@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 
 import type { ChannelEndpointSummary, ChannelProvider } from "@soko/shared-types";
 import { runtimeHashtagCapabilities, runtimeHashtagQuery } from "@soko/tool-core";
@@ -86,6 +86,17 @@ export function ChatComposer({
     messageInputRef.current?.blur();
     setMessageActionsOpen(true);
   }
+
+  // Grows the composer to fit typed content (CSS caps it at max-height and scrolls beyond that)
+  // instead of the fixed single-line box clipping a second wrapped line out of view - see
+  // .composer-input textarea in styles.css. Resetting to "auto" first is required so scrollHeight
+  // reports the height a shorter draft actually needs, not the tallest height ever reached.
+  useEffect(() => {
+    const element = messageInputRef.current;
+    if (element === null) return;
+    element.style.height = "auto";
+    element.style.height = `${element.scrollHeight}px`;
+  }, [liveDraft]);
 
   function runMessageAction(action: () => void) {
     setMessageActionsOpen(false);

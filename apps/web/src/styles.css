@@ -131,7 +131,12 @@ button:disabled {
   padding: 9px 13px;
   pointer-events: none;
   position: fixed;
-  top: 72px;
+  /* Below .top-bar + .shell-mode-bar, whose combined height holds at ~119px across every
+     supported viewport width (280px-1440px+) and at 200% text zoom - measured directly rather
+     than guessed, since this value previously sat at 72px and opaquely covered the Buy/Messages/
+     Sell buttons underneath it whenever a status message (e.g. enabling push notifications)
+     showed. */
+  top: 128px;
   transform: translateX(-50%);
   width: max-content;
   z-index: 60;
@@ -3614,25 +3619,29 @@ details.nested-form-section summary {
   border-radius: 8px;
   color: #17211b;
   font-size: 16px;
-  /* height, not min-height: rows={1} in ChatComposer.tsx means this is meant to stay a compact
-     one-line pill by default. A min-height alone has no ceiling, so on a narrow column (mobile,
-     or any column too tight for the placeholder text) wrapped content grew the box to two lines
-     even before the user typed anything. */
-  height: 42px;
+  /* min-height (not a fixed height) holds the compact one-line pill by default; ChatComposer.tsx's
+     auto-resize effect grows the actual inline height to fit typed content up to max-height,
+     scrolling internally beyond that. A hard `height: 42px; overflow: hidden` here previously
+     clipped a second wrapped line of real typed text out of view entirely - the only way to see
+     it was the manual corner resize handle, which most touch/mobile browsers do not expose at
+     all, so on mobile the tail of anything longer than one line was simply unreadable/"warped". */
+  min-height: 42px;
+  max-height: 132px;
   min-width: 0;
-  overflow: hidden;
-  resize: vertical;
+  overflow-y: auto;
+  /* No manual resize handle: it would fight the auto-resize effect above (the next keystroke
+     recalculates height from content, overriding a manual drag) and most touch browsers do not
+     expose it anyway - auto-grow supersedes it entirely, matching every other chat composer. */
+  resize: none;
   padding: 9px 12px;
   width: 100%;
 }
 
-/* The fixed height above correctly contains wrapped real typed content (it grows on purpose via
-   the resize handle / scrolls if not manually resized), but Chromium paints an unfocused
-   textarea's wrapped *placeholder* text outside its own border box regardless of height/overflow
-   - confirmed by measuring the element's own box at a clean single-line height while a second
-   line of placeholder text still visibly painted below it. white-space here is scoped to
-   ::placeholder only, so real multi-line typed messages above still wrap and grow the box
-   normally; only the empty-state hint text is forced to a single truncated line. */
+/* Chromium paints an unfocused textarea's wrapped *placeholder* text outside its own border box
+   regardless of height/overflow - confirmed by measuring the element's own box at a clean
+   single-line height while a second line of placeholder text still visibly painted below it.
+   white-space here is scoped to ::placeholder only; the auto-resize effect above only measures
+   real typed content, so this has no effect on it. */
 .composer-input textarea::placeholder {
   overflow: hidden;
   text-overflow: ellipsis;

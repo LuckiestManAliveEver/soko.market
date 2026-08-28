@@ -243,6 +243,37 @@ test("mobile composer keeps one More control and exposes secondary actions in a 
   await expect(more).toBeFocused();
 });
 
+test("the composer grows to show a wrapped draft instead of clipping it on mobile", async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto("/sell");
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await expect(composer).toBeVisible({ timeout: 15_000 });
+
+  const emptyHeight = (await composer.boundingBox())?.height ?? 0;
+  // Single visible line by default - the fixed-height/overflow:hidden bug this guards against
+  // only appears once content wraps, so an empty composer should stay compact.
+  expect(emptyHeight).toBeLessThan(50);
+
+  await composer.fill(
+    "This is a somewhat long test message typed into the chat composer box on a phone"
+  );
+  await expect
+    .poll(async () => (await composer.boundingBox())?.height ?? 0)
+    .toBeGreaterThan(emptyHeight);
+
+  // No clipped tail: the grown box must be tall enough to show the whole wrapped draft, not just
+  // scroll it out of view behind a fixed-height, overflow:hidden box. A few px of tolerance for
+  // border-box rounding between scrollHeight and clientHeight - a real clipping regression (the
+  // fixed-height bug this guards against) leaves a full line's worth of gap, not a rounding pixel.
+  const { scrollHeight, clientHeight } = await composer.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    return { scrollHeight: textarea.scrollHeight, clientHeight: textarea.clientHeight };
+  });
+  expect(clientHeight).toBeGreaterThanOrEqual(scrollHeight - 4);
+});
+
 test("persisted owner-control cards stay attached to their historical message", async ({
   page
 }) => {
@@ -574,6 +605,27 @@ test("touch controls satisfy the WCAG 2.2 minimum target size", async ({ page })
       })
     );
   expect(undersized).toEqual([]);
+});
+
+test("the status notice never covers the Buy/Messages/Sell header buttons", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.getByTestId("messages-button").click();
+  await page.getByRole("button", { name: "Notifications" }).click();
+
+  const notice = page.locator(".app-action-notice");
+  await expect(notice).toBeVisible();
+  const noticeBox = await notice.boundingBox();
+  expect(noticeBox).not.toBeNull();
+
+  for (const testId of ["marketplace-button", "messages-button", "sell-button"]) {
+    const buttonBox = await page.getByTestId(testId).boundingBox();
+    expect(buttonBox, testId).not.toBeNull();
+    const overlapsVertically =
+      noticeBox!.y < buttonBox!.y + buttonBox!.height &&
+      noticeBox!.y + noticeBox!.height > buttonBox!.y;
+    expect(overlapsVertically, `${testId} vertical range must not overlap the notice`).toBe(false);
+  }
 });
 
 test("reduced-motion and forced-color preferences keep the page operable", async ({ page }) => {
