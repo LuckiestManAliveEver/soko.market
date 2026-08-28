@@ -1974,7 +1974,8 @@ export function OwnerApp() {
                     unit: product.unit,
                     quantity: String(product.quantity),
                     buyingPrice: product.buyingPrice === null ? "" : String(product.buyingPrice),
-                    sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice)
+                    sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice),
+                    fieldValues: product.fieldValues ?? {}
                   });
                   setStockProductId(product.id);
                   setStockQuantityAfter(String(product.quantity));

@@ -45,7 +45,6 @@ export function CatalogueNestedCard({
   onSaveFields: (fields: ProductFieldDraft[]) => void;
   onSaveProduct: () => Promise<void>;
 }) {
-  const [customProductFields, setCustomProductFields] = useState<ProductFieldDraft[]>([]);
   const [managedFields, setManagedFields] = useState<ProductFieldDraft[]>(() =>
     fields.map((field) => ({ ...field, value: "" }))
   );
@@ -53,20 +52,6 @@ export function CatalogueNestedCard({
   useEffect(() => {
     setManagedFields(fields.map((field) => ({ ...field, value: "" })));
   }, [fields]);
-
-  function addCustomProductField() {
-    setCustomProductFields((fields) => [...fields, createProductFieldDraft("Custom field")]);
-  }
-
-  function updateCustomProductField(fieldId: string, value: string) {
-    setCustomProductFields((fields) =>
-      fields.map((field) => (field.id === fieldId ? { ...field, value } : field))
-    );
-  }
-
-  function removeCustomProductField(fieldId: string) {
-    setCustomProductFields((fields) => fields.filter((field) => field.id !== fieldId));
-  }
 
   function updateManagedField(fieldId: string, patch: Partial<ProductFieldDraft>) {
     setManagedFields((fields) =>
@@ -287,46 +272,45 @@ export function CatalogueNestedCard({
 
   return (
     <ProductNestedEditor
-      customFields={customProductFields}
+      fields={fields}
       form={form}
       isEdit={view === "editProduct"}
       products={products}
-      onAddField={addCustomProductField}
+      onAddField={onOpenFields}
       onBack={onBack}
-      onChangeCustomField={updateCustomProductField}
       onChangeForm={onChangeForm}
       onEditProduct={onEditProduct}
-      onRemoveCustomField={removeCustomProductField}
       onSave={onSaveProduct}
     />
   );
 }
 
 export function ProductNestedEditor({
-  customFields,
+  fields,
   form,
   isEdit,
   products,
   onAddField,
   onBack,
-  onChangeCustomField,
   onChangeForm,
   onEditProduct,
-  onRemoveCustomField,
   onSave
 }: {
-  customFields: ProductFieldDraft[];
+  fields: ProductFieldDefinition[];
   form: ProductFormState;
   isEdit: boolean;
   products: ProductSummary[];
   onAddField: () => void;
   onBack: () => void;
-  onChangeCustomField: (fieldId: string, value: string) => void;
   onChangeForm: (form: ProductFormState) => void;
   onEditProduct: (product: ProductSummary) => void;
-  onRemoveCustomField: (fieldId: string) => void;
   onSave: () => Promise<void>;
 }) {
+  const customFields = fields.filter((field) => !builtInProductFieldIds.has(field.id));
+  const hasMissingRequiredField = customFields.some(
+    (field) => field.required && (form.fieldValues[field.id] ?? "").trim().length === 0
+  );
+
   return (
     <div className="nested-card">
       <button className="nested-breadcrumb" type="button" onClick={onBack}>
@@ -417,24 +401,17 @@ export function ProductNestedEditor({
           />
         </label>
         {customFields.map((field) => (
-          <div className="custom-product-field-row" key={field.id}>
-            <span className="drag-handle">::</span>
-            <label>
-              {field.label}
-              <input
-                value={field.value}
-                placeholder={field.label}
-                onChange={(event) => onChangeCustomField(field.id, event.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => onRemoveCustomField(field.id)}
-              aria-label="Remove field"
-            >
-              x
-            </button>
-          </div>
+          <ProductFieldControl
+            field={field}
+            key={field.id}
+            value={form.fieldValues[field.id] ?? ""}
+            onChange={(value) =>
+              onChangeForm({
+                ...form,
+                fieldValues: { ...form.fieldValues, [field.id]: value }
+              })
+            }
+          />
         ))}
       </div>
       <details className="nested-form-section">
@@ -459,11 +436,70 @@ export function ProductNestedEditor({
         <button
           type="button"
           onClick={() => void onSave()}
-          disabled={form.name.trim().length === 0}
+          disabled={form.name.trim().length === 0 || hasMissingRequiredField}
         >
           Save
         </button>
       </div>
     </div>
+  );
+}
+
+const builtInProductFieldIds = new Set(["name", "sku", "unit", "quantity", "selling-price"]);
+
+function ProductFieldControl({
+  field,
+  value,
+  onChange
+}: {
+  field: ProductFieldDefinition;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const label = `${field.label}${field.required ? " *" : ""}`;
+
+  if (field.inputType === "textarea") {
+    return (
+      <label>
+        {label}
+        <textarea
+          value={value}
+          placeholder={field.label}
+          required={field.required}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </label>
+    );
+  }
+
+  if (field.inputType === "yes_no") {
+    return (
+      <label>
+        {label}
+        <select
+          value={value}
+          required={field.required}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </label>
+    );
+  }
+
+  return (
+    <label>
+      {label}
+      <input
+        value={value}
+        type={field.inputType === "number" ? "number" : "text"}
+        inputMode={field.inputType === "number" ? "decimal" : undefined}
+        placeholder={field.label}
+        required={field.required}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
   );
 }

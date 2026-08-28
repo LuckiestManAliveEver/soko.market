@@ -333,6 +333,7 @@ export interface ProductSummary {
   quantity: number;
   buyingPrice: number | null;
   sellingPrice: number | null;
+  fieldValues?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }
@@ -1493,6 +1494,7 @@ export interface ProductFormState {
   quantity: string;
   buyingPrice: string;
   sellingPrice: string;
+  fieldValues: Record<string, string>;
 }
 
 export interface ProductFieldDraft {
@@ -1842,7 +1844,8 @@ export const emptyProductForm: ProductFormState = {
   unit: "unit",
   quantity: "0",
   buyingPrice: "",
-  sellingPrice: ""
+  sellingPrice: "",
+  fieldValues: {}
 };
 
 export const emptyCustomerForm: CustomerFormState = {

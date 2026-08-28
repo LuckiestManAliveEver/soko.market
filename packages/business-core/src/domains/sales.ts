@@ -46,6 +46,7 @@ export interface ProductInput {
   quantity?: number;
   buyingPrice?: number | null;
   sellingPrice?: number | null;
+  fieldValues?: Record<string, string>;
 }
 
 export interface StockAdjustmentInput {
@@ -82,6 +83,7 @@ export interface NormalizedProductInput {
   quantity: number;
   buyingPrice: number | null;
   sellingPrice: number | null;
+  fieldValues: Record<string, string>;
 }
 
 export interface NormalizedStockAdjustmentInput {
@@ -162,6 +164,23 @@ export function validateProductInput(input: ProductInput): ValidationResult {
       )
     ) {
       errors.push("Each product alias must be non-empty text no longer than 80 characters.");
+    }
+  }
+
+  if (input.fieldValues !== undefined) {
+    const entries = Object.entries(input.fieldValues);
+    if (entries.length > 50) {
+      errors.push("Product field values must contain at most 50 entries.");
+    } else if (
+      entries.some(
+        ([fieldId, value]) =>
+          !/^[a-z0-9][a-z0-9_-]*$/iu.test(fieldId) ||
+          fieldId.length > 80 ||
+          typeof value !== "string" ||
+          value.trim().length > 5_000
+      )
+    ) {
+      errors.push("Product field values contain an invalid field ID or value.");
     }
   }
 
@@ -286,7 +305,10 @@ export function normalizeProductInput(input: ProductInput): NormalizedProductInp
     sellingPrice:
       input.sellingPrice === null || input.sellingPrice === undefined
         ? null
-        : roundMoney(input.sellingPrice)
+        : roundMoney(input.sellingPrice),
+    fieldValues: Object.fromEntries(
+      Object.entries(input.fieldValues ?? {}).map(([fieldId, value]) => [fieldId, value.trim()])
+    )
   };
 }
 

@@ -81,6 +81,7 @@ interface ProductBody {
   quantity?: number;
   buyingPrice?: number | null;
   sellingPrice?: number | null;
+  fieldValues?: unknown;
 }
 
 interface ProductFieldStructureBody {
@@ -563,8 +564,27 @@ export function parseProductBody(body: ProductBody | null | undefined) {
     sellingPrice:
       record.sellingPrice === undefined || record.sellingPrice === null
         ? null
-        : parseNumber(record.sellingPrice, "sellingPrice")
+        : parseNumber(record.sellingPrice, "sellingPrice"),
+    ...(record.fieldValues === undefined
+      ? {}
+      : { fieldValues: parseProductFieldValues(record.fieldValues) })
   };
+}
+
+function parseProductFieldValues(value: unknown): Record<string, string> {
+  const record = parseRequestBody(value);
+  return Object.fromEntries(
+    Object.entries(record).map(([fieldId, fieldValue]) => {
+      if (typeof fieldValue !== "string") {
+        throw new Cp2Error(
+          400,
+          "product_field_value_invalid",
+          `Product field ${fieldId} must be text.`
+        );
+      }
+      return [fieldId, fieldValue];
+    })
+  );
 }
 
 function parseProductFieldDefinitions(value: unknown): ProductFieldDefinition[] {

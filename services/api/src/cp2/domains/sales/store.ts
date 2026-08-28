@@ -348,6 +348,7 @@ export class SalesDomain {
       quantity: normalized.quantity,
       buyingPrice: normalized.buyingPrice,
       sellingPrice: normalized.sellingPrice,
+      fieldValues: normalized.fieldValues,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString()
     };
@@ -404,6 +405,10 @@ export class SalesDomain {
       quantity: normalized.quantity,
       buyingPrice: normalized.buyingPrice,
       sellingPrice: normalized.sellingPrice,
+      fieldValues:
+        input.product.fieldValues === undefined
+          ? (existing.fieldValues ?? {})
+          : normalized.fieldValues,
       updatedAt: now.toISOString()
     };
 

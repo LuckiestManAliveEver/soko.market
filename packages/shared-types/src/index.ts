@@ -1302,6 +1302,8 @@ export interface ProductSummary {
   quantity: number;
   buyingPrice: number | null;
   sellingPrice: number | null;
+  /** Values for business-defined catalogue fields, keyed by ProductFieldDefinition.id. */
+  fieldValues?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }

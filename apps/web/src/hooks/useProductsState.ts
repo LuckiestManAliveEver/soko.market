@@ -75,7 +75,8 @@ export function useProductsState(deps: UseProductsStateDeps) {
       unit: product.unit,
       quantity: String(product.quantity),
       buyingPrice: product.buyingPrice === null ? "" : String(product.buyingPrice),
-      sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice)
+      sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice),
+      fieldValues: product.fieldValues ?? {}
     });
     setStockProductId(product.id);
     setStockQuantityAfter(String(product.quantity));
@@ -123,7 +124,8 @@ export function useProductsState(deps: UseProductsStateDeps) {
         buyingPrice:
           productForm.buyingPrice.trim().length === 0 ? null : Number(productForm.buyingPrice),
         sellingPrice:
-          productForm.sellingPrice.trim().length === 0 ? null : Number(productForm.sellingPrice)
+          productForm.sellingPrice.trim().length === 0 ? null : Number(productForm.sellingPrice),
+        fieldValues: productForm.fieldValues
       };
       const product =
         productForm.id === null

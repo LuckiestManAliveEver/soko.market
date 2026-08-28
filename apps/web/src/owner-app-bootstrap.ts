@@ -414,11 +414,11 @@ export function productFieldDefinitionsFromDrafts(
 
 export function createDefaultProductFieldDrafts(): ProductFieldDraft[] {
   return [
-    createProductFieldDraft("Name", "text", true),
-    createProductFieldDraft("SKU", "text", true),
-    createProductFieldDraft("Unit", "select", true),
-    createProductFieldDraft("Quantity", "number", true),
-    createProductFieldDraft("Selling Price", "number", true)
+    { ...createProductFieldDraft("Name", "text", true), id: "name" },
+    { ...createProductFieldDraft("SKU", "text", true), id: "sku" },
+    { ...createProductFieldDraft("Unit", "select", true), id: "unit" },
+    { ...createProductFieldDraft("Quantity", "number", true), id: "quantity" },
+    { ...createProductFieldDraft("Selling Price", "number", true), id: "selling-price" }
   ];
 }
 

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
-import type { ProductFieldSchemaSummary } from "@soko/shared-types";
+import type { ProductFieldSchemaSummary, ProductSummary } from "@soko/shared-types";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
@@ -41,6 +41,25 @@ describe("product field schema", () => {
     );
     expect(saved.fields).toHaveLength(2);
     expect(store.snapshot().productFieldSchemas).toEqual([saved]);
+
+    const product = await postJson<ProductSummary>(
+      app,
+      `/businesses/${business.business.id}/products`,
+      {
+        name: "Blue shirt",
+        sku: "SHIRT-BLUE",
+        unit: "piece",
+        quantity: 3,
+        buyingPrice: 10,
+        sellingPrice: 20,
+        fieldValues: { color: "Blue" }
+      },
+      cookie
+    );
+    expect(product.fieldValues).toEqual({ color: "Blue" });
+    expect(store.snapshot().products).toContainEqual(
+      expect.objectContaining({ id: product.id, fieldValues: { color: "Blue" } })
+    );
 
     const duplicate = await app.inject({
       method: "POST",
