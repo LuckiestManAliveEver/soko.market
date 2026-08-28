@@ -1076,7 +1076,7 @@ export function resolveRuntimeModel(modelId: string): RuntimeModelDefinition | n
 export interface AgentModelBindingPermissions {
   allowInstalledApp: boolean;
   allowRemoteShopDevice: boolean;
-  allowOpenAIFallback: boolean;
+  allowBackendFallback: boolean;
 }
 
 export interface AgentModelBindingSummary {

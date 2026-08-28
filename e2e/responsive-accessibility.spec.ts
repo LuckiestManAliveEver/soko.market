@@ -286,7 +286,7 @@ test("a switched device offers the hosted default without silently granting cons
   await page.goto("/sell");
 
   const fallback = page.getByRole("region", {
-    name: "Use your selected OpenAI fallback here?"
+    name: "Use your selected backend fallback here?"
   });
   await expect(fallback).toBeVisible({ timeout: 15_000 });
   const beforeConsent = await page.evaluate(() =>
@@ -294,11 +294,11 @@ test("a switched device offers the hosted default without silently granting cons
   );
   expect(beforeConsent).toBeNull();
 
-  await fallback.getByRole("button", { name: "Allow OpenAI fallback here" }).click();
+  await fallback.getByRole("button", { name: "Allow backend fallback here" }).click();
   await expect(fallback).toBeHidden();
   await expect(
     page.getByText(
-      "The explicitly selected OpenAI model is enabled only as a fallback on this device."
+      "The explicitly selected backend model is enabled only as a fallback on this device."
     )
   ).toBeVisible();
   const preferences = await page.evaluate(() =>

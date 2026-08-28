@@ -464,11 +464,7 @@ export function AgentModelPanel({
       setActiveAgentModelBinding(canonicalBinding.binding);
       setCloudFallbackModelId(
         allModels.some(
-          (model) =>
-            model.id === active.modelId &&
-            model.available &&
-            model.provider === "openai" &&
-            model.source === "hosted"
+          (model) => model.id === active.modelId && model.available && model.source === "hosted"
         )
           ? active.modelId
           : null
@@ -1020,13 +1016,13 @@ export function AgentModelPanel({
 
   async function useBackendModelWithAgent(model: AiModelSummary) {
     if (modelRuntimeBusyRef.current || !model.available) return;
-    if (model.provider !== "openai" || model.source !== "hosted") {
-      setProfileMessage("Only configured hosted models can be selected as cloud fallbacks.");
+    if (model.source !== "hosted") {
+      setProfileMessage("Only configured hosted models can be selected as backend fallbacks.");
       return;
     }
     if (!inferencePreferences.cloudConsent) {
       setProfileMessage(
-        "Enable explicit OpenAI fallback consent before selecting an OpenAI model."
+        "Enable explicit backend fallback consent before selecting a hosted model."
       );
       return;
     }
@@ -1038,7 +1034,7 @@ export function AgentModelPanel({
       agentModelAssignment.runtimeBackend !== "CLOUD";
     if (!hasReadyLocalModel) {
       setProfileMessage(
-        "Download, connect, and test a GGUF model before selecting an OpenAI fallback."
+        "Download, connect, and test a GGUF model before selecting a backend fallback."
       );
       return;
     }
@@ -1057,7 +1053,7 @@ export function AgentModelPanel({
         setProfileMessage("Connect to the internet to activate this model.");
         return;
       }
-      setProfileMessage(`Setting ${model.label} as the cloud fallback…`);
+      setProfileMessage(`Setting ${model.label} as the backend fallback…`);
       await onEnsureRuntimeSession();
       const activated = await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
         modelId: model.id
@@ -1068,7 +1064,7 @@ export function AgentModelPanel({
 
       setCloudFallbackModelId(activated.modelId);
       setProfileMessage(
-        `${model.label} is the explicit cloud fallback. The downloaded llama.cpp model remains connected and always runs first.`
+        `${model.label} is the explicit backend fallback. The downloaded llama.cpp model remains connected and always runs first.`
       );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
@@ -1140,7 +1136,7 @@ export function AgentModelPanel({
     setModelActivationState("validating");
     try {
       setProfileMessage(`Verifying and activating ${model.label} for ${agent.name}…`);
-      const allowOpenAIFallback =
+      const allowBackendFallback =
         inferencePreferences.cloudConsent && cloudFallbackModelId !== null;
       const result = await postJson<AgentModelActivationResult>(
         `/api/agents/${encodeURIComponent(
@@ -1154,9 +1150,9 @@ export function AgentModelPanel({
           permissions: {
             allowInstalledApp: inferencePreferences.nativePermission,
             allowRemoteShopDevice: inferencePreferences.ownerNodeAllowed,
-            allowOpenAIFallback
+            allowBackendFallback
           },
-          fallbackModelId: allowOpenAIFallback ? cloudFallbackModelId : null
+          fallbackModelId: allowBackendFallback ? cloudFallbackModelId : null
         },
         { timeoutMs: backendModelProbeRequestTimeoutMs }
       );
@@ -1342,7 +1338,7 @@ export function AgentModelPanel({
     localAiModels.some((localModel) => localModel.modelId === offlineStarter.id);
   const cloudFallbackModel = aiModels.find((model) => model.id === cloudFallbackModelId);
   const backendModels = visibleAiModels.filter(
-    (model) => model.provider === "openai" && model.source === "hosted" && model.format === "remote"
+    (model) => model.source === "hosted" && model.format === "remote"
   );
   const serverBackendModels = visibleAiModels.filter(
     (model) =>
@@ -1581,8 +1577,8 @@ export function AgentModelPanel({
               <strong>Client-first route permissions</strong>
               <p>
                 Soko uses the downloaded GGUF model through its llama.cpp-compatible harness first.
-                Another owner device or OpenAI can only be used as an allowed fallback. Server tools
-                remain confirmation-gated.
+                Another owner device or a hosted backend model can only be used as an allowed
+                fallback. Server tools remain confirmation-gated.
               </p>
             </div>
             <label className="browser-model-toggle">
@@ -1624,11 +1620,12 @@ export function AgentModelPanel({
                   updateInferencePreferences({ cloudConsent: event.target.checked })
                 }
               />
-              Allow explicitly selected OpenAI fallback
+              Allow explicitly selected backend fallback
             </label>
             <small>
-              Off by default. OpenAI is used only after you select an available fallback model and
-              the downloaded model cannot process the request. API credentials remain server-only.
+              Off by default. The selected hosted backend model is swappable at any time and is
+              used only after you select an available fallback model and the downloaded model
+              cannot process the request. API credentials remain server-only.
             </small>
           </section>
           <label>
@@ -1930,13 +1927,14 @@ export function AgentModelPanel({
                 ) : null}
               </div>
             </section>
-            <section aria-label="Cloud fallback models">
+            <section aria-label="Backend fallback models">
               <div className="section-subheading">
-                <h4>Cloud fallback models</h4>
+                <h4>Backend fallback models</h4>
                 <p>
-                  OpenAI is optional and off by default. It can be selected only after a downloaded
-                  GGUF model is connected and tested, and is used only when local inference cannot
-                  run under your fallback policy.
+                  A hosted backend model is optional and off by default, and swappable for any
+                  other configured hosted model at any time. It can be selected only after a
+                  downloaded GGUF model is connected and tested, and is used only when local
+                  inference cannot run under your fallback policy.
                 </p>
               </div>
               <div className="ai-model-catalog">

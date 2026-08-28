@@ -1190,13 +1190,13 @@ export function OwnerApp() {
           if (preferences.cloudConsent) {
             setAgentSettings((current) => ({ ...current, model: fallbackModelId }));
             setStatusMessage(
-              "This device has no ready downloaded model, so your explicitly selected OpenAI fallback is available."
+              "This device has no ready downloaded model, so your explicitly selected backend fallback is available."
             );
             return;
           }
           setDeviceCloudFallbackModelId(fallbackModelId);
           setStatusMessage(
-            "No downloaded model is ready on this device. Download one, or explicitly allow your selected OpenAI fallback."
+            "No downloaded model is ready on this device. Download one, or explicitly allow your selected backend fallback."
           );
         })
         .catch((error) => {
@@ -1873,29 +1873,30 @@ export function OwnerApp() {
                 >
                   <div>
                     <strong id="device-model-fallback-title">
-                      Use your selected OpenAI fallback here?
+                      Use your selected backend fallback here?
                     </strong>
                     <p>
-                      This device does not have a ready copy of your preferred local model. Soko can
-                      use the OpenAI model you explicitly selected while leaving the downloaded
-                      model on the other device unchanged.
+                      This device does not have a ready copy of your preferred local model. Soko
+                      can use the hosted backend model you explicitly selected while leaving the
+                      downloaded model on the other device unchanged.
                     </p>
                   </div>
                   <div className="device-model-fallback-actions">
                     <button type="button" onClick={enableDeviceCloudFallback}>
-                      Allow OpenAI fallback here
+                      Allow backend fallback here
                     </button>
                     <button
                       className="secondary"
                       type="button"
                       onClick={declineDeviceCloudFallback}
                     >
-                      Keep OpenAI off
+                      Keep backend fallback off
                     </button>
                   </div>
                   <small>
-                    OpenAI receives chat context only after this explicit approval and only when no
-                    downloaded model is ready on this device. You can turn it off in Agent settings.
+                    The backend fallback model receives chat context only after this explicit
+                    approval and only when no downloaded model is ready on this device. You can
+                    turn it off in Agent settings.
                   </small>
                 </section>
               ) : null}

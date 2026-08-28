@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   AgentModelActivationResult,
   AgentModelBindingSummary,
+  AiModelSummary,
   ModelExecutionTarget,
   RuntimeModelPrompt
 } from "../packages/shared-types/src";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
+import { validateAgentModelBindingConfiguration } from "../services/api/src/cp2/domains/agent-runtime/shared";
 import {
   createBackendModelAdapter,
   ModelRuntimeError,
@@ -656,7 +658,7 @@ describe("agent model activation runtime", () => {
     const snapshot = initialStore.snapshot();
     const binding = snapshot.agentModelBindings?.find((candidate) => candidate.status === "active");
     if (binding === undefined) throw new Error("Expected an active binding.");
-    binding.permissions.allowOpenAIFallback = true;
+    binding.permissions.allowBackendFallback = true;
     binding.fallbackModelId = "openai-fast";
     binding.fallbackPolicy = "WHEN_LOCAL_FAILS";
 
@@ -696,6 +698,78 @@ describe("agent model activation runtime", () => {
 
     await initialApp.close();
     await app.close();
+  });
+});
+
+describe("backend fallback model slot is a swappable placeholder, not hardcoded to one vendor", () => {
+  const localPrimaryModel: AiModelSummary = {
+    id: "local-primary-model",
+    label: "Local primary model",
+    provider: "local",
+    description: "A downloaded on-device model used as the primary runtime.",
+    capabilities: ["chat"],
+    available: true,
+    source: "huggingface",
+    format: "GGUF",
+    license: null,
+    licenseUrl: null,
+    modelCardUrl: null,
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: false,
+    contextWindow: null
+  };
+
+  function activationInput(fallbackModelId: string | null, allowBackendFallback: boolean) {
+    return {
+      modelId: localPrimaryModel.id,
+      executionTarget: "backend" as ModelExecutionTarget,
+      executionMode: "LOCAL_FIRST" as const,
+      permissions: {
+        allowInstalledApp: false,
+        allowRemoteShopDevice: false,
+        allowBackendFallback
+      },
+      fallbackModelId
+    };
+  }
+
+  it("accepts a hosted fallback model whose provider is not OpenAI", () => {
+    // Simulates a future non-OpenAI hosted provider: the gate must key off `source === "hosted"`,
+    // not the vendor identity, or a second hosted provider could never be selected as a fallback.
+    const alternateHostedModel: AiModelSummary = {
+      ...localPrimaryModel,
+      id: "alternate-hosted-fallback",
+      label: "Alternate hosted fallback",
+      provider: "local",
+      source: "hosted",
+      format: "remote"
+    };
+
+    expect(() =>
+      validateAgentModelBindingConfiguration(
+        activationInput(alternateHostedModel.id, true),
+        localPrimaryModel,
+        [alternateHostedModel]
+      )
+    ).not.toThrow();
+  });
+
+  it("still rejects a fallback that is not hosted, regardless of provider", () => {
+    const nonHostedModel: AiModelSummary = {
+      ...localPrimaryModel,
+      id: "not-hosted-fallback"
+    };
+
+    expect(() =>
+      validateAgentModelBindingConfiguration(
+        activationInput(nonHostedModel.id, true),
+        localPrimaryModel,
+        [nonHostedModel]
+      )
+    ).toThrowError(expect.objectContaining({ code: "BACKEND_FALLBACK_MODEL_REQUIRED" }));
   });
 });
 
@@ -989,7 +1063,7 @@ function activationPayload(shopId: string) {
     permissions: {
       allowInstalledApp: false,
       allowRemoteShopDevice: false,
-      allowOpenAIFallback: false
+      allowBackendFallback: false
     },
     fallbackModelId: null
   };

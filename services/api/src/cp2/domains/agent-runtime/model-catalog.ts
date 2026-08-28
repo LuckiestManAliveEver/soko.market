@@ -318,11 +318,7 @@ export function contextCharacterBudgetForModel(modelId: string): number {
 
 export function resolveDefaultDeviceModelId(preferredModelId: string): string {
   const preferredModel = aiModelRegistry.find((model) => model.id === preferredModelId);
-  if (
-    preferredModel?.provider === "openai" &&
-    preferredModel.source === "hosted" &&
-    preferredModel.available
-  ) {
+  if (preferredModel?.source === "hosted" && preferredModel.available) {
     return preferredModel.id;
   }
   return "sokoclaw-local";

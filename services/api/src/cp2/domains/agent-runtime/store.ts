@@ -416,16 +416,11 @@ export class AgentRuntimeDomain {
       now
     );
     const model = aiModelRegistry.find((candidate) => candidate.id === input.modelId);
-    if (
-      model === undefined ||
-      model.provider !== "openai" ||
-      model.source !== "hosted" ||
-      !model.available
-    ) {
+    if (model === undefined || model.source !== "hosted" || !model.available) {
       throw new Cp2Error(
         400,
         "cloud_model_unavailable",
-        "The selected cloud fallback model is unavailable."
+        "The selected backend fallback model is unavailable."
       );
     }
     const hasReadyLocalModel = [...this.agentModelAssignments.values()].some(
@@ -440,7 +435,7 @@ export class AgentRuntimeDomain {
       throw new Cp2Error(
         409,
         "local_model_required",
-        "Connect and test a downloaded model before selecting an OpenAI fallback."
+        "Connect and test a downloaded model before selecting a backend fallback model."
       );
     }
     const selection: ActiveAiModelSummary = {
@@ -622,7 +617,7 @@ export class AgentRuntimeDomain {
       existingActive.permissions.allowInstalledApp === input.permissions.allowInstalledApp &&
       existingActive.permissions.allowRemoteShopDevice ===
         input.permissions.allowRemoteShopDevice &&
-      existingActive.permissions.allowOpenAIFallback === input.permissions.allowOpenAIFallback
+      existingActive.permissions.allowBackendFallback === input.permissions.allowBackendFallback
     ) {
       input.onStage?.("runtime_probe_started", Date.now() - startedAt);
       const health = healthSummary(
@@ -1479,11 +1474,11 @@ export class AgentRuntimeDomain {
     if ((!deviceModel && model === undefined) || model?.available === false) {
       throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
     }
-    if (model?.provider === "openai" || model?.source === "hosted") {
+    if (model?.source === "hosted") {
       throw new Cp2Error(
         400,
         "cloud_model_cannot_be_primary",
-        "OpenAI can only be selected explicitly as a fallback after a local model is ready."
+        "A hosted model can only be selected explicitly as a fallback after a local model is ready."
       );
     }
 
@@ -2202,7 +2197,7 @@ export class AgentRuntimeDomain {
     const modelName =
       aiModelRegistry.find((model) => model.id === binding.modelId)?.label ?? binding.modelId;
     const approvedFallbackConfigured =
-      binding.permissions.allowOpenAIFallback && binding.fallbackModelId !== null;
+      binding.permissions.allowBackendFallback && binding.fallbackModelId !== null;
     return [
       `I couldn’t reach ${modelName}, but your message is saved.`,
       "To continue:",

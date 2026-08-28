@@ -55,7 +55,7 @@ test("workspace and model settings do not replace the authenticated shell", asyn
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
   await expect(page).toHaveURL(/\/$/);
   await page.getByRole("button", { name: "Open model library" }).click();
-  await expect(page.getByLabel("Cloud fallback models", { exact: true })).toBeVisible({
+  await expect(page.getByLabel("Backend fallback models", { exact: true })).toBeVisible({
     timeout: 30_000
   });
 
@@ -164,7 +164,7 @@ async function installDelayedApi(page: Page): Promise<void> {
         permissions: {
           allowInstalledApp: false,
           allowRemoteShopDevice: false,
-          allowOpenAIFallback: false
+          allowBackendFallback: false
         },
         fallbackModelId: null,
         activatedAt: "2026-08-14T00:00:00.000Z",

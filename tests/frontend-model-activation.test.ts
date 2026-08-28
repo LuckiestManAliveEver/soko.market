@@ -64,7 +64,7 @@ describe("frontend model activation contracts", () => {
     expect(activation).not.toContain("updateAgent({ model: activated.modelId })");
     expect(activation).not.toContain("onAgentChange({ ...agent, model: activated.modelId })");
     expect(activation).toContain("inferencePreferences.cloudConsent");
-    expect(agentModelPanel).toContain('aria-label="Cloud fallback models"');
+    expect(agentModelPanel).toContain('aria-label="Backend fallback models"');
     expect(agentModelPanel).toContain('"Set as fallback"');
     expect(agentModelPanel).toContain('"Default fallback"');
     expect(agentModelPanel).not.toContain('<option value="CLOUD_ONLY">Cloud only</option>');

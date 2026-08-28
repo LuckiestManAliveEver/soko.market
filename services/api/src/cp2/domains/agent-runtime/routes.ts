@@ -1614,9 +1614,9 @@ function parseAgentModelBindingPermissions(value: unknown): AgentModelBindingPer
       permissions.allowRemoteShopDevice,
       "permissions.allowRemoteShopDevice"
     ),
-    allowOpenAIFallback: parseBoolean(
-      permissions.allowOpenAIFallback,
-      "permissions.allowOpenAIFallback"
+    allowBackendFallback: parseBoolean(
+      permissions.allowBackendFallback,
+      "permissions.allowBackendFallback"
     )
   };
 }

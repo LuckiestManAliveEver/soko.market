@@ -439,8 +439,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         (model) =>
           model.id === selectedCloudFallback?.modelId &&
           model.available &&
-          model.source === "hosted" &&
-          model.provider === "openai"
+          model.source === "hosted"
       ) ?? null;
     const downloadedBrowserModelReady =
       browserState?.settings?.enabled === true &&

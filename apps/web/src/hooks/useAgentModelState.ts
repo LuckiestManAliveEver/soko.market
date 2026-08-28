@@ -108,10 +108,7 @@ export function useAgentModelState(deps: UseAgentModelStateDeps) {
     ]);
     const cloudModel = registry.models.find(
       (model) =>
-        model.id === selectedFallback?.modelId &&
-        model.available &&
-        model.provider === "openai" &&
-        model.source === "hosted"
+        model.id === selectedFallback?.modelId && model.available && model.source === "hosted"
     );
     return cloudModel?.id ?? null;
   }
@@ -127,7 +124,7 @@ export function useAgentModelState(deps: UseAgentModelStateDeps) {
     deps.setAgentSettings((current) => ({ ...current, model: deviceCloudFallbackModelId }));
     setDeviceCloudFallbackModelId(null);
     deps.setStatusMessage(
-      "The explicitly selected OpenAI model is enabled only as a fallback on this device."
+      "The explicitly selected backend model is enabled only as a fallback on this device."
     );
   }
 
@@ -139,7 +136,9 @@ export function useAgentModelState(deps: UseAgentModelStateDeps) {
         : (readDeviceAgentModelAssignment(deps.business.id, getOrCreateDeviceModelScopeId())
             ?.modelId ?? "sokoclaw-local");
     deps.setAgentSettings((current) => ({ ...current, model: localModelId }));
-    deps.setStatusMessage("OpenAI remains off. Downloaded-model-first routing is unchanged.");
+    deps.setStatusMessage(
+      "The backend fallback remains off. Downloaded-model-first routing is unchanged."
+    );
   }
 
   deps.registerReset("agent-model", () => {

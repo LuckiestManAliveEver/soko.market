@@ -489,7 +489,7 @@ describePostgres("CP2 Postgres store", () => {
         permissions: {
           allowInstalledApp: false,
           allowRemoteShopDevice: false,
-          allowOpenAIFallback: false
+          allowBackendFallback: false
         },
         fallbackModelId: null
       },

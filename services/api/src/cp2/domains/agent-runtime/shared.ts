@@ -1253,18 +1253,18 @@ export function validateAgentModelBindingConfiguration(
   model: AiModelSummary,
   registry: AiModelSummary[]
 ): void {
-  if (model.provider === "openai" && input.executionTarget !== "openai") {
+  if (model.source === "hosted" && input.executionTarget !== "openai") {
     throw new Cp2Error(
       409,
       "MODEL_RUNTIME_INCOMPATIBLE",
-      "The selected hosted model must use the OpenAI execution target."
+      "The selected hosted model must use the hosted execution target."
     );
   }
-  if (model.provider !== "openai" && input.executionTarget === "openai") {
+  if (model.source !== "hosted" && input.executionTarget === "openai") {
     throw new Cp2Error(
       409,
       "MODEL_RUNTIME_INCOMPATIBLE",
-      "The selected model is not an OpenAI-hosted model."
+      "The selected model is not a hosted model."
     );
   }
   if (input.executionMode === "CLOUD_ONLY" && input.executionTarget !== "openai") {
@@ -1288,25 +1288,20 @@ export function validateAgentModelBindingConfiguration(
       "Remote shop-device inference is not permitted by this binding."
     );
   }
-  if (input.permissions.allowOpenAIFallback) {
+  if (input.permissions.allowBackendFallback) {
     const fallback = registry.find((candidate) => candidate.id === input.fallbackModelId);
-    if (
-      fallback === undefined ||
-      fallback.provider !== "openai" ||
-      fallback.source !== "hosted" ||
-      !fallback.available
-    ) {
+    if (fallback === undefined || fallback.source !== "hosted" || !fallback.available) {
       throw new Cp2Error(
         400,
-        "OPENAI_FALLBACK_MODEL_REQUIRED",
-        "Select an available OpenAI model before enabling OpenAI fallback."
+        "BACKEND_FALLBACK_MODEL_REQUIRED",
+        "Select an available hosted model before enabling backend fallback."
       );
     }
   } else if (input.fallbackModelId !== null) {
     throw new Cp2Error(
       400,
       "MODEL_CONFIGURATION_INVALID",
-      "A fallback model cannot be saved while OpenAI fallback is disabled."
+      "A fallback model cannot be saved while backend fallback is disabled."
     );
   }
 }

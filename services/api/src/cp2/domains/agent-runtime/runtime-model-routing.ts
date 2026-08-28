@@ -349,7 +349,7 @@ export async function createRuntimeModelRoute(
   if (
     binding !== null &&
     completion.status !== "available" &&
-    binding.permissions.allowOpenAIFallback &&
+    binding.permissions.allowBackendFallback &&
     binding.fallbackModelId !== null &&
     qualifiesForModelFallback(binding.fallbackPolicy, completion.errorCode)
   ) {
