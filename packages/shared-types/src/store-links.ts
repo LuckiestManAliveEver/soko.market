@@ -13,11 +13,13 @@ export interface StoreLinkConfig {
 
 export interface StoreLinks {
   /**
-   * Aspirational: `{handle}.soko.market` requires a wildcard custom domain registered against a
-   * server capable of Host-header routing, which does not exist in this deployment today (the web
-   * app is a static site with a single fixed domain, `render.yaml`). This field is still generated
-   * because it's pure string formatting, and becomes live the moment that infra step is done -
-   * `universal` below is what actually resolves today.
+   * `{handle}.soko.market` (the `soko.` prefix on the underlying sokoId is stripped - it would
+   * otherwise double up into `soko.{handle}.soko.market`, which is not the intended subdomain).
+   * The API service (`services/api/src/app.ts`) already resolves and 302-redirects this Host to
+   * the storefront the moment a request actually reaches it, but nothing does today: it requires
+   * a wildcard `*.soko.market` custom domain registered against that service, which is a real
+   * production DNS/hosting change, not something this repo can apply on its own
+   * (docs/architecture/soko-id-slug-system.md). `universal` below is what actually resolves today.
    */
   web: string;
   /** Empty string when no bot username is configured (mirrors the existing
@@ -28,9 +30,11 @@ export interface StoreLinks {
 }
 
 export function getStoreLinks(sokoId: string, config: StoreLinkConfig): StoreLinks {
-  const handle = encodeURIComponent(sokoId.trim());
+  const trimmedSokoId = sokoId.trim();
+  const handle = encodeURIComponent(trimmedSokoId);
+  const bareHandle = encodeURIComponent(trimmedSokoId.replace(/^soko\./u, ""));
   return {
-    web: `https://${handle}.soko.market`,
+    web: `https://${bareHandle}.soko.market`,
     telegram:
       config.telegramBotUsername.trim() === ""
         ? ""

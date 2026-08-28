@@ -103,7 +103,7 @@ describe("PUT /businesses/:businessId/soko-id - the rename endpoint", () => {
     expect(response.json()).toMatchObject({
       business: { sokoId: "soko.brand-new-handle" },
       links: {
-        web: "https://soko.brand-new-handle.soko.market",
+        web: "https://brand-new-handle.soko.market",
         telegram: "https://t.me/SokoBot?start=soko.brand-new-handle",
         universal: "https://soko.market/s/soko.brand-new-handle"
       }

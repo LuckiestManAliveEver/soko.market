@@ -63,18 +63,29 @@ lookups (`requirePublicStorefrontBusiness`, unchanged, active-only; `resolveBusi
 active+stale-aware) serving genuinely different call sites with genuinely different needs, not one
 lookup accidentally duplicated.
 
-## 4. Web "subdomain" support is real string generation, blocked on a real infra step
+## 4. Web subdomain support: code is done, one real infra step remains
 
-`getStoreLinks().web` produces `https://{handle}.soko.market` - correct as a string, but **nothing
-in this deployment can currently receive that request**. `soko-market-web` is a Render static site
-with domain `soko.market` only; no wildcard custom domain is registered, and static sites have no
-server-side Host-header middleware capability regardless. This is a genuine infra gap, not a code
-gap: closing it requires registering a wildcard custom domain in Render's dashboard (an operational
-step, not something committable from this repo) and deciding whether it should point at the static
-web service or at `soko-market-api` (a real Node service that _could_ do Host-header routing and
-302 to the real storefront path). `GET /s/:slug` (the universal fallback) is what actually resolves
-today, using only the existing single `soko.market`/`api.soko.market` domains - it is the correct
-thing to hand out in QR codes/flyers/etc. right now, not `getStoreLinks().web`.
+`getStoreLinks().web` produces `https://{handle}.soko.market` (the underlying sokoId's `soko.`
+prefix is stripped here specifically - `soko.mama-mboga` becomes `mama-mboga.soko.market`, not
+`soko.mama-mboga.soko.market`). `services/api/src/app.ts` has a root-level `onRequest` hook that
+resolves that Host to a business via the same `resolveBusinessBySokoId` every channel uses and
+302-redirects to the real storefront (`https://soko.market/agent/{sokoId}`), 404ing for a handle
+that never existed. It excludes `api.soko.market`/`www.soko.market`, this deployment's own fixed
+domains. Tests: `tests/store-subdomain-redirect.test.ts`, simulating the eventual real traffic by
+setting the `Host` header directly on `app.inject()` calls (active handle, retired/in-cooldown
+handle, never-existed handle, and confirming the apex/`api`/`www`/unrelated hosts are left alone).
+
+**What still doesn't work in production, and why it's not something this repo can fix alone**:
+`soko-market-web` (the static site serving the actual SPA) has domain `soko.market` only in
+`render.yaml`; no wildcard custom domain is registered against `soko-market-api` either, so no
+`*.soko.market` request reaches this hook today. Closing that gap needs a wildcard custom domain
+added for `soko-market-api` and, at whatever registrar manages `soko.market`'s DNS, a wildcard
+record (`*.soko.market`) pointed at Render per its custom-domain instructions - both are real
+production domain/DNS changes outside this repository, not configuration this session can safely
+apply on its own judgment. `GET /s/:slug` (the universal fallback) is what actually resolves today
+using only the existing fixed domains - it remains the correct thing to hand out in QR codes/flyers
+until that infra step is done, at which point `getStoreLinks().web` starts resolving with no
+further code change.
 
 ## 5. Rename flow and cooldown
 
@@ -157,4 +168,5 @@ touching many domain-store files) - two things worth stating plainly rather than
    `sendMessage` rather than creating a channel link. `getStoreLinks().telegram` (the _generation_
    side) is done and tested; this is only the _receiving_ side.
 2. **`getStoreLinks().web` (the `{handle}.soko.market` subdomain) doesn't resolve today** - see §4.
-   Real infra work (a Render custom domain decision), not a code gap.
+   The API-side resolve-and-redirect hook is implemented and tested; what's missing is a real
+   production DNS/Render custom-domain change outside this repository, not a code gap.

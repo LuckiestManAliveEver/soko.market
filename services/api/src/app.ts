@@ -4,6 +4,7 @@ import websocket from "@fastify/websocket";
 import type { HealthResponse, RuntimeModelDiagnostic } from "@soko/shared-types";
 import { registerCp2Routes, type Cp2RouteOptions } from "./cp2/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
+import type { Cp2Store } from "./cp2/store.js";
 
 const defaultAllowedCorsOrigins = ["http://127.0.0.1:5173", "http://localhost:5173"];
 
@@ -37,6 +38,12 @@ export function buildApi(options: BuildApiOptions = {}) {
   const allowedCorsOrigins = new Set(options.allowedCorsOrigins ?? defaultAllowedCorsOrigins);
   const oauthAllowedRedirectOrigins = readOAuthAllowedRedirectOrigins([...allowedCorsOrigins]);
   const persistenceBarrierRequests = new WeakSet<object>();
+  // Assigned once registerCp2Routes runs, below - Fastify finishes loading every registered
+  // plugin (so this is always assigned) before it accepts its first real request or `.inject()`
+  // call resolves. See the onRequest hook right after this for why it needs to be set this early.
+  let cp2Store: Cp2Store | undefined;
+  const webPublicUrl = (options.cp2?.webPublicUrl ?? "https://soko.market").replace(/\/+$/u, "");
+  const storefrontApexHostname = new URL(webPublicUrl).hostname;
 
   void app.register(websocket, {
     options: {
@@ -57,6 +64,39 @@ export function buildApi(options: BuildApiOptions = {}) {
       code: "rate_limited",
       message: `Too many requests. Please retry after ${context.after}.`
     })
+  });
+
+  // Store subdomain redirect (docs/architecture/soko-id-slug-system.md): once a wildcard
+  // *.soko.market custom domain is registered against this service, a request that arrives with
+  // Host: {handle}.soko.market resolves to that business's canonical storefront and redirects
+  // there. Without the wildcard domain/DNS record actually pointed at this service, no such
+  // request ever reaches it, so this hook is inert (and does nothing at all) until that one
+  // infrastructure step is done. api.soko.market and www.soko.market are excluded because they
+  // are this deployment's own fixed domains, not a store handle.
+  app.addHook("onRequest", async (request, reply) => {
+    if (cp2Store === undefined) return;
+    const requestHostname = request.hostname;
+    if (
+      !requestHostname.endsWith(`.${storefrontApexHostname}`) ||
+      requestHostname === `api.${storefrontApexHostname}` ||
+      requestHostname === `www.${storefrontApexHostname}`
+    ) {
+      return;
+    }
+    const handle = requestHostname.slice(0, -(storefrontApexHostname.length + 1));
+    if (handle.length === 0 || handle.includes(".")) return;
+
+    const resolution = cp2Store.resolveBusinessBySokoId(`soko.${handle}`);
+    if (resolution === null) {
+      return reply.code(404).send({
+        code: "storefront_not_found",
+        message: "This storefront link is no longer valid."
+      });
+    }
+    return reply.redirect(
+      `${webPublicUrl}/agent/${encodeURIComponent(resolution.business.sokoId)}`,
+      302
+    );
   });
 
   app.addHook("onRequest", async (request, reply) => {
@@ -344,6 +384,7 @@ export function buildApi(options: BuildApiOptions = {}) {
         options.cp2?.oauthAllowedRedirectOrigins ?? oauthAllowedRedirectOrigins,
       realtimeAllowedOrigins: [...allowedCorsOrigins]
     });
+    cp2Store = store;
     registerMcpRoutes(routes, { store, allowedOrigins: [...allowedCorsOrigins] });
   });
 

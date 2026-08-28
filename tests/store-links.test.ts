@@ -8,7 +8,7 @@ describe("getStoreLinks", () => {
       telegramBotUsername: "SokoBot"
     });
     expect(links).toEqual({
-      web: "https://soko.mama-mboga.soko.market",
+      web: "https://mama-mboga.soko.market",
       telegram: "https://t.me/SokoBot?start=soko.mama-mboga",
       universal: "https://soko.market/s/soko.mama-mboga"
     });
@@ -35,9 +35,18 @@ describe("getStoreLinks", () => {
       webOrigin: "https://soko.market",
       telegramBotUsername: "SokoBot"
     });
-    expect(links.web).toBe("https://soko.a%20b.soko.market");
+    expect(links.web).toBe("https://a%20b.soko.market");
     expect(links.telegram).toBe("https://t.me/SokoBot?start=soko.a%20b");
     expect(links.universal).toBe("https://soko.market/s/soko.a%20b");
+  });
+
+  it("strips the soko. prefix from the web subdomain but keeps it in telegram/universal", () => {
+    const links = getStoreLinks("soko.jane", {
+      webOrigin: "https://soko.market",
+      telegramBotUsername: ""
+    });
+    expect(links.web).toBe("https://jane.soko.market");
+    expect(links.universal).toBe("https://soko.market/s/soko.jane");
   });
 
   it("has no whatsapp field - deliberately deferred", () => {
