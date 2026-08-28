@@ -33,7 +33,7 @@ interface NormalizedCollection {
   tableName: string;
 }
 
-const normalizedCollections: NormalizedCollection[] = [
+export const normalizedCollections: NormalizedCollection[] = [
   { key: "accounts", tableName: "cp2_accounts" },
   { key: "users", tableName: "cp2_users" },
   { key: "deviceAccountBootstraps", tableName: "cp2_device_account_bootstraps" },

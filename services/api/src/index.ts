@@ -14,6 +14,8 @@ import {
 } from "./cp2/account-deletion-runner.js";
 import { readAccountDeletionProcessors } from "./cp2/account-deletion-processors.js";
 import { createPostgresCp2Store } from "./cp2/postgres-store.js";
+import { RETIRED_EXECUTION_FABRIC_TABLES } from "./cp2/retired-execution-fabric-tables.js";
+import { readBuildManifest } from "./build-manifest.js";
 import { createCp2Store } from "./cp2/store.js";
 import { builtinRuntimeModelId } from "./cp2/domains/native-runtime/store.js";
 import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
@@ -136,12 +138,7 @@ const cp2StoreOptions = {
   ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors })
 };
 
-const cp2Store = shouldUsePostgresStore
-  ? await createPostgresCp2Store({
-      databaseUrl: config.databaseUrl,
-      ...cp2StoreOptions
-    })
-  : createCp2Store(cp2StoreOptions);
+const cp2Store = await createCp2StoreOrExplainSchemaFailure();
 if (process.env.NODE_ENV === "production") {
   const defaultAdapter = modelRuntimeAdapters.get(`openai:${builtinRuntimeModelId}`);
   if (defaultAdapter === undefined) {
@@ -199,6 +196,21 @@ const app = buildApi(
           : {}),
         ...(isFlushableStore(cp2Store) ? { mutationPersistenceFlush: () => cp2Store.flush() } : {})
       }
+);
+
+const buildManifest = readBuildManifest();
+app.log.info(
+  {
+    event: "runtime_schema_boot",
+    runtimeArchitecture: "native",
+    store: shouldUsePostgresStore ? "postgres" : "memory",
+    schemaCompatibility: "verified",
+    redisConfigured: (process.env.REDIS_URL ?? "").trim() !== "",
+    ...(buildManifest === null
+      ? {}
+      : { gitCommitSha: buildManifest.gitCommitSha, buildTimestamp: buildManifest.buildTimestamp })
+  },
+  "Runtime schema boot diagnostic."
 );
 
 let accountDeletionRunner: AccountDeletionRunner | null = null;
@@ -280,6 +292,36 @@ if (process.env.ENABLE_ACCOUNT_DELETION_RUNNER === "true") {
     onResult: (result) => app.log.info({ result }, "Account deletion purge completed."),
     onError: (error) => app.log.error({ error }, "Account deletion purge failed.")
   });
+}
+
+// Structurally, nothing in normalizedCollections (postgres-store.ts) names a retired Execution
+// Fabric table any more, so this branch should be unreachable in a correctly built process. It
+// exists as a defense-in-depth diagnostic: if a stale or reverted build somehow ships a query
+// against one of those tables anyway, this turns an opaque `relation ... does not exist` (42P01)
+// into a message that names the real problem instead of one query failure among many. See
+// docs/architecture/native-runtime-deployment.md.
+async function createCp2StoreOrExplainSchemaFailure() {
+  try {
+    return shouldUsePostgresStore
+      ? await createPostgresCp2Store({
+          databaseUrl: config.databaseUrl,
+          ...cp2StoreOptions
+        })
+      : createCp2Store(cp2StoreOptions);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const retiredTable = RETIRED_EXECUTION_FABRIC_TABLES.find((table) => message.includes(table));
+    if (retiredTable !== undefined) {
+      throw new Error(
+        `Native runtime schema compatibility failure: expected cp2_native_runtime_bindings, ` +
+          `retired ${retiredTable} must not be used. This process is running a build that is ` +
+          `stale relative to the deployed schema (infra/db/migrations/065_retire_execution_fabric.sql); ` +
+          `redeploy from a clean build.`,
+        { cause: error }
+      );
+    }
+    throw error;
+  }
 }
 
 function isClosableStore(store: unknown): store is { close: () => Promise<void> } {

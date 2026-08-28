@@ -92,6 +92,35 @@ const databaseUrl = process.env.CP2_POSTGRES_TEST_DATABASE_URL;
 const describePostgres = databaseUrl === undefined ? describe.skip : describe;
 
 describePostgres("CP2 Postgres store", () => {
+  it(
+    "boots createPostgresCp2Store/loadNormalizedSnapshot against the post-065 schema without " +
+      "querying any retired Execution Fabric table (regression for the Render startup crash: " +
+      'error: relation "cp2_model_preferences" does not exist, code 42P01)',
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const connectionString = databaseUrl ?? "";
+      const pool = new Pool({ connectionString });
+      try {
+        const retiredTables = await pool.query<{ table_name: string }>(
+          `
+            select table_name from information_schema.tables
+            where table_schema = 'public'
+              and table_name in ('cp2_model_preferences', 'cp2_runtime_hosts', 'cp2_runtime_model_installations')
+          `
+        );
+        expect(retiredTables.rows).toEqual([]);
+
+        // If loadNormalizedSnapshot (called internally by createPostgresCp2Store) still queried a
+        // table migration 065 dropped, this call would reject with Postgres error 42P01 - exactly
+        // the production crash this test guards against.
+        const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+        await store.close();
+      } finally {
+        await pool.end();
+      }
+    }
+  );
+
   it("persists passkey ceremony creation without replacing the application snapshot", async () => {
     expect(databaseUrl).toBeDefined();
     const connectionString = databaseUrl ?? "";

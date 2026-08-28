@@ -151,8 +151,27 @@ export function readEnvironment(): EnvironmentConfig {
     inferenceJobTimeoutMs: numberFromEnv("INFERENCE_JOB_TIMEOUT_MS", 120_000),
     workspaceDeliveryMaxFileBytes: numberFromEnv("WORKSPACE_DELIVERY_MAX_FILE_BYTES", 10_000_000),
     workspaceRoot: stringFromEnv("SOKO_WORKSPACE_ROOT", "").trim(),
-    redisUrl: stringFromEnv("REDIS_URL", "redis://127.0.0.1:6379")
+    redisUrl: readRedisUrl()
   };
+}
+
+// Rate limiting requires a real, shared Redis so counters survive process restarts and are
+// consistent across instances. Silently falling back to loopback in production would make the
+// API connect to a Redis that doesn't exist there (each Render instance has no local Redis),
+// producing the opaque `rate_limit_redis_connection_error` / ECONNREFUSED 127.0.0.1:6379 failure
+// instead of a clear configuration error at boot. Non-production environments keep the loopback
+// default so local dev and CI don't require REDIS_URL to be set.
+function readRedisUrl(): string {
+  const configured = stringFromEnv("REDIS_URL", "").trim();
+  if (configured !== "") return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "REDIS_URL is required in production. Configure the Render Key Value service " +
+        "(soko-market-rate-limit-cache) connection string; the API will not silently fall back " +
+        "to a local Redis that does not exist in production."
+    );
+  }
+  return "redis://127.0.0.1:6379";
 }
 
 function readCloudProvider(): EnvironmentConfig["inferenceCloudProvider"] {

@@ -6,7 +6,14 @@ services:
     autoDeployTrigger: commit
     plan: starter
     region: oregon
-    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate && REQUIRE_NEON_DATABASE=true COREPACK_HOME=/tmp/corepack corepack pnpm db:verify-schema && COREPACK_HOME=/tmp/corepack corepack pnpm build:production
+    # Build order is deliberately compile-and-verify-first: the new application code must prove
+    # it builds and passes every static gate (including check:retired-runtime-references) BEFORE
+    # any migration touches the shared production database. db:migrate can include destructive,
+    # already-applied-in-production steps (see infra/db/migrations/065_retire_execution_fabric.sql
+    # and docs/architecture/native-runtime-deployment.md); running it only after build:production
+    # succeeds means a failed build can never leave the schema migrated out from under whatever
+    # instance is still serving traffic on the previous deploy.
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm build:production && COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate && REQUIRE_NEON_DATABASE=true COREPACK_HOME=/tmp/corepack corepack pnpm db:verify-schema
     startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
     healthCheckPath: /health/ready
     buildFilter:
@@ -18,6 +25,7 @@ services:
         - infra/db/**
         - packages/**
         - services/api/**
+        - scripts/**
         - vendor/**
     domains:
       - api.soko.market

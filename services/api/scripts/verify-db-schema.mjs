@@ -207,6 +207,119 @@ try {
     );
   }
 
+  // Native runtime graph (infra/db/migrations/063_native_runtime_bindings.sql). Column presence
+  // alone isn't enough - the whole point of this table set is the relationships between them
+  // (a binding resolves through its binding-models to a model, and through a model installation
+  // to an execution host), so this also checks each table exists and confirms the foreign keys
+  // that make that resolution possible, rather than only checking table names as the retired-table
+  // check above does. See docs/architecture/native-runtime-deployment.md.
+  const nativeRuntimeTables = new Map([
+    ["cp2_native_runtime_agents", ["entity_id", "record", "updated_at"]],
+    ["cp2_native_runtime_models", ["entity_id", "record", "updated_at"]],
+    ["cp2_native_execution_hosts", ["entity_id", "record", "updated_at"]],
+    [
+      "cp2_native_model_installations",
+      ["entity_id", "parent_id", "model_id", "record", "updated_at"]
+    ],
+    ["cp2_native_runtime_bindings", ["entity_id", "parent_id", "record", "updated_at"]],
+    [
+      "cp2_native_runtime_binding_models",
+      [
+        "entity_id",
+        "parent_id",
+        "model_id",
+        "execution_host_id",
+        "role",
+        "priority",
+        "enabled",
+        "record",
+        "updated_at"
+      ]
+    ]
+  ]);
+
+  for (const [tableName, expectedColumns] of nativeRuntimeTables) {
+    const columns = await client.query(
+      `
+        select column_name
+        from information_schema.columns
+        where table_schema = 'public' and table_name = $1
+      `,
+      [tableName]
+    );
+    if (columns.rows.length === 0) {
+      throw new Error(`Required native runtime table is missing: ${tableName}`);
+    }
+    const actualColumns = new Set(columns.rows.map((row) => row.column_name));
+    const missingColumns = expectedColumns.filter((column) => !actualColumns.has(column));
+    if (missingColumns.length > 0) {
+      throw new Error(`${tableName} is missing columns: ${missingColumns.join(", ")}`);
+    }
+
+    const primaryKey = await client.query(
+      `
+        select 1
+        from information_schema.table_constraints
+        where table_schema = 'public' and table_name = $1 and constraint_type = 'PRIMARY KEY'
+      `,
+      [tableName]
+    );
+    if (primaryKey.rows.length === 0) {
+      throw new Error(`${tableName} is missing a PRIMARY KEY constraint.`);
+    }
+  }
+
+  async function hasForeignKey(fromTable, toTable) {
+    const result = await client.query(
+      `
+        select 1
+        from pg_constraint c
+        join pg_class fromClass on fromClass.oid = c.conrelid
+        join pg_class toClass on toClass.oid = c.confrelid
+        where c.contype = 'f' and fromClass.relname = $1 and toClass.relname = $2
+      `,
+      [fromTable, toTable]
+    );
+    return result.rows.length > 0;
+  }
+
+  const requiredNativeRuntimeForeignKeys = [
+    ["cp2_native_model_installations", "cp2_native_execution_hosts"],
+    ["cp2_native_model_installations", "cp2_native_runtime_models"],
+    ["cp2_native_runtime_bindings", "cp2_native_runtime_agents"],
+    ["cp2_native_runtime_binding_models", "cp2_native_runtime_bindings"],
+    ["cp2_native_runtime_binding_models", "cp2_native_runtime_models"],
+    ["cp2_native_runtime_binding_models", "cp2_native_execution_hosts"],
+    ["cp2_conversations", "cp2_native_runtime_bindings"],
+    ["conversations", "cp2_native_runtime_bindings"]
+  ];
+  for (const [fromTable, toTable] of requiredNativeRuntimeForeignKeys) {
+    if (!(await hasForeignKey(fromTable, toTable))) {
+      throw new Error(
+        `${fromTable} is missing a foreign key into ${toTable}: the native runtime graph is incomplete.`
+      );
+    }
+  }
+
+  const requiredNativeRuntimeIndexes = [
+    "cp2_native_runtime_bindings_one_global_default_idx",
+    "cp2_native_runtime_binding_models_one_primary_idx",
+    "cp2_native_runtime_binding_models_fallback_priority_idx"
+  ];
+  const existingIndexes = await client.query(
+    `select indexname from pg_indexes where schemaname = 'public' and indexname = any($1)`,
+    [requiredNativeRuntimeIndexes]
+  );
+  const existingIndexNames = new Set(existingIndexes.rows.map((row) => row.indexname));
+  const missingIndexes = requiredNativeRuntimeIndexes.filter(
+    (indexName) => !existingIndexNames.has(indexName)
+  );
+  if (missingIndexes.length > 0) {
+    throw new Error(
+      `Native runtime graph is missing required uniqueness guards: ${missingIndexes.join(", ")}`
+    );
+  }
+
   const globalRuntime = await client.query(`
     select b.entity_id as binding_id,
            b.record ->> 'status' as binding_status,
@@ -241,7 +354,8 @@ try {
         databaseUser: connection.rows[0]?.database_user,
         databaseProvider: isNeonDatabase ? "neon" : "other",
         globalRuntimeModel: globalRuntime.rows[0]?.model_id,
-        retiredRuntimeTables: "absent"
+        retiredRuntimeTables: "absent",
+        nativeRuntimeSchema: "verified"
       },
       null,
       2
