@@ -1876,8 +1876,8 @@ export function OwnerApp() {
                       Use your selected backend fallback here?
                     </strong>
                     <p>
-                      This device does not have a ready copy of your preferred local model. Soko
-                      can use the hosted backend model you explicitly selected while leaving the
+                      This device does not have a ready copy of your preferred local model. Soko can
+                      use the hosted backend model you explicitly selected while leaving the
                       downloaded model on the other device unchanged.
                     </p>
                   </div>
@@ -1895,8 +1895,8 @@ export function OwnerApp() {
                   </div>
                   <small>
                     The backend fallback model receives chat context only after this explicit
-                    approval and only when no downloaded model is ready on this device. You can
-                    turn it off in Agent settings.
+                    approval and only when no downloaded model is ready on this device. You can turn
+                    it off in Agent settings.
                   </small>
                 </section>
               ) : null}

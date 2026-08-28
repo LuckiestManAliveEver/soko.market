@@ -1623,9 +1623,9 @@ export function AgentModelPanel({
               Allow explicitly selected backend fallback
             </label>
             <small>
-              Off by default. The selected hosted backend model is swappable at any time and is
-              used only after you select an available fallback model and the downloaded model
-              cannot process the request. API credentials remain server-only.
+              Off by default. The selected hosted backend model is swappable at any time and is used
+              only after you select an available fallback model and the downloaded model cannot
+              process the request. API credentials remain server-only.
             </small>
           </section>
           <label>
@@ -1931,10 +1931,10 @@ export function AgentModelPanel({
               <div className="section-subheading">
                 <h4>Backend fallback models</h4>
                 <p>
-                  A hosted backend model is optional and off by default, and swappable for any
-                  other configured hosted model at any time. It can be selected only after a
-                  downloaded GGUF model is connected and tested, and is used only when local
-                  inference cannot run under your fallback policy.
+                  A hosted backend model is optional and off by default, and swappable for any other
+                  configured hosted model at any time. It can be selected only after a downloaded
+                  GGUF model is connected and tested, and is used only when local inference cannot
+                  run under your fallback policy.
                 </p>
               </div>
               <div className="ai-model-catalog">
