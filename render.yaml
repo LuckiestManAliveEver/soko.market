@@ -21,6 +21,14 @@ services:
         - vendor/**
     domains:
       - api.soko.market
+      # Store subdomain resolution (docs/architecture/soko-id-slug-system.md §4): this service's
+      # onRequest hook (services/api/src/app.ts) already resolves {handle}.soko.market and
+      # 302-redirects to the real storefront, excluding api./www. subdomains and the bare apex.
+      # This line registers the wildcard domain in Render; it stays unverified/inert until a
+      # matching wildcard DNS record (e.g. a CNAME for *.soko.market) is added at whatever
+      # registrar manages soko.market's DNS, pointed at this service per Render's custom-domain
+      # instructions - that DNS-side step is outside this repository.
+      - "*.soko.market"
     envVars:
       - key: NODE_ENV
         value: production
