@@ -3,6 +3,7 @@ import type { RuntimeModelPrompt, RuntimeModelProvider } from "@soko/shared-type
 import { describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
+import { activateGenericGlobalDefaultModel } from "./fixtures/native-runtime-test-helpers";
 
 const androidHeaders = {
   "x-soko-device-id": "android-device-1",
@@ -71,7 +72,7 @@ describe("Android native SMS channel", () => {
     // Global default model/host are seeded unavailable until a verified health check runs (see
     // services/api/src/index.ts's production startup gate); mirror that here so the injected
     // provider is actually reachable.
-    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
+    activateGenericGlobalDefaultModel(store, new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const owner = await createAndroidOwner(app, "+254700000783", "Inbound Shop", "1783");
     await registerReadyDevice(app, owner.cookie);

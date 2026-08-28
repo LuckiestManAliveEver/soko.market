@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { BrowserInferenceAssignmentSummary } from "../packages/shared-types/src";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
+import { activateGenericGlobalDefaultModel } from "./fixtures/native-runtime-test-helpers";
 
 const runtimeContract = {
   schemaVersion: 1,
@@ -488,7 +489,7 @@ describe("browser inference database assignment", () => {
     // Global default model/host are seeded unavailable until a verified health check runs (see
     // services/api/src/index.ts's production startup gate); mirror that here so the resolver has
     // an available candidate to route to (the client supplies its own browser completion).
-    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
+    activateGenericGlobalDefaultModel(store, new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700001436");
     await putJson(

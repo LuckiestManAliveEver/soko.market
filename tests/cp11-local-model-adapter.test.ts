@@ -15,6 +15,7 @@ import {
 import { buildApi } from "../services/api/src/app";
 import { resolveOllamaModelName } from "../services/api/src/config";
 import { createCp2Store } from "../services/api/src/cp2/store";
+import { activateGenericGlobalDefaultModel } from "./fixtures/native-runtime-test-helpers";
 
 interface VerifyOtpResponse {
   session: {
@@ -427,7 +428,7 @@ describe("CP11 local model adapter", () => {
     // Global default model/host are seeded unavailable until a verified health check runs (see
     // services/api/src/index.ts's production startup gate); mirror that here so the injected
     // provider is actually reachable.
-    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
+    activateGenericGlobalDefaultModel(store, new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
     const inboxResponse = await app.inject({
@@ -520,7 +521,7 @@ describe("CP11 local model adapter", () => {
     // Global default model/host are seeded unavailable until a verified health check runs (see
     // services/api/src/index.ts's production startup gate); mirror that here so the injected
     // provider is actually reachable.
-    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
+    activateGenericGlobalDefaultModel(store, new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
     const inbox = await app.inject({
@@ -594,7 +595,7 @@ describe("CP11 local model adapter", () => {
     // Global default model/host are seeded unavailable until a verified health check runs (see
     // services/api/src/index.ts's production startup gate); mirror that here so the injected
     // provider is actually reachable.
-    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
+    activateGenericGlobalDefaultModel(store, new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
     const inbox = await app.inject({

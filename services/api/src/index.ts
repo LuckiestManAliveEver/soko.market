@@ -17,7 +17,6 @@ import { createPostgresCp2Store } from "./cp2/postgres-store.js";
 import { RETIRED_EXECUTION_FABRIC_TABLES } from "./cp2/retired-execution-fabric-tables.js";
 import { readBuildManifest } from "./build-manifest.js";
 import { createCp2Store } from "./cp2/store.js";
-import { builtinRuntimeModelId } from "./cp2/domains/native-runtime/store.js";
 import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
 import { createEmailProviderFromEnvironment } from "./cp2/email-provider.js";
 import { createReceiptOCRProcessorFromEnvironment } from "./cp2/receipt-ocr-provider.js";
@@ -138,28 +137,13 @@ const cp2StoreOptions = {
   ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors })
 };
 
+// No model vendor is required for Soko to boot (docs/architecture/provider-neutral-runtime.md).
+// Startup never health-checks a model provider or requires one to be configured: agents, models,
+// and execution hosts are independent, swappable slots, and the global default runtime binding is
+// a valid, resolvable state even with zero models assigned (RUNTIME_MODEL_NOT_CONFIGURED at
+// turn-time, not a startup failure). Whichever adapters ARE configured above (backend, OpenAI,
+// ...) are simply registered into modelRuntimeAdapters for on-demand use.
 const cp2Store = await createCp2StoreOrExplainSchemaFailure();
-if (process.env.NODE_ENV === "production") {
-  const defaultAdapter = modelRuntimeAdapters.get(`openai:${builtinRuntimeModelId}`);
-  if (defaultAdapter === undefined) {
-    throw new Error(
-      `The global generative runtime ${builtinRuntimeModelId} is not configured. ` +
-        "Enable the OpenAI provider, allow the model, and configure OPENAI_API_KEY."
-    );
-  }
-  const health = await defaultAdapter.healthCheck({
-    agentId: "builtin:soko-agent:v1",
-    shopId: "global-default",
-    modelId: builtinRuntimeModelId
-  });
-  if (!health.available) {
-    throw new Error(
-      `The global generative runtime ${builtinRuntimeModelId} failed activation: ${health.errorCode ?? "MODEL_HEALTH_CHECK_FAILED"}.`
-    );
-  }
-  cp2Store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
-  if (isFlushableStore(cp2Store)) await cp2Store.flush();
-}
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
   bodyLimit: Math.max(

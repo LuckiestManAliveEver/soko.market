@@ -320,27 +320,45 @@ try {
     );
   }
 
-  const globalRuntime = await client.query(`
+  // Provider-neutral: no model vendor is required for Soko to boot (docs/architecture/
+  // provider-neutral-runtime.md). The global default runtime binding is a valid, structurally
+  // sound state whether or not a model has been assigned yet ("draft") or one has ("active" with
+  // exactly one enabled primary role, matching the check_native_runtime_binding_primary trigger's
+  // own invariant) - this must never assert a specific vendor, model id, or execution host.
+  const globalDefault = await client.query(`
     select b.entity_id as binding_id,
            b.record ->> 'status' as binding_status,
-           bm.record ->> 'modelId' as model_id,
-           m.record ->> 'provider' as provider,
-           bm.record ->> 'executionHostId' as execution_host_id
+           a.record ->> 'status' as agent_status,
+           (
+             select count(*)
+             from cp2_native_runtime_binding_models bm
+             where bm.parent_id = b.entity_id
+               and bm.record ->> 'role' = 'primary'
+               and (bm.record ->> 'enabled')::boolean
+           ) as enabled_primary_count
     from cp2_native_runtime_bindings b
-    join cp2_native_runtime_binding_models bm on bm.parent_id = b.entity_id
-    join cp2_native_runtime_models m on m.entity_id = bm.record ->> 'modelId'
+    join cp2_native_runtime_agents a on a.entity_id = b.parent_id
     where b.record ->> 'isDefault' = 'true'
-      and b.record ->> 'status' = 'active'
-      and bm.record ->> 'role' = 'primary'
-      and (bm.record ->> 'enabled')::boolean
   `);
+  if (globalDefault.rows.length !== 1) {
+    throw new Error("There must be exactly one global default runtime binding.");
+  }
+  const globalDefaultRow = globalDefault.rows[0] ?? {};
+  if (globalDefaultRow.agent_status !== "active") {
+    throw new Error("The global default runtime binding's agent is not active.");
+  }
+  if (globalDefaultRow.binding_status !== "active" && globalDefaultRow.binding_status !== "draft") {
+    throw new Error(
+      `The global default runtime binding has an unexpected status: ${globalDefaultRow.binding_status}.`
+    );
+  }
   if (
-    globalRuntime.rows.length !== 1 ||
-    globalRuntime.rows[0]?.model_id !== "openai-fast" ||
-    globalRuntime.rows[0]?.provider !== "openai" ||
-    globalRuntime.rows[0]?.execution_host_id === null
+    globalDefaultRow.binding_status === "active" &&
+    Number(globalDefaultRow.enabled_primary_count) !== 1
   ) {
-    throw new Error("The active global runtime is not the unique OpenAI generative default.");
+    throw new Error(
+      "An active global default runtime binding must have exactly one enabled primary model."
+    );
   }
 
   await client.query("commit");
@@ -353,7 +371,7 @@ try {
         databaseName: connection.rows[0]?.database_name,
         databaseUser: connection.rows[0]?.database_user,
         databaseProvider: isNeonDatabase ? "neon" : "other",
-        globalRuntimeModel: globalRuntime.rows[0]?.model_id,
+        globalDefaultRuntimeStatus: globalDefaultRow.binding_status,
         retiredRuntimeTables: "absent",
         nativeRuntimeSchema: "verified"
       },

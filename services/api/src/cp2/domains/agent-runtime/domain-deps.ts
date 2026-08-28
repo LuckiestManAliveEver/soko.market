@@ -289,7 +289,11 @@ export interface AgentRuntimeDomainDeps {
   invoices: Map<string, InvoiceSummary>;
   sessions: Map<string, SessionRecord>;
   businesses: Map<string, BusinessSummary>;
-  resolveNativeRuntimeBinding: (conversationId: string) => ResolvedNativeRuntimeBinding;
+  // null means the native runtime graph has nothing usable for this conversation right now (no
+  // model configured, nothing currently available, etc.) - callers fall back to the legacy
+  // agent-model-binding path rather than treating it as an error. See resolveNativeRuntimeBinding
+  // in store.ts and docs/architecture/provider-neutral-runtime.md §5.
+  resolveNativeRuntimeBinding: (conversationId: string) => ResolvedNativeRuntimeBinding | null;
   activateVerifiedRuntimeBinding: (
     input: NativeRuntimeActivationInput
   ) => NativeRuntimeBindingSummary;

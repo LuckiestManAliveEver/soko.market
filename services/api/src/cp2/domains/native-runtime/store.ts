@@ -19,14 +19,7 @@ import { Cp2Error } from "../../cp2-error.js";
 
 export const nativeRuntimeContractVersion = "1";
 export const builtinRuntimeAgentId = "builtin:soko-agent:v1";
-export const builtinRuntimeModelId = "openai-fast";
 export const globalDefaultRuntimeBindingId = "builtin:soko-default-runtime:v1";
-
-const builtinRuntimeHostId = stableUuid("native-runtime-host:global:openai");
-const builtinRuntimeInstallationId = stableUuid(
-  "native-runtime-installation:openai-fast:global-openai"
-);
-const builtinPrimaryRoleId = stableUuid("native-runtime-role:global-default:primary");
 
 export interface NativeRuntimeSnapshot {
   nativeRuntimeAgents?: NativeRuntimeAgentSummary[];
@@ -49,6 +42,15 @@ export class NativeRuntimeBindingStore {
     this.ensureGlobalDefault();
   }
 
+  // Provider-neutral by construction: this creates only the two concepts genuinely built into
+  // Soko itself (the built-in agent, and a global default runtime *slot*). It deliberately does
+  // not create a model, execution host, or installation for that slot - no model vendor is
+  // required for Soko to boot. The slot starts "draft" (see NativeRuntimeBindingStatus) with zero
+  // model assignments; resolveRuntimeBinding reports that state as RUNTIME_MODEL_NOT_CONFIGURED
+  // rather than resolving a fake or hardcoded model. See docs/architecture/
+  // provider-neutral-runtime.md and infra/db/migrations/067_provider_agnostic_runtime_default.sql,
+  // which converts the equivalent pre-existing production seed (migration 065's forced
+  // openai-fast default) into this same unconfigured state.
   ensureGlobalDefault(now: Date = new Date()): NativeRuntimeBindingSummary {
     const timestamp = now.toISOString();
     const existingAgent = this.agents.get(builtinRuntimeAgentId);
@@ -67,46 +69,6 @@ export class NativeRuntimeBindingStore {
       createdAt: existingAgent?.createdAt ?? timestamp,
       updatedAt: timestamp
     });
-    const existingModel = this.models.get(builtinRuntimeModelId);
-    this.models.set(builtinRuntimeModelId, {
-      id: builtinRuntimeModelId,
-      name: "OpenAI fast",
-      provider: "openai",
-      providerModelId: builtinRuntimeModelId,
-      runtimeContractVersion: nativeRuntimeContractVersion,
-      capabilities: ["chat", "tool-routing"],
-      configuration: { executionTarget: "openai", activationRequired: true },
-      status: "active",
-      createdAt: existingModel?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    });
-    const existingHost = this.hosts.get(builtinRuntimeHostId);
-    this.hosts.set(builtinRuntimeHostId, {
-      id: builtinRuntimeHostId,
-      businessId: null,
-      accountId: null,
-      type: "openai",
-      name: "OpenAI hosted runtime",
-      endpoint: null,
-      status: "unavailable",
-      capabilities: ["openai", "chat", "tool-routing"],
-      configuration: { executionTarget: "openai", activationRequired: true },
-      credentialReference: "env:OPENAI_API_KEY",
-      lastKnownHealthyAt: null,
-      createdAt: existingHost?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    });
-    const existingInstallation = this.installations.get(builtinRuntimeInstallationId);
-    this.installations.set(builtinRuntimeInstallationId, {
-      id: builtinRuntimeInstallationId,
-      modelId: builtinRuntimeModelId,
-      executionHostId: builtinRuntimeHostId,
-      status: "unavailable",
-      configuration: { activationRequired: true },
-      lastKnownHealthyAt: null,
-      createdAt: existingInstallation?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    });
     const existing = this.bindings.get(globalDefaultRuntimeBindingId);
     if (existing === undefined) {
       this.bindings.set(globalDefaultRuntimeBindingId, {
@@ -115,52 +77,63 @@ export class NativeRuntimeBindingStore {
         accountId: null,
         agentId: builtinRuntimeAgentId,
         name: "Soko default runtime",
-        status: "active",
+        status: "draft",
         isDefault: true,
-        configuration: { source: "repository-default", activationRequired: true },
+        configuration: { source: "repository-default" },
         runtimeContractVersion: nativeRuntimeContractVersion,
         createdAt: timestamp,
         updatedAt: timestamp,
         updatedBy: "system"
       });
     }
-    const existingRole = this.bindingModels.get(builtinPrimaryRoleId);
-    this.bindingModels.set(builtinPrimaryRoleId, {
-      id: builtinPrimaryRoleId,
-      runtimeBindingId: globalDefaultRuntimeBindingId,
-      modelId: builtinRuntimeModelId,
-      role: "primary",
-      priority: 0,
-      executionHostId: builtinRuntimeHostId,
-      configuration: { activationRequired: true },
-      enabled: true,
-      createdAt: existingRole?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    });
     return this.bindings.get(globalDefaultRuntimeBindingId) as NativeRuntimeBindingSummary;
   }
 
-  activateVerifiedGlobalDefault(checkedAt: string): NativeRuntimeBindingSummary {
-    const host = this.hosts.get(builtinRuntimeHostId);
-    const installation = this.installations.get(builtinRuntimeInstallationId);
-    if (host === undefined || installation === undefined) {
-      throw new Cp2Error(503, "RUNTIME_DEFAULT_MISSING", "Global runtime topology is incomplete.");
+  // The general-purpose "choose a model" operation for the global default runtime slot: any
+  // catalog model on any execution target can occupy it, and calling this again with a different
+  // model swaps the primary assignment in place - the binding's id (and therefore every
+  // conversation.runtimeBindingId pointing at it) never changes. This is the provider-neutral
+  // replacement for the old hardcoded openai-fast seed: OpenAI, a local browser model, an owner
+  // node model, or any future provider all go through this same call.
+  activateGlobalDefaultModel(input: {
+    model: AiModelSummary;
+    executionTarget: ModelExecutionTarget;
+    checkedAt: string;
+    updatedBy: string;
+  }): NativeRuntimeBindingSummary {
+    const binding = this.bindings.get(globalDefaultRuntimeBindingId);
+    const agent = this.agents.get(builtinRuntimeAgentId);
+    if (binding === undefined || agent === undefined) {
+      throw new Cp2Error(
+        503,
+        "RUNTIME_DEFAULT_MISSING",
+        "No global default runtime binding is configured."
+      );
     }
-    this.hosts.set(host.id, {
-      ...host,
-      status: "available",
-      configuration: { ...host.configuration, verifiedAt: checkedAt },
-      lastKnownHealthyAt: checkedAt,
-      updatedAt: checkedAt
+    const model = this.upsertCatalogModel(input.model, input.executionTarget, input.checkedAt);
+    this.validateCapabilityMatch(agent, model);
+    const host = this.upsertVerifiedHost({
+      accountId: null,
+      businessId: null,
+      executionTarget: input.executionTarget,
+      checkedAt: input.checkedAt
     });
-    this.installations.set(installation.id, {
-      ...installation,
-      status: "available",
-      configuration: { ...installation.configuration, verifiedAt: checkedAt },
-      lastKnownHealthyAt: checkedAt,
-      updatedAt: checkedAt
-    });
-    return this.requireGlobalDefault();
+    this.upsertInstallation(model.id, host.id, input.checkedAt);
+    for (const [id, role] of this.bindingModels) {
+      if (role.runtimeBindingId === binding.id && role.role === "primary") {
+        this.bindingModels.delete(id);
+      }
+    }
+    const role = roleRecord(binding.id, model.id, "primary", 0, host.id, input.checkedAt);
+    this.bindingModels.set(role.id, role);
+    const nextBinding: NativeRuntimeBindingSummary = {
+      ...binding,
+      status: "active",
+      updatedAt: input.checkedAt,
+      updatedBy: input.updatedBy
+    };
+    this.bindings.set(binding.id, nextBinding);
+    return { ...nextBinding };
   }
 
   activateVerifiedModel(input: NativeRuntimeActivationInput): NativeRuntimeBindingSummary {
@@ -342,18 +315,13 @@ export class NativeRuntimeBindingStore {
     return this.resolveBinding(binding, conversationId, false);
   }
 
-  // Structural validity only: binding/agent are active, contract versions line up, and exactly
-  // one primary role is enabled. Deliberately does not resolve installation/host availability -
-  // assigning a binding to a conversation (or simply opening one) must not fail just because a
-  // model happens to be unreachable right now. That is a turn-time concern, checked separately by
-  // resolveBinding below, so a temporarily unavailable model never blocks viewing or continuing a
-  // conversation's history from another device signed into the same account.
-  private validateBindingStructure(binding: NativeRuntimeBindingSummary): {
-    agent: NativeRuntimeAgentSummary;
-    primaryRole: NativeRuntimeBindingModelSummary;
-    enabledRoles: NativeRuntimeBindingModelSummary[];
-  } {
-    if (binding.status !== "active") {
+  // The binding/agent-only half of structural validity: does the binding exist and belong to an
+  // active agent with a compatible contract version. Deliberately says nothing about whether a
+  // model is assigned - a conversation must be attachable to a binding (requireAssignableBinding
+  // below) whether or not one has been chosen yet, exactly like the implicit global-default path
+  // (requireGlobalDefault). See docs/architecture/provider-neutral-runtime.md §5.
+  private requireActiveAgent(binding: NativeRuntimeBindingSummary): NativeRuntimeAgentSummary {
+    if (binding.status !== "active" && binding.status !== "draft") {
       throw new Cp2Error(409, "RUNTIME_BINDING_INACTIVE", "Runtime binding is not active.");
     }
     const agent = this.agents.get(binding.agentId);
@@ -363,11 +331,39 @@ export class NativeRuntimeBindingStore {
     if (agent.runtimeContractVersion !== binding.runtimeContractVersion) {
       throw incompatibleContract(binding.id, agent.id, null);
     }
+    return agent;
+  }
+
+  // Full structural validity for turn-time resolution: the binding/agent check above, plus
+  // whether a model is actually assigned. Deliberately does not resolve installation/host
+  // availability - that unreachable-model case is a turn-time concern checked separately by
+  // resolveBinding below (RUNTIME_MODELS_UNAVAILABLE); this only reports whether a model was ever
+  // chosen at all (RUNTIME_MODEL_NOT_CONFIGURED).
+  private validateBindingStructure(binding: NativeRuntimeBindingSummary): {
+    agent: NativeRuntimeAgentSummary;
+    primaryRole: NativeRuntimeBindingModelSummary;
+    enabledRoles: NativeRuntimeBindingModelSummary[];
+  } {
+    const agent = this.requireActiveAgent(binding);
     const enabledRoles = [...this.bindingModels.values()].filter(
       (role) => role.runtimeBindingId === binding.id && role.enabled
     );
     const primaryRoles = enabledRoles.filter((role) => role.role === "primary");
-    if (primaryRoles.length !== 1) {
+    if (primaryRoles.length === 0) {
+      if (binding.status === "draft") {
+        throw new Cp2Error(
+          503,
+          "RUNTIME_MODEL_NOT_CONFIGURED",
+          "No model is assigned to this runtime. Choose or install a model before sending an AI message."
+        );
+      }
+      throw new Cp2Error(
+        409,
+        "RUNTIME_PRIMARY_INVALID",
+        "An active runtime binding must have exactly one enabled primary model."
+      );
+    }
+    if (primaryRoles.length > 1) {
       throw new Cp2Error(
         409,
         "RUNTIME_PRIMARY_INVALID",
@@ -491,6 +487,17 @@ export class NativeRuntimeBindingStore {
     if (model.runtimeContractVersion !== agent.runtimeContractVersion) {
       throw incompatibleContract("unknown", agent.id, model.id);
     }
+    this.validateCapabilityMatch(agent, model);
+  }
+
+  // Capability compatibility is checked purely against agent.configuration.requiredModelCapabilities
+  // vs model.capabilities - never against provider/vendor name, per docs/architecture/
+  // provider-neutral-runtime.md §13: any model from any provider that declares the right
+  // capabilities (chat, tool-routing, reasoning, vision, coding, ...) is usable.
+  private validateCapabilityMatch(
+    agent: NativeRuntimeAgentSummary,
+    model: NativeRuntimeModelSummary
+  ): void {
     const required = Array.isArray(agent.configuration.requiredModelCapabilities)
       ? agent.configuration.requiredModelCapabilities.filter(
           (capability): capability is string => typeof capability === "string"
@@ -500,8 +507,8 @@ export class NativeRuntimeBindingStore {
     if (missing.length > 0) {
       throw new Cp2Error(
         409,
-        "RUNTIME_CONTRACT_INCOMPATIBLE",
-        "The selected model does not satisfy the agent runtime contract.",
+        "RUNTIME_MODEL_CAPABILITY_MISMATCH",
+        "The selected model does not satisfy the agent's required capabilities.",
         false,
         { agentId: agent.id, modelId: model.id, missingCapabilities: missing.join(",") }
       );
@@ -513,7 +520,11 @@ export class NativeRuntimeBindingStore {
     input: { accountId: string; activeShopId: string | null }
   ): NativeRuntimeBindingSummary {
     const binding = this.bindings.get(bindingId);
-    if (binding === undefined || binding.status !== "active") {
+    // draft is accepted here for the same reason requireGlobalDefault accepts it: explicitly
+    // requesting the (currently unconfigured) global default binding must succeed exactly like
+    // falling back to it implicitly does - conversation creation must not depend on a model
+    // already being assigned. See docs/architecture/provider-neutral-runtime.md §4.
+    if (binding === undefined || (binding.status !== "active" && binding.status !== "draft")) {
       throw new Cp2Error(400, "RUNTIME_BINDING_INVALID", "Requested runtime binding is invalid.");
     }
     if (binding.accountId !== null && binding.accountId !== input.accountId) {
@@ -530,19 +541,23 @@ export class NativeRuntimeBindingStore {
         "Runtime binding belongs to another shop."
       );
     }
-    this.validateBindingStructure(binding);
+    this.requireActiveAgent(binding);
     return binding;
   }
 
+  // Structural lookup only - draft (unconfigured) counts as a valid default just as much as
+  // active, since assigning a conversation to the default slot (assignConversationBinding) must
+  // succeed whether or not a model has been chosen yet. Whether that slot can actually run
+  // inference is a separate, later question answered by validateBindingStructure/resolveBinding.
   private requireGlobalDefault(): NativeRuntimeBindingSummary {
     const defaults = [...this.bindings.values()].filter(
-      (binding) => binding.isDefault && binding.status === "active"
+      (binding) => binding.isDefault && (binding.status === "active" || binding.status === "draft")
     );
     if (defaults.length !== 1) {
       throw new Cp2Error(
         503,
         "RUNTIME_DEFAULT_MISSING",
-        "No unique active global runtime binding is configured."
+        "No unique global runtime binding is configured."
       );
     }
     return defaults[0] as NativeRuntimeBindingSummary;
@@ -583,12 +598,14 @@ export class NativeRuntimeBindingStore {
   }
 
   private upsertVerifiedHost(input: {
-    accountId: string;
-    businessId: string;
+    accountId: string | null;
+    businessId: string | null;
     executionTarget: ModelExecutionTarget;
     checkedAt: string;
   }): NativeExecutionHostSummary {
-    const id = stableUuid(`native-runtime-host:${input.accountId}:${input.executionTarget}`);
+    const id = stableUuid(
+      `native-runtime-host:${input.accountId ?? "global"}:${input.executionTarget}`
+    );
     const existing = this.hosts.get(id);
     const host: NativeExecutionHostSummary = {
       id,

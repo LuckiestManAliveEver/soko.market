@@ -116,6 +116,14 @@ services:
         value: "true"
       - key: INFERENCE_OWNER_NODE_ENABLED
         value: "true"
+      # OpenAI is one optional cloud model provider, not a requirement to boot (docs/architecture/
+      # provider-neutral-runtime.md). None of these five keys are required for API readiness:
+      # OPENAI_API_KEY is sync: false and may be left blank in the Render dashboard - with it
+      # blank, services/api/src/index.ts simply never registers the OpenAI cloud-fallback adapter
+      # (see createCloudFallbackProvider in services/api/src/inference/cloud-fallback.ts), an
+      # optional-registration pattern applied uniformly to every provider adapter here. The API
+      # starts, /health/ready reports ready, and chat turns with no model configured return
+      # RUNTIME_MODEL_NOT_CONFIGURED rather than crashing the process.
       - key: INFERENCE_CLOUD_FALLBACK_ENABLED
         value: "true"
       - key: INFERENCE_CLOUD_PROVIDER

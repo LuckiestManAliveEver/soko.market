@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
+  AiModelSummary,
   ConversationSummary,
   NativeExecutionHostSummary,
   NativeModelInstallationSummary,
@@ -34,21 +35,87 @@ describe("native runtime binding resolver", () => {
     expect(resolved.selected.model.id).toBe("model-primary");
   });
 
-  it("uses the verified generative global default when a legacy conversation has no binding", () => {
+  it("boots with an unconfigured, provider-neutral global default: no vendor is required to start", () => {
+    const store = new NativeRuntimeBindingStore();
+    const binding = store.bindingsMap.get(globalDefaultRuntimeBindingId);
+    expect(binding).toMatchObject({ status: "draft", isDefault: true });
+    expect(
+      [...store.bindingModelsMap.values()].filter(
+        (role) => role.runtimeBindingId === globalDefaultRuntimeBindingId
+      )
+    ).toEqual([]);
+    expect(store.modelsMap.size).toBe(0);
+    expect(store.hostsMap.size).toBe(0);
+  });
+
+  it("reports RUNTIME_MODEL_NOT_CONFIGURED for the unconfigured global default, then resolves once any model is bound - not just OpenAI", () => {
     const store = new NativeRuntimeBindingStore();
     const conversation = conversationRecord(null);
     expect(() =>
       store.resolveRuntimeBinding(conversation.id, new Map([[conversation.id, conversation]]))
-    ).toThrowError(expect.objectContaining({ code: "RUNTIME_MODELS_UNAVAILABLE" }));
-    store.activateVerifiedGlobalDefault(timestamp);
+    ).toThrowError(expect.objectContaining({ code: "RUNTIME_MODEL_NOT_CONFIGURED" }));
+
+    store.activateGlobalDefaultModel({
+      model: localCatalogModel("local-model"),
+      executionTarget: "browser-local",
+      checkedAt: timestamp,
+      updatedBy: "user-1"
+    });
     const resolved = store.resolveRuntimeBinding(
       conversation.id,
       new Map([[conversation.id, conversation]])
     );
     expect(resolved.usedGlobalDefault).toBe(true);
     expect(resolved.binding.id).toBe(globalDefaultRuntimeBindingId);
-    expect(resolved.selected.model.id).toBe("openai-fast");
-    expect(resolved.selected.host?.lastKnownHealthyAt).toBe(timestamp);
+    expect(resolved.binding.status).toBe("active");
+    expect(resolved.selected.model.id).toBe("local-model");
+    expect(resolved.selected.model.provider).not.toBe("openai");
+    expect(resolved.selected.host?.type).toBe("browser-local");
+  });
+
+  it("swaps the global default's model in place: same binding id, no new agent or conversation", () => {
+    const store = new NativeRuntimeBindingStore();
+    store.activateGlobalDefaultModel({
+      model: localCatalogModel("local-model-x"),
+      executionTarget: "browser-local",
+      checkedAt: timestamp,
+      updatedBy: "user-1"
+    });
+    const afterFirst = store.bindingsMap.get(globalDefaultRuntimeBindingId);
+
+    const swapped = store.activateGlobalDefaultModel({
+      model: localCatalogModel("local-model-y"),
+      executionTarget: "browser-local",
+      checkedAt: "2026-08-27T12:05:00.000Z",
+      updatedBy: "user-1"
+    });
+
+    expect(swapped.id).toBe(afterFirst?.id);
+    const primaryRoles = [...store.bindingModelsMap.values()].filter(
+      (role) => role.runtimeBindingId === globalDefaultRuntimeBindingId && role.role === "primary"
+    );
+    expect(primaryRoles).toHaveLength(1);
+    expect(primaryRoles[0]?.modelId).toBe("local-model-y");
+
+    const conversation = conversationRecord(null);
+    const resolved = store.resolveRuntimeBinding(
+      conversation.id,
+      new Map([[conversation.id, conversation]])
+    );
+    expect(resolved.binding.id).toBe(globalDefaultRuntimeBindingId);
+    expect(resolved.selected.model.id).toBe("local-model-y");
+  });
+
+  it("rejects assigning the global default a model missing a required capability", () => {
+    const store = new NativeRuntimeBindingStore();
+    expect(() =>
+      store.activateGlobalDefaultModel({
+        model: { ...localCatalogModel("embedding-only"), capabilities: ["embeddings"] },
+        executionTarget: "browser-local",
+        checkedAt: timestamp,
+        updatedBy: "user-1"
+      })
+    ).toThrowError(expect.objectContaining({ code: "RUNTIME_MODEL_CAPABILITY_MISMATCH" }));
   });
 
   it("returns an explicit error when no global default exists", () => {
@@ -124,12 +191,24 @@ describe("native runtime binding resolver", () => {
     fetchSpy.mockRestore();
   });
 
-  it("rejects incompatible agent/model contracts", () => {
+  it("rejects a model missing a required capability, distinctly from a contract-version mismatch", () => {
     const graph = graphStore();
     const model = graph.store.modelsMap.get("model-primary") as NativeRuntimeModelSummary;
     graph.store.modelsMap.set(model.id, { ...model, capabilities: ["chat"] });
     expect(() =>
       graph.store.resolveRuntimeBinding("conversation-1", graph.conversations)
+    ).toThrowError(expect.objectContaining({ code: "RUNTIME_MODEL_CAPABILITY_MISMATCH" }));
+
+    const versionMismatch = graphStore();
+    const versionedModel = versionMismatch.store.modelsMap.get(
+      "model-primary"
+    ) as NativeRuntimeModelSummary;
+    versionMismatch.store.modelsMap.set(versionedModel.id, {
+      ...versionedModel,
+      runtimeContractVersion: "2"
+    });
+    expect(() =>
+      versionMismatch.store.resolveRuntimeBinding("conversation-1", versionMismatch.conversations)
     ).toThrowError(expect.objectContaining({ code: "RUNTIME_CONTRACT_INCOMPATIBLE" }));
   });
 
@@ -186,6 +265,29 @@ function graphStore() {
   }
   const conversation = conversationRecord("binding-1");
   return { store, conversations: new Map([[conversation.id, conversation]]) };
+}
+
+function localCatalogModel(id: string): AiModelSummary {
+  return {
+    id,
+    label: id,
+    provider: "local",
+    description:
+      "A downloaded on-device model used to prove the global default is not vendor-locked.",
+    capabilities: ["chat", "tool-routing"],
+    available: true,
+    source: "huggingface",
+    format: "GGUF",
+    license: null,
+    licenseUrl: null,
+    modelCardUrl: null,
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: false,
+    contextWindow: null
+  };
 }
 
 function agentRecord(): NativeRuntimeAgentSummary {

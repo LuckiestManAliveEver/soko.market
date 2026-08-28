@@ -10,8 +10,11 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("CP2_STORE\n        value: postgres");
     expect(blueprint).toContain("name: soko-market-api\n    runtime: node");
     expect(blueprint).toContain("plan: starter");
+    // build:production runs (and gates on) a clean compile before db:migrate, not after: a
+    // destructive migration must never commit against the shared production database ahead of a
+    // build that turns out not to compile - see docs/architecture/native-runtime-deployment.md §3.
     expect(blueprint).toContain(
-      "buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate && REQUIRE_NEON_DATABASE=true COREPACK_HOME=/tmp/corepack corepack pnpm db:verify-schema && COREPACK_HOME=/tmp/corepack corepack pnpm build:production"
+      "buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm build:production && COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate && REQUIRE_NEON_DATABASE=true COREPACK_HOME=/tmp/corepack corepack pnpm db:verify-schema"
     );
     expect(blueprint).not.toContain("preDeployCommand:");
     expect(blueprint.match(/key: DATABASE_URL\n\s+sync: false/g)?.length).toBeGreaterThanOrEqual(4);

@@ -528,17 +528,42 @@ describe("agent model activation runtime", () => {
     await app.close();
   });
 
-  it("uses the persisted in-process global default for an otherwise unbound conversation", async () => {
+  it("uses the persisted in-process global default for an otherwise unbound conversation - provider-neutral, not hardcoded to OpenAI", async () => {
+    const globalDefaultModelId = "soko-local-default";
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
-        modelId === "openai-fast" && executionTarget === "openai"
-          ? healthyAdapter("openai-fast", { executionTarget: "openai" })
+        modelId === globalDefaultModelId && executionTarget === "backend"
+          ? healthyAdapter(globalDefaultModelId, { executionTarget: "backend" })
           : undefined
     });
-    // Mirrors production startup (services/api/src/index.ts): the global default's model and
-    // host are seeded unavailable until a live health check verifies them, so an unbound
-    // conversation only resolves once that verification has actually happened.
-    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
+    // services/api/src/index.ts no longer requires (or health-checks) any model vendor at
+    // startup - see docs/architecture/provider-neutral-runtime.md. An unbound conversation only
+    // resolves once an operator has actually chosen a model for the global default slot, and any
+    // catalog model works, not just OpenAI.
+    store.activateGlobalDefaultModel({
+      model: {
+        id: globalDefaultModelId,
+        label: "Soko local default",
+        provider: "local",
+        description: "A non-OpenAI model proving the global default is not vendor-locked.",
+        capabilities: ["chat", "tool-routing"],
+        available: true,
+        source: "huggingface",
+        format: "GGUF",
+        license: null,
+        licenseUrl: null,
+        modelCardUrl: null,
+        downloadUrl: null,
+        fileName: null,
+        fileSizeBytes: null,
+        minimumMemoryGb: null,
+        recommended: false,
+        contextWindow: null
+      },
+      executionTarget: "backend",
+      checkedAt: new Date().toISOString(),
+      updatedBy: "system"
+    });
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700002008", "Configuration Guidance Shop");
     const conversations = await getJson<{ conversations: Array<{ id: string }> }>(

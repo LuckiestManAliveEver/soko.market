@@ -281,7 +281,7 @@ const mutatingMethodNames = new Set([
   "finalizeShopDeletion",
   "activateAiModel",
   "activateAgentModel",
-  "activateVerifiedGlobalRuntimeDefault",
+  "activateGlobalDefaultModel",
   "removeAgentModelBinding",
   "assignAgentModel",
   "upsertBrowserInferenceAssignment",

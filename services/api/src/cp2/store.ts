@@ -96,6 +96,7 @@ import {
 import type {
   AccountSummary,
   AgentContextSource,
+  AiModelSummary,
   AgentEvaluationEvent,
   AgentOwnerCorrection,
   AgentRuntimeVersion,
@@ -1021,11 +1022,23 @@ export class Cp2Store {
       invoices: this.salesDomain.invoicesMap,
       sessions: this.sessions,
       businesses: this.businesses,
-      resolveNativeRuntimeBinding: (conversationId) =>
-        this.nativeRuntimeBindings.resolveRuntimeBinding(
-          conversationId,
-          this.messagingDomain.conversationsMap
-        ),
+      // A conversation's native runtime binding can legitimately have no configured model yet
+      // (RUNTIME_MODEL_NOT_CONFIGURED) or no currently-available one (RUNTIME_MODELS_UNAVAILABLE) -
+      // neither should crash a chat turn. Every caller already treats a null nativeResolution as
+      // "fall back to the legacy agent-model-binding path" (see resolveNativeRuntimeModelProvider
+      // and resolveActiveRuntimeModelId), so a resolution failure here degrades to that same null
+      // rather than throwing. See docs/architecture/provider-neutral-runtime.md §5.
+      resolveNativeRuntimeBinding: (conversationId) => {
+        try {
+          return this.nativeRuntimeBindings.resolveRuntimeBinding(
+            conversationId,
+            this.messagingDomain.conversationsMap
+          );
+        } catch (error) {
+          if (error instanceof Cp2Error) return null;
+          throw error;
+        }
+      },
       activateVerifiedRuntimeBinding: (input) => {
         const binding = this.nativeRuntimeBindings.activateVerifiedModel(input);
         for (const [conversationId, conversation] of this.messagingDomain.conversationsMap) {
@@ -2988,8 +3001,18 @@ export class Cp2Store {
     );
   }
 
-  activateVerifiedGlobalRuntimeDefault(checkedAt: string): NativeRuntimeBindingSummary {
-    return this.nativeRuntimeBindings.activateVerifiedGlobalDefault(checkedAt);
+  // Assigns/swaps the primary model for the global default runtime slot - the provider-neutral
+  // replacement for the old hardcoded openai-fast activation. Any catalog model on any execution
+  // target is accepted; calling this again with a different model swaps it in place without
+  // changing the binding's id or any conversation bound to it. See docs/architecture/
+  // provider-neutral-runtime.md.
+  activateGlobalDefaultModel(input: {
+    model: AiModelSummary;
+    executionTarget: ModelExecutionTarget;
+    checkedAt: string;
+    updatedBy: string;
+  }): NativeRuntimeBindingSummary {
+    return this.nativeRuntimeBindings.activateGlobalDefaultModel(input);
   }
 
   getActiveAgentModelBinding(
