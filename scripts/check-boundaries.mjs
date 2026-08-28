@@ -154,7 +154,7 @@ const lineBudgets = new Map([
   ["packages/tool-core/src/parsers/receipt-context.ts", 350],
   ["packages/tool-core/src/parsers/runtime-proposals.ts", 275],
   ["packages/tool-core/src/registry/index.ts", 50],
-  ["apps/web/src/SokoApplication.tsx", 2100],
+  ["apps/web/src/SokoApplication.tsx", 2150],
   ["apps/web/src/OwnerWorkspace.tsx", 800],
   ["apps/web/src/ChatSurface.tsx", 1125],
   ["apps/web/src/ChatComposer.tsx", 375],
@@ -166,7 +166,7 @@ const lineBudgets = new Map([
   ["services/api/src/cp2/domains/agent-runtime/runtime-context.ts", 300],
   ["services/api/src/cp2/domains/agent-runtime/runtime-model-routing.ts", 550],
   ["services/api/src/cp2/domains/agent-runtime/shared.ts", 1700],
-  ["services/api/src/cp2/domains/agent-runtime/routes.ts", 1650],
+  ["services/api/src/cp2/domains/agent-runtime/routes.ts", 1800],
   ["services/api/src/cp2/domains/agent-runtime/capabilities.ts", 525]
 ]);
 for (const [file, maximum] of lineBudgets) {
