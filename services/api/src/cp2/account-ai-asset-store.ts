@@ -5,6 +5,10 @@ import type {
   InstalledOssAgentManifestSummary,
   OssAgentSummary
 } from "@soko/shared-types";
+import {
+  portableAgentManifestFromOssAgent,
+  validatePortableAgentManifest
+} from "@soko/shared-types";
 
 export const modelArtifactChunkSizeBytes = 4 * 1024 * 1024;
 
@@ -169,7 +173,27 @@ export function copyAgentManifest(input: {
   agent: OssAgentSummary;
   installedAt: string;
 }): InstalledOssAgentManifestSummary {
-  return { manifestVersion: 1, ...input, agent: structuredClone(input.agent) };
+  return {
+    manifestVersion: 1,
+    ...input,
+    agent: structuredClone(input.agent),
+    portableManifest: portableAgentManifestFromOssAgent(input.agent)
+  };
+}
+
+export function hydrateAccountAgentManifest(
+  input: Omit<InstalledOssAgentManifestSummary, "portableManifest"> & {
+    portableManifest?: unknown;
+  }
+): InstalledOssAgentManifestSummary {
+  const validation = validatePortableAgentManifest(input.portableManifest);
+  return {
+    ...structuredClone(input),
+    agent: structuredClone(input.agent),
+    portableManifest: validation.valid
+      ? validation.manifest
+      : portableAgentManifestFromOssAgent(input.agent)
+  };
 }
 
 function requireOwnedArtifact(

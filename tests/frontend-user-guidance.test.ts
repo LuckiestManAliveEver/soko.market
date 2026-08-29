@@ -138,7 +138,7 @@ describe("frontend user guidance", () => {
     expect(chatMessagePlumbing).toContain('attachment.category === "document"');
     // The required-guardrail append matters at the point a profile is actually saved and used to
     // build a prompt, not on every chat message - apps/web/src/agent-profile-payload.ts is the
-    // save-payload builder AgentProfileSurface/useOssAgentSelectionState actually call, and
+    // save-payload builder AgentProfileSurface actually calls, and
     // server-side runtimeAgentProfileFromStored (services/api/src/cp2/domains/agent-runtime/shared.ts)
     // re-applies the same guardrail from the saved profile on every real turn regardless of what a
     // client sends.

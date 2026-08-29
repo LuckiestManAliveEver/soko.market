@@ -1,8 +1,8 @@
 import { type FormEvent, useEffect, useState } from "react";
 import type { OssAgentSearchResult, OssAgentSummary } from "@soko/shared-types";
 
-import type { DeviceModelCapability, LocalAiModel } from "./ai-model-manager";
-import { applyOssAgent, rankOssAgentsForDevice } from "./agent-catalog";
+import type { LocalAiModel } from "./ai-model-manager";
+import { applyOssAgent, rankPortableOssAgents } from "./agent-catalog";
 import { getJson } from "./api-helpers";
 import { listInstalledOssAgentManifests } from "./oss-agent-installation";
 import { hydrateAccountOssAgentManifests, installOssAgentForAccount } from "./account-ai-assets";
@@ -15,7 +15,6 @@ export interface AgentIdentityPanelProps {
   activeAiModelId: string;
   activeInstalledModel: LocalAiModel | null;
   activeAiModel: AiModelSummary | undefined;
-  deviceCapability: DeviceModelCapability | null;
   backendAvailable: boolean;
 }
 
@@ -26,7 +25,6 @@ export function AgentIdentityPanel({
   activeAiModelId,
   activeInstalledModel,
   activeAiModel,
-  deviceCapability,
   backendAvailable
 }: AgentIdentityPanelProps) {
   const [agentSearch, setAgentSearch] = useState("");
@@ -98,23 +96,19 @@ export function AgentIdentityPanel({
       );
       updateAgent(applyOssAgent(draftAgent, definition));
       setCatalogueMessage(
-        `${definition.label}'s verified manifest is saved to your account and this device. Save to link it to this shop's chat.`
+        `${definition.label}'s portable manifest is saved to your account. Save to use the same logical agent on every signed-in device.`
       );
     } catch (error) {
       setCatalogueMessage(error instanceof Error ? error.message : "The manifest was not saved.");
     }
   }
 
-  // An unavailable agent (unverified license, or a repository needing a backend adapter this
-  // deployment doesn't have) is hidden entirely rather than shown disabled - it can't be
-  // downloaded or used here, so listing it just invites a dead-end tap. An already-downloaded
-  // agent stays listed even if it would now rank unavailable, so it can still be managed/removed.
-  const agentOptions =
-    deviceCapability === null
-      ? []
-      : rankOssAgentsForDevice({ agents, capability: deviceCapability, backendAvailable }).filter(
-          (option) => option.status !== "unavailable" || installedAgentIds.has(option.agent.id)
-        );
+  // Agent definitions are ranked by whether Soko can host/adapt them, never by the hardware of
+  // the phone or browser currently rendering this screen. A saved definition stays visible if a
+  // deployment adapter later becomes unavailable so the owner can still manage the profile.
+  const agentOptions = rankPortableOssAgents({ agents, backendAvailable }).filter(
+    (option) => option.status !== "unavailable" || installedAgentIds.has(option.agent.id)
+  );
 
   return (
     <div className="record-form">
@@ -126,13 +120,11 @@ export function AgentIdentityPanel({
         <div>
           <strong>Choose an open-source agent</strong>
           <small>
-            Live projects from GitHub and Hugging Face. Soko downloads a verified manifest and uses
-            it through the bounded Soko runtime; the conversational model remains separate.
+            Live projects from GitHub and Hugging Face. Soko saves a portable definition and uses it
+            through the bounded Soko runtime; the model and execution host remain separate.
           </small>
         </div>
-        <span className="model-badge">
-          {deviceCapability === null ? "Checking device…" : `${deviceCapability.level} device`}
-        </span>
+        <span className="model-badge">Device independent</span>
       </div>
       <form className="agent-catalog-search" onSubmit={searchAgents}>
         <input
@@ -177,9 +169,7 @@ export function AgentIdentityPanel({
                 {definition.license} · {definition.popularity.toLocaleString()}{" "}
                 {definition.source === "github" ? "stars" : "likes"}
               </small>
-              {installed ? (
-                <small className="agent-installed-label">Downloaded manifest</small>
-              ) : null}
+              {installed ? <small className="agent-installed-label">Saved to account</small> : null}
               <a href={definition.sourceUrl} target="_blank" rel="noreferrer">
                 View on {definition.source === "github" ? "GitHub" : "Hugging Face"}
               </a>
@@ -193,10 +183,10 @@ export function AgentIdentityPanel({
                 {selected && installed
                   ? "Selected"
                   : selected
-                    ? "Download manifest"
+                    ? "Save manifest"
                     : installed
-                      ? "Use downloaded agent"
-                      : "Download & use"}
+                      ? "Use saved agent"
+                      : "Save & use"}
               </button>
             </article>
           );

@@ -1,6 +1,5 @@
 import type { OssAgentSummary } from "@soko/shared-types";
 
-import type { DeviceModelCapability } from "./ai-model-manager";
 import type { AgentSettings } from "./soko-application-shared";
 
 export type AgentCompatibilityStatus = "hosted-ready" | "backend-assisted" | "unavailable";
@@ -12,19 +11,19 @@ export interface RankedOssAgent {
   score: number;
 }
 
-export function rankOssAgentsForDevice(input: {
+export function rankPortableOssAgents(input: {
   agents: OssAgentSummary[];
-  capability: DeviceModelCapability;
   backendAvailable: boolean;
 }): RankedOssAgent[] {
-  return input.agents
+  const { agents, backendAvailable } = input;
+  return agents
     .map((agent): RankedOssAgent => {
       const hosted = agent.executionMode === "hosted-api";
       const status: AgentCompatibilityStatus = !agent.licenseVerified
         ? "unavailable"
         : hosted
           ? "hosted-ready"
-          : input.backendAvailable
+          : backendAvailable
             ? "backend-assisted"
             : "unavailable";
       const reason = !agent.licenseVerified
@@ -33,7 +32,7 @@ export function rankOssAgentsForDevice(input: {
           ? agent.requiresGpu
             ? "Runs on the Space's hosted GPU; this device only uses its API."
             : "Runs through the hosted Hugging Face API without local installation."
-          : !input.backendAvailable
+          : !backendAvailable
             ? "This GitHub project needs a configured backend adapter before it can be selected."
             : `Runs through Soko's restricted backend adapter (estimated ${agent.minimumMemoryGb} GB backend memory); repository code is never executed in the browser.`;
 

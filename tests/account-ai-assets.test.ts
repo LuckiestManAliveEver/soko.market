@@ -77,7 +77,14 @@ describe("account-scoped AI assets", () => {
       pin: "2468"
     });
     expect(await store.listAccountOssAgentManifests({ sessionId: second.session.id })).toEqual([
-      expect.objectContaining({ agent: expect.objectContaining({ id: agent.id }) })
+      expect.objectContaining({
+        agent: expect.objectContaining({ id: agent.id }),
+        portableManifest: expect.objectContaining({
+          schemaVersion: "1",
+          agent: expect.objectContaining({ id: agent.id }),
+          modelRequirements: expect.objectContaining({ hostedAllowed: true, localAllowed: true })
+        })
+      })
     ]);
     expect(await store.listAccountModelArtifacts({ sessionId: second.session.id })).toEqual([
       expect.objectContaining({ id: artifact.id, modelId: "custom:tiny-test", status: "READY" })

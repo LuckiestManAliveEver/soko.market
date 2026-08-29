@@ -1,13 +1,7 @@
 import { useEffect, useRef } from "react";
 
-import type { OssAgentSearchResult } from "@soko/shared-types";
-
-import { getJson, putJson } from "../api-helpers";
-import { applyOssAgent, rankOssAgentsForDevice, selectLeastMemoryOssAgent } from "../agent-catalog";
-import { buildAgentProfileUpdate } from "../agent-profile-payload";
-import { getOrCreateDeviceModelScopeId, inspectDeviceModelCapability } from "../ai-model-manager";
-import { linkInstalledOssAgent, readDeviceOssAgentBinding } from "../oss-agent-installation";
-import { hydrateAccountOssAgentManifests, installOssAgentForAccount } from "../account-ai-assets";
+import { getJson } from "../api-helpers";
+import { hydrateAccountOssAgentManifests } from "../account-ai-assets";
 import { agentSettingsFromBusinessProfile } from "../owner-app-bootstrap";
 import type {
   ActiveBusiness,
@@ -27,23 +21,13 @@ interface UseOssAgentSelectionStateDeps {
 }
 
 /**
- * Once a business is fully set up and online, picks (or resumes) a hardware-appropriate OSS
- * agent for this device: honors an already-assigned non-default agent profile, otherwise ranks
- * GitHub/Hugging Face candidates against this device's model capability and links the
- * lowest-memory compatible match. Runs at most once per (account, business) pair per mount, via
- * automaticAgentSelectionRef.
+ * Hydrates the persisted logical agent and account manifest cache on a new device. Agent identity
+ * is never selected, installed, or linked based on this device's hardware; runtime/model
+ * capability discovery happens independently in the inference path.
  */
 export function useOssAgentSelectionState(deps: UseOssAgentSelectionStateDeps): void {
   const automaticAgentSelectionRef = useRef(new Set<string>());
-  const {
-    agentSettings,
-    setAgentSettings,
-    business,
-    session,
-    isOnline,
-    setupComplete,
-    setStatusMessage
-  } = deps;
+  const { agentSettings, setAgentSettings, business, session, isOnline, setupComplete } = deps;
 
   useEffect(() => {
     if (!setupComplete || !isOnline || session === null || business === null) {
@@ -60,82 +44,10 @@ export function useOssAgentSelectionState(deps: UseOssAgentSelectionStateDeps): 
       const profile = await getJson<BusinessAgentProfileSummary>(
         `/businesses/${business.id}/agent-profile`
       );
-      if (profile.agentDefinitionId !== "builtin:shopkeeper") {
-        if (!cancelled) setAgentSettings(agentSettingsFromBusinessProfile(profile, business));
-        const deviceId = getOrCreateDeviceModelScopeId();
-        const binding = readDeviceOssAgentBinding(business.id, deviceId);
-        if (binding?.agentDefinitionId === profile.agentDefinitionId) {
-          completed = true;
-          return;
-        }
-        const accountManifests = await hydrateAccountOssAgentManifests().catch(() => []);
-        let selected = accountManifests.find(
-          (manifest) => manifest.agent.id === profile.agentDefinitionId
-        )?.agent;
-        if (selected === undefined) {
-          const separator = profile.agentDefinitionId.indexOf(":");
-          const source = profile.agentDefinitionId.slice(0, separator);
-          const sourceId = profile.agentDefinitionId.slice(separator + 1);
-          const catalogue = await getJson<OssAgentSearchResult>(
-            `/v1/oss-agents/${source}?search=${encodeURIComponent(sourceId)}`
-          );
-          selected = catalogue.agents.find(
-            (candidate) => candidate.id === profile.agentDefinitionId && candidate.licenseVerified
-          );
-        }
-        if (selected !== undefined) {
-          if (!accountManifests.some((manifest) => manifest.agent.id === selected.id)) {
-            await installOssAgentForAccount(selected);
-          }
-          linkInstalledOssAgent({
-            businessId: business.id,
-            deviceId,
-            agentDefinitionId: selected.id
-          });
-          completed = true;
-        }
-        return;
-      }
-
-      const [capability, github, huggingFace] = await Promise.all([
-        inspectDeviceModelCapability(),
-        getJson<OssAgentSearchResult>("/v1/oss-agents/github"),
-        getJson<OssAgentSearchResult>("/v1/oss-agents/huggingface")
-      ]);
-      const agents = new Map(
-        [...huggingFace.agents, ...github.agents].map((candidate) => [candidate.id, candidate])
-      );
-      const selected = selectLeastMemoryOssAgent(
-        rankOssAgentsForDevice({
-          agents: [...agents.values()],
-          capability,
-          // No repository execution adapter is composed in this web/API deployment. General
-          // agent readiness must not make a backend-worker repository look runnable.
-          backendAvailable: false
-        })
-      );
-      if (selected === null) return;
-
-      await installOssAgentForAccount(selected.agent);
-      const nextAgent = applyOssAgent(
-        agentSettingsFromBusinessProfile(profile, business),
-        selected.agent
-      );
-      const saved = await putJson<BusinessAgentProfileSummary>(
-        `/businesses/${business.id}/agent-profile`,
-        buildAgentProfileUpdate(nextAgent)
-      );
-      linkInstalledOssAgent({
-        businessId: business.id,
-        deviceId: getOrCreateDeviceModelScopeId(),
-        agentDefinitionId: saved.agentDefinitionId
-      });
+      await hydrateAccountOssAgentManifests().catch(() => []);
       completed = true;
       if (!cancelled) {
-        setAgentSettings(agentSettingsFromBusinessProfile(saved, business));
-        setStatusMessage(
-          `${selected.agent.label} was downloaded as the lowest-memory compatible agent and linked to chat.`
-        );
+        setAgentSettings(agentSettingsFromBusinessProfile(profile, business));
       }
     })()
       .catch(() => {

@@ -26,8 +26,6 @@ import { YourShopsPanel } from "./YourShopsPanel";
 import {
   listLocalAiModels,
   getOrCreateDeviceModelScopeId,
-  inspectDeviceModelCapability,
-  type DeviceModelCapability,
   type LocalAiModel
 } from "./ai-model-manager";
 import {
@@ -52,9 +50,8 @@ import { postJson, putJson, getJson } from "./api-helpers";
 import { createStorefrontUrl, normalizeSokoId } from "./sokoid-and-storefront";
 import { agentSettingsFromBusinessProfile } from "./owner-app-bootstrap";
 import { getErrorMessage } from "./chat-message-plumbing";
-import { installedModelRequest, isDownloadableCatalogModel } from "./agent-model-panel-utils";
+import { installedModelRequest } from "./agent-model-panel-utils";
 import { buildAgentProfileUpdate } from "./agent-profile-payload";
-import { linkInstalledOssAgent, listInstalledOssAgentManifests } from "./oss-agent-installation";
 
 export interface AgentProfileSurfaceProps {
   accountId: string;
@@ -139,7 +136,6 @@ export function AgentProfileSurface({
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [activeAiModelId, setActiveAiModelId] = useState(agent.model);
   const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
-  const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
   const [deviceId] = useState(() => getOrCreateDeviceModelScopeId());
   const [agentModelAssignment, setAgentModelAssignment] =
     useState<DeviceAgentModelAssignment | null>(() =>
@@ -156,9 +152,6 @@ export function AgentProfileSurface({
     void loadAgentProfile();
     void loadAgentRuntimeDetails();
     void loadAgentModelAssignment();
-    void inspectDeviceModelCapability()
-      .then(setDeviceCapability)
-      .catch(() => undefined);
   }, [accountId, business.id]);
 
   async function runProfileAction(key: string, action: () => Promise<void>) {
@@ -363,18 +356,6 @@ export function AgentProfileSurface({
 
   async function saveAgent() {
     if (isSaving) return;
-    const selectedCatalogModel = aiModels.find((model) => model.id === draftAgent.model);
-    if (
-      selectedCatalogModel !== undefined &&
-      isDownloadableCatalogModel(selectedCatalogModel) &&
-      draftAgent.model !== agent.model &&
-      !localAiModels.some((model) => model.modelId === draftAgent.model)
-    ) {
-      setProfileMessage(
-        `Install ${selectedCatalogModel.label} on this phone before activating it.`
-      );
-      return;
-    }
     const publicAgentId = normalizeSokoId(business.sokoId);
     setIsSaving(true);
     try {
@@ -382,18 +363,6 @@ export function AgentProfileSurface({
         `/businesses/${business.id}/agent-profile`,
         buildAgentProfileUpdate(draftAgent)
       );
-      if (
-        saved.agentDefinitionId !== "builtin:shopkeeper" &&
-        listInstalledOssAgentManifests().some(
-          (manifest) => manifest.agent.id === saved.agentDefinitionId
-        )
-      ) {
-        linkInstalledOssAgent({
-          businessId: business.id,
-          deviceId,
-          agentDefinitionId: saved.agentDefinitionId
-        });
-      }
       onAgentChange({
         ...agentSettingsFromBusinessProfile(saved, business),
         globalAgentId: publicAgentId,
@@ -522,7 +491,6 @@ export function AgentProfileSurface({
             activeAiModelId={activeAiModelId}
             activeInstalledModel={activeInstalledModel}
             activeAiModel={activeAiModel}
-            deviceCapability={deviceCapability}
             // Agent-runtime readiness describes Soko's bounded prompt/tool runtime. It does not
             // prove that arbitrary repository source has a configured isolated backend adapter.
             backendAvailable={false}

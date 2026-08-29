@@ -3,9 +3,7 @@ import type { OssAgentSummary } from "../packages/shared-types/src";
 
 import {
   installOssAgentManifest,
-  linkInstalledOssAgent,
-  listInstalledOssAgentManifests,
-  readDeviceOssAgentBinding
+  listInstalledOssAgentManifests
 } from "../apps/web/src/oss-agent-installation";
 
 class MemoryStorage {
@@ -41,26 +39,13 @@ const agent: OssAgentSummary = {
 };
 
 describe("OSS agent installation", () => {
-  it("caches a verified manifest before linking it to a shop and device", () => {
+  it("caches a verified manifest without creating a device-specific agent identity", () => {
     const storage = new MemoryStorage();
     installOssAgentManifest(agent, storage, "2026-08-21T10:00:00.000Z");
-    linkInstalledOssAgent(
-      {
-        businessId: "business-1",
-        deviceId: "device-1",
-        agentDefinitionId: agent.id
-      },
-      storage,
-      "2026-08-21T10:01:00.000Z"
-    );
 
     expect(listInstalledOssAgentManifests(storage)).toEqual([
       { manifestVersion: 1, agent, installedAt: "2026-08-21T10:00:00.000Z" }
     ]);
-    expect(readDeviceOssAgentBinding("business-1", "device-1", storage)).toMatchObject({
-      agentDefinitionId: agent.id,
-      linkedAt: "2026-08-21T10:01:00.000Z"
-    });
   });
 
   it("rejects unlicensed or source-mismatched manifests", () => {
@@ -73,15 +58,5 @@ describe("OSS agent installation", () => {
       installOssAgentManifest({ ...agent, sourceUrl: "https://example.com/agent" }, storage)
     ).toThrow("license-verified");
     expect(listInstalledOssAgentManifests(storage)).toEqual([]);
-  });
-
-  it("refuses to link a manifest that has not been downloaded", () => {
-    const storage = new MemoryStorage();
-    expect(() =>
-      linkInstalledOssAgent(
-        { businessId: "business-1", deviceId: "device-1", agentDefinitionId: agent.id },
-        storage
-      )
-    ).toThrow("Install the agent manifest");
   });
 });

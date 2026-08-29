@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest";
 const chatState = readFileSync("apps/web/src/hooks/useChatRuntimeState.ts", "utf8");
 const agentModelPanel = readFileSync("apps/web/src/AgentModelPanel.tsx", "utf8");
 const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
+const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
+const agentIdentityPanel = readFileSync("apps/web/src/AgentIdentityPanel.tsx", "utf8");
+const ossSelectionState = readFileSync("apps/web/src/hooks/useOssAgentSelectionState.ts", "utf8");
 const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
 describe("frontend model activation contracts", () => {
@@ -55,6 +58,17 @@ describe("frontend model activation contracts", () => {
     expect(agentModelPanel).not.toContain('"Default fallback"');
     expect(agentModelPanel).not.toContain('<option value="CLOUD_ONLY">Cloud only</option>');
     expect(agentModelPanel).not.toContain("fallbackPolicy");
+  });
+
+  it("keeps logical agent and model choice independent from the current device", () => {
+    expect(agentProfileSurface).not.toContain(
+      "Install ${selectedCatalogModel.label} on this phone"
+    );
+    expect(agentProfileSurface).not.toContain("linkInstalledOssAgent");
+    expect(ossSelectionState).not.toContain("readDeviceOssAgentBinding");
+    expect(ossSelectionState).not.toContain("inspectDeviceModelCapability");
+    expect(agentIdentityPanel).toContain("Device independent");
+    expect(agentIdentityPanel).toContain("same logical agent on every signed-in device");
   });
 
   it("uses the provider-neutral route in the actual chat send path", () => {

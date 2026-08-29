@@ -3,7 +3,7 @@ import type { OssAgentSummary } from "../packages/shared-types/src";
 
 import {
   applyOssAgent,
-  rankOssAgentsForDevice,
+  rankPortableOssAgents,
   selectLeastMemoryOssAgent
 } from "../apps/web/src/agent-catalog";
 import type { AgentSettings } from "../apps/web/src/soko-application-shared";
@@ -48,11 +48,10 @@ const githubAgent: OssAgentSummary = {
   updatedAt: "2026-08-01T00:00:00.000Z"
 };
 
-describe("hardware-aware OSS agent catalogue", () => {
-  it("prioritizes callable Hugging Face agents on constrained hardware", () => {
-    const ranked = rankOssAgentsForDevice({
+describe("device-independent OSS agent catalogue", () => {
+  it("prioritizes callable Hugging Face agents when no backend adapter is configured", () => {
+    const ranked = rankPortableOssAgents({
       agents: [githubAgent, hostedAgent],
-      capability: basicDevice,
       backendAvailable: false
     });
 
@@ -60,10 +59,9 @@ describe("hardware-aware OSS agent catalogue", () => {
     expect(ranked[1]).toMatchObject({ agent: { id: githubAgent.id }, status: "unavailable" });
   });
 
-  it("allows a GitHub project only when its adapter and client requirements are ready", () => {
-    const ranked = rankOssAgentsForDevice({
+  it("allows a GitHub project once its backend adapter is ready, independent of device hardware", () => {
+    const ranked = rankPortableOssAgents({
       agents: [githubAgent],
-      capability: { ...basicDevice, deviceMemoryGb: 8, level: "standard" },
       backendAvailable: true
     });
 
@@ -71,9 +69,8 @@ describe("hardware-aware OSS agent catalogue", () => {
   });
 
   it("keeps a public source unavailable when its OSS license is not verified", () => {
-    const ranked = rankOssAgentsForDevice({
+    const ranked = rankPortableOssAgents({
       agents: [{ ...hostedAgent, license: "unknown", licenseVerified: false }],
-      capability: basicDevice,
       backendAvailable: true
     });
 
@@ -85,9 +82,8 @@ describe("hardware-aware OSS agent catalogue", () => {
 
   it("selects the runnable agent with the smallest declared memory footprint by default", () => {
     const popularButLarge = { ...githubAgent, minimumMemoryGb: 12, popularity: 100_000 };
-    const ranked = rankOssAgentsForDevice({
+    const ranked = rankPortableOssAgents({
       agents: [popularButLarge, hostedAgent],
-      capability: basicDevice,
       backendAvailable: true
     });
 
@@ -127,13 +123,3 @@ describe("hardware-aware OSS agent catalogue", () => {
     expect(next.integrations).toContain(`OSS agent: ${hostedAgent.sourceUrl}`);
   });
 });
-
-const basicDevice = {
-  deviceMemoryGb: 2,
-  hardwareConcurrency: 2,
-  freeStorageBytes: 1_000_000_000,
-  level: "basic" as const,
-  privateStorageSupported: true,
-  customModelsAllowed: false,
-  reason: "test device"
-};

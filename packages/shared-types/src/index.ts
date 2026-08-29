@@ -1,7 +1,10 @@
 export type RuntimeName = "api" | "sync" | "ai-runtime" | "web";
 
 export * from "./phone-number.js";
+export * from "./portable-agent.js";
 export * from "./store-links.js";
+
+import type { PortableAgentManifest } from "./portable-agent.js";
 
 export interface HealthResponse {
   service: RuntimeName;
@@ -1166,6 +1169,7 @@ export interface InstalledOssAgentManifestSummary {
   accountId: string;
   userId: string;
   agent: OssAgentSummary;
+  portableManifest: PortableAgentManifest;
   installedAt: string;
 }
 
@@ -3545,7 +3549,10 @@ export interface AgentPersonality {
 }
 
 export type AgentDefinitionId =
-  `builtin:${string}` | `github:${string}/${string}` | `huggingface:${string}/${string}`;
+  | `builtin:${string}`
+  | `github:${string}/${string}`
+  | `huggingface:${string}/${string}`
+  | `portable:${string}`;
 export type OssAgentSource = "github" | "huggingface";
 export type OssAgentRuntime =
   "docker" | "gradio" | "javascript" | "python" | "typescript" | "unknown";
@@ -3636,6 +3643,7 @@ export function isAgentDefinitionId(value: unknown): value is AgentDefinitionId 
     // fallback template hosted in cp2_agent_catalog (see services/api/src/cp2/store.ts
     // upsertAgentCatalogEntry) - a platform operator can add more without a code change.
     /^builtin:[a-z0-9][a-z0-9_-]{0,79}$/.test(value) ||
+    /^portable:[a-z0-9][a-z0-9_-]{0,79}$/.test(value) ||
     /^(?:github|huggingface):[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(value)
   );
 }

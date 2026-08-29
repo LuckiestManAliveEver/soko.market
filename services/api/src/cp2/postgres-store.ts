@@ -16,6 +16,7 @@ import {
 import type { ConversationAttachmentBlobStore } from "./conversation-attachment-blob-store.js";
 import {
   assertArtifactChunk,
+  hydrateAccountAgentManifest,
   modelArtifactFromInstallation,
   type AccountAiAssetStore
 } from "./account-ai-asset-store.js";
@@ -2226,7 +2227,7 @@ function createPostgresAccountAiAssetStore(pool: Pool): AccountAiAssetStore {
          order by installed_at desc`,
         [accountId, userId]
       );
-      return result.rows.map((row) => row.manifest);
+      return result.rows.map((row) => hydrateAccountAgentManifest(row.manifest));
     },
     async beginModelArtifact({ accountId, userId, model, now }) {
       const artifact = modelArtifactFromInstallation(accountId, userId, model, now);
