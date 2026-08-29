@@ -9,7 +9,6 @@ import type {
 
 import type { AgentRuntimeDomainDeps } from "./domain-deps.js";
 import {
-  aiModelRegistry,
   cloneAgentContextSource,
   cloneAgentInstructions,
   cloneAgentPersonality,
@@ -48,7 +47,7 @@ export function buildShopAgentRuntime(
     )
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
   const activeBinding = state.activeBinding;
-  const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
+  const model = state.deps.resolveCatalogModel(modelId);
   const sources = state.contextSources.filter((source) =>
     source.accessRules.audiences.includes(audience)
   );

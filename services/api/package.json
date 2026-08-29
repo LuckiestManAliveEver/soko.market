@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "db:backfill-native-runtime": "node scripts/backfill-native-runtime-bindings.mjs",
+    "db:grant-platform-operator": "node scripts/grant-platform-operator.mjs",
     "db:backup": "node scripts/backup-db.mjs",
     "db:backup:verify": "node scripts/verify-backup-db.mjs",
     "db:health": "node scripts/check-db-health.mjs",

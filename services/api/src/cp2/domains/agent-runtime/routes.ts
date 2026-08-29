@@ -22,6 +22,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   isModelExecutionTarget,
   type AgentContextSource,
+  type AgentDefinition,
+  type AiModelSummary,
   type AgentEvaluationPolicy,
   type AgentInstructions,
   type AgentMemoryPolicy,
@@ -40,7 +42,8 @@ import {
   type ModelExecutionTarget,
   type ModelInstallationStatus,
   type PreferredExecutionMode,
-  type OssAgentSummary
+  type OssAgentSummary,
+  type RuntimeToolName
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, isSupportedLanguage, readSessionCookie } from "../../store.js";
@@ -57,7 +60,9 @@ import {
   parseBoolean,
   parseIntegerString,
   parseIsoTimestamp,
+  parseNullableNumber,
   parseNullableString,
+  parseNumber,
   parseOptionalString,
   parsePositiveInteger,
   parseRequestBody,
@@ -347,6 +352,97 @@ export function registerAgentRuntimeRoutes(
     async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
       try {
         return await huggingFaceAgentCatalog.searchAgents(request.query.search);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  // DB-hosted catalog API (infra/db/migrations/071_platform_catalog.sql). Reads require an
+  // authenticated session; writes additionally require platform-operator authority.
+  // Every device already reaches the effective catalog through GET /v1/ai-models above; these
+  // routes are how a platform operator edits what that endpoint serves, without a code deploy.
+  // Store-side requirePlatformOperator (services/api/src/cp2/store.ts) is the actual authorization
+  // boundary - these handlers pass the session through unchanged.
+  app.get("/v1/platform/model-catalog", async (request, reply) => {
+    try {
+      return {
+        models: store.listPlatformModelCatalog(readSessionCookie(request.headers.cookie))
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.put(
+    "/v1/platform/model-catalog/:modelId",
+    async (request: FastifyRequest<{ Params: { modelId: string }; Body: unknown }>, reply) => {
+      try {
+        return {
+          model: store.upsertModelCatalogEntry({
+            sessionId: readSessionCookie(request.headers.cookie),
+            model: parseModelCatalogEntry(request.body, request.params.modelId)
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/v1/platform/model-catalog/:modelId",
+    async (request: FastifyRequest<{ Params: { modelId: string } }>, reply) => {
+      try {
+        store.removeModelCatalogEntry({
+          sessionId: readSessionCookie(request.headers.cookie),
+          modelId: request.params.modelId
+        });
+        return { removed: true };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/v1/platform/agent-catalog", async (request, reply) => {
+    try {
+      return {
+        agents: store.listPlatformAgentCatalog(readSessionCookie(request.headers.cookie))
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.put(
+    "/v1/platform/agent-catalog/:agentDefinitionId",
+    async (
+      request: FastifyRequest<{ Params: { agentDefinitionId: string }; Body: unknown }>,
+      reply
+    ) => {
+      try {
+        return {
+          agent: store.upsertAgentCatalogEntry({
+            sessionId: readSessionCookie(request.headers.cookie),
+            agent: parseAgentCatalogEntry(request.body, request.params.agentDefinitionId)
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/v1/platform/agent-catalog/:agentDefinitionId",
+    async (request: FastifyRequest<{ Params: { agentDefinitionId: string } }>, reply) => {
+      try {
+        store.removeAgentCatalogEntry({
+          sessionId: readSessionCookie(request.headers.cookie),
+          agentDefinitionId: request.params.agentDefinitionId
+        });
+        return { removed: true };
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -1357,6 +1453,112 @@ function parseAgentFeedbackBody(body: AgentFeedbackBody | null | undefined): {
     ...(record.messageId === undefined ? {} : { messageId: parseNullableString(record.messageId) }),
     correct: parseBoolean(record.correct, "correct"),
     ...(record.reason === undefined ? {} : { reason: parseNullableString(record.reason) })
+  };
+}
+
+function parseModelCatalogEntry(value: unknown, expectedId: string): AiModelSummary {
+  const record = parseRequestBody(value);
+  const id = record.id === undefined ? expectedId : parseString(record.id, "id");
+  if (id !== expectedId) {
+    throw new Cp2Error(
+      400,
+      "model_catalog_entry_invalid",
+      "Model id in the body must match the URL."
+    );
+  }
+  const source = record.source;
+  if (
+    source !== "huggingface" &&
+    source !== "github" &&
+    source !== "builtin" &&
+    source !== "hosted"
+  ) {
+    throw new Cp2Error(400, "model_catalog_entry_invalid", "Model source is invalid.");
+  }
+  const format = record.format;
+  if (format !== "GGUF" && format !== "remote") {
+    throw new Cp2Error(400, "model_catalog_entry_invalid", "Model format is invalid.");
+  }
+  return {
+    id,
+    label: parseString(record.label, "label"),
+    provider: parseString(record.provider, "provider"),
+    description: parseString(record.description, "description"),
+    capabilities: parseStringArray(record.capabilities, "capabilities", 40),
+    available: parseBoolean(record.available, "available"),
+    source,
+    format,
+    license: parseNullableString(record.license),
+    licenseUrl: parseNullableString(record.licenseUrl),
+    modelCardUrl: parseNullableString(record.modelCardUrl),
+    downloadUrl: parseNullableString(record.downloadUrl),
+    fileName: parseNullableString(record.fileName),
+    fileSizeBytes: parseNullableNumber(record.fileSizeBytes, "fileSizeBytes"),
+    minimumMemoryGb: parseNullableNumber(record.minimumMemoryGb, "minimumMemoryGb"),
+    recommended: parseBoolean(record.recommended, "recommended"),
+    contextWindow: parseNullableNumber(record.contextWindow, "contextWindow")
+  };
+}
+
+function parseAgentCatalogEntry(value: unknown, expectedId: string): AgentDefinition {
+  const record = parseRequestBody(value);
+  const id = record.id === undefined ? expectedId : parseString(record.id, "id");
+  if (id !== expectedId) {
+    throw new Cp2Error(
+      400,
+      "agent_catalog_entry_invalid",
+      "Agent id in the body must match the URL."
+    );
+  }
+  if (!isAgentDefinitionId(id) || !id.startsWith("builtin:")) {
+    throw new Cp2Error(
+      400,
+      "agent_catalog_entry_invalid",
+      "Agent catalog entries must use a builtin: id."
+    );
+  }
+  const workloadClass = record.workloadClass;
+  if (workloadClass !== "focused") {
+    throw new Cp2Error(400, "agent_catalog_entry_invalid", "Agent workload class is invalid.");
+  }
+  const minimumDeviceTier = record.minimumDeviceTier;
+  if (
+    minimumDeviceTier !== "low" &&
+    minimumDeviceTier !== "medium" &&
+    minimumDeviceTier !== "high"
+  ) {
+    throw new Cp2Error(400, "agent_catalog_entry_invalid", "Minimum device tier is invalid.");
+  }
+  const skillIds = parseStringArray(
+    record.skillIds,
+    "skillIds",
+    Object.keys(runtimeToolRegistry).length
+  );
+  if (skillIds.some((skillId) => !(skillId in runtimeToolRegistry))) {
+    throw new Cp2Error(
+      400,
+      "agent_catalog_entry_invalid",
+      "Agent skill ids must reference registered runtime tools."
+    );
+  }
+  return {
+    id: id as AgentDefinition["id"],
+    displayName: parseString(record.displayName, "displayName"),
+    role: parseString(record.role, "role"),
+    description: parseString(record.description, "description"),
+    operatingPattern: parseString(record.operatingPattern, "operatingPattern"),
+    workloadClass,
+    minimumDeviceTier,
+    minimumMemoryGb: parseNumber(record.minimumMemoryGb, "minimumMemoryGb"),
+    recommendedContextTokens: parseNumber(
+      record.recommendedContextTokens,
+      "recommendedContextTokens"
+    ),
+    personality: parseString(record.personality, "personality"),
+    instructions: parseString(record.instructions, "instructions"),
+    knowledge: parseString(record.knowledge, "knowledge"),
+    tools: parseStringArray(record.tools, "tools", 40),
+    skillIds: skillIds as RuntimeToolName[]
   };
 }
 

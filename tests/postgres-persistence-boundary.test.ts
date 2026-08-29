@@ -21,6 +21,10 @@ describe("Postgres persistence boundary", () => {
       "listBetaFeatureFlags",
       "listLaunchChecklist",
       "listNotifications",
+      "upsertModelCatalogEntry",
+      "removeModelCatalogEntry",
+      "upsertAgentCatalogEntry",
+      "removeAgentCatalogEntry",
       "syncConnectedSocialProvider",
       "updateInvoice"
     ];

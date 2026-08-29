@@ -89,4 +89,28 @@ describe("native runtime binding migration", () => {
       "drop index if exists cp2_native_runtime_bindings_one_tenant_default_idx"
     );
   });
+
+  it("adds the DB-hosted platform catalog tables, seeded from the current bootstrap catalog", async () => {
+    const migration = await readFile(
+      new URL("../infra/db/migrations/071_platform_catalog.sql", import.meta.url),
+      "utf8"
+    );
+    const rollback = await readFile(
+      new URL("../infra/db/rollbacks/071_platform_catalog.down.sql", import.meta.url),
+      "utf8"
+    );
+    expect(migration).toContain("create table cp2_model_catalog");
+    expect(migration).toContain("create table cp2_agent_catalog");
+    expect(migration).toContain("create table cp2_platform_operators");
+    expect(migration).toContain("entity_id = account_id");
+    expect(migration).toContain("insert into cp2_model_catalog");
+    expect(migration).toContain("'qwen2.5-0.5b-android'");
+    expect(migration).toContain("'openai-fast'");
+    expect(migration).toContain("insert into cp2_agent_catalog");
+    expect(migration).toContain("'builtin:shopkeeper'");
+    expect(migration).toContain("on conflict (entity_id) do nothing");
+    expect(rollback).toContain("drop table if exists cp2_platform_operators");
+    expect(rollback).toContain("drop table if exists cp2_agent_catalog");
+    expect(rollback).toContain("drop table if exists cp2_model_catalog");
+  });
 });

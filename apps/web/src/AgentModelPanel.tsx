@@ -401,6 +401,12 @@ export function AgentModelPanel({
   const getModelRuntime = getSharedAgentModelRuntime;
 
   async function loadAiModels(search?: string) {
+    // Only used below in the catch block, as a bare-minimum offline fallback when the fetch to
+    // GET /v1/ai-models fails entirely - the DB-hosted catalog (services/api/src/cp2/store.ts
+    // listModelCatalog, infra/db/migrations/071_platform_catalog.sql) is authoritative once that
+    // fetch succeeds. It used to also be merged into the successful-fetch result as `primary`,
+    // which meant this hand-maintained, already-stale copy's label/description/capabilities
+    // silently overrode the live catalog's for these two model ids on every load.
     const offlineDefaults: AiModelSummary[] = defaultOfflineAiModels;
     try {
       const normalizedSearch = search?.trim() ?? "";
@@ -438,27 +444,15 @@ export function AgentModelPanel({
         huggingFaceRegistry.models
       );
       const allModels = applyDeploymentRuntimeAvailability(
-        mergeAiModelCatalogs(
-          offlineDefaults,
-          mergeAiModelCatalogs(registry.models, externalRegistry)
-        ),
+        mergeAiModelCatalogs(registry.models, externalRegistry),
         registry.models
       );
       const visibleModels = applyDeploymentRuntimeAvailability(
         mergeAiModelCatalogs(
-          offlineDefaults.filter((model) =>
-            normalizedSearch.length === 0
-              ? true
-              : normalizeSearchText(
-                  `${model.label} ${model.description} ${model.capabilities.join(" ")}`
-                ).includes(normalizeSearchText(normalizedSearch))
-          ),
+          searchResults?.models ?? registry.models,
           mergeAiModelCatalogs(
-            searchResults?.models ?? registry.models,
-            mergeAiModelCatalogs(
-              githubSearchResults?.models ?? githubRegistry.models,
-              huggingFaceSearchResults?.models ?? huggingFaceRegistry.models
-            )
+            githubSearchResults?.models ?? githubRegistry.models,
+            huggingFaceSearchResults?.models ?? huggingFaceRegistry.models
           )
         ),
         registry.models

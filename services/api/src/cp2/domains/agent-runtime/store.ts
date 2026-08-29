@@ -95,6 +95,7 @@ import type {
   RuntimeTurnSummary,
   ShopAgentRuntime
 } from "@soko/shared-types";
+import { defaultAgentDefinitionId } from "@soko/shared-types";
 import {
   createRuntimeToolProposal,
   createRuntimeToolProposalFromProductContextScript,
@@ -144,7 +145,6 @@ import {
 } from "./planning.js";
 import {
   agentModelAssignmentKey,
-  aiModelRegistry,
   assertModelCanBeAssigned,
   browserInferenceAssignmentKey,
   cloneAgentContextSource,
@@ -349,7 +349,8 @@ export class AgentRuntimeDomain {
     const normalizedSearch = search?.trim().toLowerCase();
     const compactSearch =
       normalizedSearch === undefined ? undefined : normalizeModelCatalogSearch(normalizedSearch);
-    return aiModelRegistry
+    return this.deps
+      .listModelCatalog()
       .filter((model) => {
         if (!normalizedSearch) return true;
         const exactMatch =
@@ -397,7 +398,11 @@ export class AgentRuntimeDomain {
       now
     );
     const stored = this.activeAiModels.get(input.businessId);
-    const modelId = resolveDefaultDeviceModelId(stored?.modelId ?? "sokoclaw-local");
+    const preferredModelId = stored?.modelId ?? "sokoclaw-local";
+    const modelId = resolveDefaultDeviceModelId(
+      preferredModelId,
+      this.deps.resolveCatalogModel(preferredModelId)
+    );
     return {
       businessId: input.businessId,
       modelId,
@@ -419,7 +424,7 @@ export class AgentRuntimeDomain {
       "membership:manage",
       now
     );
-    const model = aiModelRegistry.find((candidate) => candidate.id === input.modelId);
+    const model = this.deps.resolveCatalogModel(input.modelId);
     if (model === undefined || model.source !== "hosted" || !model.available) {
       throw new Cp2Error(
         400,
@@ -519,7 +524,10 @@ export class AgentRuntimeDomain {
     this.agentModelBindings.set(inactive.id, inactive);
 
     const fallbackModelId = resolveDefaultDeviceModelId(
-      this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId
+      this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId,
+      this.deps.resolveCatalogModel(
+        this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId
+      )
     );
     const revised: BusinessAgentProfileSummary = {
       ...profile,
@@ -947,7 +955,7 @@ export class AgentRuntimeDomain {
     }
 
     const preferredModelId = this.agentProfiles.get(input.businessId)?.modelId ?? defaultAiModelId;
-    const preferredModel = aiModelRegistry.find((model) => model.id === preferredModelId);
+    const preferredModel = this.deps.resolveCatalogModel(preferredModelId);
     const modelId =
       preferredModel?.provider === "local" && preferredModel.available
         ? preferredModel.id
@@ -1412,7 +1420,8 @@ export class AgentRuntimeDomain {
       business,
       modelId: this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId,
       updatedAt: now.toISOString(),
-      updatedBy: session.user.id
+      updatedBy: session.user.id,
+      agentDefinition: this.deps.resolveAgentCatalogEntry(defaultAgentDefinitionId)
     });
   }
 
@@ -1437,10 +1446,11 @@ export class AgentRuntimeDomain {
           business,
           modelId: this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId,
           updatedAt: now.toISOString(),
-          updatedBy: session.user.id
+          updatedBy: session.user.id,
+          agentDefinition: this.deps.resolveAgentCatalogEntry(defaultAgentDefinitionId)
         })
     );
-    const model = aiModelRegistry.find((candidate) => candidate.id === profile.modelId);
+    const model = this.deps.resolveCatalogModel(profile.modelId);
     const deviceModel = downloadableAiModelIdPattern.test(profile.modelId);
     if ((!deviceModel && model === undefined) || model?.available === false) {
       throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
@@ -1642,9 +1652,7 @@ export class AgentRuntimeDomain {
         });
       } else if (
         !downloadableAiModelIdPattern.test(effectiveProfile.modelId) &&
-        !aiModelRegistry.some(
-          (model) => model.id === effectiveProfile.modelId && model.available
-        ) &&
+        this.deps.resolveCatalogModel(effectiveProfile.modelId)?.available !== true &&
         effectiveProfile.modelId !== "sokoclaw-local"
       ) {
         issues.push({
@@ -1971,8 +1979,7 @@ export class AgentRuntimeDomain {
       ].join("\n");
     }
 
-    const modelName =
-      aiModelRegistry.find((model) => model.id === binding.modelId)?.label ?? binding.modelId;
+    const modelName = this.deps.resolveCatalogModel(binding.modelId)?.label ?? binding.modelId;
     return [
       `I couldn’t reach ${modelName}, but your message is saved.`,
       "To continue:",
@@ -2501,7 +2508,10 @@ export class AgentRuntimeDomain {
       audience: callerAudience,
       limit: 6,
       intent: parserResult.intent,
-      characterBudget: contextCharacterBudgetForModel(runtimeModelId)
+      characterBudget: contextCharacterBudgetForModel(
+        runtimeModelId,
+        this.deps.resolveCatalogModel(runtimeModelId)
+      )
     });
     const runtimeMemory = shopRuntime.memory.ownerCorrectionsEnabled
       ? this.ownerCorrectionsForBusiness(input.businessId)
@@ -2883,7 +2893,7 @@ export class AgentRuntimeDomain {
   }
 
   private requireCanonicalAiModel(modelId: string): AiModelSummary {
-    const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
+    const model = this.deps.resolveCatalogModel(modelId);
     if (model === undefined) {
       throw new Cp2Error(404, "MODEL_NOT_FOUND", "The requested model was not found.");
     }
@@ -2961,7 +2971,10 @@ export class AgentRuntimeDomain {
         ? null
         : this.deps.resolveNativeRuntimeBinding(conversationId, businessId);
     const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
-      this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId
+      this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId,
+      this.deps.resolveCatalogModel(
+        this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId
+      )
     );
     const requestedModelId = storedAgentProfile.modelId;
     const activeModelId =
@@ -3008,7 +3021,8 @@ export class AgentRuntimeDomain {
       input.profile.modelId,
       this.activeAiModels.get(input.businessId)?.modelId,
       defaultAiModelId,
-      ...aiModelRegistry
+      ...this.deps
+        .listModelCatalog()
         .filter((model) => model.available && model.capabilities.includes("tool-routing"))
         .sort((left, right) => Number(right.recommended) - Number(left.recommended))
         .map((model) => model.id)
@@ -3019,7 +3033,7 @@ export class AgentRuntimeDomain {
       checkedAt: string;
     }> = [];
     for (const modelId of preferredIds) {
-      const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
+      const model = this.deps.resolveCatalogModel(modelId);
       if (model === undefined || !model.available || !model.capabilities.includes("tool-routing")) {
         continue;
       }
@@ -3092,7 +3106,8 @@ export class AgentRuntimeDomain {
       business: this.deps.requireBusiness(businessId),
       modelId: this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId,
       updatedAt: now.toISOString(),
-      updatedBy: "00000000-0000-4000-8000-000000000000"
+      updatedBy: "00000000-0000-4000-8000-000000000000",
+      agentDefinition: this.deps.resolveAgentCatalogEntry(defaultAgentDefinitionId)
     });
   }
 

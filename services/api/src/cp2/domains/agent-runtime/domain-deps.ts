@@ -1,5 +1,7 @@
 import type {
+  AgentDefinition,
   AgentRouteSummary,
+  AiModelSummary,
   AuthenticatedActorView,
   BuyCheckoutItemInput,
   BuyFeedSummary,
@@ -40,6 +42,16 @@ import type { ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
 import type { SessionRecord } from "../../store.js";
 
 export interface AgentRuntimeDomainDeps {
+  // DB-hosted model catalog (see infra/db/migrations/071_platform_catalog.sql,
+  // Cp2Store.modelCatalog) - the source of truth every aiModelRegistry.find()/.filter() call in
+  // this domain used to read directly now goes through these instead, so a platform operator's
+  // catalog edit is visible without a redeploy.
+  listModelCatalog: () => AiModelSummary[];
+  resolveCatalogModel: (modelId: string) => AiModelSummary | undefined;
+  // Same for the built-in agent template catalog (Cp2Store.agentCatalog) - always resolves to
+  // something usable (falls back to the hardcoded defaultAgentDefinition), since a business must
+  // always be able to bootstrap a default agent profile even if the catalog row was deleted.
+  resolveAgentCatalogEntry: (agentDefinitionId: string) => AgentDefinition;
   requireAuthorizedSession: (
     sessionId: string | null,
     businessId: string,

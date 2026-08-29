@@ -70,6 +70,7 @@ import type {
   AgentContextSource,
   AgentDefinitionId,
   AgentEvaluationPolicy,
+  AgentDefinition,
   AgentInstructions,
   AgentMemoryPolicy,
   AgentModelBindingPermissions,
@@ -454,6 +455,7 @@ export {
   openaiFastContextWindow,
   openaiReasoningContextWindow,
   aiModelRegistry,
+  computeModelAvailability,
   defaultContextCharacterBudget,
   contextWindowCharacterShare,
   estimatedCharactersPerToken,
@@ -466,8 +468,14 @@ export function createDefaultBusinessAgentProfile(input: {
   modelId: string;
   updatedAt: string;
   updatedBy: string;
+  // Resolved from the DB-hosted agent catalog (Cp2Store.agentCatalog) by the caller, falling back
+  // to the hardcoded defaultAgentDefinition when the catalog row is missing - see
+  // AgentRuntimeDomainDeps.resolveAgentCatalogEntry. Defaults to that same hardcoded constant so
+  // every existing direct caller/test keeps working unchanged.
+  agentDefinition?: AgentDefinition;
 }): BusinessAgentProfileSummary {
-  const generalInstruction = defaultAgentDefinition.instructions;
+  const definition = input.agentDefinition ?? defaultAgentDefinition;
+  const generalInstruction = definition.instructions;
   const toolNames = Object.keys(runtimeToolRegistry) as RuntimeToolName[];
   return {
     businessId: input.business.id,
@@ -476,21 +484,18 @@ export function createDefaultBusinessAgentProfile(input: {
     agentId: input.business.id,
     runtimeVersion: 1,
     createdAt: input.updatedAt,
-    agentDefinitionId: defaultAgentDefinitionId,
-    name: defaultAgentDefinition.displayName,
-    description: defaultAgentDefinition.description,
+    agentDefinitionId: definition.id,
+    name: definition.displayName,
+    description: definition.description,
     modelId: input.modelId,
-    role: defaultAgentDefinition.role,
+    role: definition.role,
     language: input.business.language,
-    personality: defaultAgentDefinition.personality,
-    personalityConfig: defaultAgentPersonality(
-      input.business.language,
-      defaultAgentDefinition.personality
-    ),
+    personality: definition.personality,
+    personalityConfig: defaultAgentPersonality(input.business.language, definition.personality),
     instructions: generalInstruction,
     instructionPolicy: defaultAgentInstructions(generalInstruction),
-    knowledge: defaultAgentDefinition.knowledge,
-    tools: [...defaultAgentDefinition.tools],
+    knowledge: definition.knowledge,
+    tools: [...definition.tools],
     skillBindings: defaultAgentSkillBindings(toolNames),
     integrations: ["Soko.market storefront"],
     contextScripts: [...defaultBusinessAgentContextScripts],

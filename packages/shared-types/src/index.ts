@@ -3545,7 +3545,7 @@ export interface AgentPersonality {
 }
 
 export type AgentDefinitionId =
-  "builtin:shopkeeper" | `github:${string}/${string}` | `huggingface:${string}/${string}`;
+  `builtin:${string}` | `github:${string}/${string}` | `huggingface:${string}/${string}`;
 export type OssAgentSource = "github" | "huggingface";
 export type OssAgentRuntime =
   "docker" | "gradio" | "javascript" | "python" | "typescript" | "unknown";
@@ -3630,11 +3630,13 @@ export const defaultAgentDefinition: AgentDefinition = {
 };
 
 export function isAgentDefinitionId(value: unknown): value is AgentDefinitionId {
+  if (typeof value !== "string" || value.length > 220) return false;
   return (
-    value === defaultAgentDefinitionId ||
-    (typeof value === "string" &&
-      value.length <= 220 &&
-      /^(?:github|huggingface):[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(value))
+    // builtin:<slug> covers defaultAgentDefinitionId ("builtin:shopkeeper") and any other built-in
+    // fallback template hosted in cp2_agent_catalog (see services/api/src/cp2/store.ts
+    // upsertAgentCatalogEntry) - a platform operator can add more without a code change.
+    /^builtin:[a-z0-9][a-z0-9_-]{0,79}$/.test(value) ||
+    /^(?:github|huggingface):[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(value)
   );
 }
 

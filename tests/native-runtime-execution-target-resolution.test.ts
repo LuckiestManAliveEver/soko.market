@@ -297,7 +297,10 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
     // The native binding's only role targets browser-local, which a server request can never
     // execute - eligibleExecutionTargets filters it out entirely, leaving no native candidate. A
     // still-usable legacy binding must get the request instead of a hard RUNTIME_MODELS_UNAVAILABLE.
-    const localOnly = nativeResolution({ configuredTarget: "browser-local", hostType: "browser-local" });
+    const localOnly = nativeResolution({
+      configuredTarget: "browser-local",
+      hostType: "browser-local"
+    });
 
     const requireAdapter = vi.fn(() => fakeAdapter("backend"));
     const result = resolveNativeRuntimeModelProvider({
@@ -316,7 +319,10 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
   });
 
   it("still terminates once both the native graph and the legacy binding are exhausted", () => {
-    const localOnly = nativeResolution({ configuredTarget: "browser-local", hostType: "browser-local" });
+    const localOnly = nativeResolution({
+      configuredTarget: "browser-local",
+      hostType: "browser-local"
+    });
     const requireAdapter = vi.fn(() => fakeAdapter("backend"));
     const binding = legacyBinding({ executionTarget: "backend" });
     const firstAttempt = resolveNativeRuntimeModelProvider({

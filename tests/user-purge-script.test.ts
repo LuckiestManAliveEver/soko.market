@@ -25,9 +25,12 @@ describe("registered-user purge script", () => {
     // bindings (docs/architecture/native-runtime-bindings.md) added the six
     // cp2_native_runtime_*/cp2_native_execution_hosts/cp2_native_model_installations collections,
     // to postgres-store.ts's normalizedCollections - each must be classified DELETE here too, or an
-    // account purge would silently leave that user's data behind.
-    expect(plan.size).toBe(163);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(158);
+    // account purge would silently leave that user's data behind. cp2_model_catalog/
+    // cp2_agent_catalog/cp2_platform_operators (infra/db/migrations/071_platform_catalog.sql) are
+    // global deployment configuration, not user data, and are therefore explicitly preserved;
+    // cp2_platform_operators remains DELETE because its grants belong to purged accounts.
+    expect(plan.size).toBe(166);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(159);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")
@@ -38,13 +41,19 @@ describe("registered-user purge script", () => {
         "database_backup_runs",
         "database_health_checks",
         "database_restore_drills",
+        "cp2_agent_catalog",
+        "cp2_model_catalog",
         "identity_providers",
         "soko_schema_migrations"
       ].sort()
     );
     expect(normalizedTables.length).toBeGreaterThan(0);
     for (const tableName of normalizedTables) {
-      expect(plan.get(tableName), `${tableName} must be deleted`).toBe("DELETE");
+      const expectedClassification =
+        tableName === "cp2_model_catalog" || tableName === "cp2_agent_catalog"
+          ? "PRESERVE"
+          : "DELETE";
+      expect(plan.get(tableName), `${tableName} must be classified`).toBe(expectedClassification);
     }
   });
 

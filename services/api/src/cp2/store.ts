@@ -9,7 +9,13 @@ import {
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { verifyAuthenticationResponse } from "@simplewebauthn/server";
 import type { BusinessEvent } from "@soko/event-core";
-import { isAccountSyncCollection, isAgentDefinitionId } from "@soko/shared-types";
+import { runtimeToolRegistry } from "@soko/tool-core";
+import {
+  defaultAgentDefinition,
+  defaultAgentDefinitionId,
+  isAccountSyncCollection,
+  isAgentDefinitionId
+} from "@soko/shared-types";
 import { Cp2Error, assertValid } from "./cp2-error.js";
 import { roundMoney } from "./money.js";
 import {
@@ -53,6 +59,9 @@ import {
 } from "./domains/messaging/shared.js";
 import { AgentRuntimeDomain } from "./domains/agent-runtime/store.js";
 import {
+  aiModelRegistry,
+  computeModelAvailability,
+  defaultAiModelId,
   buildRuntimeModelPrompt,
   cloneAgentContextSource,
   cloneAgentModelBinding,
@@ -96,6 +105,7 @@ import {
 import type {
   AccountSummary,
   AgentContextSource,
+  AgentDefinition,
   AiModelSummary,
   AgentEvaluationEvent,
   AgentOwnerCorrection,
@@ -368,6 +378,21 @@ export type {
   DeviceRecoveryCredentialRecord
 } from "./domains/device-bootstrap/shared.js";
 
+/**
+ * A deployment-level operator grant, distinct from every existing business-scoped role
+ * (BusinessRole is always "who can do what within one shop"). Membership is the sole source of
+ * authority for the platform model/agent catalog CRUD routes and is only ever written by
+ * services/api/scripts/grant-platform-operator.mjs - no API route can create, extend, or
+ * self-grant one. `id` mirrors `accountId` so this fits the generic normalizedCollections
+ * entity_id contract (services/api/src/cp2/postgres-store.ts) without a bespoke loader.
+ */
+export interface PlatformOperatorGrant {
+  id: string;
+  accountId: string;
+  grantedAt: string;
+  grantedBy: string;
+}
+
 export interface SessionRecord extends SessionSummary {
   accountId: string;
   userId: string;
@@ -536,6 +561,9 @@ export interface Cp2Snapshot {
   nativeModelInstallations?: NativeModelInstallationSummary[];
   nativeRuntimeBindings?: NativeRuntimeBindingSummary[];
   nativeRuntimeBindingModels?: NativeRuntimeBindingModelSummary[];
+  modelCatalog?: AiModelSummary[];
+  agentCatalog?: AgentDefinition[];
+  platformOperators?: PlatformOperatorGrant[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
   productFieldSchemas: ProductFieldSchemaSummary[];
@@ -971,6 +999,10 @@ export class Cp2Store {
         : { workspaceDeliveryMaxFileBytes: this.options.workspaceDeliveryMaxFileBytes })
     });
     this.agentRuntimeDomain = new AgentRuntimeDomain({
+      listModelCatalog: () => this.listModelCatalog(),
+      resolveCatalogModel: (modelId) => this.resolveCatalogModel(modelId),
+      resolveAgentCatalogEntry: (agentDefinitionId) =>
+        cloneAgentCatalogEntry(this.agentCatalog.get(agentDefinitionId) ?? defaultAgentDefinition),
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
         this.requireAuthorizedActor(sessionId, businessId, permission, now),
       requirePinVerifiedSession: (sessionId, now) => this.requireAuthenticatedActor(sessionId, now),
@@ -1138,6 +1170,7 @@ export class Cp2Store {
         ? {}
         : { runtimeModelProvider: this.options.runtimeModelProvider })
     });
+    this.seedCatalogDefaultsIfEmpty();
   }
 
   private readonly accounts = new Map<string, AccountSummary>();
@@ -1180,6 +1213,15 @@ export class Cp2Store {
   // comment for why).
   private readonly agentRuntimeDomain: AgentRuntimeDomain;
   private readonly nativeRuntimeBindings = new NativeRuntimeBindingStore();
+  // DB-hosted model/agent catalog (see infra/db/migrations/071_platform_catalog.sql) and the
+  // platform-operator grants that authorize editing it - see requirePlatformOperator,
+  // listModelCatalog/upsertModelCatalogEntry/removeModelCatalogEntry, and the agent-catalog
+  // equivalents. seedCatalogDefaultsIfEmpty supplies modelCatalog/agentCatalog from the hardcoded
+  // aiModelRegistry/defaultAgentDefinition bootstrap content in memory whenever a fresh store or
+  // an unexpectedly empty loaded collection needs a safe fallback.
+  private readonly modelCatalog = new Map<string, AiModelSummary>();
+  private readonly agentCatalog = new Map<string, AgentDefinition>();
+  private readonly platformOperators = new Map<string, PlatformOperatorGrant>();
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly syncChanges: SyncChange[] = [];
   private readonly nextSyncSequenceByAccount = new Map<string, number>();
@@ -3753,7 +3795,10 @@ export class Cp2Store {
       audience: "customer",
       limit: 6,
       intent: parserResult.intent,
-      characterBudget: contextCharacterBudgetForModel(activeModelId)
+      characterBudget: contextCharacterBudgetForModel(
+        activeModelId,
+        this.resolveCatalogModel(activeModelId)
+      )
     });
     const assembled = assembleAgentInferenceMessage({
       runtime: shopRuntime,
@@ -5413,6 +5458,9 @@ export class Cp2Store {
       nativeModelInstallations: [...this.nativeRuntimeBindings.installationsMap.values()],
       nativeRuntimeBindings: [...this.nativeRuntimeBindings.bindingsMap.values()],
       nativeRuntimeBindingModels: [...this.nativeRuntimeBindings.bindingModelsMap.values()],
+      modelCatalog: [...this.modelCatalog.values()].map(cloneModelCatalogEntry),
+      agentCatalog: [...this.agentCatalog.values()].map(cloneAgentCatalogEntry),
+      platformOperators: [...this.platformOperators.values()],
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpTokensDomain.mcpAccessTokensMap.values()],
       productFieldSchemas: [...this.salesDomain.productFieldSchemasMap.values()],
@@ -5505,6 +5553,9 @@ export class Cp2Store {
     this.marketplaceIntroStates.clear();
     this.agentRuntimeDomain.clear();
     this.nativeRuntimeBindings.clear();
+    this.modelCatalog.clear();
+    this.agentCatalog.clear();
+    this.platformOperators.clear();
     this.quarantinedBusinessIds.clear();
     this.syncChanges.splice(0, this.syncChanges.length);
     this.nextSyncSequenceByAccount.clear();
@@ -5596,6 +5647,17 @@ export class Cp2Store {
         state
       );
     }
+
+    for (const model of snapshot.modelCatalog ?? []) {
+      this.modelCatalog.set(model.id, cloneModelCatalogEntry(model));
+    }
+    for (const agent of snapshot.agentCatalog ?? []) {
+      this.agentCatalog.set(agent.id, cloneAgentCatalogEntry(agent));
+    }
+    for (const grant of snapshot.platformOperators ?? []) {
+      this.platformOperators.set(grant.accountId, grant);
+    }
+    this.seedCatalogDefaultsIfEmpty();
 
     for (const request of snapshot.accountDeletionRequests ?? []) {
       if (request.status === "QUARANTINED") {
@@ -5850,6 +5912,257 @@ export class Cp2Store {
     }
 
     this.auditEvents.push(...snapshot.auditEvents.map((event) => createAuditEvent(event)));
+  }
+
+  private seedCatalogDefaultsIfEmpty(): void {
+    if (this.modelCatalog.size === 0) {
+      for (const model of aiModelRegistry) {
+        this.modelCatalog.set(model.id, cloneModelCatalogEntry(model));
+      }
+    }
+    if (this.agentCatalog.size === 0) {
+      this.agentCatalog.set(
+        defaultAgentDefinitionId,
+        cloneAgentCatalogEntry(defaultAgentDefinition)
+      );
+    }
+  }
+
+  /**
+   * Platform-operator authority is a deployment-level concept, distinct from every business-scoped
+   * role in this codebase (see PlatformOperatorGrant). It is the only thing that can write to the
+   * model/agent catalog; there is no API path that can grant it - only
+   * services/api/scripts/grant-platform-operator.mjs, run directly against the database.
+   */
+  private requirePlatformOperator(sessionId: string | null, now: Date): AuthSessionView {
+    const session = this.requirePinVerifiedSession(sessionId, now);
+    this.requireAccountNotPendingDeletion(session.account.id, now);
+    if (!this.platformOperators.has(session.account.id)) {
+      throw new Cp2Error(
+        403,
+        "platform_operator_required",
+        "Platform operator access is required for this action."
+      );
+    }
+    return session;
+  }
+
+  /** The DB-hosted model catalog, with env-gated provider availability applied. Any device already
+   *  reaches this through GET /v1/ai-models (listAiModels below). */
+  listModelCatalog(): AiModelSummary[] {
+    return [...this.modelCatalog.values()]
+      .map((model) => this.effectiveCatalogModel(model))
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }
+
+  listPlatformModelCatalog(sessionId: string | null, now = new Date()): AiModelSummary[] {
+    this.requirePinVerifiedSession(sessionId, now);
+    return this.listModelCatalog();
+  }
+
+  private effectiveCatalogModel(model: AiModelSummary): AiModelSummary {
+    return {
+      ...cloneModelCatalogEntry(model),
+      available: computeModelAvailability(model.id, model.available)
+    };
+  }
+
+  private resolveCatalogModel(modelId: string): AiModelSummary | undefined {
+    const stored = this.modelCatalog.get(modelId);
+    if (stored === undefined) return undefined;
+    return this.effectiveCatalogModel(stored);
+  }
+
+  upsertModelCatalogEntry(input: {
+    sessionId: string | null;
+    model: AiModelSummary;
+    now?: Date;
+  }): AiModelSummary {
+    const now = input.now ?? new Date();
+    const session = this.requirePlatformOperator(input.sessionId, now);
+    const model = input.model;
+    if (model.id.trim() === "" || model.id.length > 220) {
+      throw new Cp2Error(400, "model_catalog_entry_invalid", "Model id is invalid.");
+    }
+    if (model.label.trim() === "" || model.label.length > 200) {
+      throw new Cp2Error(400, "model_catalog_entry_invalid", "Model label is invalid.");
+    }
+    if (
+      model.source !== "huggingface" &&
+      model.source !== "github" &&
+      model.source !== "builtin" &&
+      model.source !== "hosted"
+    ) {
+      throw new Cp2Error(400, "model_catalog_entry_invalid", "Model source is invalid.");
+    }
+    if (model.format !== "GGUF" && model.format !== "remote") {
+      throw new Cp2Error(400, "model_catalog_entry_invalid", "Model format is invalid.");
+    }
+    if (
+      !Array.isArray(model.capabilities) ||
+      model.capabilities.length > 40 ||
+      model.capabilities.some((capability) => invalidBoundedText(capability, 100))
+    ) {
+      throw new Cp2Error(400, "model_catalog_entry_invalid", "Model capabilities are invalid.");
+    }
+    if (
+      invalidNullableNonNegativeInteger(model.fileSizeBytes) ||
+      invalidNullablePositiveNumber(model.minimumMemoryGb) ||
+      invalidNullablePositiveInteger(model.contextWindow)
+    ) {
+      throw new Cp2Error(400, "model_catalog_entry_invalid", "Model requirements are invalid.");
+    }
+    const created = !this.modelCatalog.has(model.id);
+    this.modelCatalog.set(model.id, cloneModelCatalogEntry(model));
+    this.recordAuditEvent({
+      type: created ? "platform_catalog.model_created" : "platform_catalog.model_updated",
+      aggregateType: "model_catalog_entry",
+      aggregateId: model.id,
+      actorId: session.account.id,
+      occurredAt: now.toISOString(),
+      payload: { modelId: model.id, label: model.label, source: model.source }
+    });
+    return this.resolveCatalogModel(model.id) as AiModelSummary;
+  }
+
+  removeModelCatalogEntry(input: { sessionId: string | null; modelId: string; now?: Date }): void {
+    const now = input.now ?? new Date();
+    const session = this.requirePlatformOperator(input.sessionId, now);
+    if (input.modelId === defaultAiModelId || input.modelId === "sokoclaw-local") {
+      throw new Cp2Error(
+        409,
+        "model_catalog_entry_protected",
+        "This catalog entry is a required runtime fallback and cannot be removed."
+      );
+    }
+    if (!this.modelCatalog.delete(input.modelId)) {
+      throw new Cp2Error(404, "model_not_found", "The requested model was not found.");
+    }
+    this.recordAuditEvent({
+      type: "platform_catalog.model_removed",
+      aggregateType: "model_catalog_entry",
+      aggregateId: input.modelId,
+      actorId: session.account.id,
+      occurredAt: now.toISOString(),
+      payload: { modelId: input.modelId }
+    });
+  }
+
+  /** The DB-hosted built-in agent template catalog. External GitHub/Hugging Face agent discovery
+   *  is unaffected - this is only the safe-fallback template(s) used when that is unavailable. */
+  listAgentCatalog(): AgentDefinition[] {
+    return [...this.agentCatalog.values()]
+      .map(cloneAgentCatalogEntry)
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+  }
+
+  listPlatformAgentCatalog(sessionId: string | null, now = new Date()): AgentDefinition[] {
+    this.requirePinVerifiedSession(sessionId, now);
+    return this.listAgentCatalog();
+  }
+
+  upsertAgentCatalogEntry(input: {
+    sessionId: string | null;
+    agent: AgentDefinition;
+    now?: Date;
+  }): AgentDefinition {
+    const now = input.now ?? new Date();
+    const session = this.requirePlatformOperator(input.sessionId, now);
+    const agent = input.agent;
+    if (!isAgentDefinitionId(agent.id) || !agent.id.startsWith("builtin:")) {
+      throw new Cp2Error(
+        400,
+        "agent_catalog_entry_invalid",
+        "Agent catalog entries must use a builtin: id."
+      );
+    }
+    if (agent.displayName.trim() === "" || agent.displayName.length > 200) {
+      throw new Cp2Error(400, "agent_catalog_entry_invalid", "Agent display name is invalid.");
+    }
+    if (agent.instructions.trim() === "" || agent.instructions.length > 20_000) {
+      throw new Cp2Error(400, "agent_catalog_entry_invalid", "Agent instructions are invalid.");
+    }
+    if (
+      !Array.isArray(agent.tools) ||
+      agent.tools.length > 40 ||
+      agent.tools.some((tool) => invalidBoundedText(tool, 200))
+    ) {
+      throw new Cp2Error(400, "agent_catalog_entry_invalid", "Agent tools are invalid.");
+    }
+    if (
+      !Number.isFinite(agent.minimumMemoryGb) ||
+      agent.minimumMemoryGb <= 0 ||
+      !Number.isSafeInteger(agent.recommendedContextTokens) ||
+      agent.recommendedContextTokens <= 0 ||
+      !Array.isArray(agent.skillIds) ||
+      agent.skillIds.length > Object.keys(runtimeToolRegistry).length ||
+      agent.skillIds.some((skillId) => !(skillId in runtimeToolRegistry))
+    ) {
+      throw new Cp2Error(
+        400,
+        "agent_catalog_entry_invalid",
+        "Agent runtime requirements are invalid."
+      );
+    }
+    const created = !this.agentCatalog.has(agent.id);
+    this.agentCatalog.set(agent.id, cloneAgentCatalogEntry(agent));
+    this.recordAuditEvent({
+      type: created ? "platform_catalog.agent_created" : "platform_catalog.agent_updated",
+      aggregateType: "agent_catalog_entry",
+      aggregateId: agent.id,
+      actorId: session.account.id,
+      occurredAt: now.toISOString(),
+      payload: { agentDefinitionId: agent.id, displayName: agent.displayName }
+    });
+    return cloneAgentCatalogEntry(agent);
+  }
+
+  removeAgentCatalogEntry(input: {
+    sessionId: string | null;
+    agentDefinitionId: string;
+    now?: Date;
+  }): void {
+    const now = input.now ?? new Date();
+    const session = this.requirePlatformOperator(input.sessionId, now);
+    if (input.agentDefinitionId === defaultAgentDefinitionId) {
+      throw new Cp2Error(
+        409,
+        "agent_catalog_entry_protected",
+        "This catalog entry is the required runtime fallback and cannot be removed."
+      );
+    }
+    if (!this.agentCatalog.delete(input.agentDefinitionId)) {
+      throw new Cp2Error(404, "agent_not_found", "The requested agent was not found.");
+    }
+    this.recordAuditEvent({
+      type: "platform_catalog.agent_removed",
+      aggregateType: "agent_catalog_entry",
+      aggregateId: input.agentDefinitionId,
+      actorId: session.account.id,
+      occurredAt: now.toISOString(),
+      payload: { agentDefinitionId: input.agentDefinitionId }
+    });
+  }
+
+  grantPlatformOperator(input: {
+    accountId: string;
+    grantedBy: string;
+    now?: Date;
+  }): PlatformOperatorGrant {
+    const now = input.now ?? new Date();
+    this.requireAccount(input.accountId);
+    const grant: PlatformOperatorGrant = {
+      id: input.accountId,
+      accountId: input.accountId,
+      grantedAt: now.toISOString(),
+      grantedBy: input.grantedBy
+    };
+    this.platformOperators.set(input.accountId, grant);
+    return grant;
+  }
+
+  revokePlatformOperator(accountId: string): boolean {
+    return this.platformOperators.delete(accountId);
   }
 
   beginRecovery(input: {
@@ -9524,6 +9837,30 @@ function constantTimeHashMatches(actual: string | undefined, expected: string): 
 function normalizeDeviceSessionValue(value: string, fallback: string): string {
   const normalized = value.trim().slice(0, 200);
   return normalized.length > 0 ? normalized : fallback;
+}
+
+function cloneModelCatalogEntry(model: AiModelSummary): AiModelSummary {
+  return { ...model, capabilities: [...model.capabilities] };
+}
+
+function cloneAgentCatalogEntry(agent: AgentDefinition): AgentDefinition {
+  return { ...agent, tools: [...agent.tools], skillIds: [...agent.skillIds] };
+}
+
+function invalidBoundedText(value: unknown, maximumLength: number): boolean {
+  return typeof value !== "string" || value.trim().length === 0 || value.length > maximumLength;
+}
+
+function invalidNullableNonNegativeInteger(value: number | null): boolean {
+  return value !== null && (!Number.isSafeInteger(value) || value < 0);
+}
+
+function invalidNullablePositiveInteger(value: number | null): boolean {
+  return value !== null && (!Number.isSafeInteger(value) || value <= 0);
+}
+
+function invalidNullablePositiveNumber(value: number | null): boolean {
+  return value !== null && (!Number.isFinite(value) || value <= 0);
 }
 
 function defaultDisplayName(destination: string): string {

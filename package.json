@@ -43,6 +43,7 @@
     "db:backup": "pnpm --filter @soko/api db:backup",
     "db:backup:verify": "pnpm --filter @soko/api db:backup:verify",
     "db:backfill-native-runtime": "pnpm --filter @soko/api db:backfill-native-runtime",
+    "db:grant-platform-operator": "pnpm --filter @soko/api db:grant-platform-operator",
     "db:health": "pnpm --filter @soko/api db:health",
     "db:migrate": "pnpm --filter @soko/api db:migrate",
     "db:purge-shops": "pnpm --filter @soko/api db:purge-shops",

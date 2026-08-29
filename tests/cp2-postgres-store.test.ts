@@ -7,6 +7,7 @@ import {
   ACCOUNT_SYNC_COLLECTIONS,
   isAccountSyncCollection,
   type AgentRouteSummary,
+  type AiModelSummary,
   type BetaFeatureFlagSummary,
   type BetaReadinessReportSummary,
   type BetaSupportTicketSummary,
@@ -120,6 +121,82 @@ describePostgres("CP2 Postgres store", () => {
       }
     }
   );
+
+  it("persists platform catalog upserts and removals through the Postgres proxy", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const phone = `+254799${Date.now().toString().slice(-6)}`;
+    const modelId = `platform-catalog-persistence-${randomUUID()}`;
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    let accountId: string | null = null;
+
+    try {
+      const actor = store.continueWithChannelPin({
+        channel: "phone",
+        destination: phone,
+        pin: "7421"
+      });
+      accountId = actor.account.id;
+      await store.flush();
+      await store.close();
+
+      const grant = {
+        id: actor.account.id,
+        accountId: actor.account.id,
+        grantedAt: new Date().toISOString(),
+        grantedBy: "cp2-postgres-store-test"
+      };
+      await pool.query(
+        `insert into cp2_platform_operators (entity_id, account_id, record, updated_at)
+         values ($1, $1, $2::jsonb, now())`,
+        [actor.account.id, JSON.stringify(grant)]
+      );
+
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const model: AiModelSummary = {
+        id: modelId,
+        label: "Persistence regression model",
+        provider: "local",
+        description: "Proves platform catalog writes reach PostgreSQL.",
+        capabilities: ["chat"],
+        available: true,
+        source: "builtin",
+        format: "remote",
+        license: null,
+        licenseUrl: null,
+        modelCardUrl: null,
+        downloadUrl: null,
+        fileName: null,
+        fileSizeBytes: null,
+        minimumMemoryGb: null,
+        recommended: false,
+        contextWindow: null
+      };
+      store.upsertModelCatalogEntry({ sessionId: actor.session.id, model });
+      await store.flush();
+
+      const persisted = await pool.query<{ record: AiModelSummary }>(
+        "select record from cp2_model_catalog where entity_id = $1",
+        [modelId]
+      );
+      expect(persisted.rows[0]?.record).toMatchObject({ id: modelId, label: model.label });
+
+      store.removeModelCatalogEntry({ sessionId: actor.session.id, modelId });
+      await store.flush();
+      const removed = await pool.query(
+        "select record from cp2_model_catalog where entity_id = $1",
+        [modelId]
+      );
+      expect(removed.rows).toHaveLength(0);
+    } finally {
+      await store.close().catch(() => undefined);
+      if (accountId !== null) {
+        await pool.query("delete from cp2_platform_operators where entity_id = $1", [accountId]);
+      }
+      await pool.end();
+    }
+  }, 20_000);
 
   it("persists passkey ceremony creation without replacing the application snapshot", async () => {
     expect(databaseUrl).toBeDefined();

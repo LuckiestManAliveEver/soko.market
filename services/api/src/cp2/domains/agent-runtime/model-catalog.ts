@@ -102,6 +102,36 @@ export const openaiReasoningContextWindow = readBoundedSecurityInteger(
   1_000,
   2_000_000
 );
+
+/**
+ * Whether a hosted-provider catalog entry is actually usable in this deployment right now. Deploy
+ * configuration (env vars), not catalog data, decides this for the two OpenAI profiles - a
+ * platform operator editing the DB-hosted catalog (see Cp2Store.modelCatalog) can change a model's
+ * label/description/capabilities, but never make an unconfigured provider usable, and this
+ * computation must be applied identically whether the entry came from the bootstrap array below or
+ * a catalog row loaded from cp2_model_catalog. Every other catalog entry's availability is exactly
+ * its stored `available` flag - operator-controlled, not env-controlled.
+ */
+export function computeModelAvailability(modelId: string, storedAvailable: boolean): boolean {
+  if (modelId === "openai-fast") {
+    return (
+      storedAvailable &&
+      configuredOpenAiModelsAvailable &&
+      (configuredCloudModelIds.has("openai-fast") ||
+        configuredCloudModelIds.has(process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini"))
+    );
+  }
+  if (modelId === "openai-reasoning") {
+    return (
+      storedAvailable &&
+      configuredOpenAiModelsAvailable &&
+      (configuredCloudModelIds.has("openai-reasoning") ||
+        configuredCloudModelIds.has(process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2"))
+    );
+  }
+  return storedAvailable;
+}
+
 export const aiModelRegistry: AiModelSummary[] = [
   {
     id: "smollm2-360m-android",
@@ -255,10 +285,7 @@ export const aiModelRegistry: AiModelSummary[] = [
     provider: "openai",
     description: "Fast hosted reasoning for connected shops.",
     capabilities: ["chat", "tool-routing"],
-    available:
-      configuredOpenAiModelsAvailable &&
-      (configuredCloudModelIds.has("openai-fast") ||
-        configuredCloudModelIds.has(process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini")),
+    available: computeModelAvailability("openai-fast", true),
     source: "hosted",
     format: "remote",
     license: null,
@@ -277,10 +304,7 @@ export const aiModelRegistry: AiModelSummary[] = [
     provider: "openai",
     description: "Higher-reasoning hosted profile for complex business tasks.",
     capabilities: ["chat", "reasoning", "tool-routing"],
-    available:
-      configuredOpenAiModelsAvailable &&
-      (configuredCloudModelIds.has("openai-reasoning") ||
-        configuredCloudModelIds.has(process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2")),
+    available: computeModelAvailability("openai-reasoning", true),
     source: "hosted",
     format: "remote",
     license: null,
@@ -309,18 +333,27 @@ export const defaultContextCharacterBudget = 6_000;
 export const contextWindowCharacterShare = 0.25;
 export const estimatedCharactersPerToken = 4;
 
-export function contextCharacterBudgetForModel(modelId: string): number {
+export function contextCharacterBudgetForModel(
+  modelId: string,
+  catalogModel?: AiModelSummary
+): number {
   const runtimeModel = resolveRuntimeModel(modelId);
   const contextWindow =
-    runtimeModel?.contextWindow ??
-    aiModelRegistry.find((candidate) => candidate.id === modelId)?.contextWindow ??
-    null;
+    catalogModel === undefined
+      ? (runtimeModel?.contextWindow ??
+        aiModelRegistry.find((candidate) => candidate.id === modelId)?.contextWindow ??
+        null)
+      : catalogModel.contextWindow;
   if (contextWindow === null) return defaultContextCharacterBudget;
   return Math.floor(contextWindow * estimatedCharactersPerToken * contextWindowCharacterShare);
 }
 
-export function resolveDefaultDeviceModelId(preferredModelId: string): string {
-  const preferredModel = aiModelRegistry.find((model) => model.id === preferredModelId);
+export function resolveDefaultDeviceModelId(
+  preferredModelId: string,
+  catalogModel?: AiModelSummary
+): string {
+  const preferredModel =
+    catalogModel ?? aiModelRegistry.find((model) => model.id === preferredModelId);
   if (preferredModel?.source === "hosted" && preferredModel.available) {
     return preferredModel.id;
   }
