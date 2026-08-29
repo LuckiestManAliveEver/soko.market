@@ -11,8 +11,11 @@ import type {
   AgentSkillBinding,
   BuyResultSourceKind,
   ConversationMessageSummary,
+  ModelExecutionTarget,
+  ModelProviderId,
   PasskeySummary,
-  ProductFieldInputType
+  ProductFieldInputType,
+  RuntimeModelProviderName
 } from "@soko/shared-types";
 
 import { type PhoneCountryOption } from "./PhoneNumberField";
@@ -125,7 +128,7 @@ export interface MarketplaceIntroStateSummary {
 export interface AiModelSummary {
   id: string;
   label: string;
-  provider: "local" | "openai";
+  provider: ModelProviderId;
   description: string;
   capabilities: string[];
   available: boolean;
@@ -139,6 +142,7 @@ export interface AiModelSummary {
   fileSizeBytes: number | null;
   minimumMemoryGb: number | null;
   recommended: boolean;
+  runtimeAvailability?: Partial<Record<ModelExecutionTarget, "configured" | "unconfigured">>;
 }
 
 export interface ActiveAiModelSummary {
@@ -1145,16 +1149,18 @@ export interface RuntimeTurnResult {
     status: "completed" | "needs_confirmation" | "clarifying" | "blocked" | "rate_limited";
     response: string;
     model: {
-      provider: "browser" | "llama.cpp" | "ollama" | "openai" | "test" | null;
+      provider: RuntimeModelProviderName | null;
       status: "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
       fallbackUsed: boolean;
       errorCode: string | null;
       bindingId?: string;
       modelId?: string;
-      executionTarget?:
-        "backend" | "browser-local" | "installed-app" | "remote-shop-device" | "openai";
+      executionTarget?: ModelExecutionTarget;
       durationMs?: number | null;
       fallbackReason?: string | null;
+      fallbackIndex?: number;
+      executionHostId?: string | null;
+      resolutionReason?: string;
     } | null;
     plan: {
       toolName: string;

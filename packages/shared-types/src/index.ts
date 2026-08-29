@@ -32,7 +32,8 @@ export interface EnvironmentConfig {
   redisUrl: string;
 }
 
-export type InferenceRuntime = "browser-webgpu" | "browser-wasm" | "native-llama-cpp" | "owner-node";
+export type InferenceRuntime =
+  "browser-webgpu" | "browser-wasm" | "native-llama-cpp" | "owner-node";
 
 export interface InferenceMessage {
   role: "system" | "user" | "assistant";
@@ -882,10 +883,13 @@ export interface MarketplaceIntroStateSummary {
   updatedAt: string;
 }
 
+/** Stable provider-registry key. Providers are runtime extensions, not a closed platform enum. */
+export type ModelProviderId = string;
+
 export interface AiModelSummary {
   id: string;
   label: string;
-  provider: "local" | "openai";
+  provider: ModelProviderId;
   description: string;
   capabilities: string[];
   available: boolean;
@@ -957,7 +961,18 @@ export type AgentModelBindingStatus =
   "inactive" | "verifying" | "active" | "failed" | "unavailable";
 
 export type ModelExecutionTarget =
-  "backend" | "browser-local" | "installed-app" | "remote-shop-device" | "openai";
+  "backend" | "browser-local" | "installed-app" | "remote-shop-device";
+
+export const modelExecutionTargets = [
+  "backend",
+  "browser-local",
+  "installed-app",
+  "remote-shop-device"
+] as const satisfies readonly ModelExecutionTarget[];
+
+export function isModelExecutionTarget(value: unknown): value is ModelExecutionTarget {
+  return (modelExecutionTargets as readonly unknown[]).includes(value);
+}
 
 export type BrowserInferenceBackend = "webgpu" | "wasm";
 export type BrowserDeviceTier = "low" | "medium" | "high";
@@ -3227,7 +3242,7 @@ export interface RuntimeContextSummary {
   knowledgeFactCount: number;
 }
 
-export type RuntimeModelProviderName = "browser" | "llama.cpp" | "ollama" | "openai" | "test";
+export type RuntimeModelProviderName = ModelProviderId;
 
 export type RuntimeModelAdapterStatus =
   "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
@@ -3382,6 +3397,11 @@ export interface RuntimeModelTrace {
   promptTokens?: number;
   completionTokens?: number;
   executionTarget?: ModelExecutionTarget;
+  executionHostId?: string | null;
+  fallbackIndex?: number;
+  resolutionReason?: string;
+  fallbackUsed?: boolean;
+  fallbackReason?: string | null;
 }
 
 export interface RuntimePlannedAction {
@@ -3841,7 +3861,15 @@ export interface AgentRuntimeReadiness {
 
 /** Native, database-backed runtime graph. Agents, models, and hosts are independent slots. */
 export type NativeRuntimeEntityStatus = "active" | "inactive";
-export type NativeRuntimeAvailabilityStatus = "available" | "unavailable";
+export type NativeRuntimeAvailabilityStatus =
+  | "registered"
+  | "online"
+  | "healthy"
+  | "temporarily-unavailable"
+  | "disabled"
+  | "incompatible"
+  | "available"
+  | "unavailable";
 export type NativeRuntimeBindingStatus = "draft" | "active" | "inactive" | "failed";
 
 export interface NativeRuntimeAgentSummary {
@@ -3923,8 +3951,37 @@ export interface NativeRuntimeActivationInput {
   model: AiModelSummary;
   executionTarget: ModelExecutionTarget;
   fallbackModel: AiModelSummary | null;
+  fallbackExecutionTarget?: ModelExecutionTarget;
   updatedBy: string;
   checkedAt: string;
+}
+
+/**
+ * A model/host pair that has been verified by the execution adapter for automatic runtime
+ * provisioning. Provider identity remains model metadata; `executionTarget` is only location.
+ */
+export interface NativeRuntimeProvisioningCandidate {
+  model: AiModelSummary;
+  executionTarget: ModelExecutionTarget;
+  checkedAt: string;
+}
+
+export interface NativeDefaultRuntimeProvisioningInput {
+  conversationId: string;
+  businessId: string;
+  accountId: string;
+  agentId: string;
+  agentName: string;
+  candidates: NativeRuntimeProvisioningCandidate[];
+  updatedBy: string;
+  checkedAt: string;
+}
+
+export interface NativeDefaultRuntimeProvisioningResult {
+  binding: NativeRuntimeBindingSummary;
+  created: boolean;
+  resolutionReason:
+    "existing-binding-preserved" | "hosted-fallback-attached" | "default-binding-created";
 }
 
 export interface NativeRuntimeBindingModelSummary {

@@ -78,7 +78,7 @@ for (const [modelId, provider] of cloudProviders) {
   const adapter = createProviderModelAdapter({
     modelId,
     provider,
-    executionTarget: "openai"
+    executionTarget: "backend"
   });
   modelRuntimeAdapters.set(`${adapter.executionTarget}:${modelId}`, adapter);
 }

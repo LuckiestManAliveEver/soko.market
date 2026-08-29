@@ -1,10 +1,11 @@
-import type {
-  AgentModelBindingSummary,
-  ModelExecutionTarget,
-  ResolvedNativeRuntimeBinding,
-  RuntimeModelTrace,
-  RuntimeModelProvider,
-  ShopAgentRuntime
+import {
+  isModelExecutionTarget,
+  type AgentModelBindingSummary,
+  type ModelExecutionTarget,
+  type ResolvedNativeRuntimeBinding,
+  type RuntimeModelTrace,
+  type RuntimeModelProvider,
+  type ShopAgentRuntime
 } from "@soko/shared-types";
 
 import {
@@ -19,9 +20,7 @@ import { Cp2Error } from "../../cp2-error.js";
  * for tests that need to assert the precedence rule fired correctly rather than just its output.
  */
 export type ExecutionTargetResolutionSource =
-  | "explicit-native-configuration"
-  | "explicit-native-host"
-  | "legacy-binding";
+  "explicit-native-configuration" | "explicit-native-host" | "legacy-binding";
 
 export interface ExecutionTargetResolution {
   target: ModelExecutionTarget;
@@ -43,19 +42,16 @@ export function resolveExecutionTarget(input: {
   modelId: string;
   agentId: string;
 }): ExecutionTargetResolution {
-  const declaredTarget = input.nativeResolution?.selected.model.configuration.executionTarget;
-  if (isExecutionTarget(declaredTarget)) {
-    return { target: declaredTarget, source: "explicit-native-configuration" };
-  }
-  // `configuration` is an untyped bag (Record<string, unknown>): a model row written before this
-  // field existed, or restored from a partial snapshot, can lack it even though the model resolved
-  // to a concrete, available host (resolveBinding in native-runtime/store.ts only ever selects an
-  // `available` candidate, and `available` implies a non-null host). That host's `type` was stamped
-  // by upsertVerifiedHost with the exact target the host was created for, so reading it here is
-  // still a genuine explicit signal recovered from durable state, not a guess.
+  // A model may be installed on more than one execution location. The selected host is therefore
+  // authoritative; model.configuration.executionTarget is retained only as a compatibility
+  // fallback for partially migrated rows without a concrete host.
   const hostType = input.nativeResolution?.selected.host?.type;
-  if (isExecutionTarget(hostType)) {
+  if (isModelExecutionTarget(hostType)) {
     return { target: hostType, source: "explicit-native-host" };
+  }
+  const declaredTarget = input.nativeResolution?.selected.model.configuration.executionTarget;
+  if (isModelExecutionTarget(declaredTarget)) {
+    return { target: declaredTarget, source: "explicit-native-configuration" };
   }
   if (input.legacyBinding !== null) {
     return { target: input.legacyBinding.executionTarget, source: "legacy-binding" };
@@ -88,13 +84,26 @@ export function resolveNativeRuntimeModelProvider(input: {
   adapterResolverConfigured: boolean;
   runtimeModelProvider?: RuntimeModelProvider;
   runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
+  attemptedRuntimeKeys?: ReadonlySet<string>;
+  eligibleExecutionTargets?: ReadonlySet<ModelExecutionTarget>;
 }): {
   provider: RuntimeModelProvider | undefined;
   binding: AgentModelBindingSummary | null;
   executionTarget: ModelExecutionTarget | undefined;
   resolutionSource: ExecutionTargetResolutionSource | null;
+  runtimeKey: string | null;
+  runtimeBindingId: string | null;
+  resolvedModelId: string;
+  executionHostId: string | null;
+  fallbackIndex: number;
 } {
-  const { nativeResolution, legacyBinding, shopRuntime } = input;
+  const nativeResolution = selectUnattemptedNativeResolution(
+    input.nativeResolution,
+    input.attemptedRuntimeKeys,
+    input.eligibleExecutionTargets,
+    input.legacyBinding !== null
+  );
+  const { legacyBinding, shopRuntime } = input;
   const modelId =
     nativeResolution?.selected.model.id ?? legacyBinding?.modelId ?? input.requestedModelId;
   const agentId = nativeResolution?.agent.id ?? legacyBinding?.agentId ?? shopRuntime.agentId;
@@ -111,12 +120,34 @@ export function resolveNativeRuntimeModelProvider(input: {
       input.runtimeModelProviderResolver === undefined
         ? input.runtimeModelProvider
         : input.runtimeModelProviderResolver(modelId);
-    const bestEffort = tryResolveExecutionTarget({ nativeResolution, legacyBinding, modelId, agentId });
+    const bestEffort = tryResolveExecutionTarget({
+      nativeResolution,
+      legacyBinding,
+      modelId,
+      agentId
+    });
     return {
       provider,
       binding: legacyBinding,
       executionTarget: bestEffort?.target,
-      resolutionSource: bestEffort?.source ?? null
+      resolutionSource: bestEffort?.source ?? null,
+      runtimeKey:
+        bestEffort === null
+          ? null
+          : runtimeCandidateKey(
+              modelId,
+              nativeResolution?.selected.host?.id ?? null,
+              bestEffort.target
+            ),
+      runtimeBindingId: nativeResolution?.binding.id ?? legacyBinding?.id ?? null,
+      resolvedModelId: modelId,
+      executionHostId: nativeResolution?.selected.host?.id ?? null,
+      fallbackIndex:
+        nativeResolution?.selected.bindingModel.role === "fallback"
+          ? nativeResolution.fallbacks.findIndex(
+              (candidate) => candidate.bindingModel.id === nativeResolution.selected.bindingModel.id
+            ) + 1
+          : 0
     };
   }
 
@@ -126,9 +157,95 @@ export function resolveNativeRuntimeModelProvider(input: {
     modelId,
     agentId
   });
+  const runtimeKey = runtimeCandidateKey(
+    modelId,
+    nativeResolution?.selected.host?.id ?? null,
+    executionTarget
+  );
+  if (input.attemptedRuntimeKeys?.has(runtimeKey)) {
+    throw new Cp2Error(
+      503,
+      "RUNTIME_MODELS_UNAVAILABLE",
+      "No unattempted compatible runtime remains for this request.",
+      true
+    );
+  }
   const adapter = input.requireAdapter({ modelId, executionTarget, agentId, businessId: shopId });
   const provider = runtimeProviderFromAdapter({ adapter, context: { modelId, agentId, shopId } });
-  return { provider, binding: legacyBinding, executionTarget, resolutionSource };
+  return {
+    provider,
+    binding: legacyBinding,
+    executionTarget,
+    resolutionSource,
+    runtimeKey,
+    runtimeBindingId: nativeResolution?.binding.id ?? legacyBinding?.id ?? null,
+    resolvedModelId: modelId,
+    executionHostId: nativeResolution?.selected.host?.id ?? null,
+    fallbackIndex:
+      nativeResolution?.selected.bindingModel.role === "fallback"
+        ? nativeResolution.fallbacks.findIndex(
+            (candidate) => candidate.bindingModel.id === nativeResolution.selected.bindingModel.id
+          ) + 1
+        : 0
+  };
+}
+
+function selectUnattemptedNativeResolution(
+  resolution: ResolvedNativeRuntimeBinding | null,
+  attempted: ReadonlySet<string> | undefined,
+  eligibleTargets: ReadonlySet<ModelExecutionTarget> | undefined,
+  hasLegacyFallback: boolean
+): ResolvedNativeRuntimeBinding | null {
+  if (resolution === null) return null;
+  const candidates = [resolution.primary, ...resolution.fallbacks].filter(
+    (candidate, index, all) =>
+      candidate.available &&
+      all.findIndex((other) => other.bindingModel.id === candidate.bindingModel.id) === index
+  );
+  const selected = candidates.find((candidate) => {
+    const target = candidate.host?.type ?? candidate.model.configuration.executionTarget;
+    return (
+      isModelExecutionTarget(target) &&
+      (eligibleTargets === undefined || eligibleTargets.has(target)) &&
+      !attempted?.has(runtimeCandidateKey(candidate.model.id, candidate.host?.id ?? null, target))
+    );
+  });
+  if (selected === undefined) {
+    // No unattempted/eligible native candidate remains. Only degrade to null (letting the caller's
+    // legacyBinding get a chance) when a legacy binding actually exists as an alternative - a legacy
+    // binding stays a valid, currently-working escape hatch when every native role targets
+    // something this request can't reach (e.g. a local-only binding resolved from a server context)
+    // or has already failed this turn. Without a legacy binding there is nothing left to try, so
+    // this must still throw: the "no adapter resolver configured" test-bypass branch above has no
+    // attemptedRuntimeKeys check of its own and relies entirely on this throw to stop a retry loop
+    // from re-invoking the exact same provider after it already failed once.
+    if (hasLegacyFallback) return null;
+    throw new Cp2Error(
+      503,
+      "RUNTIME_MODELS_UNAVAILABLE",
+      "No unattempted compatible runtime remains for this request.",
+      true
+    );
+  }
+  return {
+    ...resolution,
+    selected,
+    fallbackUsed: selected.bindingModel.role === "fallback",
+    fallbackReason:
+      selected.bindingModel.role === "fallback"
+        ? attempted !== undefined && attempted.size > 0
+          ? "PREVIOUS_EXECUTION_ATTEMPT_FAILED"
+          : "PRIMARY_EXECUTION_TARGET_NOT_REACHABLE_FROM_SERVER"
+        : resolution.fallbackReason
+  };
+}
+
+function runtimeCandidateKey(
+  modelId: string,
+  executionHostId: string | null,
+  target: ModelExecutionTarget
+): string {
+  return `${modelId}:${executionHostId ?? "unbound"}:${target}`;
 }
 
 function tryResolveExecutionTarget(
@@ -163,15 +280,5 @@ export function assertResolvedRuntimeAvailable(
       fallbackReason: resolution.fallbackReason,
       runtimeErrorCode: trace.errorCode
     }
-  );
-}
-
-function isExecutionTarget(value: unknown): value is ModelExecutionTarget {
-  return (
-    value === "backend" ||
-    value === "browser-local" ||
-    value === "installed-app" ||
-    value === "remote-shop-device" ||
-    value === "openai"
   );
 }

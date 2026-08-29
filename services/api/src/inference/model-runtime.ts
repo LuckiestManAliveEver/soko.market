@@ -395,7 +395,7 @@ export function createBackendInferenceClient(options: {
 export function createProviderModelAdapter(input: {
   modelId: string;
   provider: RuntimeModelProvider;
-  executionTarget: "openai";
+  executionTarget: "backend";
 }): ModelRuntimeAdapter {
   return {
     provider: input.provider.name,

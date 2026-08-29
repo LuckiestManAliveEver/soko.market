@@ -12,6 +12,7 @@ import type {
   RuntimeModelProvider,
   ShopAgentRuntime
 } from "../packages/shared-types/src";
+import { isModelExecutionTarget, modelExecutionTargets } from "../packages/shared-types/src";
 import { Cp2Error } from "../services/api/src/cp2/cp2-error";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
@@ -19,24 +20,30 @@ import {
   resolveExecutionTarget,
   resolveNativeRuntimeModelProvider
 } from "../services/api/src/cp2/domains/agent-runtime/native-runtime-routing";
-import { ModelRuntimeError, type ModelRuntimeAdapter } from "../services/api/src/inference/model-runtime";
+import type { ModelRuntimeAdapter } from "../services/api/src/inference/model-runtime";
 
 const modelId = "qwen2.5-0.5b-android";
 const agentId = "agent-1";
 const shopId = "shop-1";
 
 describe("resolveExecutionTarget - the single authoritative execution-target resolver", () => {
-  it("prefers the native resolution's declared configuration.executionTarget", () => {
+  it("prefers the selected native execution host over model-level compatibility metadata", () => {
     const resolution = resolveExecutionTarget({
-      nativeResolution: nativeResolution({ configuredTarget: "browser-local", hostType: "backend" }),
+      nativeResolution: nativeResolution({
+        configuredTarget: "browser-local",
+        hostType: "backend"
+      }),
       legacyBinding: legacyBinding({ executionTarget: "backend" }),
       modelId,
       agentId
     });
-    expect(resolution).toEqual({ target: "browser-local", source: "explicit-native-configuration" });
+    expect(resolution).toEqual({
+      target: "backend",
+      source: "explicit-native-host"
+    });
   });
 
-  it("never lets a legacy binding override an explicit native target", () => {
+  it("never lets a legacy binding override an explicit native model target when no host exists", () => {
     const resolution = resolveExecutionTarget({
       nativeResolution: nativeResolution({ configuredTarget: "installed-app" }),
       legacyBinding: legacyBinding({ executionTarget: "backend" }),
@@ -50,7 +57,10 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
     // Simulates a native model row written before configuration.executionTarget existed, or
     // restored from a partial snapshot - the durable host record is still a genuine signal.
     const resolution = resolveExecutionTarget({
-      nativeResolution: nativeResolution({ configuredTarget: undefined, hostType: "browser-local" }),
+      nativeResolution: nativeResolution({
+        configuredTarget: undefined,
+        hostType: "browser-local"
+      }),
       legacyBinding: null,
       modelId,
       agentId
@@ -68,21 +78,50 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
     expect(resolution).toEqual({ target: "browser-local", source: "legacy-binding" });
   });
 
-  it("uses the legacy binding when the native resolution has no usable target either", () => {
-    const resolution = resolveExecutionTarget({
-      nativeResolution: nativeResolution({ configuredTarget: undefined, hostType: undefined }),
-      legacyBinding: legacyBinding({ executionTarget: "openai" }),
-      modelId,
-      agentId
-    });
-    expect(resolution).toEqual({ target: "openai", source: "legacy-binding" });
+  it("exposes exactly the four provider-neutral targets and rejects provider names", () => {
+    expect(modelExecutionTargets).toEqual([
+      "backend",
+      "browser-local",
+      "installed-app",
+      "remote-shop-device"
+    ]);
+    expect(isModelExecutionTarget("openai")).toBe(false);
+    expect(isModelExecutionTarget("anthropic")).toBe(false);
+
+    // @ts-expect-error Provider identifiers must never satisfy ModelExecutionTarget.
+    const providerAsTarget: ModelExecutionTarget = "openai";
+    expect(isModelExecutionTarget(providerAsTarget)).toBe(false);
+  });
+
+  it("rejects the legacy provider name at the HTTP execution-target boundary", async () => {
+    const app = buildApi();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agents/agent-1/models/model-1/activate",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({
+          shopId,
+          executionTarget: "openai",
+          executionMode: "CLOUD_ONLY",
+          permissions: { allowInstalledApp: false, allowRemoteShopDevice: false }
+        })
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ code: "execution_target_invalid" });
+    } finally {
+      await app.close();
+    }
   });
 
   it(
     "does not default native model resolution to backend when executionTarget is absent " +
       "(regression: never guess backend)",
     () => {
-      for (const nr of [null, nativeResolution({ configuredTarget: undefined, hostType: undefined })]) {
+      for (const nr of [
+        null,
+        nativeResolution({ configuredTarget: undefined, hostType: undefined })
+      ]) {
         expect(() =>
           resolveExecutionTarget({ nativeResolution: nr, legacyBinding: null, modelId, agentId })
         ).toThrow(Cp2Error);
@@ -127,7 +166,10 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
     "never fails routing over an unresolved target when no adapter system is even wired up " +
       "(regression: broke every test harness that drives runtimeModelProvider directly)",
     () => {
-      const runtimeModelProvider = { name: "test", complete: vi.fn() } as unknown as RuntimeModelProvider;
+      const runtimeModelProvider = {
+        name: "test",
+        complete: vi.fn()
+      } as unknown as RuntimeModelProvider;
       const requireAdapter = vi.fn(() => fakeAdapter("backend"));
       const result = resolveNativeRuntimeModelProvider({
         shopRuntime,
@@ -151,7 +193,11 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
 
   it("surfaces the RUNTIME_NOT_CONFIGURED code (no eligible host) when backend has no adapter", () => {
     const requireAdapter = vi.fn(() => {
-      throw new Cp2Error(503, "RUNTIME_NOT_CONFIGURED", "The selected model runtime is not configured.");
+      throw new Cp2Error(
+        503,
+        "RUNTIME_NOT_CONFIGURED",
+        "The selected model runtime is not configured."
+      );
     });
     expectCp2ErrorCode(
       () =>
@@ -213,79 +259,180 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
       );
     }
   });
+
+  it("uses a hosted fallback when a local-first primary cannot execute in the API process", () => {
+    const localFirst = nativeResolution({
+      configuredTarget: "browser-local",
+      hostType: "browser-local"
+    });
+    const hosted = nativeResolution({ configuredTarget: "backend", hostType: "backend" }).primary;
+    hosted.bindingModel = {
+      ...hosted.bindingModel,
+      id: "role-hosted-fallback",
+      role: "fallback",
+      executionHostId: "host-backend"
+    };
+    hosted.host = hosted.host === null ? null : { ...hosted.host, id: "host-backend" };
+    localFirst.fallbacks = [hosted];
+
+    const requireAdapter = vi.fn(() => fakeAdapter("backend"));
+    const result = resolveNativeRuntimeModelProvider({
+      shopRuntime,
+      requestedModelId: modelId,
+      legacyBinding: legacyBinding({ executionTarget: "browser-local" }),
+      nativeResolution: localFirst,
+      requireAdapter,
+      adapterResolverConfigured: true,
+      eligibleExecutionTargets: new Set(["backend"])
+    });
+
+    expect(result.executionTarget).toBe("backend");
+    expect(result.fallbackIndex).toBe(1);
+    expect(requireAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ modelId, executionTarget: "backend", agentId })
+    );
+  });
+
+  it("falls back to a working legacy binding when every native role is ineligible from this request", () => {
+    // The native binding's only role targets browser-local, which a server request can never
+    // execute - eligibleExecutionTargets filters it out entirely, leaving no native candidate. A
+    // still-usable legacy binding must get the request instead of a hard RUNTIME_MODELS_UNAVAILABLE.
+    const localOnly = nativeResolution({ configuredTarget: "browser-local", hostType: "browser-local" });
+
+    const requireAdapter = vi.fn(() => fakeAdapter("backend"));
+    const result = resolveNativeRuntimeModelProvider({
+      shopRuntime,
+      requestedModelId: modelId,
+      legacyBinding: legacyBinding({ executionTarget: "backend" }),
+      nativeResolution: localOnly,
+      requireAdapter,
+      adapterResolverConfigured: true,
+      eligibleExecutionTargets: new Set(["backend"])
+    });
+
+    expect(result.executionTarget).toBe("backend");
+    expect(result.resolutionSource).toBe("legacy-binding");
+    expect(result.provider).toBeDefined();
+  });
+
+  it("still terminates once both the native graph and the legacy binding are exhausted", () => {
+    const localOnly = nativeResolution({ configuredTarget: "browser-local", hostType: "browser-local" });
+    const requireAdapter = vi.fn(() => fakeAdapter("backend"));
+    const binding = legacyBinding({ executionTarget: "backend" });
+    const firstAttempt = resolveNativeRuntimeModelProvider({
+      shopRuntime,
+      requestedModelId: modelId,
+      legacyBinding: binding,
+      nativeResolution: localOnly,
+      requireAdapter,
+      adapterResolverConfigured: true,
+      eligibleExecutionTargets: new Set(["backend"])
+    });
+    expect(firstAttempt.runtimeKey).not.toBeNull();
+
+    expectCp2ErrorCode(
+      () =>
+        resolveNativeRuntimeModelProvider({
+          shopRuntime,
+          requestedModelId: modelId,
+          legacyBinding: binding,
+          nativeResolution: localOnly,
+          requireAdapter,
+          adapterResolverConfigured: true,
+          eligibleExecutionTargets: new Set(["backend"]),
+          attemptedRuntimeKeys: new Set([firstAttempt.runtimeKey as string])
+        }),
+      "RUNTIME_MODELS_UNAVAILABLE"
+    );
+  });
 });
 
-describe("regression: fresh deployment never manufactures a backend dependency", () => {
-  it(
-    "a conversation with no native model configured and no legacy binding fails routing " +
-      "instead of silently attempting backend inference",
-    async () => {
-      const backendGenerate = vi.fn(() => {
-        throw new ModelRuntimeError("INFERENCE_SERVICE_UNREACHABLE", "unreachable", true);
-      });
-      const store = createCp2Store({
-        modelRuntimeAdapterResolver: ({ executionTarget }) =>
-          executionTarget === "backend"
-            ? {
-                provider: "test",
-                executionTarget: "backend",
-                canRun: async () => ({ available: true, errorCode: null, message: null }),
-                healthCheck: async () => {
-                  throw new Error("not used in this test");
-                },
-                generate: backendGenerate
-              }
-            : undefined
-      });
-      const app = buildApi({ cp2: { store } });
+describe("zero-setup hosted-first runtime provisioning", () => {
+  it("provisions a verified generic backend binding for first chat without manual activation", async () => {
+    const backendGenerate = vi.fn(async () => ({
+      text: JSON.stringify({ type: "response", message: "Soko AI is ready." }),
+      modelId,
+      provider: "test-hosted-adapter",
+      executionTarget: "backend" as const,
+      latencyMs: 2
+    }));
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ executionTarget }) =>
+        executionTarget === "backend"
+          ? {
+              provider: "test",
+              executionTarget: "backend",
+              canRun: async () => ({ available: true, errorCode: null, message: null }),
+              healthCheck: async () => {
+                throw new Error("not used in this test");
+              },
+              generate: backendGenerate
+            }
+          : undefined
+    });
+    const app = buildApi({ cp2: { store } });
 
-      const signup = await app.inject({
-        method: "POST",
-        url: "/auth/pin/signup",
-        headers: { "content-type": "application/json" },
-        payload: JSON.stringify({ method: "phone", contact: "+254700009001", pin: "1234" })
-      });
-      expect(signup.statusCode).toBe(200);
-      const setCookieHeader = signup.headers["set-cookie"];
-      const rawCookie = (
-        Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader
-      ) as string;
-      const cookie = rawCookie.split(";")[0] as string;
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ method: "phone", contact: "+254700009001", pin: "1234" })
+    });
+    expect(signup.statusCode).toBe(200);
+    const setCookieHeader = signup.headers["set-cookie"];
+    const rawCookie = (
+      Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader
+    ) as string;
+    const cookie = rawCookie.split(";")[0] as string;
 
-      const businessResponse = await app.inject({
-        method: "POST",
-        url: "/businesses",
-        headers: { "content-type": "application/json", cookie },
-        payload: JSON.stringify({ name: "Fresh Shop", language: "en" })
-      });
-      expect(businessResponse.statusCode).toBe(200);
-      const businessId = businessResponse.json<{ business: { id: string } }>().business.id;
+    const businessResponse = await app.inject({
+      method: "POST",
+      url: "/businesses",
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({ name: "Fresh Shop", language: "en" })
+    });
+    expect(businessResponse.statusCode).toBe(200);
+    const businessId = businessResponse.json<{ business: { id: string } }>().business.id;
 
-      const conversation = await app.inject({
-        method: "POST",
-        url: "/v1/conversations",
-        headers: { "content-type": "application/json", cookie },
-        payload: JSON.stringify({ kind: "personal", activeShopId: businessId })
-      });
-      expect(conversation.statusCode).toBe(200);
-      const conversationId = conversation.json<{ conversation: { id: string } }>().conversation.id;
+    const conversation = await app.inject({
+      method: "POST",
+      url: "/v1/conversations",
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({ kind: "personal", activeShopId: businessId })
+    });
+    expect(conversation.statusCode).toBe(200);
+    const conversationId = conversation.json<{ conversation: { id: string } }>().conversation.id;
 
-      const turn = await app.inject({
-        method: "POST",
-        url: `/businesses/${businessId}/runtime/turns`,
-        headers: { "content-type": "application/json", cookie },
-        payload: JSON.stringify({ conversationId, message: "hello" })
-      });
+    const turn = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({ conversationId, message: "hello" })
+    });
 
-      // The old bug: this would resolve executionTarget to "backend" purely because nothing else
-      // was configured, invoke the backend adapter, and surface a confusing "unreachable" error
-      // even though no model was ever actually chosen. The fix must fail routing cleanly instead,
-      // and must never have called the backend adapter to find that out.
-      expect(backendGenerate).not.toHaveBeenCalled();
-      expect(turn.statusCode).toBe(409);
-      expect(turn.json()).toMatchObject({ code: "NO_COMPATIBLE_EXECUTION_TARGET" });
-    }
-  );
+    expect(turn.statusCode).toBe(200);
+    expect(backendGenerate).toHaveBeenCalledOnce();
+    expect(turn.json()).toMatchObject({
+      turn: {
+        response: "Soko AI is ready.",
+        model: {
+          status: "available",
+          modelId,
+          executionTarget: "backend",
+          fallbackIndex: 0
+        }
+      }
+    });
+    const provisioned = store
+      .snapshot()
+      .nativeRuntimeBindings.filter(
+        (binding) =>
+          binding.businessId === businessId &&
+          binding.configuration.source === "zero-setup-provisioning"
+      );
+    expect(provisioned).toHaveLength(1);
+    expect(provisioned[0]).toMatchObject({ status: "active", isDefault: true });
+  });
 });
 
 function expectCp2ErrorCode(fn: () => unknown, code: string): void {
@@ -324,7 +471,9 @@ function fakeAdapter(executionTarget: ModelExecutionTarget): ModelRuntimeAdapter
   };
 }
 
-function legacyBinding(overrides: Partial<AgentModelBindingSummary> = {}): AgentModelBindingSummary {
+function legacyBinding(
+  overrides: Partial<AgentModelBindingSummary> = {}
+): AgentModelBindingSummary {
   return {
     id: "binding-1",
     agentId,

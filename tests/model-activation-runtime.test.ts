@@ -109,7 +109,7 @@ describe("agent model activation runtime", () => {
       primary: {
         model: { id: primaryModelId },
         installation: { status: "available" },
-        host: { type: "backend", status: "available" }
+        host: { type: "backend", status: "healthy" }
       },
       selected: { model: { id: primaryModelId } }
     });
@@ -700,6 +700,52 @@ describe("agent model activation runtime", () => {
     await app.close();
   });
 
+  it("rejects a hosted model activated against a non-backend execution target", async () => {
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId }) =>
+        modelId === primaryModelId ? healthyAdapter(primaryModelId) : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700002006", "Hosted Model Shop");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/agents/${owner.businessId}/models/openai-fast/activate`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({
+        ...activationPayload(owner.businessId),
+        executionTarget: "browser-local"
+      })
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: "MODEL_RUNTIME_INCOMPATIBLE" });
+
+    await app.close();
+  });
+
+  it("rejects CLOUD_ONLY execution mode paired with a non-backend execution target", async () => {
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId }) =>
+        modelId === primaryModelId ? healthyAdapter(primaryModelId) : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700002007", "Cloud Only Shop");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/agents/${owner.businessId}/models/${primaryModelId}/activate`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({
+        ...activationPayload(owner.businessId),
+        executionTarget: "browser-local",
+        executionMode: "CLOUD_ONLY"
+      })
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: "MODEL_CONFIGURATION_INVALID" });
+
+    await app.close();
+  });
 });
 
 describe("backend model adapter", () => {
@@ -938,7 +984,7 @@ function healthyAdapter(
   options: {
     healthOk?: boolean;
     prompts?: RuntimeModelPrompt[];
-    executionTarget?: "backend" | "openai";
+    executionTarget?: "backend";
   } = {}
 ): ModelRuntimeAdapter {
   const executionTarget = options.executionTarget ?? "backend";

@@ -19,11 +19,13 @@ export interface OpenAiProviderOptions {
 }
 
 /**
- * Adapter for explicit, deliberately-configured OpenAI models (ModelExecutionTarget "openai") -
- * never invoked as an automatic retry when some other target fails. See "OpenAI's role now" in
- * docs/architecture/provider-neutral-runtime.md.
+ * Adapter for explicit, deliberately configured OpenAI model bindings. The generic provider
+ * registry selects this implementation by model/provider identity after the provider-neutral
+ * execution path has resolved; OpenAI is never an execution target or automatic fallback.
  */
-export function createOpenAiProvider(options: OpenAiProviderOptions): RuntimeModelProvider | undefined {
+export function createOpenAiProvider(
+  options: OpenAiProviderOptions
+): RuntimeModelProvider | undefined {
   const apiKey = options.apiKey.trim();
   const model = options.model.trim();
   const allowed = new Set(options.modelAllowlist);

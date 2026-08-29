@@ -72,23 +72,19 @@ codes. The resolver compares runtime contract versions and the agent's declared
 `requiredModelCapabilities` with model capabilities. It never silently substitutes an arbitrary
 provider. Persisted fallbacks are tried by numeric priority and stable role ID.
 
-Endpoints remain credential-free. Host records may contain an opaque `credentialReference` such
-as `env:OPENAI_API_KEY`; raw credentials are rejected from endpoint-shaped data by migration
-constraints and are never copied into binding configuration.
+Endpoints remain credential-free. Execution hosts do not own provider credentials. Provider
+credential references belong to model/provider configuration; raw credentials are rejected from
+endpoint-shaped data by migration constraints and are never copied into binding configuration.
 
 ## Default and activation
 
-The global default is `builtin:soko-agent:v1` plus the repository-supported `openai-fast`
-generative model. Its host and installation are seeded as `unavailable`; a database row is not
-treated as proof that inference works. On every production process start, the existing OpenAI
-adapter performs a live completion health check. Only a successful probe marks the host and
-installation `available` and persists `lastKnownHealthyAt`. A missing adapter, key, allowlist entry,
-or failed probe stops production startup instead of falling back to deterministic protected-agent
-behavior or fabricating a language-model response.
-
-Development and test stores therefore have an explicit unavailable global model until a test or
-caller invokes verified activation. Business-specific Qwen, browser, installed-app, owner-node,
-and OpenAI bindings continue to activate only after their existing adapter health checks pass.
+The global default is an unconfigured provider-neutral binding for `builtin:soko-agent:v1`. It has
+no mandatory model, provider, host, or installation. Soko therefore starts without a configured
+model vendor; attempting inference before a model is assigned returns
+`RUNTIME_MODEL_NOT_CONFIGURED` at turn time. Verified activation can assign any compatible model
+and one of the four provider-neutral targets. Provider-backed backend models, browser models,
+installed-app models, and remote-shop-device models all pass through their relevant readiness or
+health checks before activation.
 
 The existing “Use with agent” API now writes both the legacy rollback record and the native graph
 in the same CP2 snapshot transaction, then rebinds the account's shop/agent conversations. Removing
@@ -130,8 +126,8 @@ resolution.
 ## Database verification
 
 `db:verify-schema` runs in a read-only transaction and checks all migration checksums, constraints,
-indexes, the absence of retired tables, and the unique `openai-fast` global default. The production
-Render build runs it immediately after migrations with `REQUIRE_NEON_DATABASE=true`; verification
+indexes, the absence of retired tables, and the provider-neutral global default binding. The
+production Render build runs it immediately after migrations with `REQUIRE_NEON_DATABASE=true`; verification
 fails unless the connection is an actual Neon hostname. Local Postgres remains useful for migration
 replay, but it can no longer satisfy the production database gate.
 

@@ -43,4 +43,50 @@ describe("native runtime binding migration", () => {
     expect(verifier).toContain('process.env.REQUIRE_NEON_DATABASE === "true"');
     expect(verifier).toContain("Retired runtime tables remain");
   });
+
+  it("migrates provider-specific targets forward without changing model provider identity", async () => {
+    const migration = await readFile(
+      new URL("../infra/db/migrations/069_provider_neutral_execution_targets.sql", import.meta.url),
+      "utf8"
+    );
+    const rollback = await readFile(
+      new URL(
+        "../infra/db/rollbacks/069_provider_neutral_execution_targets.down.sql",
+        import.meta.url
+      ),
+      "utf8"
+    );
+    expect(migration).toContain("record #>> '{configuration,executionTarget}' = 'openai'");
+    expect(migration).toContain("create table migration_069_execution_target_backup");
+    expect(migration).toContain("select 'cp2_native_runtime_models'");
+    expect(migration).toContain("select 'cp2_native_execution_hosts'");
+    expect(migration).toContain("select 'cp2_agent_model_bindings'");
+    expect(migration).toContain("'{configuration,executionTarget}'");
+    expect(migration).toContain("'\"backend\"'::jsonb");
+    expect(migration).toContain("drop constraint if exists cp2_agent_model_bindings_target_check");
+    expect(migration).not.toContain("set record = jsonb_set(record, '{provider}'");
+    expect(rollback).toContain("set record = backup.record");
+    expect(rollback).toContain("'remote-shop-device',\n      'openai'");
+    expect(rollback).toContain("drop table migration_069_execution_target_backup");
+  });
+
+  it("adds a concurrency-safe tenant default and explicit host health states", async () => {
+    const migration = await readFile(
+      new URL("../infra/db/migrations/070_zero_setup_runtime_defaults.sql", import.meta.url),
+      "utf8"
+    );
+    const rollback = await readFile(
+      new URL("../infra/db/rollbacks/070_zero_setup_runtime_defaults.down.sql", import.meta.url),
+      "utf8"
+    );
+    expect(migration).toContain("cp2_native_runtime_bindings_one_tenant_default_idx");
+    expect(migration).toContain("business_id is not null");
+    expect(migration).toContain("'healthy'");
+    expect(migration).toContain("'temporarily-unavailable'");
+    expect(migration).toContain("'disabled'");
+    expect(migration).toContain("'incompatible'");
+    expect(rollback).toContain(
+      "drop index if exists cp2_native_runtime_bindings_one_tenant_default_idx"
+    );
+  });
 });

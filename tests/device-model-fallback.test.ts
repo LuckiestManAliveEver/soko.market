@@ -36,7 +36,7 @@ describe("device model fallback", () => {
     });
   });
 
-  it("uses OpenAI only after explicit server-side model activation and ignores per-turn model spoofing", async () => {
+  it("uses an explicitly selected hosted adapter without a local prerequisite and ignores per-turn model spoofing", async () => {
     vi.stubEnv("INFERENCE_CLOUD_PROVIDER", "openai");
     vi.stubEnv("INFERENCE_CLOUD_MODEL_ALLOWLIST", "openai-fast,openai-reasoning");
     vi.stubEnv("OPENAI_API_KEY", "test-server-key");
@@ -71,13 +71,11 @@ describe("device model fallback", () => {
       name: "Cross Device Shop",
       language: "en"
     });
-    expect(() =>
-      store.activateAiModel({
-        sessionId: auth.session.id,
-        businessId: created.business.id,
-        modelId: "openai-fast"
-      })
-    ).toThrowError(expect.objectContaining({ code: "local_model_required" }));
+    store.activateAiModel({
+      sessionId: auth.session.id,
+      businessId: created.business.id,
+      modelId: "openai-fast"
+    });
     store.registerInstalledAgentModel({
       sessionId: auth.session.id,
       model: {
@@ -121,7 +119,7 @@ describe("device model fallback", () => {
       businessId: created.business.id,
       modelId: "openai-fast"
     });
-    expect(() =>
+    expect(
       store.updateAgentProfile({
         sessionId: auth.session.id,
         businessId: created.business.id,
@@ -132,15 +130,15 @@ describe("device model fallback", () => {
           role: "Business assistant",
           language: "en",
           personality: "Careful",
-          instructions: "Use the downloaded model first.",
+          instructions: "Use the downloaded model first when it is available.",
           knowledge: "Use saved shop records.",
           tools: [],
           integrations: [],
           contextScripts: [],
           status: "active"
         }
-      })
-    ).toThrowError(expect.objectContaining({ code: "cloud_model_cannot_be_primary" }));
+      }).modelId
+    ).toBe("openai-fast");
 
     const deviceB = store.getAgentModelAssignment({
       sessionId: auth.session.id,

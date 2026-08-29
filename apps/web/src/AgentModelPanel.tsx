@@ -1153,7 +1153,7 @@ export function AgentModelPanel({
       setModelActivationState("idle");
       setFailedActivationModelId(null);
       setProfileMessage(
-        `${model.label} was removed from ${agent.name}. Activate a verified model before using server chat.`
+        `${model.label} is no longer preferred for ${agent.name}. Chat will continue with automatic execution.`
       );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
@@ -1286,9 +1286,12 @@ export function AgentModelPanel({
     <>
       <div className="record-form agent-model-panel">
         <div className="section-heading">
-          <p className="eyebrow">Device model first · cloud fallback second</p>
-          <h3>Agent model</h3>
-          <p>Choose, verify, and connect an installed model to this business agent.</p>
+          <p className="eyebrow">Soko AI · Ready</p>
+          <h3>Advanced model preferences</h3>
+          <p>
+            Execution is automatic. Local models are optional privacy, offline, latency, and cost
+            optimizations.
+          </p>
         </div>
         {modelActivationState !== "idle" && profileMessage.length > 0 ? (
           <p className="shell-note" role="status" aria-live="polite">
@@ -1307,23 +1310,23 @@ export function AgentModelPanel({
               <span className={`model-badge status-${activeAgentModelBinding?.status ?? "failed"}`}>
                 {activeAgentModelBinding?.status === "active"
                   ? `Active for ${agent.name}`
-                  : "Not configured"}
+                  : "Automatic"}
               </span>
             </div>
             <h4>
               {activeAgentModelBinding === null
-                ? "No verified model"
+                ? "Soko AI is ready"
                 : (activeAiModel?.label ?? activeAgentModelBinding.modelId)}
             </h4>
             <p>
               {activeAgentModelBinding === null
-                ? "This agent does not have a working model yet. Test and activate one below."
+                ? "A compatible execution host and model are selected automatically when you chat."
                 : `Running on: ${formatExecutionTarget(activeAgentModelBinding.executionTarget)}`}
             </p>
             <small>
               {activeAgentModelBinding?.lastVerifiedAt === null ||
               activeAgentModelBinding?.lastVerifiedAt === undefined
-                ? "Not verified"
+                ? "No download or activation required"
                 : `Verified ${formatDate(activeAgentModelBinding.lastVerifiedAt)}`}
             </small>
             {activeBackendBinding && !activeBackendConfigured ? (

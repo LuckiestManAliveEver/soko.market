@@ -22,7 +22,18 @@ const verifiedBinding = {
 
 describe("native runtime backfill", () => {
   it("maps verified bindings to stable independent entities and ordered roles", () => {
-    const plan = planNativeRuntimeBackfill({ agentModelBindings: [{ record: verifiedBinding }] });
+    const plan = planNativeRuntimeBackfill({
+      agentModelBindings: [{ record: verifiedBinding }],
+      nativeRuntimeModels: [
+        {
+          record: {
+            id: "openai-fast",
+            provider: "openai",
+            configuration: { executionTarget: "openai" }
+          }
+        }
+      ]
+    });
     expect(plan.conflicts).toEqual([]);
     expect(plan.ambiguous).toEqual([]);
     expect(plan.actions).toEqual(
@@ -44,6 +55,43 @@ describe("native runtime backfill", () => {
         })
       ])
     );
+    const openAiModel = plan.actions.find(
+      (item) => item.kind === "model" && item.id === "openai-fast"
+    );
+    const fallbackRole = plan.actions.find(
+      (item) => item.kind === "role" && item.record.role === "fallback"
+    );
+    const fallbackHost = plan.actions.find(
+      (item) => item.kind === "host" && item.id === fallbackRole?.record.executionHostId
+    );
+    expect(openAiModel?.record).toMatchObject({
+      provider: "openai",
+      configuration: { executionTarget: "backend" }
+    });
+    expect(fallbackHost?.record).toMatchObject({
+      type: "backend",
+      credentialReference: null
+    });
+  });
+
+  it("does not infer provider identity from a model-name prefix", () => {
+    const plan = planNativeRuntimeBackfill({
+      agentModelBindings: [
+        {
+          record: {
+            ...verifiedBinding,
+            fallbackModelId: "openai-custom-name-without-metadata"
+          }
+        }
+      ]
+    });
+    const fallback = plan.actions.find(
+      (item) => item.kind === "model" && item.id === "openai-custom-name-without-metadata"
+    );
+    expect(fallback?.record).toMatchObject({
+      provider: "legacy",
+      configuration: { executionTarget: "backend" }
+    });
   });
 
   it("is idempotent and never produces duplicate natural entities", () => {

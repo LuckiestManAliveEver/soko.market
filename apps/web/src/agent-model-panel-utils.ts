@@ -5,6 +5,23 @@ export function isDownloadableCatalogModel(model: AiModelSummary): boolean {
   return model.source === "huggingface" || model.source === "github";
 }
 
+export function applyDeploymentRuntimeAvailability(
+  models: AiModelSummary[],
+  deploymentCatalog: AiModelSummary[]
+): AiModelSummary[] {
+  const availabilityByModelId = new Map(
+    deploymentCatalog
+      .filter((model) => model.runtimeAvailability !== undefined)
+      .map((model) => [model.id, model.runtimeAvailability] as const)
+  );
+  return models.map((model) => {
+    const runtimeAvailability = availabilityByModelId.get(model.id);
+    return runtimeAvailability === undefined
+      ? model
+      : { ...model, runtimeAvailability: { ...runtimeAvailability } };
+  });
+}
+
 export function installedModelRequest(model: LocalAiModel): Record<string, unknown> {
   return {
     id: model.id,

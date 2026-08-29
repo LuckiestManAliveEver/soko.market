@@ -1028,7 +1028,25 @@ export class Cp2Store {
       // "fall back to the legacy agent-model-binding path" (see resolveNativeRuntimeModelProvider
       // and resolveActiveRuntimeModelId), so a resolution failure here degrades to that same null
       // rather than throwing. See docs/architecture/provider-neutral-runtime.md §5.
-      resolveNativeRuntimeBinding: (conversationId) => {
+      resolveNativeRuntimeBinding: (conversationId, businessId) => {
+        // A conversationId is request-body input, not something the caller's authorization was
+        // ever checked against - only the businessId on the URL/session was. Without this check a
+        // shop member who learns another shop's conversationId (support ticket, shared screenshot,
+        // browser history) could get inference routed through - and its binding/model/host echoed
+        // back from - a runtime this request was never authorized for. Mirrors the same guard
+        // ensureDefaultRuntimeBinding already applies to conversation binding assignment below.
+        const conversation = this.messagingDomain.conversationsMap.get(conversationId);
+        if (
+          conversation !== undefined &&
+          conversation.activeShopId !== null &&
+          conversation.activeShopId !== businessId
+        ) {
+          throw new Cp2Error(
+            403,
+            "RUNTIME_BINDING_FORBIDDEN",
+            "The conversation cannot use this shop runtime."
+          );
+        }
         try {
           return this.nativeRuntimeBindings.resolveRuntimeBinding(
             conversationId,
@@ -1054,6 +1072,34 @@ export class Cp2Store {
           }
         }
         return binding;
+      },
+      ensureDefaultRuntimeBinding: (input) => {
+        // Authorize before mutating: this call provisions binding/host/model/installation rows,
+        // and a rejected conversation must never leave those behind. resolveNativeRuntimeBinding
+        // above already rejects a cross-shop conversationId before ensureDefaultRuntimeForTurn ever
+        // reaches this call, but that check alone doesn't cover a same-shop conversationId that
+        // belongs to a different account - check both here, first, so nothing is written.
+        const conversation = this.messagingDomain.conversationsMap.get(input.conversationId);
+        if (
+          conversation === undefined ||
+          conversation.accountId !== input.accountId ||
+          conversation.activeShopId !== input.businessId
+        ) {
+          throw new Cp2Error(
+            403,
+            "RUNTIME_BINDING_FORBIDDEN",
+            "The conversation cannot use this shop runtime."
+          );
+        }
+        const result = this.nativeRuntimeBindings.ensureDefaultRuntimeBinding(input);
+        if (conversation.runtimeBindingId !== result.binding.id) {
+          this.messagingDomain.conversationsMap.set(conversation.id, {
+            ...conversation,
+            runtimeBindingId: result.binding.id,
+            updatedAt: input.checkedAt
+          });
+        }
+        return result;
       },
       deactivateRuntimeBinding: (input) => {
         const bindingId = this.nativeRuntimeBindings.deactivateBusinessAgentBinding(

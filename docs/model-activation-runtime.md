@@ -116,7 +116,7 @@ Normal server agent chat:
 3. loads the agent profile, personality, instructions, context, memory, and enabled skills;
 4. resolves the execution target and adapter deterministically from the saved model and binding -
    see `resolveExecutionTarget` in `services/api/src/cp2/domains/agent-runtime/
-   native-runtime-routing.ts` and docs/architecture/provider-neutral-runtime.md;
+native-runtime-routing.ts` and docs/architecture/provider-neutral-runtime.md;
 5. performs inference;
 6. parses the typed response/tool proposal;
 7. applies role, policy, and confirmation gates;

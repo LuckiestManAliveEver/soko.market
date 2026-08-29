@@ -138,14 +138,19 @@ export function formatModelStatus(value: string): string {
 }
 
 export function formatExecutionTarget(value: AgentModelBindingSummary["executionTarget"]): string {
+  const raw: string = value;
   return (
-    {
-      backend: "Soko backend",
-      "browser-local": "this browser",
-      "installed-app": "installed Soko app",
-      "remote-shop-device": "signed-in shop device",
-      openai: "OpenAI"
-    }[value] ?? value
+    (
+      {
+        backend: "Soko backend",
+        "browser-local": "this browser",
+        "installed-app": "installed Soko app",
+        "remote-shop-device": "signed-in shop device",
+        // A tab open across the migration-069 deploy can still hold this stale value in memory
+        // until it refetches; label it rather than showing the raw enum string.
+        openai: "Soko backend (legacy)"
+      } as Record<string, string>
+    )[raw] ?? raw
   );
 }
 

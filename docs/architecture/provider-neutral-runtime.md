@@ -42,6 +42,34 @@ No layer assumes OpenAI, or any other vendor. A model assignment resolves purely
 `NativeExecutionHostSummary` never has special-cased vendor logic beyond the metadata a user's own
 choice of execution target implies.
 
+Models and providers are independently swappable runtime slots. Provider names must never appear
+in `ModelExecutionTarget`. The dimensions are intentionally separate:
+
+- NeonDB is the configuration/control plane for bindings, models, targets, hosts, and devices.
+- A model is the swappable inference identity selected by a binding.
+- A provider is the swappable adapter used to access that model.
+- An execution target is the provider-neutral compute location or dispatch path.
+- An execution host/device is the concrete destination that satisfies the selected target.
+
+`ModelProviderId` and `RuntimeModelProviderName` are extensible string registry keys, not closed
+vendor unions. Adding a provider registers metadata and an adapter; it does not require editing a
+platform provider enum. The web application imports `ModelExecutionTarget`, `ModelProviderId`, and
+`RuntimeModelProviderName` from `@soko/shared-types` rather than maintaining parallel unions.
+
+The only native execution targets are:
+
+| Target               | Meaning                                                                                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `browser-local`      | Inference runs in the merchant browser through WebGPU, WASM, or another compatible browser runtime.                         |
+| `installed-app`      | Inference runs through the trusted `window.SokoAgentModelRuntime` bridge.                                                   |
+| `remote-shop-device` | Inference runs on an eligible authenticated device in the same shop runtime graph.                                          |
+| `backend`            | Inference is dispatched through an eligible server-side execution path, then through the selected model's provider adapter. |
+
+`backend` does not mean OpenAI, Ollama, or any other provider. Multiple model/provider bindings can
+use the same target, and a compatible model can use a different target without changing model
+identity. The invariant is: execution target = where, model = what, provider = how the model is
+accessed, and host/device = the concrete compute destination.
+
 ## Empty-slot semantics
 
 `ensureGlobalDefault()` (`services/api/src/cp2/domains/native-runtime/store.ts`) now creates only
@@ -98,7 +126,7 @@ configured in this deployment, and surfacing as a confusing adapter-unreachable 
 clear "nothing is configured" one. It now calls `resolveExecutionTarget`, which resolves a target
 from, in order: the native resolution's declared `configuration.executionTarget`; failing that, the
 `type` of the concrete, already-available execution host backing the native resolution's selected
-model (still a genuine explicit signal recovered from durable state, not a guess, since a *selected*
+model (still a genuine explicit signal recovered from durable state, not a guess, since a _selected_
 candidate is only ever the one that resolved `available: true`); failing that, the legacy binding's
 `executionTarget`. If none of those exist, it throws `NO_COMPATIBLE_EXECUTION_TARGET` rather than
 guessing. `services/api/src/cp2/store.ts`'s `attemptPublicAgentReply` (the anonymous storefront
@@ -119,7 +147,7 @@ network dependency over, since no adapter lookup happens in that shape at all.
 `Cp2Store.activateGlobalDefaultModel(input)` → `NativeRuntimeBindingStore.activateGlobalDefaultModel`
 assigns (or swaps) the primary model for the global default slot: it upserts the catalog model,
 upserts a verified execution host and installation for the given `executionTarget` (any target -
-`backend`, `browser-local`, `installed-app`, `remote-shop-device`, or `openai`), validates the
+`backend`, `browser-local`, `installed-app`, or `remote-shop-device`), validates the
 model's capabilities against the built-in agent's requirements, replaces the existing primary role
 if any, and promotes the binding from `"draft"` to `"active"`. Calling it again with a different
 model replaces the primary role in place - **the binding's id never changes**, so every
@@ -149,9 +177,11 @@ OpenAI is exactly one optional cloud provider. `render.yaml`'s `OPENAI_API_KEY` 
 failure was the deleted startup health check. With the key blank, `createOpenAiProvider`
 (`services/api/src/inference/openai-provider.ts`) simply never registers an OpenAI adapter - the
 same optional-registration pattern `BACKEND_INFERENCE_ENABLED=false` already used for the backend
-adapter, now applied uniformly. The `openai-fast` / `openai-reasoning` catalog models, their
-execution host, and their installation (seeded by migration 065, left alone by migration 067)
-remain in the database as a legitimate, selectable option - not as required infrastructure.
+adapter, now applied uniformly. When configured, each OpenAI-backed model is registered through
+the generic model/provider registry under the `backend` execution path. The runtime first resolves
+the model and target, then that model's provider adapter; it never branches on
+`executionTarget === "openai"`. The `openai-fast` / `openai-reasoning` catalog models and their
+provider metadata remain legitimate selectable options, not required infrastructure.
 This adapter (renamed from `createCloudFallbackProvider`/`cloud-fallback.ts` when the automatic
 local-to-cloud escalation feature was removed - see "No implicit `"backend"` default" above) now
 backs only explicit, deliberately-configured OpenAI model selection, never an automatic retry.
@@ -171,7 +201,17 @@ scoped to those exact repository-seeded entity ids. A working rollback
 (`infra/db/rollbacks/067_provider_agnostic_runtime_default.down.sql`) restores the pre-067 state
 exactly, since this migration is fully reversible (unlike 065's table drops).
 
-Verified live: applied to a local Postgres already migrated through 066, `pnpm db:verify-schema`
+`infra/db/migrations/069_provider_neutral_execution_targets.sql` then converts every persisted
+`executionTarget: "openai"` value in the active binding/native graph to `"backend"`, replaces the
+legacy binding check constraint with the four-target contract, and neutralizes matching execution
+hosts. Existing model `provider` and `providerModelId` fields are deliberately untouched. Provider
+credential references formerly stored on provider-named hosts are preserved in model configuration
+before host credentials are cleared. Before transforming anything, migration 069 snapshots the
+exact affected model, host, and binding envelopes. Its paired rollback restores those snapshots
+and the pre-069 constraint for a coordinated downgrade to the older application, then removes the
+backup table. The current application and forward schema still expose only the four neutral targets.
+
+Migration 067 was verified live against a local Postgres already migrated through 066; `pnpm db:verify-schema`
 passes with `globalDefaultRuntimeStatus: "draft"`, and `createPostgresCp2Store` boots against it
 without error.
 

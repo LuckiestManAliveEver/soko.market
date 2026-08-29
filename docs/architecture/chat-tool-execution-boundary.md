@@ -81,8 +81,8 @@ distinct, non-overlapping job, enforced by the actual UI flow
 (`apps/web/src/SokoApplication.tsx`), not just by convention:
 
 1. **`cp2_agent_model_bindings`** (`AgentModelBindingSummary`) — the canonical binding for
-   _server-side_ execution targets (backend/Ollama, OpenAI, installed-app native bridge,
-   remote-shop-device). Set only via `POST /api/agents/:agentId/models/:modelId/activate`, which
+   provider-neutral execution targets (`backend`, `browser-local`, installed-app native bridge,
+   and `remote-shop-device`). Set only via `POST /api/agents/:agentId/models/:modelId/activate`, which
    re-runs a real inference health check before flipping the binding to `active`
    (`store.ts:3492`, `requireModelRuntimeAdapter(...).healthCheck(...)`). This is what
    `Cp2Store.resolveActiveRuntimeModelId` checks first when a runtime turn needs a model.
@@ -93,15 +93,27 @@ distinct, non-overlapping job, enforced by the actual UI flow
    (`SokoApplication.tsx:13195`) — a device model is not considered "ready" until it has proven
    itself with a real completion, mirroring the health-check discipline of layer 1 at the device
    level.
-3. **`activeAiModels`** (`PUT /businesses/:id/ai-model`, `activateAiModel`) — the **cloud fallback**
-   selector only. The UI explicitly blocks setting a cloud fallback model until layer 2 reports a
-   ready local model (`SokoApplication.tsx:13197-13202`, `"Download, connect, and test a GGUF model
-before selecting an OpenAI fallback."`). It is never the primary model source; it is only
-   consulted by `resolveActiveRuntimeModelId` as a last-resort model ID when no verified binding
-   (layer 1) exists.
+3. **`activeAiModels`** (`PUT /businesses/:id/ai-model`, `activateAiModel`) — the **hosted fallback
+   model** selector only. It is never the primary model source; it is only consulted by
+   `resolveActiveRuntimeModelId` as a last-resort model ID when no verified binding (layer 1)
+   exists.
 
-None of the three is reachable without a prior real-inference success gate somewhere in its own
-layer. There is no path to "chat is running on a model that was never confirmed to work."
+> **Correction (2026-08-29):** this section originally said "the UI blocks setting a hosted
+> fallback model until layer 2 reports a ready local model" and that none of the three layers is
+> reachable without a prior real-inference success gate. Neither is still true. Zero-setup hosted
+> execution (`docs/architecture/native-agent-model-runtime.md`) removed the local-model
+> prerequisite from ordinary chat, and its own gate is deliberately weaker than layers 1-2's: `
+> AgentRuntimeDomain.ensureDefaultRuntimeForTurn` (`store.ts`) only requires a configured adapter's
+> `canRun(...)` to report available — an advisory availability probe, not a completed real
+> inference — before `NativeRuntimeBindingStore.ensureDefaultRuntimeBinding` provisions a binding.
+> This is intentional: the alternative is a real inference call, with its cost and latency, on
+> every fresh account before the first message can even be attempted. The residual risk is the same
+> shape as the heuristic-miss risk two sections up - a `canRun: true` adapter can still fail its
+> first real `generate` call - which is why that failure is retryable and falls through the
+> ordered execution-target chain (`docs/architecture/native-agent-model-runtime.md#resolution-and-fallback`)
+> rather than being treated as fatal. Layers 1 and 2 above still gate on a completed real inference
+> exactly as described; only the zero-setup provisioning path trades that guarantee for
+> zero-setup availability.
 
 ## Verification
 

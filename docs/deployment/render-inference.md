@@ -24,8 +24,9 @@ provider boundary requires all of the following:
 - an allow-listed cloud model;
 - a server-only provider key; and
 - the shop owner explicitly activating that model for their agent (native runtime
-  `ModelExecutionTarget: "openai"`, or the legacy `/api/agents/:agentId/models/:modelId/activate`
-  route) - there is no separate "cloud consent" toggle; activating the model is the consent.
+  `ModelExecutionTarget: "backend"` plus the model's independent `provider: "openai"` identity, or
+  the legacy `/api/agents/:agentId/models/:modelId/activate` route) - there is no separate "cloud
+  consent" toggle; activating the model is the consent.
 
 No prompt is ever sent to the cloud merely because a browser or backend model is slow, unavailable,
 or fails - a failed model surfaces a routing error instead of silently retrying elsewhere.

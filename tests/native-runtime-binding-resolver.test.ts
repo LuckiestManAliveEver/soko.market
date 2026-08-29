@@ -106,6 +106,81 @@ describe("native runtime binding resolver", () => {
     expect(resolved.selected.model.id).toBe("local-model-y");
   });
 
+  it("binds fallback by model identity and an independent target, never by provider name", () => {
+    const store = new NativeRuntimeBindingStore();
+    const fallbackModel: AiModelSummary = {
+      ...localCatalogModel("provider-backed-fallback"),
+      provider: "openai",
+      source: "hosted",
+      format: null
+    };
+
+    const binding = store.activateVerifiedModel({
+      accountId: "account-1",
+      businessId: "business-1",
+      agentId: "agent-1",
+      agentName: "Agent",
+      model: localCatalogModel("local-primary"),
+      executionTarget: "browser-local",
+      fallbackModel,
+      fallbackExecutionTarget: "backend",
+      updatedBy: "user-1",
+      checkedAt: timestamp
+    });
+
+    const roles = [...store.bindingModelsMap.values()].filter(
+      (role) => role.runtimeBindingId === binding.id
+    );
+    const fallbackRole = roles.find((role) => role.role === "fallback");
+    expect(fallbackRole?.modelId).toBe("provider-backed-fallback");
+    expect(store.modelsMap.get("provider-backed-fallback")).toMatchObject({
+      provider: "openai",
+      configuration: { executionTarget: "backend" }
+    });
+    expect(store.hostsMap.get(fallbackRole?.executionHostId ?? "")).toMatchObject({
+      type: "backend",
+      credentialReference: null
+    });
+  });
+
+  it("never reassigns another account's active binding for the same shop-scoped agentId", () => {
+    const store = new NativeRuntimeBindingStore();
+    const activate = (accountId: string) =>
+      store.activateVerifiedModel({
+        accountId,
+        businessId: "business-1",
+        agentId: "agent-1",
+        agentName: "Agent",
+        model: localCatalogModel(`model-${accountId}`),
+        executionTarget: "backend",
+        fallbackModel: null,
+        updatedBy: accountId,
+        checkedAt: timestamp
+      });
+
+    // agentId is shop-scoped, so two staff accounts on the same shop share it - the second
+    // account's activation must create its own binding, not hijack the first account's.
+    const bindingA = activate("account-a");
+    const bindingB = activate("account-b");
+
+    expect(bindingB.id).not.toBe(bindingA.id);
+    expect(bindingB.accountId).toBe("account-b");
+    expect(store.bindingsMap.get(bindingA.id)).toMatchObject({
+      accountId: "account-a",
+      status: "active"
+    });
+    expect(store.bindingsMap.get(bindingB.id)).toMatchObject({
+      accountId: "account-b",
+      status: "active"
+    });
+    const primaryRoleFor = (bindingId: string) =>
+      [...store.bindingModelsMap.values()].find(
+        (role) => role.runtimeBindingId === bindingId && role.role === "primary"
+      );
+    expect(primaryRoleFor(bindingA.id)?.modelId).toBe("model-account-a");
+    expect(primaryRoleFor(bindingB.id)?.modelId).toBe("model-account-b");
+  });
+
   it("rejects assigning the global default a model missing a required capability", () => {
     const store = new NativeRuntimeBindingStore();
     expect(() =>

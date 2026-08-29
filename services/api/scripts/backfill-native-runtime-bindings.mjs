@@ -8,6 +8,12 @@ export function planNativeRuntimeBackfill(input) {
   const conflicts = [];
   const skipped = [];
   const activeByAgent = new Map();
+  const modelMetadata = new Map(
+    (input.nativeRuntimeModels ?? []).map((envelope) => {
+      const model = envelope.record ?? envelope;
+      return [model.id, model];
+    })
+  );
 
   for (const envelope of input.agentModelBindings ?? []) {
     const binding = envelope.record ?? envelope;
@@ -35,8 +41,9 @@ export function planNativeRuntimeBackfill(input) {
   for (const binding of activeByAgent.values()) {
     const timestamp = binding.updatedAt ?? binding.activatedAt ?? new Date(0).toISOString();
     const nativeBindingId = `native:legacy:${binding.id}`;
+    const primaryTarget = normalizeLegacyExecutionTarget(binding.executionTarget);
     const primaryHostId = stableUuid(
-      `native-runtime-host:${binding.accountId}:${binding.executionTarget}`
+      `native-runtime-host:${binding.accountId}:${binding.shopId}:${primaryTarget}`
     );
     actions.push(
       action("agent", binding.agentId, {
@@ -54,8 +61,13 @@ export function planNativeRuntimeBackfill(input) {
         createdAt: binding.createdAt ?? timestamp,
         updatedAt: timestamp
       }),
-      modelAction(binding.modelId, binding.executionTarget, timestamp),
-      hostAction(primaryHostId, binding, binding.executionTarget, timestamp),
+      modelAction(
+        binding.modelId,
+        primaryTarget,
+        timestamp,
+        modelMetadata.get(binding.modelId)?.provider
+      ),
+      hostAction(primaryHostId, binding, primaryTarget, timestamp),
       installationAction(binding.modelId, primaryHostId, timestamp),
       action("binding", nativeBindingId, {
         id: nativeBindingId,
@@ -74,14 +86,19 @@ export function planNativeRuntimeBackfill(input) {
       roleAction(nativeBindingId, binding.modelId, "primary", 0, primaryHostId, timestamp)
     );
     if (binding.fallbackModelId) {
-      const fallbackTarget = binding.fallbackModelId.startsWith("openai-")
-        ? "openai"
-        : binding.executionTarget;
+      const persistedFallbackTarget = modelMetadata.get(binding.fallbackModelId)?.configuration
+        ?.executionTarget;
+      const fallbackTarget = normalizeLegacyExecutionTarget(persistedFallbackTarget ?? "backend");
       const fallbackHostId = stableUuid(
-        `native-runtime-host:${binding.accountId}:${fallbackTarget}`
+        `native-runtime-host:${binding.accountId}:${binding.shopId}:${fallbackTarget}`
       );
       actions.push(
-        modelAction(binding.fallbackModelId, fallbackTarget, timestamp),
+        modelAction(
+          binding.fallbackModelId,
+          fallbackTarget,
+          timestamp,
+          modelMetadata.get(binding.fallbackModelId)?.provider
+        ),
         hostAction(fallbackHostId, binding, fallbackTarget, timestamp),
         installationAction(binding.fallbackModelId, fallbackHostId, timestamp),
         roleAction(
@@ -156,7 +173,7 @@ export function planNativeRuntimeBackfill(input) {
       const role = index === 0 ? "primary" : "fallback";
       const priority = role === "primary" ? 0 : index - 1;
       actions.push(
-        modelAction(modelId, "retired-fabric", timestamp),
+        modelAction(modelId, "retired-fabric", timestamp, modelMetadata.get(modelId)?.provider),
         roleAction(bindingId, modelId, role, priority, null, timestamp)
       );
     }
@@ -201,7 +218,12 @@ export function planNativeRuntimeBackfill(input) {
     const timestamp =
       installation.updatedAt ?? installation.installedAt ?? new Date(0).toISOString();
     actions.push(
-      modelAction(installation.modelId, "retired-fabric", timestamp),
+      modelAction(
+        installation.modelId,
+        "retired-fabric",
+        timestamp,
+        modelMetadata.get(installation.modelId)?.provider
+      ),
       action("installation", installation.id, {
         id: installation.id,
         modelId: installation.modelId,
@@ -231,11 +253,11 @@ function uniqueStrings(value) {
   return [...new Set(Array.isArray(value) ? value.filter((item) => typeof item === "string") : [])];
 }
 
-function modelAction(modelId, executionTarget, timestamp) {
+function modelAction(modelId, executionTarget, timestamp, provider) {
   return action("model", modelId, {
     id: modelId,
     name: modelId,
-    provider: modelId.startsWith("openai-") ? "openai" : "local",
+    provider: typeof provider === "string" && provider !== "" ? provider : "legacy",
     providerModelId: modelId,
     runtimeContractVersion: "1",
     capabilities: ["chat", "tool-routing"],
@@ -257,11 +279,15 @@ function hostAction(id, binding, executionTarget, timestamp) {
     status: "available",
     capabilities: [executionTarget],
     configuration: { executionTarget, source: "verified-legacy-binding" },
-    credentialReference: executionTarget === "openai" ? "env:OPENAI_API_KEY" : null,
+    credentialReference: null,
     lastKnownHealthyAt: binding.lastVerifiedAt,
     createdAt: binding.createdAt ?? timestamp,
     updatedAt: timestamp
   });
+}
+
+function normalizeLegacyExecutionTarget(executionTarget) {
+  return executionTarget === "openai" ? "backend" : executionTarget;
 }
 
 function installationAction(modelId, hostId, timestamp) {
@@ -312,8 +338,12 @@ async function readSources(client) {
     client,
     "cp2_runtime_model_installations"
   );
+  const nativeRuntimeModels = await client.query(
+    "select record, business_id, account_id from cp2_native_runtime_models order by entity_id"
+  );
   return {
     agentModelBindings: bindings.rows,
+    nativeRuntimeModels: nativeRuntimeModels.rows,
     modelPreferences: preferences,
     runtimeHosts,
     runtimeModelInstallations

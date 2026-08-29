@@ -77,11 +77,9 @@ import { executeInferenceRoute } from "../inference/executor";
 import { readClientInferencePreferences } from "../inference/preferences";
 import { createRemoteInferenceProvider } from "../inference/remote-provider";
 import { decideClientInferenceRoute, defaultInferencePriority } from "../inference/router";
-import { downloadedAgentModelMustStayLocal } from "../inference/local-runtime-boundary";
 import { collectClientWorkspaceFileTransfers } from "../local-workspace-files";
 import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "../lib/api";
 import { queueMessagingOutbox } from "../messaging/outbox";
-import { readDeviceOssAgentBinding } from "../oss-agent-installation";
 import {
   clientInferenceFeatureFlags,
   runtimeManager,
@@ -359,8 +357,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       return;
     }
     const localDeviceId = getOrCreateDeviceModelScopeId();
-    const localAgentBinding =
-      business === null ? null : readDeviceOssAgentBinding(business.id, localDeviceId);
     const localAssignment =
       business === null ? null : readDeviceAgentModelAssignment(business.id, localDeviceId);
     const readyLocalAssignment =
@@ -401,7 +397,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           }
         : readClientInferencePreferences(session.account.id, business.id);
     const requiresServerTool = requestRequiresServerTool(runtimeMessage);
-    const isHashtagRuntimeCall = /^\s*#/.test(runtimeMessage);
     const availableRuntimeTools = requiresServerTool
       ? (Object.keys(runtimeToolRegistry) as RuntimeToolName[])
       : [];
@@ -419,19 +414,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         ? listCachedBrowserModelIds(session.account.id).catch(() => [])
         : Promise.resolve<string[]>([])
     ]);
-    const downloadedBrowserModelReady =
-      browserState?.settings?.enabled === true &&
-      browserState.settings.status === "ready" &&
-      browserState.settings.downloadedAt !== null &&
-      browserState.settings.selectedModelId !== null &&
-      cachedBrowserModelIds.includes(browserState.settings.selectedModelId);
-    const downloadedAgentAndModelActive = downloadedAgentModelMustStayLocal({
-      linkedAgentDefinitionId: localAgentBinding?.agentDefinitionId ?? null,
-      activeAgentDefinitionId: agentSettings.agentDefinitionId,
-      installedGgufReady:
-        localInstallation !== null && readyLocalAssignment?.preferredExecutionMode !== "CLOUD_ONLY",
-      cachedBrowserModelReady: downloadedBrowserModelReady
-    });
     const inferenceModelId =
       localInstallation?.modelId ?? browserState?.settings?.selectedModelId ?? agentSettings.model;
     const ownerNodeReachable =
@@ -683,7 +665,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       inferenceRequest !== null &&
       business !== null &&
       ownerNodeReachable &&
-      !downloadedAgentAndModelActive &&
+      readyLocalAssignment?.preferredExecutionMode !== "LOCAL_ONLY" &&
       !requiresServerTool
     ) {
       inferenceProviders.push(
@@ -702,8 +684,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       priority: defaultInferencePriority,
       maximumFallbacks: clientInferenceFeatureFlags.maximumFallbacks,
       allowNativeBridge: clientInferenceFeatureFlags.nativeBridge,
-      allowOwnerNode:
-        clientInferenceFeatureFlags.ownerNode && !localOnly && !downloadedAgentAndModelActive,
+      allowOwnerNode: clientInferenceFeatureFlags.ownerNode && !localOnly,
       requireCachedBrowserModelWhenOffline: true,
       privacyMode: inferencePreferences.ownerNodeAllowed
         ? ("tenant-devices" as const)
@@ -724,8 +705,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }).catch(() => null);
     }
     const shouldResolveClientInference = inferenceRoute !== null;
-    const shouldRequestServerInference =
-      !shouldResolveClientInference && !downloadedAgentAndModelActive;
+    const shouldRequestServerInference = !shouldResolveClientInference;
     let activeServerRuntimeSessionId = resolvedInferenceRuntimeSessionId;
     if (
       !hasHumanRecipient &&
@@ -1261,7 +1241,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             updatedAt: new Date().toISOString()
           });
         }
-        if (downloadedAgentAndModelActive || localOnly) {
+        if (localOnly) {
           await appendAgentMessage(
             "No permitted local inference provider could process this message. Check the model and device runtime, then try again."
           );
@@ -1475,14 +1455,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       await appendAgentMessage(
         "Choose or create a shop before asking the authorized business runtime to act."
       );
-      return;
-    }
-
-    if (downloadedAgentAndModelActive && !isHashtagRuntimeCall) {
-      await appendAgentMessage(
-        "The runnable model copy stays on this device, but no browser inference runtime could process this message. Check the local model and try again; the account copy remains available for restore."
-      );
-      setStatusMessage("Local browser inference unavailable · No server inference used");
       return;
     }
 

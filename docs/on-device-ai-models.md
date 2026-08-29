@@ -78,10 +78,10 @@ enabled only when `LOCAL_MODEL_ENABLED=true`, so it never advertises an unavaila
 
 Hosted OpenAI profiles are enabled when the API has `OPENAI_API_KEY`. They are processed through
 the OpenAI Responses API and can be configured with `OPENAI_FAST_MODEL` and
-`OPENAI_REASONING_MODEL`. OpenAI has no implicit default and cannot be the agent's primary model.
-The merchant must first connect and successfully test a downloaded GGUF model, enable explicit
-OpenAI fallback consent, and select an available hosted profile. That selection is stored
-separately and never detaches, replaces, or rewrites the downloaded model assignment.
+`OPENAI_REASONING_MODEL`. OpenAI has no implicit default. Like any hosted provider model, it is
+selected by model identity and runs through the provider-neutral `backend` target. The separate
+hosted-fallback selector stores a model ID, not a vendor choice, and never detaches, replaces, or
+rewrites the downloaded model assignment.
 
 ## Device-switch and resource fallback
 
@@ -91,17 +91,15 @@ model library, after which Soko validates and registers a new device-scoped inst
 then, the API marks the local installation missing. It never runs GGUF inference inside Neon,
 converts the assignment into `CLOUD_ONLY`, or selects an OpenAI model from environment defaults.
 
-If the merchant previously selected an OpenAI fallback, a new device can display a separate
-consent prompt before any chat context is sent to it. Declining keeps OpenAI off and preserves the
-downloaded-model preference. Accepting stores consent only for that account and shop on the current
-device. The inference ladder remains: healthy downloaded model through the llama.cpp-compatible
-native harness, supported browser model, trusted owner device, explicitly selected and consented
-OpenAI fallback, then deterministic server behavior.
+If the merchant selected a hosted fallback model, a new device can display a separate consent
+prompt before any chat context is sent to it. Declining preserves the downloaded-model preference.
+Accepting stores consent only for that account and shop on the current device. Any fallback is an
+explicit model binding; the runtime never chooses a vendor because a local target failed.
 
-If no explicitly selected, allow-listed OpenAI provider is healthy, the local assignment remains
-unchanged and routing continues to deterministic compatibility behavior. API keys remain
-server-only; users never enter or handle an OpenAI API key. Token budgets, timeouts, retry limits,
-and the cloud circuit breaker still apply.
+If the explicitly selected hosted model's provider is unavailable, the local assignment remains
+unchanged and the generic provider error is surfaced. API keys remain server-only; users never
+enter or handle provider keys. Provider-specific token budgets, timeouts, retry limits, and circuit
+breakers still apply inside adapters.
 
 The phone ranks compatible Hugging Face and GitHub candidates using reported RAM, free private
 storage, model size, useful capabilities, and catalog recommendations. An install remains a

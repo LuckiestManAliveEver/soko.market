@@ -19,27 +19,28 @@
  * `parseProductBody` (sales) and `parseLogisticsBody` (logistics).
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type {
-  AgentContextSource,
-  AgentEvaluationPolicy,
-  AgentInstructions,
-  AgentMemoryPolicy,
-  AgentModelBindingPermissions,
-  AgentModelReadinessStatus,
-  AgentModelRuntimeBackend,
-  AgentOwnerCorrection,
-  AgentPersonality,
-  AgentSkillBinding,
-  BrowserCheckpointCompatibilityContract,
-  BrowserDeviceTier,
-  BrowserRuntimeContract,
-  ClientInferenceCompletion,
-  InstalledAgentModelSummary,
-  ModelCompatibilityStatus,
-  ModelExecutionTarget,
-  ModelInstallationStatus,
-  PreferredExecutionMode,
-  OssAgentSummary
+import {
+  isModelExecutionTarget,
+  type AgentContextSource,
+  type AgentEvaluationPolicy,
+  type AgentInstructions,
+  type AgentMemoryPolicy,
+  type AgentModelBindingPermissions,
+  type AgentModelReadinessStatus,
+  type AgentModelRuntimeBackend,
+  type AgentOwnerCorrection,
+  type AgentPersonality,
+  type AgentSkillBinding,
+  type BrowserCheckpointCompatibilityContract,
+  type BrowserDeviceTier,
+  type BrowserRuntimeContract,
+  type ClientInferenceCompletion,
+  type InstalledAgentModelSummary,
+  type ModelCompatibilityStatus,
+  type ModelExecutionTarget,
+  type ModelInstallationStatus,
+  type PreferredExecutionMode,
+  type OssAgentSummary
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, isSupportedLanguage, readSessionCookie } from "../../store.js";
@@ -1520,13 +1521,7 @@ function parsePreferredExecutionMode(value: unknown): PreferredExecutionMode {
 }
 
 function parseModelExecutionTarget(value: unknown): ModelExecutionTarget {
-  if (
-    value === "backend" ||
-    value === "browser-local" ||
-    value === "installed-app" ||
-    value === "remote-shop-device" ||
-    value === "openai"
-  ) {
+  if (isModelExecutionTarget(value)) {
     return value;
   }
   throw new Cp2Error(400, "execution_target_invalid", "Execution target is invalid.");

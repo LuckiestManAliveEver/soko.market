@@ -427,21 +427,6 @@ export class AgentRuntimeDomain {
         "The selected backend fallback model is unavailable."
       );
     }
-    const hasReadyLocalModel = [...this.agentModelAssignments.values()].some(
-      (assignment) =>
-        assignment.businessId === input.businessId &&
-        assignment.activeModelInstallationId !== null &&
-        assignment.readinessStatus === "READY" &&
-        assignment.lastSuccessfulInferenceAt !== null &&
-        assignment.runtimeBackend !== "CLOUD"
-    );
-    if (!hasReadyLocalModel) {
-      throw new Cp2Error(
-        409,
-        "local_model_required",
-        "Connect and test a downloaded model before selecting a backend fallback model."
-      );
-    }
     const selection: ActiveAiModelSummary = {
       businessId: input.businessId,
       modelId: model?.id ?? input.modelId,
@@ -1460,14 +1445,6 @@ export class AgentRuntimeDomain {
     if ((!deviceModel && model === undefined) || model?.available === false) {
       throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
     }
-    if (model?.source === "hosted") {
-      throw new Cp2Error(
-        400,
-        "cloud_model_cannot_be_primary",
-        "A hosted model can only be selected explicitly as a fallback after a local model is ready."
-      );
-    }
-
     const updated: BusinessAgentProfileSummary = {
       businessId: input.businessId,
       tenantId: input.businessId,
@@ -2310,6 +2287,21 @@ export class AgentRuntimeDomain {
     }
     const hashtagInvocation = parseRuntimeHashtagInvocation(input.message);
     const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
+    if (
+      input.conversationId !== undefined &&
+      input.clientInferenceCompletion === undefined &&
+      input.confirmationToken === undefined &&
+      hashtagInvocation === null
+    ) {
+      await this.ensureDefaultRuntimeForTurn({
+        conversationId: input.conversationId,
+        businessId: input.businessId,
+        accountId: auth.account.id,
+        userId: auth.user.id,
+        profile: storedAgentProfile,
+        now
+      });
+    }
     const { activeBinding, activeModelId, nativeResolution } = this.resolveActiveRuntimeModelId(
       input.businessId,
       storedAgentProfile,
@@ -2965,7 +2957,9 @@ export class AgentRuntimeDomain {
   } {
     const activeBinding = this.activeAgentModelBinding(storedAgentProfile.agentId);
     const nativeResolution =
-      conversationId === undefined ? null : this.deps.resolveNativeRuntimeBinding(conversationId);
+      conversationId === undefined
+        ? null
+        : this.deps.resolveNativeRuntimeBinding(conversationId, businessId);
     const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
       this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId
     );
@@ -2978,6 +2972,94 @@ export class AgentRuntimeDomain {
         ? selectedCloudFallbackModelId
         : "sokoclaw-local");
     return { activeBinding, activeModelId, nativeResolution };
+  }
+
+  /**
+   * Lazy, idempotent first-chat provisioning. Only server-reachable adapters participate here;
+   * browser and installed-app runtimes are request-device capabilities and are resolved by the
+   * client protocol instead of being guessed by the API. A configured adapter must affirm
+   * availability before its host is persisted as usable.
+   */
+  private async ensureDefaultRuntimeForTurn(input: {
+    conversationId: string;
+    businessId: string;
+    accountId: string;
+    userId: string;
+    profile: BusinessAgentProfileSummary;
+    now: Date;
+  }): Promise<void> {
+    const nativeResolution = this.deps.resolveNativeRuntimeBinding(
+      input.conversationId,
+      input.businessId
+    );
+    const hasBackendRuntime =
+      nativeResolution !== null &&
+      [nativeResolution.primary, ...nativeResolution.fallbacks].some(
+        (candidate) =>
+          candidate.available &&
+          (candidate.host?.type ?? candidate.model.configuration.executionTarget) === "backend"
+      );
+    if (hasBackendRuntime) return;
+    const explicitBinding = this.activeAgentModelBinding(input.profile.agentId);
+    if (explicitBinding?.executionMode === "LOCAL_ONLY") return;
+    if (this.deps.modelRuntimeAdapterResolver === undefined) return;
+
+    const preferredIds = uniqueModelIds([
+      input.profile.modelId,
+      this.activeAiModels.get(input.businessId)?.modelId,
+      defaultAiModelId,
+      ...aiModelRegistry
+        .filter((model) => model.available && model.capabilities.includes("tool-routing"))
+        .sort((left, right) => Number(right.recommended) - Number(left.recommended))
+        .map((model) => model.id)
+    ]);
+    const candidates: Array<{
+      model: AiModelSummary;
+      executionTarget: "backend";
+      checkedAt: string;
+    }> = [];
+    for (const modelId of preferredIds) {
+      const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
+      if (model === undefined || !model.available || !model.capabilities.includes("tool-routing")) {
+        continue;
+      }
+      const adapter = this.deps.modelRuntimeAdapterResolver({
+        modelId,
+        executionTarget: "backend",
+        agentId: input.profile.agentId,
+        shopId: input.businessId
+      });
+      if (adapter === undefined) continue;
+      try {
+        const availability = await adapter.canRun({
+          modelId,
+          agentId: input.profile.agentId,
+          shopId: input.businessId
+        });
+        if (availability.available) {
+          candidates.push({
+            model,
+            executionTarget: "backend",
+            checkedAt: input.now.toISOString()
+          });
+        }
+      } catch {
+        // Availability probing is advisory and provider-neutral. Another compatible adapter may
+        // still satisfy the request, and details are intentionally not exposed to the merchant.
+      }
+      if (candidates.length >= 2) break;
+    }
+    if (candidates.length === 0) return;
+    this.deps.ensureDefaultRuntimeBinding({
+      conversationId: input.conversationId,
+      businessId: input.businessId,
+      accountId: input.accountId,
+      agentId: input.profile.agentId,
+      agentName: input.profile.name,
+      candidates,
+      updatedBy: input.userId,
+      checkedAt: input.now.toISOString()
+    });
   }
 
   private recordAgentModelBindingAudit(
@@ -3189,16 +3271,24 @@ export class AgentRuntimeDomain {
   resolveRuntimeModelProvider(
     shopRuntime: ShopAgentRuntime,
     modelId: string,
-    conversationId?: string
+    conversationId?: string,
+    attemptedRuntimeKeys?: ReadonlySet<string>
   ): {
     provider: RuntimeModelProvider | undefined;
     binding: AgentModelBindingSummary | null;
     executionTarget: ModelExecutionTarget | undefined;
     resolutionSource: ExecutionTargetResolutionSource | null;
+    runtimeKey: string | null;
+    runtimeBindingId: string | null;
+    resolvedModelId: string;
+    executionHostId: string | null;
+    fallbackIndex: number;
   } {
     const binding = this.activeAgentModelBinding(shopRuntime.agentId);
     const nativeResolution =
-      conversationId === undefined ? null : this.deps.resolveNativeRuntimeBinding(conversationId);
+      conversationId === undefined
+        ? null
+        : this.deps.resolveNativeRuntimeBinding(conversationId, shopRuntime.shopId);
     return resolveNativeRuntimeModelProvider({
       shopRuntime,
       requestedModelId: modelId,
@@ -3211,7 +3301,11 @@ export class AgentRuntimeDomain {
         : { runtimeModelProvider: this.deps.runtimeModelProvider }),
       ...(this.deps.runtimeModelProviderResolver === undefined
         ? {}
-        : { runtimeModelProviderResolver: this.deps.runtimeModelProviderResolver })
+        : { runtimeModelProviderResolver: this.deps.runtimeModelProviderResolver }),
+      ...(attemptedRuntimeKeys === undefined ? {} : { attemptedRuntimeKeys }),
+      // Remote-shop-device execution is negotiated by the authenticated owner-node client
+      // protocol. This in-process provider call can execute only server-reachable backend hosts.
+      eligibleExecutionTargets: new Set<ModelExecutionTarget>(["backend"])
     });
   }
 
@@ -3239,8 +3333,13 @@ export class AgentRuntimeDomain {
   }> {
     return createRuntimeModelRoute(
       {
-        resolveRuntimeModelProvider: (runtime, modelId) =>
-          this.resolveRuntimeModelProvider(runtime, modelId, input.conversationId)
+        resolveRuntimeModelProvider: (runtime, modelId, attemptedRuntimeKeys) =>
+          this.resolveRuntimeModelProvider(
+            runtime,
+            modelId,
+            input.conversationId,
+            attemptedRuntimeKeys
+          )
       },
       input
     );
@@ -3364,4 +3463,16 @@ export class AgentRuntimeDomain {
       turn: input.turn
     };
   }
+}
+
+function uniqueModelIds(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (normalized === undefined || normalized === "" || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
 }

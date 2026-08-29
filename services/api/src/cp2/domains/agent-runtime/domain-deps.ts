@@ -17,6 +17,8 @@ import type {
   ModelExecutionTarget,
   NativeRuntimeBindingSummary,
   NativeRuntimeActivationInput,
+  NativeDefaultRuntimeProvisioningInput,
+  NativeDefaultRuntimeProvisioningResult,
   ResolvedNativeRuntimeBinding,
   NotificationInbox,
   ProductFieldDefinition,
@@ -293,10 +295,20 @@ export interface AgentRuntimeDomainDeps {
   // model configured, nothing currently available, etc.) - callers fall back to the legacy
   // agent-model-binding path rather than treating it as an error. See resolveNativeRuntimeBinding
   // in store.ts and docs/architecture/provider-neutral-runtime.md §5.
-  resolveNativeRuntimeBinding: (conversationId: string) => ResolvedNativeRuntimeBinding | null;
+  //
+  // businessId is the caller's already-authorized shop (from the request path/session, never the
+  // client body) - the implementation must reject a conversationId that belongs to another shop
+  // rather than silently resolving that shop's binding/model/host for this request.
+  resolveNativeRuntimeBinding: (
+    conversationId: string,
+    businessId: string
+  ) => ResolvedNativeRuntimeBinding | null;
   activateVerifiedRuntimeBinding: (
     input: NativeRuntimeActivationInput
   ) => NativeRuntimeBindingSummary;
+  ensureDefaultRuntimeBinding: (
+    input: NativeDefaultRuntimeProvisioningInput
+  ) => NativeDefaultRuntimeProvisioningResult;
   deactivateRuntimeBinding: (input: {
     businessId: string;
     accountId: string;

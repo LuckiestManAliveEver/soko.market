@@ -1,9 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import type {
   AiModelSummary,
   ConversationSummary,
   ModelExecutionTarget,
+  NativeDefaultRuntimeProvisioningInput,
+  NativeDefaultRuntimeProvisioningResult,
+  NativeRuntimeAvailabilityStatus,
   NativeRuntimeActivationInput,
   NativeExecutionHostSummary,
   NativeModelInstallationSummary,
@@ -162,13 +165,21 @@ export class NativeRuntimeBindingStore {
     });
     this.upsertInstallation(primaryModel.id, primaryHost.id, timestamp);
 
+    // accountId must scope this lookup exactly like every other binding lookup in this store
+    // (ensureDefaultRuntimeBinding's "existing" check, assignConversationBinding) - otherwise two
+    // staff accounts on the same shop share one agentId, and the second account's first activation
+    // silently reassigns the first account's already-provisioned binding to itself instead of
+    // creating its own.
     const matching = [...this.bindings.values()].find(
       (binding) =>
         binding.businessId === input.businessId &&
+        binding.accountId === input.accountId &&
         binding.agentId === agent.id &&
         binding.status === "active"
     );
-    const bindingId = matching?.id ?? randomUUID();
+    const bindingId =
+      matching?.id ??
+      stableUuid(`native-runtime-binding:${input.accountId}:${input.businessId}:${input.agentId}`);
     const binding: NativeRuntimeBindingSummary = {
       id: bindingId,
       businessId: input.businessId,
@@ -188,8 +199,7 @@ export class NativeRuntimeBindingStore {
       roleRecord(binding.id, primaryModel.id, "primary", 0, primaryHost.id, timestamp)
     ];
     if (input.fallbackModel !== null) {
-      const fallbackTarget: ModelExecutionTarget =
-        input.fallbackModel.provider === "openai" ? "openai" : input.executionTarget;
+      const fallbackTarget = input.fallbackExecutionTarget ?? input.executionTarget;
       const fallbackModel = this.upsertCatalogModel(input.fallbackModel, fallbackTarget, timestamp);
       const fallbackHost = this.upsertVerifiedHost({
         accountId: input.accountId,
@@ -207,6 +217,7 @@ export class NativeRuntimeBindingStore {
     for (const existingBinding of this.bindings.values()) {
       if (
         existingBinding.id !== binding.id &&
+        existingBinding.accountId === binding.accountId &&
         existingBinding.agentId === binding.agentId &&
         existingBinding.status === "active"
       ) {
@@ -225,6 +236,132 @@ export class NativeRuntimeBindingStore {
     for (const role of roles) this.bindingModels.set(role.id, role);
     this.bindings.set(binding.id, binding);
     return { ...binding };
+  }
+
+  /**
+   * Idempotently provisions the minimum shop-scoped graph needed by first chat. Candidates have
+   * already passed adapter availability checks, so this method performs no network I/O. Existing
+   * active bindings are never reset: explicit local-only/model preferences remain authoritative.
+   * Stable IDs make simultaneous first-chat requests converge even across API processes.
+   */
+  ensureDefaultRuntimeBinding(
+    input: NativeDefaultRuntimeProvisioningInput
+  ): NativeDefaultRuntimeProvisioningResult {
+    const candidates = dedupeProvisioningCandidates(input.candidates);
+    const existing = [...this.bindings.values()]
+      .filter(
+        (binding) =>
+          binding.businessId === input.businessId &&
+          binding.accountId === input.accountId &&
+          binding.agentId === input.agentId &&
+          binding.status === "active"
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    if (existing !== undefined) {
+      // An explicit local preference remains the primary. When its policy permits fallback, the
+      // domain calls this method with an adapter-verified backend candidate so a later server
+      // request has somewhere legitimate to run instead of treating the local host as reachable
+      // from the API process.
+      const roles = [...this.bindingModels.values()].filter(
+        (role) => role.runtimeBindingId === existing.id && role.enabled
+      );
+      const hasBackendRole = roles.some(
+        (role) =>
+          (role.executionHostId === null
+            ? this.models.get(role.modelId)?.configuration.executionTarget
+            : this.hosts.get(role.executionHostId)?.type) === "backend"
+      );
+      const backendCandidate = candidates.find(
+        (candidate) => candidate.executionTarget === "backend"
+      );
+      if (!hasBackendRole && backendCandidate !== undefined) {
+        const agent = this.requireActiveAgent(existing);
+        const model = this.upsertCatalogModel(
+          backendCandidate.model,
+          backendCandidate.executionTarget,
+          input.checkedAt
+        );
+        this.validateCapabilityMatch(agent, model);
+        const host = this.upsertVerifiedHost({
+          accountId: input.accountId,
+          businessId: input.businessId,
+          executionTarget: backendCandidate.executionTarget,
+          checkedAt: input.checkedAt
+        });
+        this.upsertInstallation(model.id, host.id, input.checkedAt);
+        const fallbackPriority =
+          Math.max(
+            -1,
+            ...roles.filter((role) => role.role === "fallback").map((role) => role.priority)
+          ) + 1;
+        const fallback = roleRecord(
+          existing.id,
+          model.id,
+          "fallback",
+          fallbackPriority,
+          host.id,
+          input.checkedAt
+        );
+        this.bindingModels.set(fallback.id, fallback);
+        const extended: NativeRuntimeBindingSummary = {
+          ...existing,
+          configuration: { ...existing.configuration, allowFallback: true },
+          updatedAt: input.checkedAt,
+          updatedBy: input.updatedBy
+        };
+        this.bindings.set(extended.id, extended);
+        return {
+          binding: { ...extended },
+          created: false,
+          resolutionReason: "hosted-fallback-attached"
+        };
+      }
+      return {
+        binding: { ...existing },
+        created: false,
+        resolutionReason: "existing-binding-preserved"
+      };
+    }
+    const [primary, ...fallbacks] = candidates;
+    if (primary === undefined) {
+      throw new Cp2Error(
+        503,
+        "RUNTIME_MODELS_UNAVAILABLE",
+        "Soko AI is temporarily unavailable because no execution host can run a compatible model.",
+        true
+      );
+    }
+
+    const binding = this.activateVerifiedModel({
+      businessId: input.businessId,
+      accountId: input.accountId,
+      agentId: input.agentId,
+      agentName: input.agentName,
+      model: primary.model,
+      executionTarget: primary.executionTarget,
+      fallbackModel: fallbacks[0]?.model ?? null,
+      ...(fallbacks[0] === undefined
+        ? {}
+        : { fallbackExecutionTarget: fallbacks[0].executionTarget }),
+      updatedBy: input.updatedBy,
+      checkedAt: input.checkedAt
+    });
+    const provisioned: NativeRuntimeBindingSummary = {
+      ...binding,
+      isDefault: true,
+      configuration: {
+        ...binding.configuration,
+        source: "zero-setup-provisioning",
+        executionPolicy: "automatic-hosted-first",
+        allowFallback: true
+      }
+    };
+    this.bindings.set(provisioned.id, provisioned);
+    return {
+      binding: { ...provisioned },
+      created: true,
+      resolutionReason: "default-binding-created"
+    };
   }
 
   bindingForBusinessAgent(businessId: string, agentId: string): NativeRuntimeBindingSummary | null {
@@ -383,15 +520,15 @@ export class NativeRuntimeBindingStore {
     usedGlobalDefault: boolean
   ): ResolvedNativeRuntimeBinding {
     const { agent, primaryRole, enabledRoles } = this.validateBindingStructure(binding);
-    const primary = this.resolveRole(agent, primaryRole);
+    const primary = this.resolveRole(binding, agent, primaryRole);
     const fallbacks = enabledRoles
       .filter((role) => role.role === "fallback")
       .sort(compareRoles)
-      .map((role) => this.resolveRole(agent, role));
+      .map((role) => this.resolveRole(binding, agent, role));
     const auxiliaryEntries = enabledRoles
       .filter((role) => role.role !== "primary" && role.role !== "fallback")
       .sort(compareRoles)
-      .map((role) => [role.role, this.resolveRole(agent, role)] as const);
+      .map((role) => [role.role, this.resolveRole(binding, agent, role)] as const);
     const auxiliaries: Record<string, ResolvedNativeRuntimeModel[]> = {};
     for (const [role, resolved] of auxiliaryEntries) {
       (auxiliaries[role] ??= []).push(resolved);
@@ -433,6 +570,7 @@ export class NativeRuntimeBindingStore {
   }
 
   private resolveRole(
+    binding: NativeRuntimeBindingSummary,
     agent: NativeRuntimeAgentSummary,
     role: NativeRuntimeBindingModelSummary
   ): ResolvedNativeRuntimeModel {
@@ -452,8 +590,9 @@ export class NativeRuntimeBindingStore {
     if (installations.length === 0) return unavailable(role, model, "INSTALLATION_MISSING");
     for (const installation of installations) {
       const host = this.hosts.get(installation.executionHostId);
-      if (installation.status !== "available") continue;
-      if (host === undefined || host.status !== "available") continue;
+      if (!availabilityStatusUsable(installation.status)) continue;
+      if (host === undefined || !availabilityStatusUsable(host.status)) continue;
+      if (!hostAuthorizedForBinding(host, binding)) continue;
       return {
         bindingModel: { ...role },
         model: { ...model },
@@ -471,11 +610,12 @@ export class NativeRuntimeBindingStore {
       installation: { ...installation },
       host: host === null ? null : { ...host },
       available: false,
-      unavailabilityReason:
-        installation.status !== "available"
-          ? "INSTALLATION_UNAVAILABLE"
-          : host === null
-            ? "EXECUTION_HOST_MISSING"
+      unavailabilityReason: !availabilityStatusUsable(installation.status)
+        ? "INSTALLATION_UNAVAILABLE"
+        : host === null
+          ? "EXECUTION_HOST_MISSING"
+          : !hostAuthorizedForBinding(host, binding)
+            ? "EXECUTION_HOST_FORBIDDEN"
             : "EXECUTION_HOST_UNAVAILABLE"
     };
   }
@@ -551,7 +691,11 @@ export class NativeRuntimeBindingStore {
   // inference is a separate, later question answered by validateBindingStructure/resolveBinding.
   private requireGlobalDefault(): NativeRuntimeBindingSummary {
     const defaults = [...this.bindings.values()].filter(
-      (binding) => binding.isDefault && (binding.status === "active" || binding.status === "draft")
+      (binding) =>
+        binding.isDefault &&
+        binding.businessId === null &&
+        binding.accountId === null &&
+        (binding.status === "active" || binding.status === "draft")
     );
     if (defaults.length !== 1) {
       throw new Cp2Error(
@@ -604,7 +748,7 @@ export class NativeRuntimeBindingStore {
     checkedAt: string;
   }): NativeExecutionHostSummary {
     const id = stableUuid(
-      `native-runtime-host:${input.accountId ?? "global"}:${input.executionTarget}`
+      `native-runtime-host:${input.accountId ?? "global"}:${input.businessId ?? "global"}:${input.executionTarget}`
     );
     const existing = this.hosts.get(id);
     const host: NativeExecutionHostSummary = {
@@ -614,10 +758,10 @@ export class NativeRuntimeBindingStore {
       type: input.executionTarget,
       name: hostName(input.executionTarget),
       endpoint: null,
-      status: "available",
+      status: "healthy",
       capabilities: [input.executionTarget],
       configuration: { executionTarget: input.executionTarget },
-      credentialReference: input.executionTarget === "openai" ? "env:OPENAI_API_KEY" : null,
+      credentialReference: null,
       lastKnownHealthyAt: input.checkedAt,
       createdAt: existing?.createdAt ?? input.checkedAt,
       updatedAt: input.checkedAt
@@ -707,6 +851,18 @@ function roleRecord(
   };
 }
 
+function dedupeProvisioningCandidates(
+  candidates: NativeDefaultRuntimeProvisioningInput["candidates"]
+): NativeDefaultRuntimeProvisioningInput["candidates"] {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = `${candidate.model.id}:${candidate.executionTarget}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function unavailable(
   role: NativeRuntimeBindingModelSummary,
   model: NativeRuntimeModelSummary,
@@ -720,6 +876,19 @@ function unavailable(
     available: false,
     unavailabilityReason: reason
   };
+}
+
+function hostAuthorizedForBinding(
+  host: NativeExecutionHostSummary,
+  binding: NativeRuntimeBindingSummary
+): boolean {
+  const accountAllowed = host.accountId === null || host.accountId === binding.accountId;
+  const businessAllowed = host.businessId === null || host.businessId === binding.businessId;
+  return accountAllowed && businessAllowed;
+}
+
+function availabilityStatusUsable(status: NativeRuntimeAvailabilityStatus): boolean {
+  return status === "available" || status === "healthy" || status === "online";
 }
 
 function validateActiveTopology(
@@ -762,7 +931,6 @@ function stableUuid(value: string): string {
 }
 
 function hostName(target: ModelExecutionTarget): string {
-  if (target === "openai") return "OpenAI remote runtime";
   if (target === "browser-local") return "Browser local runtime";
   if (target === "installed-app") return "Installed application runtime";
   if (target === "remote-shop-device") return "Remote shop device runtime";

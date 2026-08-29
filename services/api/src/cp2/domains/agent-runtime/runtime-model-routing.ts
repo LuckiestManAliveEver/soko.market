@@ -15,6 +15,7 @@ import type {
   RuntimeTurnSummary,
   ShopAgentRuntime
 } from "@soko/shared-types";
+import { normalizeInferenceErrorCode } from "@soko/shared-types";
 import {
   parseRuntimeModelOutput,
   type createRuntimeToolProposal,
@@ -42,12 +43,18 @@ interface ClientInferenceAssignmentState {
 interface RuntimeModelRouteState {
   resolveRuntimeModelProvider: (
     runtime: ShopAgentRuntime,
-    modelId: string
+    modelId: string,
+    attemptedRuntimeKeys?: ReadonlySet<string>
   ) => {
     provider: RuntimeModelProvider | undefined;
     binding: AgentModelBindingSummary | null;
     executionTarget: ModelExecutionTarget | undefined;
     resolutionSource: ExecutionTargetResolutionSource | null;
+    runtimeKey: string | null;
+    runtimeBindingId: string | null;
+    resolvedModelId: string;
+    executionHostId: string | null;
+    fallbackIndex: number;
   };
 }
 
@@ -189,6 +196,8 @@ export async function createRuntimeModelRoute(
       risk: RuntimePlannedAction["risk"] | null,
       metadata?: RuntimeTelemetryEvent["metadata"]
     ) => void;
+    attemptedRuntimeKeys?: ReadonlySet<string>;
+    fallbackIndex?: number;
   }
 ): Promise<{
   proposal: ReturnType<typeof createRuntimeToolProposal> | null;
@@ -198,8 +207,17 @@ export async function createRuntimeModelRoute(
     provider,
     binding,
     executionTarget: nativeExecutionTarget,
-    resolutionSource
-  } = state.resolveRuntimeModelProvider(input.shopRuntime, input.modelId);
+    resolutionSource,
+    runtimeKey,
+    runtimeBindingId,
+    resolvedModelId,
+    executionHostId,
+    fallbackIndex: resolvedFallbackIndex
+  } = state.resolveRuntimeModelProvider(
+    input.shopRuntime,
+    input.modelId,
+    input.attemptedRuntimeKeys
+  );
 
   if (provider === undefined) {
     if (binding !== null) {
@@ -259,6 +277,7 @@ export async function createRuntimeModelRoute(
     bindingId: binding?.id ?? null,
     executionTarget: nativeExecutionTarget ?? null,
     resolutionSource,
+    fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
     allowedToolCount: prompt.allowedTools.length,
     modelProfile: input.modelId,
     messageLength: input.message.trim().length,
@@ -276,9 +295,12 @@ export async function createRuntimeModelRoute(
     input.appendTelemetry("model.inference_started", "completed", null, null, {
       provider: provider.name,
       bindingId: binding?.id ?? null,
-      modelId: input.modelId,
       executionTarget: nativeExecutionTarget ?? null,
-      resolutionSource
+      resolutionSource,
+      fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
+      runtimeBindingId,
+      modelId: resolvedModelId,
+      executionHostId
     });
     completion = await provider.complete(prompt);
   } catch {
@@ -286,7 +308,14 @@ export async function createRuntimeModelRoute(
       provider: provider.name,
       adapterStatus: "error",
       durationMs: 0,
-      errorCode: "provider_exception"
+      errorCode: "provider_exception",
+      failureCategory: "provider_exception",
+      runtimeBindingId,
+      modelId: resolvedModelId,
+      executionHostId,
+      executionTarget: nativeExecutionTarget ?? null,
+      resolutionReason: resolutionSource,
+      fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex
     });
 
     return {
@@ -297,6 +326,12 @@ export async function createRuntimeModelRoute(
         durationMs: 0,
         outputKind: null,
         errorCode: "provider_exception",
+        ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
+        modelId: resolvedModelId,
+        executionHostId,
+        fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
+        ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
+        ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
         ...(binding === null
           ? {}
           : {
@@ -317,15 +352,52 @@ export async function createRuntimeModelRoute(
       provider: completion.provider,
       adapterStatus: completion.status,
       durationMs: completion.durationMs,
-      errorCode: completion.errorCode
+      errorCode: completion.errorCode,
+      failureCategory:
+        completion.status === "available" || completion.errorCode === null
+          ? null
+          : normalizeInferenceErrorCode(completion.errorCode),
+      runtimeBindingId,
+      modelId: resolvedModelId,
+      executionHostId,
+      executionTarget: nativeExecutionTarget ?? null,
+      resolutionReason: resolutionSource,
+      fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex
     }
   );
 
   if (completion.status !== "available" || completion.outputText === null) {
+    if (
+      runtimeKey !== null &&
+      isRetryableRuntimeCompletion(completion.status, completion.errorCode)
+    ) {
+      const attemptedRuntimeKeys = new Set(input.attemptedRuntimeKeys);
+      attemptedRuntimeKeys.add(runtimeKey);
+      try {
+        return await createRuntimeModelRoute(state, {
+          ...input,
+          attemptedRuntimeKeys,
+          fallbackIndex: (input.fallbackIndex ?? 0) + 1
+        });
+      } catch (error) {
+        if (!(error instanceof Cp2Error) || error.code !== "RUNTIME_MODELS_UNAVAILABLE") {
+          throw error;
+        }
+      }
+    }
     return {
       proposal: null,
       trace: {
         ...modelTraceFromCompletion(completion, null),
+        ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
+        modelId: resolvedModelId,
+        executionHostId,
+        fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
+        fallbackUsed: (input.fallbackIndex ?? resolvedFallbackIndex) > 0,
+        fallbackReason:
+          (input.fallbackIndex ?? resolvedFallbackIndex) > 0 ? "retryable-execution-failure" : null,
+        ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
+        ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
         ...(binding === null
           ? {}
           : {
@@ -348,6 +420,15 @@ export async function createRuntimeModelRoute(
         durationMs: completion.durationMs,
         outputKind: null,
         errorCode: "MODEL_RESPONSE_PARSE_FAILED",
+        ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
+        modelId: resolvedModelId,
+        executionHostId,
+        fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
+        fallbackUsed: (input.fallbackIndex ?? resolvedFallbackIndex) > 0,
+        fallbackReason:
+          (input.fallbackIndex ?? resolvedFallbackIndex) > 0 ? "retryable-execution-failure" : null,
+        ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
+        ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
         ...(binding === null
           ? {}
           : {
@@ -363,6 +444,15 @@ export async function createRuntimeModelRoute(
     proposal: parsed.output.proposal,
     trace: {
       ...modelTraceFromCompletion(completion, parsed.output.kind),
+      ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
+      modelId: resolvedModelId,
+      executionHostId,
+      fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
+      fallbackUsed: (input.fallbackIndex ?? resolvedFallbackIndex) > 0,
+      fallbackReason:
+        (input.fallbackIndex ?? resolvedFallbackIndex) > 0 ? "retryable-execution-failure" : null,
+      ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
+      ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
       ...(binding === null
         ? {}
         : {
@@ -372,4 +462,18 @@ export async function createRuntimeModelRoute(
           })
     }
   };
+}
+
+function isRetryableRuntimeCompletion(status: string, errorCode: string | null): boolean {
+  if (status === "timeout") return true;
+  if (status !== "unavailable" || errorCode === null) return false;
+  return [
+    "TIMEOUT",
+    "ENGINE_UNREACHABLE",
+    "MODEL_NOT_INSTALLED",
+    "MODEL_LOADING",
+    "MODEL_UNAVAILABLE",
+    "RATE_LIMITED",
+    "PROVIDER_ERROR"
+  ].includes(normalizeInferenceErrorCode(errorCode));
 }

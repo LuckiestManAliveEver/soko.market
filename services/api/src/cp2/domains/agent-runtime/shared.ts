@@ -1248,25 +1248,22 @@ export function validateAgentModelBindingConfiguration(
   },
   model: AiModelSummary
 ): void {
-  if (model.source === "hosted" && input.executionTarget !== "openai") {
+  // A "hosted" model has no downloadable artifact (format: "remote") - it can only run through the
+  // generic server-reachable target, never a target that requires local weights/installation. This
+  // does not run the other way: `backend` is provider-neutral now, so a downloadable model can
+  // legitimately be served through a self-hosted backend adapter too.
+  if (model.source === "hosted" && input.executionTarget !== "backend") {
     throw new Cp2Error(
       409,
       "MODEL_RUNTIME_INCOMPATIBLE",
-      "The selected hosted model must use the hosted execution target."
+      "The selected hosted model must use the backend execution target."
     );
   }
-  if (model.source !== "hosted" && input.executionTarget === "openai") {
-    throw new Cp2Error(
-      409,
-      "MODEL_RUNTIME_INCOMPATIBLE",
-      "The selected model is not a hosted model."
-    );
-  }
-  if (input.executionMode === "CLOUD_ONLY" && input.executionTarget !== "openai") {
+  if (input.executionMode === "CLOUD_ONLY" && input.executionTarget !== "backend") {
     throw new Cp2Error(
       400,
       "MODEL_CONFIGURATION_INVALID",
-      "Cloud-only execution requires a hosted primary model."
+      "Cloud-only execution requires the backend execution target."
     );
   }
   if (input.executionTarget === "installed-app" && !input.permissions.allowInstalledApp) {
@@ -1516,7 +1513,6 @@ export function normalizeExecutionMode(mode: PreferredExecutionMode): PreferredE
   if (mode === "CLOUD_ONLY") return "LOCAL_FIRST";
   throw new Cp2Error(400, "execution_mode_invalid", "Execution mode is invalid.");
 }
-
 
 export function ensureRequiredAgentContextScripts(scripts: string[]): string[] {
   if (scripts.some((script) => script.includes("script: document_upload_guardrails"))) {

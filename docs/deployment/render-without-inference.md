@@ -46,7 +46,7 @@ inference resources.
 - `INFERENCE_CLOUD_PROVIDER=openai`
 - `INFERENCE_CLOUD_MODEL_ALLOWLIST=openai-fast,openai-reasoning`
 - `INFERENCE_CLOUD_MONTHLY_TOKEN_BUDGET=100000`
-- `INFERENCE_MAX_FALLBACKS=3` (bounds retries across *local* runtimes only - native bridge, WebGPU,
+- `INFERENCE_MAX_FALLBACKS=3` (bounds retries across _local_ runtimes only - native bridge, WebGPU,
   WASM, owner node; there is no automatic escalation to the cloud provider, see
   docs/architecture/provider-neutral-runtime.md)
 - `OPENAI_API_KEY`, `OPENAI_FAST_MODEL`, and `OPENAI_REASONING_MODEL` (server-only; cloud stays
