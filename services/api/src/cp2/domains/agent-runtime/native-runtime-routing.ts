@@ -109,6 +109,16 @@ export function resolveNativeRuntimeModelProvider(input: {
   const agentId = nativeResolution?.agent.id ?? legacyBinding?.agentId ?? shopRuntime.agentId;
   const shopId =
     nativeResolution?.binding.businessId ?? legacyBinding?.shopId ?? shopRuntime.shopId;
+  // Identical regardless of which branch below actually routes the request - computed once so a
+  // future field addition/rename only needs one call site instead of two kept in lockstep by hand.
+  const runtimeBindingId = nativeResolution?.binding.id ?? legacyBinding?.id ?? null;
+  const executionHostId = nativeResolution?.selected.host?.id ?? null;
+  const fallbackIndex =
+    nativeResolution?.selected.bindingModel.role === "fallback"
+      ? nativeResolution.fallbacks.findIndex(
+          (candidate) => candidate.bindingModel.id === nativeResolution.selected.bindingModel.id
+        ) + 1
+      : 0;
 
   if (!input.adapterResolverConfigured) {
     // No adapter-based execution path is wired up at all - callers in this shape (a handful of
@@ -134,20 +144,11 @@ export function resolveNativeRuntimeModelProvider(input: {
       runtimeKey:
         bestEffort === null
           ? null
-          : runtimeCandidateKey(
-              modelId,
-              nativeResolution?.selected.host?.id ?? null,
-              bestEffort.target
-            ),
-      runtimeBindingId: nativeResolution?.binding.id ?? legacyBinding?.id ?? null,
+          : runtimeCandidateKey(modelId, executionHostId, bestEffort.target),
+      runtimeBindingId,
       resolvedModelId: modelId,
-      executionHostId: nativeResolution?.selected.host?.id ?? null,
-      fallbackIndex:
-        nativeResolution?.selected.bindingModel.role === "fallback"
-          ? nativeResolution.fallbacks.findIndex(
-              (candidate) => candidate.bindingModel.id === nativeResolution.selected.bindingModel.id
-            ) + 1
-          : 0
+      executionHostId,
+      fallbackIndex
     };
   }
 
@@ -157,11 +158,7 @@ export function resolveNativeRuntimeModelProvider(input: {
     modelId,
     agentId
   });
-  const runtimeKey = runtimeCandidateKey(
-    modelId,
-    nativeResolution?.selected.host?.id ?? null,
-    executionTarget
-  );
+  const runtimeKey = runtimeCandidateKey(modelId, executionHostId, executionTarget);
   if (input.attemptedRuntimeKeys?.has(runtimeKey)) {
     throw new Cp2Error(
       503,
@@ -178,15 +175,10 @@ export function resolveNativeRuntimeModelProvider(input: {
     executionTarget,
     resolutionSource,
     runtimeKey,
-    runtimeBindingId: nativeResolution?.binding.id ?? legacyBinding?.id ?? null,
+    runtimeBindingId,
     resolvedModelId: modelId,
-    executionHostId: nativeResolution?.selected.host?.id ?? null,
-    fallbackIndex:
-      nativeResolution?.selected.bindingModel.role === "fallback"
-        ? nativeResolution.fallbacks.findIndex(
-            (candidate) => candidate.bindingModel.id === nativeResolution.selected.bindingModel.id
-          ) + 1
-        : 0
+    executionHostId,
+    fallbackIndex
   };
 }
 

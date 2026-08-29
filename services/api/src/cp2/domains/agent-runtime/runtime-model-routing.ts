@@ -15,7 +15,7 @@ import type {
   RuntimeTurnSummary,
   ShopAgentRuntime
 } from "@soko/shared-types";
-import { normalizeInferenceErrorCode } from "@soko/shared-types";
+import { isRetryableInferenceCategory, normalizeInferenceErrorCode } from "@soko/shared-types";
 import {
   parseRuntimeModelOutput,
   type createRuntimeToolProposal,
@@ -218,6 +218,38 @@ export async function createRuntimeModelRoute(
     input.modelId,
     input.attemptedRuntimeKeys
   );
+  // Identical across every telemetry/trace call site below this point in the function - computed
+  // once so a future field addition doesn't have to be applied at N near-duplicate call sites.
+  const fallbackIndex = input.fallbackIndex ?? resolvedFallbackIndex;
+  const fallbackUsed = fallbackIndex > 0;
+  const fallbackReason = fallbackUsed ? ("retryable-execution-failure" as const) : null;
+  const sharedTraceFields = (): Pick<
+    RuntimeModelTrace,
+    | "modelId"
+    | "executionHostId"
+    | "fallbackIndex"
+    | "fallbackUsed"
+    | "fallbackReason"
+    | "bindingId"
+    | "resolutionReason"
+    | "executionTarget"
+  > => ({
+    ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
+    modelId: resolvedModelId,
+    executionHostId,
+    fallbackIndex,
+    fallbackUsed,
+    fallbackReason,
+    ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
+    ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
+    ...(binding === null
+      ? {}
+      : {
+          bindingId: binding.id,
+          modelId: binding.modelId,
+          executionTarget: nativeExecutionTarget ?? binding.executionTarget
+        })
+  });
 
   if (provider === undefined) {
     if (binding !== null) {
@@ -277,7 +309,7 @@ export async function createRuntimeModelRoute(
     bindingId: binding?.id ?? null,
     executionTarget: nativeExecutionTarget ?? null,
     resolutionSource,
-    fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
+    fallbackIndex,
     allowedToolCount: prompt.allowedTools.length,
     modelProfile: input.modelId,
     messageLength: input.message.trim().length,
@@ -297,7 +329,7 @@ export async function createRuntimeModelRoute(
       bindingId: binding?.id ?? null,
       executionTarget: nativeExecutionTarget ?? null,
       resolutionSource,
-      fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
+      fallbackIndex,
       runtimeBindingId,
       modelId: resolvedModelId,
       executionHostId
@@ -315,7 +347,7 @@ export async function createRuntimeModelRoute(
       executionHostId,
       executionTarget: nativeExecutionTarget ?? null,
       resolutionReason: resolutionSource,
-      fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex
+      fallbackIndex
     });
 
     return {
@@ -326,19 +358,7 @@ export async function createRuntimeModelRoute(
         durationMs: 0,
         outputKind: null,
         errorCode: "provider_exception",
-        ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
-        modelId: resolvedModelId,
-        executionHostId,
-        fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
-        ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
-        ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
-        ...(binding === null
-          ? {}
-          : {
-              bindingId: binding.id,
-              modelId: binding.modelId,
-              executionTarget: nativeExecutionTarget ?? binding.executionTarget
-            })
+        ...sharedTraceFields()
       }
     };
   }
@@ -362,7 +382,7 @@ export async function createRuntimeModelRoute(
       executionHostId,
       executionTarget: nativeExecutionTarget ?? null,
       resolutionReason: resolutionSource,
-      fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex
+      fallbackIndex
     }
   );
 
@@ -377,6 +397,9 @@ export async function createRuntimeModelRoute(
         return await createRuntimeModelRoute(state, {
           ...input,
           attemptedRuntimeKeys,
+          // Deliberately not `fallbackIndex + 1`: this counts retry attempts within this recursion
+          // chain (0 on the first call regardless of which native role resolvedFallbackIndex
+          // happened to select), not "the resolved role's fallback position + 1".
           fallbackIndex: (input.fallbackIndex ?? 0) + 1
         });
       } catch (error) {
@@ -389,22 +412,7 @@ export async function createRuntimeModelRoute(
       proposal: null,
       trace: {
         ...modelTraceFromCompletion(completion, null),
-        ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
-        modelId: resolvedModelId,
-        executionHostId,
-        fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
-        fallbackUsed: (input.fallbackIndex ?? resolvedFallbackIndex) > 0,
-        fallbackReason:
-          (input.fallbackIndex ?? resolvedFallbackIndex) > 0 ? "retryable-execution-failure" : null,
-        ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
-        ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
-        ...(binding === null
-          ? {}
-          : {
-              bindingId: binding.id,
-              modelId: binding.modelId,
-              executionTarget: nativeExecutionTarget ?? binding.executionTarget
-            })
+        ...sharedTraceFields()
       }
     };
   }
@@ -420,22 +428,7 @@ export async function createRuntimeModelRoute(
         durationMs: completion.durationMs,
         outputKind: null,
         errorCode: "MODEL_RESPONSE_PARSE_FAILED",
-        ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
-        modelId: resolvedModelId,
-        executionHostId,
-        fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
-        fallbackUsed: (input.fallbackIndex ?? resolvedFallbackIndex) > 0,
-        fallbackReason:
-          (input.fallbackIndex ?? resolvedFallbackIndex) > 0 ? "retryable-execution-failure" : null,
-        ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
-        ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
-        ...(binding === null
-          ? {}
-          : {
-              bindingId: binding.id,
-              modelId: binding.modelId,
-              executionTarget: nativeExecutionTarget ?? binding.executionTarget
-            })
+        ...sharedTraceFields()
       }
     };
   }
@@ -444,22 +437,7 @@ export async function createRuntimeModelRoute(
     proposal: parsed.output.proposal,
     trace: {
       ...modelTraceFromCompletion(completion, parsed.output.kind),
-      ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
-      modelId: resolvedModelId,
-      executionHostId,
-      fallbackIndex: input.fallbackIndex ?? resolvedFallbackIndex,
-      fallbackUsed: (input.fallbackIndex ?? resolvedFallbackIndex) > 0,
-      fallbackReason:
-        (input.fallbackIndex ?? resolvedFallbackIndex) > 0 ? "retryable-execution-failure" : null,
-      ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
-      ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
-      ...(binding === null
-        ? {}
-        : {
-            bindingId: binding.id,
-            modelId: binding.modelId,
-            executionTarget: nativeExecutionTarget ?? binding.executionTarget
-          })
+      ...sharedTraceFields()
     }
   };
 }
@@ -467,13 +445,5 @@ export async function createRuntimeModelRoute(
 function isRetryableRuntimeCompletion(status: string, errorCode: string | null): boolean {
   if (status === "timeout") return true;
   if (status !== "unavailable" || errorCode === null) return false;
-  return [
-    "TIMEOUT",
-    "ENGINE_UNREACHABLE",
-    "MODEL_NOT_INSTALLED",
-    "MODEL_LOADING",
-    "MODEL_UNAVAILABLE",
-    "RATE_LIMITED",
-    "PROVIDER_ERROR"
-  ].includes(normalizeInferenceErrorCode(errorCode));
+  return isRetryableInferenceCategory(normalizeInferenceErrorCode(errorCode));
 }

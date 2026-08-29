@@ -3359,6 +3359,31 @@ export function normalizeInferenceErrorCode(code: string): RuntimeInferenceError
   return inferenceErrorCategoryByCode[code] ?? "UNKNOWN";
 }
 
+const retryableInferenceErrorCategories: ReadonlySet<RuntimeInferenceErrorCategory> = new Set([
+  "TIMEOUT",
+  "ENGINE_UNREACHABLE",
+  "MODEL_NOT_INSTALLED",
+  "MODEL_LOADING",
+  "MODEL_UNAVAILABLE",
+  "RATE_LIMITED",
+  "PROVIDER_ERROR"
+]);
+
+/**
+ * Whether a normalized inference failure category is worth trying a different runtime candidate
+ * (model/host/target) for, as opposed to a caller-facing or structural failure that will not be
+ * fixed by retrying (authentication, an invalid tool call, a malformed request, a user abort).
+ * Lives beside RuntimeInferenceErrorCategory/normalizeInferenceErrorCode so a category never has a
+ * retry policy defined anywhere else - see runtime candidate-fallback usage in
+ * services/api/src/cp2/domains/agent-runtime/runtime-model-routing.ts. This is distinct from a
+ * specific ModelRuntimeAdapter's own `retryable` flag on an individual thrown error, which decides
+ * whether that one adapter call is worth retrying at the I/O level, not whether the runtime
+ * resolver should move on to a different candidate.
+ */
+export function isRetryableInferenceCategory(category: RuntimeInferenceErrorCategory): boolean {
+  return retryableInferenceErrorCategories.has(category);
+}
+
 export interface RuntimeModelDiagnostic {
   provider: RuntimeModelProviderName;
   status: "ready" | "unavailable";
