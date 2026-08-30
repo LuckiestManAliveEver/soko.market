@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
-  AgentModelBindingSummary,
   ModelExecutionTarget,
   NativeExecutionHostSummary,
   NativeRuntimeAgentSummary,
@@ -33,7 +32,6 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
         configuredTarget: "remote-shop-device",
         hostType: "backend"
       }),
-      legacyBinding: legacyBinding({ executionTarget: "backend" }),
       modelId,
       agentId
     });
@@ -43,14 +41,16 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
     });
   });
 
-  it("never lets a legacy binding override an explicit native model target when no host exists", () => {
+  it("uses the declared model configuration when no host exists", () => {
     const resolution = resolveExecutionTarget({
       nativeResolution: nativeResolution({ configuredTarget: "remote-shop-device" }),
-      legacyBinding: legacyBinding({ executionTarget: "backend" }),
       modelId,
       agentId
     });
-    expect(resolution.target).toBe("remote-shop-device");
+    expect(resolution).toEqual({
+      target: "remote-shop-device",
+      source: "explicit-native-configuration"
+    });
   });
 
   it("falls back to the resolved host's type when configuration.executionTarget is missing", () => {
@@ -61,21 +61,19 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
         configuredTarget: undefined,
         hostType: "remote-shop-device"
       }),
-      legacyBinding: null,
       modelId,
       agentId
     });
     expect(resolution).toEqual({ target: "remote-shop-device", source: "explicit-native-host" });
   });
 
-  it("uses the legacy binding when there is no native resolution at all", () => {
-    const resolution = resolveExecutionTarget({
-      nativeResolution: null,
-      legacyBinding: legacyBinding({ executionTarget: "remote-shop-device" }),
-      modelId,
-      agentId
-    });
-    expect(resolution).toEqual({ target: "remote-shop-device", source: "legacy-binding" });
+  it("throws NO_COMPATIBLE_EXECUTION_TARGET when there is no native resolution at all", () => {
+    // The retired legacy-binding fallback tier is gone - the native runtime graph is the only
+    // source of truth now, so no resolution means a genuine routing failure, not a silent
+    // fallback to some other representation.
+    expect(() =>
+      resolveExecutionTarget({ nativeResolution: null, modelId, agentId })
+    ).toThrow(Cp2Error);
   });
 
   it("exposes exactly the two provider-neutral targets and rejects provider names", () => {
@@ -117,11 +115,11 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
         null,
         nativeResolution({ configuredTarget: undefined, hostType: undefined })
       ]) {
-        expect(() =>
-          resolveExecutionTarget({ nativeResolution: nr, legacyBinding: null, modelId, agentId })
-        ).toThrow(Cp2Error);
+        expect(() => resolveExecutionTarget({ nativeResolution: nr, modelId, agentId })).toThrow(
+          Cp2Error
+        );
         try {
-          resolveExecutionTarget({ nativeResolution: nr, legacyBinding: null, modelId, agentId });
+          resolveExecutionTarget({ nativeResolution: nr, modelId, agentId });
           expect.unreachable();
         } catch (error) {
           expect(error).toBeInstanceOf(Cp2Error);
@@ -144,13 +142,12 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
     const result = resolveNativeRuntimeModelProvider({
       shopRuntime,
       requestedModelId: modelId,
-      legacyBinding: legacyBinding({ executionTarget: "backend" }),
-      nativeResolution: null,
+      nativeResolution: nativeResolution({ configuredTarget: "backend", hostType: "backend" }),
       requireAdapter,
       adapterResolverConfigured: true
     });
     expect(result.executionTarget).toBe("backend");
-    expect(result.resolutionSource).toBe("legacy-binding");
+    expect(result.resolutionSource).toBe("explicit-native-host");
     expect(requireAdapter).toHaveBeenCalledWith(
       expect.objectContaining({ modelId, executionTarget: "backend", agentId })
     );
@@ -169,7 +166,6 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
       const result = resolveNativeRuntimeModelProvider({
         shopRuntime,
         requestedModelId: modelId,
-        legacyBinding: null,
         nativeResolution: null,
         requireAdapter,
         adapterResolverConfigured: false,
@@ -199,8 +195,7 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
         resolveNativeRuntimeModelProvider({
           shopRuntime,
           requestedModelId: modelId,
-          legacyBinding: legacyBinding({ executionTarget: "backend" }),
-          nativeResolution: null,
+          nativeResolution: nativeResolution({ configuredTarget: "backend", hostType: "backend" }),
           requireAdapter,
           adapterResolverConfigured: true
         }),
@@ -215,7 +210,6 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
         resolveNativeRuntimeModelProvider({
           shopRuntime,
           requestedModelId: modelId,
-          legacyBinding: null,
           nativeResolution: null,
           requireAdapter,
           adapterResolverConfigured: true
@@ -244,7 +238,6 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
     const result = resolveNativeRuntimeModelProvider({
       shopRuntime,
       requestedModelId: modelId,
-      legacyBinding: legacyBinding({ executionTarget: "remote-shop-device" }),
       nativeResolution: localFirst,
       requireAdapter,
       adapterResolverConfigured: true,
@@ -258,64 +251,29 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
     );
   });
 
-  it("falls back to a working legacy binding when every native role is ineligible from this request", () => {
+  it("throws RUNTIME_MODELS_UNAVAILABLE once every native role is ineligible - there is no legacy escape hatch left", () => {
     // The native binding's only role targets remote-shop-device, which this request's eligible
     // set excludes - eligibleExecutionTargets filters it out entirely, leaving no native
-    // candidate. A still-usable legacy binding must get the request instead of a hard
-    // RUNTIME_MODELS_UNAVAILABLE.
-    const localOnly = nativeResolution({
-      configuredTarget: "remote-shop-device",
-      hostType: "remote-shop-device"
-    });
-
-    const requireAdapter = vi.fn(() => fakeAdapter("backend"));
-    const result = resolveNativeRuntimeModelProvider({
-      shopRuntime,
-      requestedModelId: modelId,
-      legacyBinding: legacyBinding({ executionTarget: "backend" }),
-      nativeResolution: localOnly,
-      requireAdapter,
-      adapterResolverConfigured: true,
-      eligibleExecutionTargets: new Set(["backend"])
-    });
-
-    expect(result.executionTarget).toBe("backend");
-    expect(result.resolutionSource).toBe("legacy-binding");
-    expect(result.provider).toBeDefined();
-  });
-
-  it("still terminates once both the native graph and the legacy binding are exhausted", () => {
+    // candidate. The retired legacy-binding fallback tier is gone, so this must fail hard rather
+    // than silently routing through some other representation.
     const localOnly = nativeResolution({
       configuredTarget: "remote-shop-device",
       hostType: "remote-shop-device"
     });
     const requireAdapter = vi.fn(() => fakeAdapter("backend"));
-    const binding = legacyBinding({ executionTarget: "backend" });
-    const firstAttempt = resolveNativeRuntimeModelProvider({
-      shopRuntime,
-      requestedModelId: modelId,
-      legacyBinding: binding,
-      nativeResolution: localOnly,
-      requireAdapter,
-      adapterResolverConfigured: true,
-      eligibleExecutionTargets: new Set(["backend"])
-    });
-    expect(firstAttempt.runtimeKey).not.toBeNull();
-
     expectCp2ErrorCode(
       () =>
         resolveNativeRuntimeModelProvider({
           shopRuntime,
           requestedModelId: modelId,
-          legacyBinding: binding,
           nativeResolution: localOnly,
           requireAdapter,
           adapterResolverConfigured: true,
-          eligibleExecutionTargets: new Set(["backend"]),
-          attemptedRuntimeKeys: new Set([firstAttempt.runtimeKey as string])
+          eligibleExecutionTargets: new Set(["backend"])
         }),
       "RUNTIME_MODELS_UNAVAILABLE"
     );
+    expect(requireAdapter).not.toHaveBeenCalled();
   });
 });
 
@@ -440,33 +398,6 @@ function fakeAdapter(executionTarget: ModelExecutionTarget): ModelRuntimeAdapter
       executionTarget,
       latencyMs: 1
     })
-  };
-}
-
-function legacyBinding(
-  overrides: Partial<AgentModelBindingSummary> = {}
-): AgentModelBindingSummary {
-  return {
-    id: "binding-1",
-    agentId,
-    shopId,
-    accountId: "account-1",
-    modelId,
-    status: "active",
-    executionMode: "LOCAL_FIRST",
-    executionTarget: "backend",
-    permissions: {
-      allowRemoteShopDevice: false
-    },
-    activatedAt: "2026-01-01T00:00:00.000Z",
-    lastVerifiedAt: "2026-01-01T00:00:00.000Z",
-    lastVerificationStatus: "passed",
-    lastErrorCode: null,
-    lastErrorMessage: null,
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    updatedBy: "owner-1",
-    ...overrides
   };
 }
 

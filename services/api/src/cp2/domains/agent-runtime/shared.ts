@@ -12,12 +12,13 @@
  * docs/architecture/domain-modularization-roadmap.md). The largest slice by method count and by
  * total line volume: owns `activeAiModels`, `agentProfiles`, `agentRuntimeVersions`,
  * `agentContextSources`, `agentEvaluationEvents`, `agentOwnerCorrections`,
- * `installedAgentModels`, `agentModelAssignments`, `browserInferenceAssignments`,
- * `agentModelBindings` (+ the ephemeral `agentModelActivationLocks` mutex Set), `runtimeSessions`,
- * `runtimeTurns`, and `pendingRuntimeActions` (never persisted - no `Cp2Snapshot` field) - plus
- * the entire `createRuntimeTurn` pipeline (context retrieval, tool proposal, confirmation,
- * execution, model routing, recall persistence) and every AI-model-catalog/activation/assignment
- * method.
+ * `installedAgentModels` (+ the ephemeral `agentModelActivationLocks` mutex Set),
+ * `runtimeSessions`, `runtimeTurns`, and `pendingRuntimeActions` (never persisted - no
+ * `Cp2Snapshot` field) - plus the entire `createRuntimeTurn` pipeline (context retrieval, tool
+ * proposal, confirmation, execution, model routing, recall persistence) and every
+ * AI-model-catalog/activation/assignment method. There is no `agentModelBindings` map - runtime
+ * binding state lives solely in `NativeRuntimeBindingStore` (`../native-runtime/store.ts`); see
+ * store.ts's own header comment for the full explanation.
  *
  * **`mcpAccessTokens`/`mcpTokenIdByHash` deliberately stayed on `Cp2Store`, not here** - despite
  * being declared next to this domain's Maps. Zero code coupling either direction was found
@@ -41,14 +42,14 @@
  *
  * **Known pre-existing gap, preserved as-is (zero-behavior-change refactor, not a bugfix
  * opportunity):** `deleteShopOwnedData` (business-scoped deletion, stays on `Cp2Store`) only
- * sweeps `browserInferenceAssignments`/`runtimeSessions`/`runtimeTurns`/`pendingRuntimeActions`
- * - `activeAiModels`/`agentProfiles`/`agentRuntimeVersions`/`agentContextSources`/
- * `agentEvaluationEvents`/`agentOwnerCorrections`/`installedAgentModels`/
- * `agentModelAssignments`/`agentModelBindings` are never touched by shop-level deletion, only by
- * the account-level purge (`deleteAccountOwnedData`, which sweeps all of them completely). This
- * was true before this extraction; flagging it here rather than silently fixing it as a
- * side effect, since shop-deletion semantics for business-scoped agent config deserve a
- * deliberate product decision, not an incidental one made while moving code.
+ * sweeps `runtimeSessions`/`runtimeTurns`/`pendingRuntimeActions` -
+ * `activeAiModels`/`agentProfiles`/`agentRuntimeVersions`/`agentContextSources`/
+ * `agentEvaluationEvents`/`agentOwnerCorrections`/`installedAgentModels`/the native runtime
+ * binding graph are never touched by shop-level deletion, only by the account-level purge
+ * (`deleteAccountOwnedData`, which sweeps all of them completely). This was true before this
+ * extraction; flagging it here rather than silently fixing it as a side effect, since
+ * shop-deletion semantics for business-scoped agent config deserve a deliberate product decision,
+ * not an incidental one made while moving code.
  *
  * Coupling with the not-yet-extracted core auth/identity kernel and other domains, resolved as
  * constructor-injected callbacks/raw Map references (same pattern used throughout this refactor):
@@ -74,7 +75,6 @@ import type {
   AgentInstructions,
   AgentMemoryPolicy,
   AgentModelBindingPermissions,
-  AgentModelBindingSummary,
   AgentModelRuntimeBackend,
   AgentPersonality,
   AgentRuntimeVersion,
@@ -1061,15 +1061,6 @@ export function cloneInstalledAgentModel(
   model: InstalledAgentModelSummary
 ): InstalledAgentModelSummary {
   return { ...model };
-}
-
-export function cloneAgentModelBinding(
-  binding: AgentModelBindingSummary
-): AgentModelBindingSummary {
-  return {
-    ...binding,
-    permissions: { ...binding.permissions }
-  };
 }
 
 export function validateAgentModelBindingConfiguration(

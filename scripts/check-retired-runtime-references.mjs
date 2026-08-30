@@ -13,7 +13,10 @@ import { fileURLToPath } from "node:url";
 export const retiredRuntimeTables = [
   "cp2_model_preferences",
   "cp2_runtime_hosts",
-  "cp2_runtime_model_installations"
+  "cp2_runtime_model_installations",
+  "cp2_agent_model_assignments",
+  "cp2_browser_inference_assignments",
+  "cp2_agent_model_bindings"
 ];
 
 export const productionScanRoots = [
@@ -33,13 +36,15 @@ export const productionScanRoots = [
 
 const codeExtensions = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs"]);
 
-// The one production file allowed to name these strings: it exists solely to declare the
-// constant that lets application code (services/api/src/index.ts's startup diagnostic) and tests
-// recognize a retired table name, so scripts/check-retired-runtime-references.mjs must not treat
-// its own declaration as the forbidden reference it exists to detect. See
-// services/api/src/cp2/retired-execution-fabric-tables.ts. Matches both the TypeScript source and
+// The production files allowed to name these strings: each exists solely to declare the constant
+// that lets application code (services/api/src/index.ts's startup diagnostic) and tests recognize
+// a retired table name, so scripts/check-retired-runtime-references.mjs must not treat its own
+// declaration as the forbidden reference it exists to detect. See
+// services/api/src/cp2/retired-execution-fabric-tables.ts and
+// services/api/src/cp2/retired-legacy-binding-tables.ts. Matches both the TypeScript source and
 // its compiled dist output (.js and .d.ts, which also has a .ts extname).
-const allowlistedFilePattern = /\/cp2\/retired-execution-fabric-tables\.(?:d\.ts|ts|js)$/u;
+const allowlistedFilePattern =
+  /\/cp2\/retired-(?:execution-fabric|legacy-binding)-tables\.(?:d\.ts|ts|js)$/u;
 
 export function checkRetiredRuntimeReferences({
   rootDirectory = process.cwd(),

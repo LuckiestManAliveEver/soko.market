@@ -20,4 +20,16 @@ describe("agent model runtime binding migration", () => {
     );
     expect(sql).toContain("drop table if exists cp2_agent_model_bindings");
   });
+
+  it(
+    "is finally dropped by migration 076, once NativeRuntimeBindingStore became the sole " +
+      "runtime-binding source of truth",
+    async () => {
+      const sql = await readFile(
+        "infra/db/migrations/076_drop_legacy_agent_model_bindings.sql",
+        "utf8"
+      );
+      expect(sql).toContain("drop table cp2_agent_model_bindings");
+    }
+  );
 });

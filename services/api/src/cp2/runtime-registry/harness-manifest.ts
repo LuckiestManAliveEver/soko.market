@@ -3,7 +3,7 @@
  * scoped to declaring an AgentRuntimeAdapter-shaped harness rather than an agent.
  * PortableAgentManifest describes *what an agent needs* (instructions/tools/model requirements); a
  * harness instead declares *how Soko would load and run adapter code* -- an entirely different, and
- * far more security-sensitive, shape (it is adapter-shaped, see agent-runtime/agent-runtime-adapter.ts's
+ * far more security-sensitive, shape (it is adapter-shaped, see agent-harness/agent-runtime-adapter.ts's
  * `AgentRuntimeAdapter` interface). Kept out of packages/shared-types on purpose: this describes the
  * untrusted-harness-import boundary specific to services/api/src/cp2/runtime-registry, not a portable
  * cross-package contract every consumer needs.
@@ -27,7 +27,7 @@ export interface SokoHarnessManifest {
   displayName: string;
   /** Manifest-relative entry point; documents intent only -- never fetched, read, or executed by
    *  Soko as part of discovery or import. Actual server-side loading only ever happens through the
-   *  trusted `AgentRuntimeAdapterRegistry.register()` path (agent-runtime/agent-runtime-adapter.ts). */
+   *  trusted `AgentRuntimeAdapterRegistry.register()` path (agent-harness/agent-runtime-adapter.ts). */
   entryPoint: string;
   runtimeRequirements?: {
     node?: string;

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type {
+  ActiveNativeAgentBinding,
   AiModelSummary,
   ConversationSummary,
   ModelExecutionTarget,
@@ -18,10 +19,14 @@ import type {
   ResolvedNativeRuntimeBinding,
   ResolvedNativeRuntimeModel
 } from "@soko/shared-types";
-import { repositoryDefaultRuntimePolicy, resolveRuntimeModel } from "@soko/shared-types";
+import {
+  isModelExecutionTarget,
+  repositoryDefaultRuntimePolicy,
+  resolveRuntimeModel
+} from "@soko/shared-types";
 
 import { Cp2Error } from "../../cp2-error.js";
-import { runtimeAdapterIdForAgent } from "../../../agent-runtime/agent-runtime-adapter.js";
+import { runtimeAdapterIdForAgent } from "../../../agent-harness/agent-runtime-adapter.js";
 
 export const nativeRuntimeContractVersion = "1";
 export const builtinRuntimeAgentId = "builtin:pi:v1";
@@ -401,6 +406,34 @@ export class NativeRuntimeBindingStore {
         )
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null
     );
+  }
+
+  /** The single per-shop-agent binding + its enabled primary model, the sole read path for "which
+   *  model is this agent using" (replaces the retired legacy agentModelBindings map/table).
+   *  Returns null rather than throwing when nothing is active yet, or when a matched binding has no
+   *  enabled primary role - both are normal "not configured" states for a GET/routing read, not
+   *  errors. */
+  getActiveBindingForAgent(businessId: string, agentId: string): ActiveNativeAgentBinding | null {
+    const binding = this.bindingForBusinessAgent(businessId, agentId);
+    if (binding === null) return null;
+    const role = [...this.bindingModels.values()].find(
+      (candidate) =>
+        candidate.runtimeBindingId === binding.id &&
+        candidate.enabled &&
+        candidate.role === "primary"
+    );
+    if (role === undefined) return null;
+    const model = this.models.get(role.modelId);
+    if (model === undefined) return null;
+    const hostType =
+      role.executionHostId === null ? undefined : this.hosts.get(role.executionHostId)?.type;
+    const executionTarget = isModelExecutionTarget(hostType)
+      ? hostType
+      : isModelExecutionTarget(model.configuration.executionTarget)
+        ? model.configuration.executionTarget
+        : null;
+    if (executionTarget === null) return null;
+    return { binding, model, role, executionTarget };
   }
 
   /** The harness currently configured for a native runtime agent record, if one has ever been

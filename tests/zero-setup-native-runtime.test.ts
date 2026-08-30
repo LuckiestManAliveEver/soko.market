@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
-import type { AgentRuntimeAdapter } from "../services/api/src/agent-runtime/agent-runtime-adapter";
+import type { AgentRuntimeAdapter } from "../services/api/src/agent-harness/agent-runtime-adapter";
 import {
   ModelRuntimeError,
   type ModelRuntimeAdapter
@@ -60,7 +60,8 @@ describe("zero-setup native runtime", () => {
         provider: "pi",
         configuration: { runtimeAdapterId: "pi", requiredModelCapabilities: ["chat"] }
       });
-      expect(store.snapshot().agentModelBindings).toHaveLength(0);
+      // There is no legacy cp2_agent_model_bindings representation left to duplicate this into -
+      // the native runtime graph checked above is the sole source of truth for a first chat.
     } finally {
       await app.close();
     }

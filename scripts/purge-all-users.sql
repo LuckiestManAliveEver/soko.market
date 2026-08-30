@@ -79,9 +79,6 @@ INSERT INTO purge_table_plan (table_name, classification, delete_order, reason) 
   ('cp2_agent_evaluation_events', 'DELETE', 11, 'Business agent evaluation history'),
   ('cp2_agent_owner_corrections', 'DELETE', 11, 'Owner correction records'),
   ('cp2_installed_agent_models', 'DELETE', 11, 'Account-installed private model metadata'),
-  ('cp2_agent_model_assignments', 'DELETE', 11, 'User/business model assignments'),
-  ('cp2_browser_inference_assignments', 'DELETE', 11, 'Account browser inference assignments'),
-  ('cp2_agent_model_bindings', 'DELETE', 11, 'Business agent model bindings'),
   ('cp2_soko_id_history', 'DELETE', 11, 'Retired storefront ids (soko-id-slug-system)'),
   ('cp2_product_field_schemas', 'DELETE', 11, 'Business product schema settings'),
   ('cp2_products', 'DELETE', 11, 'Normalized product records'),
@@ -448,7 +445,6 @@ UNION ALL SELECT 'orphan_memberships', count(*) FROM business_memberships m LEFT
 UNION ALL SELECT 'orphan_products', count(*) FROM products p LEFT JOIN businesses b ON b.id = p.business_id WHERE b.id IS NULL
 UNION ALL SELECT 'orphan_invoices', count(*) FROM invoices i LEFT JOIN businesses b ON b.id = i.business_id WHERE b.id IS NULL
 UNION ALL SELECT 'orphan_runtime_records', count(*) FROM cp2_runtime_sessions
-UNION ALL SELECT 'orphan_model_assignments', count(*) FROM cp2_agent_model_assignments
 UNION ALL SELECT 'residual_auth_credentials',
   (SELECT count(*) FROM password_credentials)
   + (SELECT count(*) FROM account_identities)
@@ -462,7 +458,7 @@ UNION ALL SELECT 'residual_pin_passkeys',
 UNION ALL SELECT 'residual_agents',
   (SELECT count(*) FROM cp2_agent_profiles)
   + (SELECT count(*) FROM cp2_agent_runtime_versions)
-  + (SELECT count(*) FROM cp2_agent_model_bindings)
+  + (SELECT count(*) FROM cp2_native_runtime_bindings)
 UNION ALL SELECT 'residual_orders', count(*) FROM cp2_public_orders
 UNION ALL SELECT 'residual_context_memory',
   (SELECT count(*) FROM soko_session_contexts)

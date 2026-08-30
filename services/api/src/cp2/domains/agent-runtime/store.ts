@@ -3,12 +3,21 @@
  * docs/architecture/domain-modularization-roadmap.md). The largest slice by method count and by
  * total line volume: owns `activeAiModels`, `agentProfiles`, `agentRuntimeVersions`,
  * `agentContextSources`, `agentEvaluationEvents`, `agentOwnerCorrections`,
- * `installedAgentModels`, `agentModelAssignments`, `browserInferenceAssignments`,
- * `agentModelBindings` (+ the ephemeral `agentModelActivationLocks` mutex Set), `runtimeSessions`,
- * `runtimeTurns`, and `pendingRuntimeActions` (never persisted - no `Cp2Snapshot` field) - plus
- * the entire `createRuntimeTurn` pipeline (context retrieval, tool proposal, confirmation,
- * execution, model routing, recall persistence) and every AI-model-catalog/activation/assignment
- * method.
+ * `installedAgentModels` (+ the ephemeral `agentModelActivationLocks` mutex Set),
+ * `runtimeSessions`, `runtimeTurns`, and `pendingRuntimeActions` (never persisted - no
+ * `Cp2Snapshot` field) - plus the entire `createRuntimeTurn` pipeline (context retrieval, tool
+ * proposal, confirmation, execution, model routing, recall persistence) and every
+ * AI-model-catalog/activation/assignment method.
+ *
+ * **There is no `agentModelBindings` map here.** "Which model is this agent using" has exactly
+ * one answer, read/written entirely through `deps.getActiveNativeRuntimeBinding`/
+ * `deps.activateVerifiedRuntimeBinding` into `NativeRuntimeBindingStore`
+ * (`../native-runtime/store.ts`) - the sole runtime-binding source of truth. The legacy table this
+ * domain used to own directly, and the even-older `agentModelAssignments`/
+ * `browserInferenceAssignments` tables before it, are gone (see migrations 075 and 076 under
+ * infra/db/migrations/); `native-binding-projection.ts` builds the `AgentModelBindingSummary`
+ * wire shape `AgentModelPanel.tsx`/`QuickRuntimeSwitcher.tsx` read as a read-through projection of
+ * the native graph, not a second persisted representation.
  *
  * **`mcpAccessTokens`/`mcpTokenIdByHash` deliberately stayed on `Cp2Store`, not here** - despite
  * being declared next to this domain's Maps. Zero code coupling either direction was found
@@ -32,12 +41,13 @@
  *
  * **Known pre-existing gap, preserved as-is (zero-behavior-change refactor, not a bugfix
  * opportunity):** `deleteShopOwnedData` (business-scoped deletion, stays on `Cp2Store`) only
- * sweeps `browserInferenceAssignments`/`runtimeSessions`/`runtimeTurns`/`pendingRuntimeActions`
- * - `activeAiModels`/`agentProfiles`/`agentRuntimeVersions`/`agentContextSources`/
- * `agentEvaluationEvents`/`agentOwnerCorrections`/`installedAgentModels`/
- * `agentModelAssignments`/`agentModelBindings` are never touched by shop-level deletion, only by
- * the account-level purge (`deleteAccountOwnedData`, which sweeps all of them completely). This
- * was true before this extraction; flagging it here rather than silently fixing it as a
+ * sweeps `runtimeSessions`/`runtimeTurns`/`pendingRuntimeActions` -
+ * `activeAiModels`/`agentProfiles`/`agentRuntimeVersions`/`agentContextSources`/
+ * `agentEvaluationEvents`/`agentOwnerCorrections`/`installedAgentModels`/the native runtime
+ * binding graph are never touched by shop-level deletion, only by the account-level purge
+ * (`deleteAccountOwnedData`, which sweeps all of them completely - see that method's own comment
+ * for exactly which native-runtime maps it sweeps and why `modelsMap` is deliberately excluded).
+ * This was true before this extraction; flagging it here rather than silently fixing it as a
  * side effect, since shop-deletion semantics for business-scoped agent config deserve a
  * deliberate product decision, not an incidental one made while moving code.
  *
@@ -59,6 +69,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   ActiveAiModelSummary,
+  ActiveNativeAgentBinding,
   AgentAudience,
   AgentContextSource,
   AgentEvaluationEvent,
@@ -124,6 +135,10 @@ import {
   resolveNativeRuntimeModelProvider,
   type ExecutionTargetResolutionSource
 } from "./native-runtime-routing.js";
+import {
+  projectActiveNativeBinding,
+  projectNativeBinding
+} from "./native-binding-projection.js";
 import { executeRuntimeCapability } from "./capabilities.js";
 import {
   createRuntimeDocumentImportProposal,
@@ -135,7 +150,6 @@ import {
 import {
   cloneAgentContextSource,
   cloneAgentInstructions,
-  cloneAgentModelBinding,
   cloneAgentPersonality,
   cloneAgentRuntimeVersion,
   cloneAgentSkillBinding,
@@ -157,7 +171,6 @@ import {
   maxRuntimeTurnsPerSession,
   modelHealthError,
   normalizeBusinessAgentProfile,
-  normalizeExecutionMode,
   normalizeInstalledAgentModel,
   normalizeModelCatalogSearch,
   resolveDefaultDeviceModelId,
@@ -177,7 +190,6 @@ export class AgentRuntimeDomain {
   private readonly agentEvaluationEvents = new Map<string, AgentEvaluationEvent>();
   private readonly agentOwnerCorrections = new Map<string, AgentOwnerCorrection>();
   private readonly installedAgentModels = new Map<string, InstalledAgentModelSummary>();
-  private readonly agentModelBindings = new Map<string, AgentModelBindingSummary>();
   private readonly agentModelActivationLocks = new Set<string>();
   private readonly runtimeSessions = new Map<string, RuntimeSessionSummary>();
   private readonly runtimeTurns = new Map<string, RuntimeTurnSummary>();
@@ -213,10 +225,6 @@ export class AgentRuntimeDomain {
     return this.installedAgentModels;
   }
 
-  get agentModelBindingsMap(): Map<string, AgentModelBindingSummary> {
-    return this.agentModelBindings;
-  }
-
   get runtimeSessionsMap(): Map<string, RuntimeSessionSummary> {
     return this.runtimeSessions;
   }
@@ -237,7 +245,6 @@ export class AgentRuntimeDomain {
     this.agentEvaluationEvents.clear();
     this.agentOwnerCorrections.clear();
     this.installedAgentModels.clear();
-    this.agentModelBindings.clear();
     this.agentModelActivationLocks.clear();
     this.runtimeSessions.clear();
     this.runtimeTurns.clear();
@@ -277,10 +284,6 @@ export class AgentRuntimeDomain {
 
     for (const model of snapshot.installedAgentModels ?? []) {
       this.installedAgentModels.set(model.id, cloneInstalledAgentModel(model));
-    }
-
-    for (const binding of snapshot.agentModelBindings ?? []) {
-      this.agentModelBindings.set(binding.id, cloneAgentModelBinding(binding));
     }
 
     for (const item of snapshot.runtimeSessions) {
@@ -419,10 +422,15 @@ export class AgentRuntimeDomain {
     now?: Date;
   }): AgentModelBindingSummary | null {
     const now = input.now ?? new Date();
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    const session = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
     this.requireBusinessAgent(input.businessId, input.agentId, now);
-    const binding = this.activeAgentModelBinding(input.agentId);
-    return binding === null ? null : cloneAgentModelBinding(binding);
+    const active = this.deps.getActiveNativeRuntimeBinding(input.businessId, input.agentId);
+    return projectActiveNativeBinding(active, input.businessId, session.account.id);
   }
 
   /** The harness (AgentRuntimeAdapter) currently selected for this shop's agent, or the platform
@@ -468,7 +476,7 @@ export class AgentRuntimeDomain {
       );
     }
 
-    const active = this.activeAgentModelBinding(input.agentId);
+    const active = this.deps.getActiveNativeRuntimeBinding(input.businessId, input.agentId);
     if (active === null) {
       return {
         agentId: input.agentId,
@@ -487,12 +495,11 @@ export class AgentRuntimeDomain {
       now
     });
     const inactive: AgentModelBindingSummary = {
-      ...active,
+      ...projectNativeBinding(active, input.businessId, session.account.id),
       status: "inactive",
       updatedAt: removedAt,
       updatedBy: session.user.id
     };
-    this.agentModelBindings.set(inactive.id, inactive);
 
     const fallbackModelId = resolveDefaultDeviceModelId(
       this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId,
@@ -584,16 +591,14 @@ export class AgentRuntimeDomain {
     const model = this.requireCanonicalAiModel(input.modelId);
     validateAgentModelBindingConfiguration(input, model);
     input.onStage?.("model_resolved", Date.now() - startedAt);
-    const existingActive = this.activeAgentModelBinding(input.agentId);
+    const existingActive = this.deps.getActiveNativeRuntimeBinding(input.businessId, input.agentId);
     if (
       existingActive !== null &&
       // An explicit harness request always goes through the full (re)activation path below, even
       // when it happens to match what's already active - it's a deliberate action, not a probe.
       input.agentRuntimeAdapterId === undefined &&
-      existingActive.modelId === input.modelId &&
-      existingActive.executionTarget === input.executionTarget &&
-      existingActive.executionMode === normalizeExecutionMode(input.executionMode) &&
-      existingActive.permissions.allowRemoteShopDevice === input.permissions.allowRemoteShopDevice
+      existingActive.model.id === input.modelId &&
+      existingActive.executionTarget === input.executionTarget
     ) {
       input.onStage?.("runtime_probe_started", Date.now() - startedAt);
       const health = healthSummary(
@@ -607,36 +612,23 @@ export class AgentRuntimeDomain {
       );
       input.onStage?.("runtime_probe_completed", Date.now() - startedAt);
       if (!health.ok) throw modelHealthError(health);
-      const verified = {
-        ...existingActive,
-        lastVerifiedAt: health.checkedAt,
-        lastVerificationStatus: "passed" as const,
-        lastErrorCode: null,
-        lastErrorMessage: null,
-        updatedAt: health.checkedAt,
-        updatedBy: session.user.id
-      };
-      this.agentModelBindings.set(verified.id, verified);
-      const profile = this.currentAgentProfile(input.businessId, now);
-      const nativeBinding = this.deps.activateVerifiedRuntimeBinding({
+      const result = this.finalizeVerifiedActivation({
         businessId: input.businessId,
+        agentId: input.agentId,
         accountId: session.account.id,
-        agentId: profile.agentId,
-        agentName: profile.name,
+        actorId: session.user.id,
         model,
         executionTarget: input.executionTarget,
-        fallbackModel: null,
-        updatedBy: session.user.id,
-        checkedAt: health.checkedAt
+        checkedAt: health.checkedAt,
+        auditType: "agent_model.activation_reverified",
+        latencyMs: health.latencyMs,
+        // Model and execution target are unchanged from what's already active - this is a health
+        // re-verification, not a configuration change, so the agent profile's runtimeVersion must
+        // not bump (matches the pre-consolidation fast path, which never touched agentProfiles).
+        bumpProfile: false
       });
-      this.recordAgentModelBindingAudit(
-        "agent_model.activation_reverified",
-        verified,
-        session.user.id,
-        { latencyMs: health.latencyMs, nativeRuntimeBindingId: nativeBinding.id }
-      );
       input.onStage?.("binding_staged", Date.now() - startedAt);
-      return { binding: cloneAgentModelBinding(verified), healthCheck: health };
+      return { binding: result, healthCheck: health };
     }
     if (this.agentModelActivationLocks.has(input.agentId)) {
       throw new Cp2Error(
@@ -649,28 +641,6 @@ export class AgentRuntimeDomain {
     }
 
     this.agentModelActivationLocks.add(input.agentId);
-    const createdAt = now.toISOString();
-    const pending: AgentModelBindingSummary = {
-      id: randomUUID(),
-      agentId: input.agentId,
-      shopId: input.businessId,
-      accountId: session.account.id,
-      modelId: input.modelId,
-      status: "verifying",
-      executionMode: normalizeExecutionMode(input.executionMode),
-      executionTarget: input.executionTarget,
-      permissions: { ...input.permissions },
-      activatedAt: null,
-      lastVerifiedAt: null,
-      lastVerificationStatus: null,
-      lastErrorCode: null,
-      lastErrorMessage: null,
-      createdAt,
-      updatedAt: createdAt,
-      updatedBy: session.user.id
-    };
-    this.agentModelBindings.set(pending.id, pending);
-
     try {
       const adapter = this.requireModelRuntimeAdapter(input);
       input.onStage?.("runtime_probe_started", Date.now() - startedAt);
@@ -685,129 +655,51 @@ export class AgentRuntimeDomain {
       );
       input.onStage?.("runtime_probe_completed", Date.now() - startedAt);
       if (!health.ok) {
-        const failed: AgentModelBindingSummary = {
-          ...pending,
-          status: isUnavailableRuntimeCode(health.errorCode) ? "unavailable" : "failed",
-          lastVerifiedAt: health.checkedAt,
-          lastVerificationStatus: "failed",
-          lastErrorCode: health.errorCode,
-          lastErrorMessage: health.errorMessage,
-          updatedAt: health.checkedAt
-        };
-        this.agentModelBindings.set(failed.id, failed);
         this.recordAgentModelBindingAudit(
           "agent_model.activation_failed",
-          failed,
+          failedActivationAuditFields(input, health.checkedAt, health.errorCode),
           session.user.id,
-          {
-            errorCode: health.errorCode,
-            latencyMs: health.latencyMs
-          }
+          { errorCode: health.errorCode, latencyMs: health.latencyMs }
         );
         throw modelHealthError(health);
       }
 
-      const activatedAt = health.checkedAt;
-      for (const [bindingId, binding] of this.agentModelBindings) {
-        if (
-          binding.agentId === input.agentId &&
-          binding.status === "active" &&
-          binding.id !== pending.id
-        ) {
-          this.agentModelBindings.set(bindingId, {
-            ...binding,
-            status: "inactive",
-            updatedAt: activatedAt,
-            updatedBy: session.user.id
-          });
-        }
-      }
-      const active: AgentModelBindingSummary = {
-        ...pending,
-        status: "active",
-        activatedAt,
-        lastVerifiedAt: activatedAt,
-        lastVerificationStatus: "passed",
-        updatedAt: activatedAt
-      };
-      this.agentModelBindings.set(active.id, active);
-
-      const profile = this.currentAgentProfile(input.businessId, now);
-      const nativeBinding = this.deps.activateVerifiedRuntimeBinding({
+      const result = this.finalizeVerifiedActivation({
         businessId: input.businessId,
+        agentId: input.agentId,
         accountId: session.account.id,
-        agentId: profile.agentId,
-        agentName: profile.name,
-        ...(input.agentRuntimeAdapterId === undefined
-          ? {}
-          : { agentRuntimeAdapterId: input.agentRuntimeAdapterId }),
+        actorId: session.user.id,
         model,
         executionTarget: input.executionTarget,
-        fallbackModel: null,
-        updatedBy: session.user.id,
-        checkedAt: activatedAt
+        checkedAt: health.checkedAt,
+        auditType: "agent_model.activation_succeeded",
+        latencyMs: health.latencyMs,
+        bumpProfile: true,
+        ...(input.agentRuntimeAdapterId === undefined
+          ? {}
+          : { agentRuntimeAdapterId: input.agentRuntimeAdapterId })
       });
-      const revised = {
-        ...profile,
-        modelId: input.modelId,
-        runtimeVersion: profile.runtimeVersion + 1,
-        updatedAt: activatedAt,
-        updatedBy: session.user.id
-      };
-      this.agentProfiles.set(input.businessId, revised);
-      this.recordAgentRuntimeVersion(revised, session.user.id, "Verified agent model activated");
-      this.recordAgentModelBindingAudit(
-        "agent_model.activation_succeeded",
-        active,
-        session.user.id,
-        { latencyMs: health.latencyMs, nativeRuntimeBindingId: nativeBinding.id }
-      );
       input.onStage?.("binding_staged", Date.now() - startedAt);
-      return { binding: cloneAgentModelBinding(active), healthCheck: health };
+      return { binding: result, healthCheck: health };
     } catch (error) {
       if (error instanceof Cp2Error) {
-        const current = this.agentModelBindings.get(pending.id);
-        if (current?.status === "verifying") {
-          const failedAt = new Date().toISOString();
-          const failed: AgentModelBindingSummary = {
-            ...current,
-            status:
-              isUnavailableRuntimeCode(error.code) ||
-              error.code === "BRIDGE_UNAVAILABLE" ||
-              error.code === "BROWSER_RUNTIME_DISABLED"
-                ? "unavailable"
-                : "failed",
-            lastVerifiedAt: failedAt,
-            lastVerificationStatus: "failed",
-            lastErrorCode: error.code,
-            lastErrorMessage: error.message,
-            updatedAt: failedAt
-          };
-          this.agentModelBindings.set(failed.id, failed);
-          this.recordAgentModelBindingAudit(
-            "agent_model.activation_failed",
-            failed,
-            session.user.id,
-            { errorCode: error.code }
-          );
-        }
+        const failedAt = new Date().toISOString();
+        this.recordAgentModelBindingAudit(
+          "agent_model.activation_failed",
+          failedActivationAuditFields(input, failedAt, error.code),
+          session.user.id,
+          { errorCode: error.code }
+        );
         throw error;
       }
       const runtimeError = asModelRuntimeError(error);
       const failedAt = new Date().toISOString();
-      const failed: AgentModelBindingSummary = {
-        ...pending,
-        status: "failed",
-        lastVerifiedAt: failedAt,
-        lastVerificationStatus: "failed",
-        lastErrorCode: runtimeError.code,
-        lastErrorMessage: runtimeError.message,
-        updatedAt: failedAt
-      };
-      this.agentModelBindings.set(failed.id, failed);
-      this.recordAgentModelBindingAudit("agent_model.activation_failed", failed, session.user.id, {
-        errorCode: runtimeError.code
-      });
+      this.recordAgentModelBindingAudit(
+        "agent_model.activation_failed",
+        failedActivationAuditFields(input, failedAt, runtimeError.code),
+        session.user.id,
+        { errorCode: runtimeError.code }
+      );
       throw new Cp2Error(
         runtimeError.code === "INFERENCE_TIMEOUT" ? 504 : 503,
         runtimeError.code,
@@ -822,6 +714,65 @@ export class AgentRuntimeDomain {
     } finally {
       this.agentModelActivationLocks.delete(input.agentId);
     }
+  }
+
+  /** Writes the (sole) native runtime binding and re-reads it back joined with its model/role so
+   *  the HTTP response and audit trail are built from exactly what was persisted, not from the
+   *  input that requested it. Shared by activateAgentModel's fast (re-verify) and full paths -
+   *  both do nothing but a health check before reaching here. */
+  private finalizeVerifiedActivation(input: {
+    businessId: string;
+    agentId: string;
+    accountId: string;
+    actorId: string;
+    model: AiModelSummary;
+    executionTarget: ModelExecutionTarget;
+    checkedAt: string;
+    auditType: string;
+    latencyMs: number;
+    bumpProfile: boolean;
+    agentRuntimeAdapterId?: string;
+  }): AgentModelBindingSummary {
+    const profile = this.currentAgentProfile(input.businessId, new Date(input.checkedAt));
+    const nativeBinding = this.deps.activateVerifiedRuntimeBinding({
+      businessId: input.businessId,
+      accountId: input.accountId,
+      agentId: profile.agentId,
+      agentName: profile.name,
+      ...(input.agentRuntimeAdapterId === undefined
+        ? {}
+        : { agentRuntimeAdapterId: input.agentRuntimeAdapterId }),
+      model: input.model,
+      executionTarget: input.executionTarget,
+      fallbackModel: null,
+      updatedBy: input.actorId,
+      checkedAt: input.checkedAt
+    });
+    const refreshed = this.deps.getActiveNativeRuntimeBinding(input.businessId, input.agentId);
+    if (refreshed === null) {
+      throw new Cp2Error(
+        500,
+        "RUNTIME_BINDING_WRITE_FAILED",
+        "Failed to persist the activated runtime binding."
+      );
+    }
+    const verified = projectNativeBinding(refreshed, input.businessId, input.accountId);
+    if (input.bumpProfile) {
+      const revised = {
+        ...profile,
+        modelId: input.model.id,
+        runtimeVersion: profile.runtimeVersion + 1,
+        updatedAt: input.checkedAt,
+        updatedBy: input.actorId
+      };
+      this.agentProfiles.set(input.businessId, revised);
+      this.recordAgentRuntimeVersion(revised, input.actorId, "Verified agent model activated");
+    }
+    this.recordAgentModelBindingAudit(input.auditType, verified, input.actorId, {
+      latencyMs: input.latencyMs,
+      nativeRuntimeBindingId: nativeBinding.id
+    });
+    return verified;
   }
 
   listInstalledAgentModels(input: {
@@ -1485,7 +1436,10 @@ export class AgentRuntimeDomain {
 
   agentModelRecoveryGuidance(businessId: string, error: Cp2Error): string {
     const profile = this.agentProfiles.get(businessId);
-    const binding = profile === undefined ? null : this.activeAgentModelBinding(profile.agentId);
+    const binding =
+      profile === undefined
+        ? null
+        : this.deps.getActiveNativeRuntimeBinding(businessId, profile.agentId);
     if (binding === null) {
       return [
         "I can’t use a working model for this chat yet, but your message is saved.",
@@ -1496,7 +1450,7 @@ export class AgentRuntimeDomain {
       ].join("\n");
     }
 
-    const modelName = this.deps.resolveCatalogModel(binding.modelId)?.label ?? binding.modelId;
+    const modelName = this.deps.resolveCatalogModel(binding.model.id)?.label ?? binding.model.id;
     return [
       `I couldn’t reach ${modelName}, but your message is saved.`,
       "To continue:",
@@ -1893,10 +1847,12 @@ export class AgentRuntimeDomain {
     appendTelemetry("turn.received", "completed", null, null, {
       messageLength: input.message.trim().length,
       hasConfirmationToken: input.confirmationToken !== undefined,
-      runtimeBindingId: nativeResolution?.binding.id ?? activeBinding?.id ?? null,
+      runtimeBindingId: nativeResolution?.binding.id ?? activeBinding?.binding.id ?? null,
       runtimeAgentId: nativeResolution?.agent.id ?? storedAgentProfile.agentId,
-      selectedPrimaryModelId: nativeResolution?.primary.model.id ?? activeBinding?.modelId ?? null,
-      selectedActualModelId: nativeResolution?.selected.model.id ?? activeBinding?.modelId ?? null,
+      selectedPrimaryModelId:
+        nativeResolution?.primary.model.id ?? activeBinding?.model.id ?? null,
+      selectedActualModelId:
+        nativeResolution?.selected.model.id ?? activeBinding?.model.id ?? null,
       executionHostId: nativeResolution?.selected.host?.id ?? null,
       modelInstallationId: nativeResolution?.selected.installation?.id ?? null,
       fallbackUsed: nativeResolution?.fallbackUsed ?? false,
@@ -2063,8 +2019,8 @@ export class AgentRuntimeDomain {
         "The active agent model could not complete this message.",
         true,
         {
-          bindingId: activeBinding.id,
-          modelId: activeBinding.modelId,
+          bindingId: activeBinding.binding.id,
+          modelId: activeBinding.model.id,
           executionTarget: activeBinding.executionTarget,
           runtimeErrorCode: modelRoute.trace.errorCode
         }
@@ -2425,30 +2381,20 @@ export class AgentRuntimeDomain {
     return adapter;
   }
 
-  private activeAgentModelBinding(agentId: string): AgentModelBindingSummary | null {
-    return (
-      [...this.agentModelBindings.values()]
-        .filter(
-          (binding) =>
-            binding.agentId === agentId &&
-            binding.status === "active" &&
-            binding.lastVerificationStatus === "passed"
-        )
-        .sort((left, right) => right.activatedAt!.localeCompare(left.activatedAt!))[0] ?? null
-    );
-  }
-
   /** Shared by createRuntimeTurn and the public storefront agent reply path. */
   resolveActiveRuntimeModelId(
     businessId: string,
     storedAgentProfile: BusinessAgentProfileSummary,
     conversationId?: string
   ): {
-    activeBinding: AgentModelBindingSummary | null;
+    activeBinding: ActiveNativeAgentBinding | null;
     activeModelId: string;
     nativeResolution: ReturnType<AgentRuntimeDomainDeps["resolveNativeRuntimeBinding"]> | null;
   } {
-    const activeBinding = this.activeAgentModelBinding(storedAgentProfile.agentId);
+    const activeBinding = this.deps.getActiveNativeRuntimeBinding(
+      businessId,
+      storedAgentProfile.agentId
+    );
     const nativeResolution =
       conversationId === undefined
         ? null
@@ -2462,7 +2408,7 @@ export class AgentRuntimeDomain {
     const requestedModelId = storedAgentProfile.modelId;
     const activeModelId =
       nativeResolution?.selected.model.id ??
-      activeBinding?.modelId ??
+      activeBinding?.model.id ??
       (this.deps.runtimeModelProviderResolver === undefined ||
       requestedModelId === selectedCloudFallbackModelId
         ? selectedCloudFallbackModelId
@@ -2496,8 +2442,6 @@ export class AgentRuntimeDomain {
           (candidate.host?.type ?? candidate.model.configuration.executionTarget) === "backend"
       );
     if (hasBackendRuntime) return;
-    const explicitBinding = this.activeAgentModelBinding(input.profile.agentId);
-    if (explicitBinding?.executionMode === "LOCAL_ONLY") return;
     if (this.deps.modelRuntimeAdapterResolver === undefined) return;
 
     const usesPlatformDefaultAgent = input.profile.agentDefinitionId === defaultAgentDefinitionId;
@@ -2613,7 +2557,7 @@ export class AgentRuntimeDomain {
 
   private recordAgentModelBindingAudit(
     type: string,
-    binding: AgentModelBindingSummary,
+    binding: AgentModelBindingAuditFields,
     actorId: string,
     extra: Record<string, string | number | boolean | null>
   ): void {
@@ -2657,7 +2601,7 @@ export class AgentRuntimeDomain {
     return buildShopAgentRuntimeModule(
       {
         deps: this.deps,
-        activeBinding: this.activeAgentModelBinding(profile.agentId),
+        activeBinding: this.deps.getActiveNativeRuntimeBinding(profile.businessId, profile.agentId),
         contextSources
       },
       profile,
@@ -2795,7 +2739,6 @@ export class AgentRuntimeDomain {
     attemptedRuntimeKeys?: ReadonlySet<string>
   ): {
     provider: RuntimeModelProvider | undefined;
-    binding: AgentModelBindingSummary | null;
     executionTarget: ModelExecutionTarget | undefined;
     resolutionSource: ExecutionTargetResolutionSource | null;
     runtimeKey: string | null;
@@ -2804,7 +2747,6 @@ export class AgentRuntimeDomain {
     executionHostId: string | null;
     fallbackIndex: number;
   } {
-    const binding = this.activeAgentModelBinding(shopRuntime.agentId);
     const nativeResolution =
       conversationId === undefined
         ? null
@@ -2812,7 +2754,6 @@ export class AgentRuntimeDomain {
     return resolveNativeRuntimeModelProvider({
       shopRuntime,
       requestedModelId: modelId,
-      legacyBinding: binding,
       nativeResolution,
       requireAdapter: (adapterInput) => this.requireModelRuntimeAdapter(adapterInput),
       adapterResolverConfigured: this.deps.modelRuntimeAdapterResolver !== undefined,
@@ -3004,6 +2945,38 @@ export class AgentRuntimeDomain {
       turn: input.turn
     };
   }
+}
+
+/** The minimal shape recordAgentModelBindingAudit needs - satisfied by a full projected
+ *  AgentModelBindingSummary (the success paths) or by failedActivationAuditFields below (the
+ *  failure paths, which never persist a native binding so there is no real one to project). */
+interface AgentModelBindingAuditFields {
+  id: string;
+  updatedAt: string;
+  shopId: string;
+  agentId: string;
+  modelId: string;
+  executionTarget: ModelExecutionTarget;
+  status: string;
+}
+
+/** A failed activation attempt writes no runtime binding (native or otherwise) - this synthesizes
+ *  just enough shape for the audit trail from the request that failed, keyed deterministically by
+ *  agent+model so repeated failures for the same pair are easy to correlate in the audit log. */
+function failedActivationAuditFields(
+  input: { agentId: string; businessId: string; modelId: string; executionTarget: ModelExecutionTarget },
+  occurredAt: string,
+  errorCode: string | null
+): AgentModelBindingAuditFields {
+  return {
+    id: `activation-attempt:${input.agentId}:${input.modelId}`,
+    updatedAt: occurredAt,
+    shopId: input.businessId,
+    agentId: input.agentId,
+    modelId: input.modelId,
+    executionTarget: input.executionTarget,
+    status: isUnavailableRuntimeCode(errorCode) ? "unavailable" : "failed"
+  };
 }
 
 function uniqueModelIds(values: Array<string | undefined>): string[] {

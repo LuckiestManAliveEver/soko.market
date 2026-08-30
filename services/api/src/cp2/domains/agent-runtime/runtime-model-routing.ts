@@ -1,5 +1,4 @@
 import type {
-  AgentModelBindingSummary,
   ModelExecutionTarget,
   RuntimeContextSummary,
   RuntimeModelCompletionResult,
@@ -26,7 +25,7 @@ import { buildRuntimeModelPrompt, modelTraceFromCompletion } from "./shared.js";
 import {
   runtimeAdapterIdForAgent,
   type AgentRuntimeAdapter
-} from "../../../agent-runtime/agent-runtime-adapter.js";
+} from "../../../agent-harness/agent-runtime-adapter.js";
 
 interface RuntimeModelRouteState {
   resolveRuntimeModelProvider: (
@@ -35,7 +34,6 @@ interface RuntimeModelRouteState {
     attemptedRuntimeKeys?: ReadonlySet<string>
   ) => {
     provider: RuntimeModelProvider | undefined;
-    binding: AgentModelBindingSummary | null;
     executionTarget: ModelExecutionTarget | undefined;
     resolutionSource: ExecutionTargetResolutionSource | null;
     runtimeKey: string | null;
@@ -80,7 +78,6 @@ export async function createRuntimeModelRoute(
 }> {
   const {
     provider,
-    binding,
     executionTarget: nativeExecutionTarget,
     resolutionSource,
     runtimeKey,
@@ -131,26 +128,19 @@ export async function createRuntimeModelRoute(
     agentId: input.agent.id,
     agentAdapterId,
     ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
-    ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
-    ...(binding === null
-      ? {}
-      : {
-          bindingId: binding.id,
-          modelId: binding.modelId,
-          executionTarget: nativeExecutionTarget ?? binding.executionTarget
-        })
+    ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget })
   });
 
   if (provider === undefined) {
-    if (binding !== null) {
+    if (runtimeBindingId !== null) {
       throw new Cp2Error(
         503,
         "AGENT_MODEL_UNAVAILABLE",
         "The active agent model runtime is unavailable.",
         true,
         {
-          bindingId: binding.id,
-          modelId: binding.modelId,
+          bindingId: runtimeBindingId,
+          modelId: resolvedModelId,
           executionTarget: nativeExecutionTarget ?? null,
           resolutionSource
         }
@@ -196,7 +186,7 @@ export async function createRuntimeModelRoute(
   );
   input.appendTelemetry("model.prompt_built", "completed", null, null, {
     provider: provider.name,
-    bindingId: binding?.id ?? null,
+    bindingId: runtimeBindingId,
     executionTarget: nativeExecutionTarget ?? null,
     resolutionSource,
     fallbackIndex,
@@ -221,7 +211,7 @@ export async function createRuntimeModelRoute(
     });
     input.appendTelemetry("model.inference_started", "completed", null, null, {
       provider: provider.name,
-      bindingId: binding?.id ?? null,
+      bindingId: runtimeBindingId,
       executionTarget: nativeExecutionTarget ?? null,
       resolutionSource,
       fallbackIndex,
@@ -247,7 +237,7 @@ export async function createRuntimeModelRoute(
     }
     const agentResult = await agentAdapter.execute({
       agent: input.agent,
-      bindingId: runtimeBindingId ?? binding?.id ?? "runtime-unbound",
+      bindingId: runtimeBindingId ?? "runtime-unbound",
       executionHostId,
       modelId: resolvedModelId,
       conversationId: input.conversationId ?? "runtime-unbound",

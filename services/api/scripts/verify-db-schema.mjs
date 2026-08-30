@@ -195,7 +195,10 @@ try {
       and table_name in (
         'cp2_model_preferences',
         'cp2_runtime_hosts',
-        'cp2_runtime_model_installations'
+        'cp2_runtime_model_installations',
+        'cp2_agent_model_assignments',
+        'cp2_browser_inference_assignments',
+        'cp2_agent_model_bindings'
       )
     order by table_name
   `);

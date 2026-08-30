@@ -178,22 +178,29 @@ describe("agent model activation runtime", () => {
     const first = await activate(app, owner, primaryModelId);
     const repeated = await activate(app, owner, primaryModelId);
     expect(repeated.binding.id).toBe(first.binding.id);
-    expect(
-      store.snapshot().agentModelBindings?.filter((candidate) => candidate.status === "active")
-    ).toHaveLength(1);
+    expect(activeNativeBindingsForAgent(store, owner.businessId)).toHaveLength(1);
 
     const replacement = await activate(app, owner, replacementModelId);
     expect(replacement.binding).toMatchObject({
       modelId: replacementModelId,
       status: "active"
     });
-    expect(replacement.binding.id).not.toBe(first.binding.id);
-    expect(store.snapshot().agentModelBindings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: first.binding.id, status: "inactive" }),
-        expect.objectContaining({ id: replacement.binding.id, status: "active" })
-      ])
-    );
+    // The native runtime binding is a stable per-agent slot (see NativeRuntimeBindingStore.
+    // activateVerifiedModel) - swapping the active model updates that SAME binding's primary role
+    // in place so conversation.runtimeBindingId never has to move, rather than minting a new
+    // binding id per activation the way the retired legacy cp2_agent_model_bindings table did.
+    expect(replacement.binding.id).toBe(first.binding.id);
+    expect(activeNativeBindingsForAgent(store, owner.businessId)).toHaveLength(1);
+    expect(
+      store
+        .snapshot()
+        .nativeRuntimeBindingModels.filter(
+          (role) =>
+            role.runtimeBindingId === replacement.binding.id &&
+            role.role === "primary" &&
+            role.enabled
+        )
+    ).toMatchObject([{ modelId: replacementModelId }]);
     expect(await getBinding(app, owner)).toMatchObject({
       id: replacement.binding.id,
       modelId: replacementModelId
@@ -1050,6 +1057,14 @@ async function activate(
   });
   expect(response.statusCode).toBe(200);
   return response.json<AgentModelActivationResult>();
+}
+
+function activeNativeBindingsForAgent(store: ReturnType<typeof createCp2Store>, agentId: string) {
+  return store
+    .snapshot()
+    .nativeRuntimeBindings.filter(
+      (candidate) => candidate.agentId === agentId && candidate.status === "active"
+    );
 }
 
 async function getBinding(

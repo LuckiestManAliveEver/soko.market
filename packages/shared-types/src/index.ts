@@ -3220,14 +3220,17 @@ export interface RuntimeModelConversationMessage {
 
 /**
  * Provider-neutral inference failure categories. Every inference-capable surface in this
- * repository - server model adapters (services/api/src/inference/model-runtime.ts), the OpenAI
- * cloud-fallback provider (services/api/src/inference/cloud-fallback.ts), and browser-local
- * inference (apps/web/src/browser-inference-types.ts, BrowserInferenceErrorCode) - already throws
- * or returns its own specific error code (e.g. "MODEL_PROVIDER_TIMEOUT", "CLOUD_TIMEOUT",
- * "INFERENCE_TIMEOUT", "WEBGPU_UNAVAILABLE"). Those specific codes stay exactly as they are: this
- * type and normalizeInferenceErrorCode() only add a shared, coarser category on top, so telemetry
- * and user-facing messaging can reason about "a timeout happened" the same way regardless of which
- * of the three surfaces produced it, without any of them changing what they already throw.
+ * repository - server model adapters (services/api/src/inference/model-runtime.ts) and the OpenAI
+ * provider (services/api/src/inference/openai-provider.ts) - throws or returns its own specific
+ * error code (e.g. "MODEL_PROVIDER_TIMEOUT", "CLOUD_TIMEOUT", "INFERENCE_TIMEOUT"). Those specific
+ * codes stay exactly as they are: this type and normalizeInferenceErrorCode() only add a shared,
+ * coarser category on top, so telemetry and user-facing messaging can reason about "a timeout
+ * happened" the same way regardless of which surface produced it, without either changing what it
+ * already throws. The WEBGPU_UNAVAILABLE/MODEL_DOWNLOAD_FAILED/... entries below the server codes
+ * are historical - they categorized the retired browser-local inference architecture's error
+ * codes and are kept only so a client still holding a stale cached code from before that
+ * retirement normalizes safely instead of falling through to "UNKNOWN"; no surface in this
+ * repository produces them anymore.
  */
 export type RuntimeInferenceErrorCategory =
   | "TIMEOUT"
@@ -3285,7 +3288,8 @@ const inferenceErrorCategoryByCode: Record<string, RuntimeInferenceErrorCategory
   CLOUD_SPENDING_LIMIT_REACHED: "RATE_LIMITED",
   CLOUD_CIRCUIT_OPEN: "ENGINE_UNREACHABLE",
   CLOUD_REQUEST_FAILED: "PROVIDER_ERROR",
-  // apps/web/src/browser-inference-types.ts BrowserInferenceErrorCode
+  // Historical: the retired browser-local inference architecture's error codes (see this type's
+  // own docblock above) - no surface in this repository produces these anymore.
   WEBGPU_UNAVAILABLE: "ENGINE_UNREACHABLE",
   WASM_UNAVAILABLE: "ENGINE_UNREACHABLE",
   MODEL_DOWNLOAD_FAILED: "MODEL_NOT_INSTALLED",
@@ -4004,4 +4008,18 @@ export interface ResolvedNativeRuntimeBinding {
   fallbackUsed: boolean;
   fallbackReason: string | null;
   configuration: Record<string, unknown>;
+}
+
+/** The flat, agent-scoped read shape for "which model is this agent using" - the single
+ *  per-shop-agent binding lookup that replaced the retired legacy agentModelBindings
+ *  map/table (see cp2/domains/native-runtime/store.ts getActiveBindingForAgent, the sole
+ *  producer, and cp2/domains/agent-runtime/native-binding-projection.ts, the sole consumer).
+ *  `executionTarget` is resolved the same way turn-time resolution resolves it (host type,
+ *  falling back to the model's declared configuration), so callers never need to reach into
+ *  either object's loose `configuration` bag themselves. */
+export interface ActiveNativeAgentBinding {
+  binding: NativeRuntimeBindingSummary;
+  model: NativeRuntimeModelSummary;
+  role: NativeRuntimeBindingModelSummary;
+  executionTarget: ModelExecutionTarget;
 }

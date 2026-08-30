@@ -1,7 +1,6 @@
 import { recordRuntimeInitialization } from "./performance";
 
-export type RuntimeManagerState =
-  "idle" | "initializing" | "ready" | "switching-model" | "failed" | "stopped";
+export type RuntimeManagerState = "idle" | "initializing" | "ready" | "failed" | "stopped";
 
 export class RuntimeManager {
   private key: string | null = null;

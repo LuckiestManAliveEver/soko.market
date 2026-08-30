@@ -59,16 +59,15 @@ import {
   type MessageNotificationDelivery
 } from "./domains/messaging/shared.js";
 import { AgentRuntimeDomain } from "./domains/agent-runtime/store.js";
-import { createDefaultAgentRuntimeAdapterRegistry } from "../agent-runtime/default-agent-runtime-adapters.js";
-import type { AgentRuntimeAdapter } from "../agent-runtime/agent-runtime-adapter.js";
-import { describeAgentRuntimeAdapter } from "../agent-runtime/agent-runtime-catalog.js";
+import { createDefaultAgentRuntimeAdapterRegistry } from "../agent-harness/default-agent-runtime-adapters.js";
+import type { AgentRuntimeAdapter } from "../agent-harness/agent-runtime-adapter.js";
+import { describeAgentRuntimeAdapter } from "../agent-harness/agent-runtime-catalog.js";
 import {
   aiModelRegistry,
   computeModelAvailability,
   defaultAiModelId,
   buildRuntimeModelPrompt,
   cloneAgentContextSource,
-  cloneAgentModelBinding,
   cloneAgentRuntimeVersion,
   cloneBusinessAgentProfile,
   cloneInstalledAgentModel,
@@ -116,7 +115,6 @@ import type {
   AgentEvaluationEvent,
   AgentOwnerCorrection,
   AgentRuntimeVersion,
-  AgentModelBindingSummary,
   ActiveAiModelSummary,
   AccountDeletionRequestSummary,
   AuthChannel,
@@ -557,7 +555,6 @@ export interface Cp2Snapshot {
   agentEvaluationEvents?: AgentEvaluationEvent[];
   agentOwnerCorrections?: AgentOwnerCorrection[];
   installedAgentModels?: InstalledAgentModelSummary[];
-  agentModelBindings?: AgentModelBindingSummary[];
   nativeRuntimeAgents?: NativeRuntimeAgentSummary[];
   nativeRuntimeModels?: NativeRuntimeModelSummary[];
   nativeExecutionHosts?: NativeExecutionHostSummary[];
@@ -1122,6 +1119,8 @@ export class Cp2Store {
       },
       resolveAgentRuntimeAdapterId: (agentId) =>
         this.nativeRuntimeBindings.resolveAgentRuntimeAdapterId(agentId),
+      getActiveNativeRuntimeBinding: (businessId, agentId) =>
+        this.nativeRuntimeBindings.getActiveBindingForAgent(businessId, agentId),
       ensureDefaultRuntimeBinding: (input) => {
         // Authorize before mutating: this call provisions binding/host/model/installation rows,
         // and a rejected conversation must never leave those behind. resolveNativeRuntimeBinding
@@ -1224,13 +1223,14 @@ export class Cp2Store {
   private readonly messagingDomain: MessagingDomain;
   private readonly marketplaceIntroStates = new Map<string, MarketplaceIntroStateSummary>();
   // activeAiModels/agentProfiles/agentRuntimeVersions/agentContextSources/
-  // agentEvaluationEvents/agentOwnerCorrections/installedAgentModels/agentModelBindings
+  // agentEvaluationEvents/agentOwnerCorrections/installedAgentModels
   // (+ the ephemeral agentModelActivationLocks mutex Set)/runtimeSessions/runtimeTurns/
   // pendingRuntimeActions now live inside
   // `agentRuntimeDomain` (services/api/src/cp2/domains/agent-runtime/store.ts) - accessed via its
   // map getters for the generic snapshot/restore/Postgres-persistence/account-deletion sweeps
-  // below. `mcpAccessTokens`/`mcpTokenIdByHash` deliberately stay here (see that domain's header
-  // comment for why).
+  // below. There is no agentModelBindings map anywhere - runtime binding state lives solely in
+  // `nativeRuntimeBindings` (NativeRuntimeBindingStore) just below. `mcpAccessTokens`/
+  // `mcpTokenIdByHash` deliberately stay here (see that domain's header comment for why).
   private readonly agentRuntimeDomain: AgentRuntimeDomain;
   private readonly nativeRuntimeBindings: NativeRuntimeBindingStore;
   // DB-hosted model/agent catalog (see infra/db/migrations/071_platform_catalog.sql) and the
@@ -5462,9 +5462,6 @@ export class Cp2Store {
       installedAgentModels: [...this.agentRuntimeDomain.installedAgentModelsMap.values()].map(
         cloneInstalledAgentModel
       ),
-      agentModelBindings: [...this.agentRuntimeDomain.agentModelBindingsMap.values()].map(
-        cloneAgentModelBinding
-      ),
       nativeRuntimeAgents: [...this.nativeRuntimeBindings.agentsMap.values()],
       nativeRuntimeModels: [...this.nativeRuntimeBindings.modelsMap.values()],
       nativeExecutionHosts: [...this.nativeRuntimeBindings.hostsMap.values()],
@@ -6078,7 +6075,7 @@ export class Cp2Store {
   }
 
   /** Every AgentRuntimeAdapter actually registered in this deployment (see
-   *  agent-runtime/default-agent-runtime-adapters.ts) - the harnesses a shop can choose between. */
+   *  agent-harness/default-agent-runtime-adapters.ts) - the harnesses a shop can choose between. */
   listAgentRuntimeAdapters(): AgentRuntimeAdapterDescriptor[] {
     return this.defaultAgentRuntimeAdapters
       .list()
@@ -8856,10 +8853,24 @@ export class Cp2Store {
         this.agentRuntimeDomain.installedAgentModelsMap,
         scope
       );
+      // nativeRuntimeBindings.modelsMap is deliberately excluded here - models are the global,
+      // operator-editable catalog (like cp2_model_catalog), never account-owned, so nothing to
+      // sweep. Agents/hosts/installations/bindings/binding-models are account-or-business-scoped
+      // (businessId/accountId fields, or a foreign key that cascades to one) and must be removed or
+      // an account deletion leaves orphaned runtime state behind (see docs/adr/
+      // ADR-default-runtime-pi-smollm.md and the account-deletion completeness requirement).
+      deletedRecordCount += deleteScopedMapRecords(this.nativeRuntimeBindings.agentsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.nativeRuntimeBindings.hostsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(
-        this.agentRuntimeDomain.agentModelBindingsMap,
+        this.nativeRuntimeBindings.installationsMap,
         scope
       );
+      deletedRecordCount += deleteScopedMapRecords(this.nativeRuntimeBindings.bindingsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.nativeRuntimeBindings.bindingModelsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(this.platformOperators, scope);
       deletedRecordCount += deleteScopedMapRecords(this.mcpTokensDomain.mcpAccessTokensMap, scope);
       deletedRecordCount += deleteScopedMapRecords(
         this.externalConnectionsDomain.connectionsMap,

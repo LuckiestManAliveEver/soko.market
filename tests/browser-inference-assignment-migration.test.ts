@@ -25,4 +25,12 @@ describe("browser inference assignment migration", () => {
       'requiredMigrationFilename = "051_single_identity_single_store.sql"'
     );
   });
+
+  it("is finally dropped by migration 075, once it had been fully dead for good", async () => {
+    const sql = await readFile(
+      "infra/db/migrations/075_drop_dead_runtime_assignment_tables.sql",
+      "utf8"
+    );
+    expect(sql).toContain("drop table cp2_browser_inference_assignments");
+  });
 });

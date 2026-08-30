@@ -4,8 +4,8 @@ import type { NativeRuntimeAgentSummary, RuntimeModelCompletionResult } from "@s
 import {
   AgentRuntimeAdapterRegistry,
   type AgentRuntimeAdapter
-} from "../services/api/src/agent-runtime/agent-runtime-adapter";
-import { createPiAgentRuntimeAdapter } from "../services/api/src/agent-runtime/pi-agent-runtime-adapter";
+} from "../services/api/src/agent-harness/agent-runtime-adapter";
+import { createPiAgentRuntimeAdapter } from "../services/api/src/agent-harness/pi-agent-runtime-adapter";
 
 const completion: RuntimeModelCompletionResult = {
   provider: "test-model",

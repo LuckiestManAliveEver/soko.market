@@ -1,6 +1,5 @@
 import {
   isModelExecutionTarget,
-  type AgentModelBindingSummary,
   type ModelExecutionTarget,
   type ResolvedNativeRuntimeBinding,
   type RuntimeModelTrace,
@@ -20,7 +19,7 @@ import { Cp2Error } from "../../cp2-error.js";
  * for tests that need to assert the precedence rule fired correctly rather than just its output.
  */
 export type ExecutionTargetResolutionSource =
-  "explicit-native-configuration" | "explicit-native-host" | "legacy-binding";
+  "explicit-native-configuration" | "explicit-native-host";
 
 export interface ExecutionTargetResolution {
   target: ModelExecutionTarget;
@@ -28,8 +27,7 @@ export interface ExecutionTargetResolution {
 }
 
 // Split out so it can be unit-tested against each precedence branch (native configuration, native
-// host, legacy binding, terminal failure) directly, without needing a full adapter/provider to
-// exercise it.
+// host, terminal failure) directly, without needing a full adapter/provider to exercise it.
 //
 // Deliberately has no final "else" branch that returns a default target: a model or binding that
 // never declared where it runs is a routing failure, not an implicit "backend" default. Backend
@@ -38,7 +36,6 @@ export interface ExecutionTargetResolution {
 // See docs/architecture/provider-neutral-runtime.md.
 export function resolveExecutionTarget(input: {
   nativeResolution: ResolvedNativeRuntimeBinding | null;
-  legacyBinding: AgentModelBindingSummary | null;
   modelId: string;
   agentId: string;
 }): ExecutionTargetResolution {
@@ -53,9 +50,6 @@ export function resolveExecutionTarget(input: {
   if (isModelExecutionTarget(declaredTarget)) {
     return { target: declaredTarget, source: "explicit-native-configuration" };
   }
-  if (input.legacyBinding !== null) {
-    return { target: input.legacyBinding.executionTarget, source: "legacy-binding" };
-  }
   throw new Cp2Error(
     409,
     "NO_COMPATIBLE_EXECUTION_TARGET",
@@ -64,8 +58,7 @@ export function resolveExecutionTarget(input: {
     {
       modelId: input.modelId,
       agentId: input.agentId,
-      hasNativeResolution: input.nativeResolution !== null,
-      hasLegacyBinding: input.legacyBinding !== null
+      hasNativeResolution: input.nativeResolution !== null
     }
   );
 }
@@ -73,7 +66,6 @@ export function resolveExecutionTarget(input: {
 export function resolveNativeRuntimeModelProvider(input: {
   shopRuntime: ShopAgentRuntime;
   requestedModelId: string;
-  legacyBinding: AgentModelBindingSummary | null;
   nativeResolution: ResolvedNativeRuntimeBinding | null;
   requireAdapter: (input: {
     modelId: string;
@@ -88,7 +80,6 @@ export function resolveNativeRuntimeModelProvider(input: {
   eligibleExecutionTargets?: ReadonlySet<ModelExecutionTarget>;
 }): {
   provider: RuntimeModelProvider | undefined;
-  binding: AgentModelBindingSummary | null;
   executionTarget: ModelExecutionTarget | undefined;
   resolutionSource: ExecutionTargetResolutionSource | null;
   runtimeKey: string | null;
@@ -100,18 +91,15 @@ export function resolveNativeRuntimeModelProvider(input: {
   const nativeResolution = selectUnattemptedNativeResolution(
     input.nativeResolution,
     input.attemptedRuntimeKeys,
-    input.eligibleExecutionTargets,
-    input.legacyBinding !== null
+    input.eligibleExecutionTargets
   );
-  const { legacyBinding, shopRuntime } = input;
-  const modelId =
-    nativeResolution?.selected.model.id ?? legacyBinding?.modelId ?? input.requestedModelId;
-  const agentId = nativeResolution?.agent.id ?? legacyBinding?.agentId ?? shopRuntime.agentId;
-  const shopId =
-    nativeResolution?.binding.businessId ?? legacyBinding?.shopId ?? shopRuntime.shopId;
+  const { shopRuntime } = input;
+  const modelId = nativeResolution?.selected.model.id ?? input.requestedModelId;
+  const agentId = nativeResolution?.agent.id ?? shopRuntime.agentId;
+  const shopId = nativeResolution?.binding.businessId ?? shopRuntime.shopId;
   // Identical regardless of which branch below actually routes the request - computed once so a
   // future field addition/rename only needs one call site instead of two kept in lockstep by hand.
-  const runtimeBindingId = nativeResolution?.binding.id ?? legacyBinding?.id ?? null;
+  const runtimeBindingId = nativeResolution?.binding.id ?? null;
   const executionHostId = nativeResolution?.selected.host?.id ?? null;
   const fallbackIndex =
     nativeResolution?.selected.bindingModel.role === "fallback"
@@ -130,15 +118,9 @@ export function resolveNativeRuntimeModelProvider(input: {
       input.runtimeModelProviderResolver === undefined
         ? input.runtimeModelProvider
         : input.runtimeModelProviderResolver(modelId);
-    const bestEffort = tryResolveExecutionTarget({
-      nativeResolution,
-      legacyBinding,
-      modelId,
-      agentId
-    });
+    const bestEffort = tryResolveExecutionTarget({ nativeResolution, modelId, agentId });
     return {
       provider,
-      binding: legacyBinding,
       executionTarget: bestEffort?.target,
       resolutionSource: bestEffort?.source ?? null,
       runtimeKey:
@@ -154,7 +136,6 @@ export function resolveNativeRuntimeModelProvider(input: {
 
   const { target: executionTarget, source: resolutionSource } = resolveExecutionTarget({
     nativeResolution,
-    legacyBinding,
     modelId,
     agentId
   });
@@ -171,7 +152,6 @@ export function resolveNativeRuntimeModelProvider(input: {
   const provider = runtimeProviderFromAdapter({ adapter, context: { modelId, agentId, shopId } });
   return {
     provider,
-    binding: legacyBinding,
     executionTarget,
     resolutionSource,
     runtimeKey,
@@ -185,8 +165,7 @@ export function resolveNativeRuntimeModelProvider(input: {
 function selectUnattemptedNativeResolution(
   resolution: ResolvedNativeRuntimeBinding | null,
   attempted: ReadonlySet<string> | undefined,
-  eligibleTargets: ReadonlySet<ModelExecutionTarget> | undefined,
-  hasLegacyFallback: boolean
+  eligibleTargets: ReadonlySet<ModelExecutionTarget> | undefined
 ): ResolvedNativeRuntimeBinding | null {
   if (resolution === null) return null;
   const candidates = [resolution.primary, ...resolution.fallbacks].filter(
@@ -203,15 +182,11 @@ function selectUnattemptedNativeResolution(
     );
   });
   if (selected === undefined) {
-    // No unattempted/eligible native candidate remains. Only degrade to null (letting the caller's
-    // legacyBinding get a chance) when a legacy binding actually exists as an alternative - a legacy
-    // binding stays a valid, currently-working escape hatch when every native role targets
-    // something this request can't reach (e.g. a local-only binding resolved from a server context)
-    // or has already failed this turn. Without a legacy binding there is nothing left to try, so
-    // this must still throw: the "no adapter resolver configured" test-bypass branch above has no
-    // attemptedRuntimeKeys check of its own and relies entirely on this throw to stop a retry loop
-    // from re-invoking the exact same provider after it already failed once.
-    if (hasLegacyFallback) return null;
+    // No unattempted/eligible native candidate remains - the native runtime graph is now the only
+    // source of truth (the retired legacy-binding escape hatch is gone), so there is nothing left
+    // to try. This also stops the "no adapter resolver configured" test-bypass branch above's retry
+    // loop from re-invoking the exact same provider after it already failed once (that branch has
+    // no attemptedRuntimeKeys check of its own and relies entirely on this throw).
     throw new Cp2Error(
       503,
       "RUNTIME_MODELS_UNAVAILABLE",

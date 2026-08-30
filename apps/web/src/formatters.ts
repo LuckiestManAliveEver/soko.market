@@ -124,10 +124,9 @@ export function formatInferenceRuntimeLabel(runtime: InferenceProvider["runtime"
       "native-llama-cpp": "Installed app model",
       "browser-webgpu": "Browser WebGPU",
       "browser-wasm": "Browser WASM",
-      "owner-node": "Shop-owner device",
-      "cloud-fallback": "Consented cloud model"
-    }[runtime] ?? "Inference"
-  );
+      "owner-node": "Shop-owner device"
+    } satisfies Record<InferenceProvider["runtime"], string>
+  )[runtime];
 }
 
 export function formatModelStatus(value: string): string {
@@ -138,20 +137,12 @@ export function formatModelStatus(value: string): string {
 }
 
 export function formatExecutionTarget(value: AgentModelBindingSummary["executionTarget"]): string {
-  const raw: string = value;
   return (
-    (
-      {
-        backend: "Soko backend",
-        "remote-shop-device": "signed-in shop device",
-        // A tab open across the on-device-retirement deploy can still hold a stale value in
-        // memory until it refetches; label these rather than showing the raw enum string.
-        "browser-local": "Soko backend (legacy)",
-        "installed-app": "Soko backend (legacy)",
-        openai: "Soko backend (legacy)"
-      } as Record<string, string>
-    )[raw] ?? raw
-  );
+    {
+      backend: "Soko backend",
+      "remote-shop-device": "signed-in shop device"
+    } satisfies Record<AgentModelBindingSummary["executionTarget"], string>
+  )[value];
 }
 
 export function formatRuntimeTurnStatus(result: RuntimeTurnResult): string {

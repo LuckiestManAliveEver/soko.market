@@ -15,6 +15,7 @@ import {
 import { readAccountDeletionProcessors } from "./cp2/account-deletion-processors.js";
 import { createPostgresCp2Store } from "./cp2/postgres-store.js";
 import { RETIRED_EXECUTION_FABRIC_TABLES } from "./cp2/retired-execution-fabric-tables.js";
+import { RETIRED_LEGACY_BINDING_TABLES } from "./cp2/retired-legacy-binding-tables.js";
 import { readBuildManifest } from "./build-manifest.js";
 import { createCp2Store } from "./cp2/store.js";
 import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
@@ -292,13 +293,27 @@ async function createCp2StoreOrExplainSchemaFailure() {
       : createCp2Store(cp2StoreOptions);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const retiredTable = RETIRED_EXECUTION_FABRIC_TABLES.find((table) => message.includes(table));
-    if (retiredTable !== undefined) {
+    const retiredFabricTable = RETIRED_EXECUTION_FABRIC_TABLES.find((table) =>
+      message.includes(table)
+    );
+    if (retiredFabricTable !== undefined) {
       throw new Error(
         `Native runtime schema compatibility failure: expected cp2_native_runtime_bindings, ` +
-          `retired ${retiredTable} must not be used. This process is running a build that is ` +
+          `retired ${retiredFabricTable} must not be used. This process is running a build that is ` +
           `stale relative to the deployed schema (infra/db/migrations/065_retire_execution_fabric.sql); ` +
           `redeploy from a clean build.`,
+        { cause: error }
+      );
+    }
+    const retiredBindingTable = RETIRED_LEGACY_BINDING_TABLES.find((table) =>
+      message.includes(table)
+    );
+    if (retiredBindingTable !== undefined) {
+      throw new Error(
+        `Native runtime schema compatibility failure: expected cp2_native_runtime_bindings, ` +
+          `retired ${retiredBindingTable} must not be used. This process is running a build that ` +
+          `is stale relative to the deployed schema (infra/db/migrations/` +
+          `076_drop_legacy_agent_model_bindings.sql); redeploy from a clean build.`,
         { cause: error }
       );
     }

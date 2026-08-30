@@ -1,20 +1,3 @@
-import type { ModelExecutionTarget } from "./index.js";
-
-/**
- * Canonical, device-independent runtime selection for one agent's chat execution.
- * Agent, harness, model and execution host are independently swappable: changing one
- * dimension must never silently reset another. This is the client-facing projection of
- * the (legacy AgentModelBindingSummary | native NativeRuntimeBindingSummary+BindingModel)
- * pair the backend actually persists -- it is not a new persistence shape.
- */
-export interface RuntimeBinding {
-  agentId: string;
-  agentRuntimeAdapterId: string;
-  modelId: string | null;
-  executionTarget: ModelExecutionTarget;
-  executionHostId: string | null;
-}
-
 // ---------------------------------------------------------------------------
 // External registry connections (GitHub / Hugging Face "connect account")
 // ---------------------------------------------------------------------------

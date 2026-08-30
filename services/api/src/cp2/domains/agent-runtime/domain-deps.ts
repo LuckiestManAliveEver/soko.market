@@ -1,4 +1,5 @@
 import type {
+  ActiveNativeAgentBinding,
   AgentDefinition,
   AgentRouteSummary,
   AiModelSummary,
@@ -21,7 +22,7 @@ import type {
 import type { BusinessPermission } from "@soko/business-core";
 
 import type { ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
-import type { AgentRuntimeAdapter } from "../../../agent-runtime/agent-runtime-adapter.js";
+import type { AgentRuntimeAdapter } from "../../../agent-harness/agent-runtime-adapter.js";
 import type { SessionRecord } from "../../store.js";
 import type { AgentRuntimeCommerceDeps } from "./domain-deps-commerce.js";
 
@@ -82,6 +83,14 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
     conversationId: string,
     businessId: string
   ) => ResolvedNativeRuntimeBinding | null;
+  // The sole "which model is this agent using" read path - replaces the retired legacy
+  // agentModelBindings map/table entirely (see native-runtime/store.ts getActiveBindingForAgent,
+  // and infra/db/migrations/076_drop_legacy_agent_model_bindings.sql for the table drop). null
+  // means no model has ever been activated for this shop's agent.
+  getActiveNativeRuntimeBinding: (
+    businessId: string,
+    agentId: string
+  ) => ActiveNativeAgentBinding | null;
   activateVerifiedRuntimeBinding: (
     input: NativeRuntimeActivationInput
   ) => NativeRuntimeBindingSummary;

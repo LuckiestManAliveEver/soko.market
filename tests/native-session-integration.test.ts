@@ -8,7 +8,6 @@ import {
   readCachedAuthSession,
   saveCachedAuthSession
 } from "../apps/web/src/auth-bootstrap";
-import { modelActivationMessage } from "../apps/web/src/model-activation-state";
 import { agentSessionAuthScenarios } from "./ai-eval/agent-session-auth-scenarios";
 
 describe("native-style account session lifecycle", () => {
@@ -275,19 +274,13 @@ describe("frontend lifecycle state", () => {
     expect(readCachedAuthSession()).toBeNull();
   });
 
-  it("classifies pending bootstrap states and exposes every activation progress label", () => {
+  it("classifies pending bootstrap states", () => {
     expect(isAuthBootstrapPending("initializing")).toBe(true);
     expect(isAuthBootstrapPending("restoring-session")).toBe(true);
     expect(isAuthBootstrapPending("authenticated")).toBe(false);
     expect(hasServerAuthenticatedSession("offline-authenticated")).toBe(false);
     expect(hasServerAuthenticatedSession("failed")).toBe(false);
     expect(hasServerAuthenticatedSession("authenticated")).toBe(true);
-    expect(modelActivationMessage("validating")).toBe("Checking model…");
-    expect(modelActivationMessage("creating_runtime")).toBe("Starting runtime…");
-    expect(modelActivationMessage("loading_model")).toBe("Loading model…");
-    expect(modelActivationMessage("binding_agent")).toBe("Connecting model to agent…");
-    expect(modelActivationMessage("offline_blocked")).toBe("Connect to activate");
-    expect(modelActivationMessage("failed")).toBe("Retry device activation");
   });
 
   it("keeps every frozen agent-session lifecycle scenario behind canonical authentication", () => {

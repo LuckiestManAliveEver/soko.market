@@ -30,7 +30,7 @@ import type { RuntimeRegistryImportStore } from "./import-store.js";
  * runtime environment (isolated-vm, container, Firecracker, ...) exists in this repo to safely run
  * untrusted third-party code, so building an unsafe substitute would be worse than stopping here.
  * The only path from PROVISIONING to ACTIVE is a human/operator deploying the adapter through the
- * trusted AgentRuntimeAdapterRegistry.register() path (services/api/src/agent-runtime/agent-runtime-adapter.ts).
+ * trusted AgentRuntimeAdapterRegistry.register() path (services/api/src/agent-harness/agent-runtime-adapter.ts).
  */
 export const harnessProvisioningBoundaryReason =
   "Server-side execution requires deploying this adapter through the trusted " +

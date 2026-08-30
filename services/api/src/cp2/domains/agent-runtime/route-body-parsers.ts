@@ -31,7 +31,7 @@ import {
 import { runtimeToolRegistry } from "@soko/tool-core";
 import { Cp2Error } from "../../cp2-error.js";
 import { isSupportedLanguage } from "../../store.js";
-import { normalizeAdapterId } from "../../../agent-runtime/agent-runtime-adapter.js";
+import { normalizeAdapterId } from "../../../agent-harness/agent-runtime-adapter.js";
 import type { BusinessAgentProfileInput } from "./shared.js";
 import {
   parseBoolean,

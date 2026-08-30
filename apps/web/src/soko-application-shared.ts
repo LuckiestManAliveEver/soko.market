@@ -9,14 +9,15 @@ import type {
   AgentMemoryPolicy,
   AgentPersonality,
   AgentSkillBinding,
+  AiModelSummary,
   BuyResultSourceKind,
   ConversationMessageSummary,
-  ModelExecutionTarget,
-  ModelProviderId,
   PasskeySummary,
   ProductFieldInputType,
-  RuntimeModelProviderName
+  RuntimeModelTrace
 } from "@soko/shared-types";
+
+export type { AiModelSummary } from "@soko/shared-types";
 
 import { type PhoneCountryOption } from "./PhoneNumberField";
 
@@ -123,26 +124,6 @@ export const chatAttachmentAccept = [
 
 export interface MarketplaceIntroStateSummary {
   completedAt: string | null;
-}
-
-export interface AiModelSummary {
-  id: string;
-  label: string;
-  provider: ModelProviderId;
-  description: string;
-  capabilities: string[];
-  available: boolean;
-  source: "huggingface" | "github" | "builtin" | "hosted";
-  format: "GGUF" | "remote";
-  license: string | null;
-  licenseUrl: string | null;
-  modelCardUrl: string | null;
-  downloadUrl: string | null;
-  fileName: string | null;
-  fileSizeBytes: number | null;
-  minimumMemoryGb: number | null;
-  recommended: boolean;
-  runtimeAvailability?: Partial<Record<ModelExecutionTarget, "configured" | "unconfigured">>;
 }
 
 export interface ActiveAiModelSummary {
@@ -1148,20 +1129,11 @@ export interface RuntimeTurnResult {
   turn: {
     status: "completed" | "needs_confirmation" | "clarifying" | "blocked" | "rate_limited";
     response: string;
-    model: {
-      provider: RuntimeModelProviderName | null;
-      status: "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
-      fallbackUsed: boolean;
-      errorCode: string | null;
-      bindingId?: string;
-      modelId?: string;
-      executionTarget?: ModelExecutionTarget;
-      durationMs?: number | null;
-      fallbackReason?: string | null;
-      fallbackIndex?: number;
-      executionHostId?: string | null;
-      resolutionReason?: string;
-    } | null;
+    // The full canonical shape (packages/shared-types/src/index.ts RuntimeModelTrace) - not a
+    // narrower hand-duplicated projection, since this is exactly the "which model/host actually
+    // ran this turn" trace the runtime resolver records, and every field on it is meaningful
+    // observability data a caller might reasonably read.
+    model: RuntimeModelTrace | null;
     plan: {
       toolName: string;
       confirmationToken: string | null;

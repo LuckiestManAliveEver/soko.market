@@ -17,8 +17,6 @@ import { navigateToBrowserUrl } from "./browser-navigation";
 
 import { ApiRequestError } from "./lib/api";
 
-import { type ModelActivationState } from "./model-activation-state";
-
 import {
   type ActiveAiModelSummary,
   type ActiveBusiness,
@@ -40,6 +38,11 @@ import {
 } from "./agent-model-panel-utils";
 import { backendModelRuntimeStatusMessage } from "./backend-model-runtime-status";
 import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
+
+// Local UI state for the activate/test button, not a backend runtime concept - activation is a
+// single request/response against the canonical runtime binding API, not a multi-stage local
+// process, so this only ever takes these four values.
+type ModelActivationState = "idle" | "validating" | "active" | "failed";
 
 export interface AgentModelPanelProps {
   accountId: string;

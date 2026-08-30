@@ -1,7 +1,7 @@
 import type {
+  ActiveNativeAgentBinding,
   AgentAudience,
   AgentContextSource,
-  AgentModelBindingSummary,
   AgentOwnerCorrection,
   ShopAgentRuntime
 } from "@soko/shared-types";
@@ -20,7 +20,7 @@ import {
 
 interface ShopRuntimeState {
   deps: AgentRuntimeDomainDeps;
-  activeBinding: AgentModelBindingSummary | null;
+  activeBinding: ActiveNativeAgentBinding | null;
   contextSources: AgentContextSource[];
 }
 
@@ -69,12 +69,12 @@ export function buildShopAgentRuntime(
     memory: { ...profile.memoryPolicy },
     evaluations: { ...profile.evaluationPolicy },
     model: {
-      modelId: activeBinding?.modelId ?? modelId,
+      modelId: activeBinding?.model.id ?? modelId,
       provider:
         activeBinding?.executionTarget ??
         model?.provider ??
         (downloadableAiModelIdPattern.test(modelId) ? "device" : "deterministic"),
-      executionMode: activeBinding?.executionMode ?? "LOCAL_FIRST",
+      executionMode: "CLOUD_ONLY",
       deviceAssignmentId: null
     },
     version: profile.runtimeVersion,

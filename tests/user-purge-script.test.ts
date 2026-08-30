@@ -29,8 +29,12 @@ describe("registered-user purge script", () => {
     // cp2_agent_catalog/cp2_platform_operators (infra/db/migrations/071_platform_catalog.sql) are
     // global deployment configuration, not user data, and are therefore explicitly preserved;
     // cp2_platform_operators remains DELETE because its grants belong to purged accounts.
-    expect(plan.size).toBe(166);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(159);
+    // cp2_agent_model_assignments/cp2_browser_inference_assignments/cp2_agent_model_bindings were
+    // removed from this classification list entirely once infra/db/migrations/
+    // 075_drop_dead_runtime_assignment_tables.sql and 076_drop_legacy_agent_model_bindings.sql
+    // dropped the tables - there is nothing left to classify.
+    expect(plan.size).toBe(163);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(156);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")
