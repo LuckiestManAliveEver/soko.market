@@ -965,8 +965,6 @@ function stableUuid(value: string): string {
 }
 
 function hostName(target: ModelExecutionTarget): string {
-  if (target === "browser-local") return "Browser local runtime";
-  if (target === "installed-app") return "Installed application runtime";
   if (target === "remote-shop-device") return "Remote shop device runtime";
   return "Soko backend inference runtime";
 }

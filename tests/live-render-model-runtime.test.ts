@@ -43,7 +43,6 @@ describe.skipIf(!enabled)("live Render and Neon model runtime", () => {
         executionTarget: "backend",
         executionMode: "LOCAL_FIRST",
         permissions: {
-          allowInstalledApp: false,
           allowRemoteShopDevice: false
         }
       }

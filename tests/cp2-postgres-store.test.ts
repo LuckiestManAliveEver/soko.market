@@ -592,7 +592,6 @@ describePostgres("CP2 Postgres store", () => {
         executionTarget: "backend",
         executionMode: "LOCAL_FIRST",
         permissions: {
-          allowInstalledApp: false,
           allowRemoteShopDevice: false
         }
       },
@@ -641,8 +640,8 @@ describePostgres("CP2 Postgres store", () => {
   }, 30_000);
 
   it(
-    "persists agent profile, context sources, owner corrections, feedback, installed models, " +
-      "model assignments, and browser inference assignments across restarts",
+    "persists agent profile, context sources, owner corrections, feedback, and installed " +
+      "models across restarts",
     async () => {
       expect(databaseUrl).toBeDefined();
       const connectionString = databaseUrl ?? "";
@@ -746,33 +745,6 @@ describePostgres("CP2 Postgres store", () => {
         }
       });
 
-      store.assignAgentModel({
-        sessionId,
-        businessId: business.id,
-        deviceId,
-        installationId: installedModel.id,
-        preferredExecutionMode: "LOCAL_FIRST",
-        readinessStatus: "ATTACHED",
-        lastSuccessfulInferenceAt: null,
-        lastErrorCode: null
-      });
-
-      store.upsertBrowserInferenceAssignment({
-        sessionId,
-        businessId: business.id,
-        deviceId,
-        enabled: false,
-        selectedModelId: null,
-        modelFamilyId: null,
-        modelRevision: null,
-        runtimeContract: null,
-        checkpointCompatibilityContract: null,
-        deviceTier: "medium",
-        readinessStatus: "ATTACHED",
-        lastSuccessfulInferenceAt: null,
-        lastErrorCode: null
-      });
-
       await store.flush();
       await app.close();
 
@@ -834,24 +806,6 @@ describePostgres("CP2 Postgres store", () => {
       expect(restoredInstalledModels).toEqual(
         expect.arrayContaining([expect.objectContaining({ id: installedModel.id })])
       );
-
-      const restoredAssignment = restoredStore.getAgentModelAssignment({
-        sessionId,
-        businessId: business.id,
-        deviceId
-      });
-      expect(restoredAssignment.activeModelInstallationId).toBe(installedModel.id);
-
-      const restoredBrowserAssignment = restoredStore.getBrowserInferenceAssignment({
-        sessionId,
-        businessId: business.id,
-        deviceId
-      });
-      expect(restoredBrowserAssignment).toMatchObject({
-        enabled: false,
-        deviceTier: "medium",
-        readinessStatus: "ATTACHED"
-      });
 
       await restoredApp.close();
     },

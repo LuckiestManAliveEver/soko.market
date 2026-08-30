@@ -57,7 +57,7 @@ describe("native runtime binding resolver", () => {
 
     store.activateGlobalDefaultModel({
       model: localCatalogModel("local-model"),
-      executionTarget: "browser-local",
+      executionTarget: "remote-shop-device",
       checkedAt: timestamp,
       updatedBy: "user-1"
     });
@@ -70,14 +70,14 @@ describe("native runtime binding resolver", () => {
     expect(resolved.binding.status).toBe("active");
     expect(resolved.selected.model.id).toBe("local-model");
     expect(resolved.selected.model.provider).not.toBe("openai");
-    expect(resolved.selected.host?.type).toBe("browser-local");
+    expect(resolved.selected.host?.type).toBe("remote-shop-device");
   });
 
   it("swaps the global default's model in place: same binding id, no new agent or conversation", () => {
     const store = new NativeRuntimeBindingStore();
     store.activateGlobalDefaultModel({
       model: localCatalogModel("local-model-x"),
-      executionTarget: "browser-local",
+      executionTarget: "remote-shop-device",
       checkedAt: timestamp,
       updatedBy: "user-1"
     });
@@ -85,7 +85,7 @@ describe("native runtime binding resolver", () => {
 
     const swapped = store.activateGlobalDefaultModel({
       model: localCatalogModel("local-model-y"),
-      executionTarget: "browser-local",
+      executionTarget: "remote-shop-device",
       checkedAt: "2026-08-27T12:05:00.000Z",
       updatedBy: "user-1"
     });
@@ -121,7 +121,7 @@ describe("native runtime binding resolver", () => {
       agentId: "agent-1",
       agentName: "Agent",
       model: localCatalogModel("local-primary"),
-      executionTarget: "browser-local",
+      executionTarget: "remote-shop-device",
       fallbackModel,
       fallbackExecutionTarget: "backend",
       updatedBy: "user-1",
@@ -186,7 +186,7 @@ describe("native runtime binding resolver", () => {
     expect(() =>
       store.activateGlobalDefaultModel({
         model: { ...localCatalogModel("embedding-only"), capabilities: ["embeddings"] },
-        executionTarget: "browser-local",
+        executionTarget: "remote-shop-device",
         checkedAt: timestamp,
         updatedBy: "user-1"
       })

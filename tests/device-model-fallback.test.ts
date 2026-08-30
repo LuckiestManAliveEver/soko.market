@@ -76,49 +76,6 @@ describe("device model fallback", () => {
       businessId: created.business.id,
       modelId: "openai-fast"
     });
-    store.registerInstalledAgentModel({
-      sessionId: auth.session.id,
-      model: {
-        id: "device-a-qwen",
-        deviceId: "device-a",
-        modelId: "qwen2.5-0.5b-android",
-        displayName: "Qwen device A",
-        provider: "huggingface",
-        repositoryId: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
-        filename: "qwen.gguf",
-        format: "GGUF",
-        quantization: "Q4_K_M",
-        architecture: "qwen2",
-        parameterCount: 500_000_000,
-        contextLength: 2_048,
-        fileSizeBytes: 491_000_000,
-        checksum: null,
-        license: "Apache-2.0",
-        commercialUseAllowed: true,
-        storageKey: "qwen.gguf",
-        runtimeBackend: "LLAMA_CPP_ANDROID",
-        installationStatus: "INSTALLED",
-        compatibilityStatus: "COMPATIBLE",
-        installedAt: "2026-07-21T00:00:00.000Z",
-        lastVerifiedAt: "2026-07-21T00:00:00.000Z",
-        validationError: null
-      }
-    });
-    store.assignAgentModel({
-      sessionId: auth.session.id,
-      businessId: created.business.id,
-      deviceId: "device-a",
-      installationId: "device-a-qwen",
-      preferredExecutionMode: "LOCAL_FIRST",
-      readinessStatus: "READY",
-      lastSuccessfulInferenceAt: "2026-07-21T00:01:00.000Z",
-      lastErrorCode: null
-    });
-    store.activateAiModel({
-      sessionId: auth.session.id,
-      businessId: created.business.id,
-      modelId: "openai-fast"
-    });
     expect(
       store.updateAgentProfile({
         sessionId: auth.session.id,
@@ -140,21 +97,6 @@ describe("device model fallback", () => {
       }).modelId
     ).toBe("openai-fast");
 
-    const deviceB = store.getAgentModelAssignment({
-      sessionId: auth.session.id,
-      businessId: created.business.id,
-      deviceId: "device-b"
-    });
-
-    expect(deviceB).toMatchObject({
-      deviceId: "device-b",
-      activeModelInstallationId: null,
-      modelId: "smollm2-360m",
-      preferredExecutionMode: "LOCAL_FIRST",
-      readinessStatus: "ATTACHED",
-      runtimeBackend: null,
-      lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE"
-    });
     expect(
       store.getActiveAiModel({
         sessionId: auth.session.id,

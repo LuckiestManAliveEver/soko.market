@@ -16,14 +16,10 @@ import {
   type AgentInstructions,
   type AgentMemoryPolicy,
   type AgentModelBindingPermissions,
-  type AgentModelReadinessStatus,
   type AgentModelRuntimeBackend,
   type AgentOwnerCorrection,
   type AgentPersonality,
   type AgentSkillBinding,
-  type BrowserCheckpointCompatibilityContract,
-  type BrowserDeviceTier,
-  type BrowserRuntimeContract,
   type InstalledAgentModelSummary,
   type ModelCompatibilityStatus,
   type ModelExecutionTarget,
@@ -587,97 +583,10 @@ export function parseAgentRuntimeAdapterId(value: unknown): string | undefined {
 export function parseAgentModelBindingPermissions(value: unknown): AgentModelBindingPermissions {
   const permissions = parseRequestBody(value);
   return {
-    allowInstalledApp: parseBoolean(permissions.allowInstalledApp, "permissions.allowInstalledApp"),
     allowRemoteShopDevice: parseBoolean(
       permissions.allowRemoteShopDevice,
       "permissions.allowRemoteShopDevice"
     )
-  };
-}
-
-export function parseAgentModelReadinessStatus(value: unknown): AgentModelReadinessStatus {
-  if (value === "ATTACHED" || value === "LOADING" || value === "READY" || value === "FAILED") {
-    return value;
-  }
-  throw new Cp2Error(400, "model_readiness_status_invalid", "Readiness status is invalid.");
-}
-
-export function parseBrowserDeviceTier(value: unknown): BrowserDeviceTier | null {
-  if (value === null || value === undefined) return null;
-  if (value === "low" || value === "medium" || value === "high") return value;
-  throw new Cp2Error(400, "browser_device_tier_invalid", "Browser device tier is invalid.");
-}
-
-export function parseBrowserRuntimeContract(value: unknown): BrowserRuntimeContract | null {
-  if (value === null || value === undefined) return null;
-  const contract = parseRequestBody(value);
-  if (
-    contract.schemaVersion !== 1 ||
-    (contract.adapterId !== "transformers-js" && contract.adapterId !== "webllm") ||
-    (contract.runtime !== "browser-webgpu" && contract.runtime !== "browser-wasm") ||
-    (contract.backend !== "webgpu" && contract.backend !== "wasm") ||
-    contract.streaming !== true ||
-    contract.cancellation !== true ||
-    (contract.tokenCounting !== "exact" && contract.tokenCounting !== "estimated") ||
-    !Array.isArray(contract.checkpointKinds) ||
-    contract.checkpointKinds.some(
-      (kind) => kind !== "task-state" && kind !== "token-replay" && kind !== "native-kv"
-    ) ||
-    (contract.nativeStateFormat !== null && typeof contract.nativeStateFormat !== "string")
-  ) {
-    throw new Cp2Error(
-      400,
-      "browser_runtime_contract_invalid",
-      "Browser runtime contract is invalid."
-    );
-  }
-  return {
-    schemaVersion: 1,
-    adapterId: contract.adapterId,
-    adapterVersion: parseString(contract.adapterVersion, "runtimeContract.adapterVersion"),
-    libraryRevision: parseNullableString(contract.libraryRevision),
-    runtime: contract.runtime,
-    backend: contract.backend,
-    streaming: true,
-    cancellation: true,
-    tokenCounting: contract.tokenCounting,
-    checkpointKinds: [...contract.checkpointKinds] as BrowserRuntimeContract["checkpointKinds"],
-    nativeStateFormat: parseNullableString(contract.nativeStateFormat)
-  };
-}
-
-export function parseBrowserCheckpointContract(
-  value: unknown
-): BrowserCheckpointCompatibilityContract | null {
-  if (value === null || value === undefined) return null;
-  const contract = parseRequestBody(value);
-  if (
-    contract.schemaVersion !== 1 ||
-    contract.checkpointKind !== "task-state" ||
-    contract.taskStateSchema !== "soko.browser-task-state.v2" ||
-    (contract.sourceAdapterId !== "transformers-js" && contract.sourceAdapterId !== "webllm") ||
-    contract.promptRepresentation !== "role-content-messages" ||
-    contract.portableAcrossAdapters !== true
-  ) {
-    throw new Cp2Error(
-      400,
-      "browser_checkpoint_contract_invalid",
-      "Browser checkpoint compatibility contract is invalid."
-    );
-  }
-  return {
-    schemaVersion: 1,
-    checkpointKind: "task-state",
-    taskStateSchema: "soko.browser-task-state.v2",
-    modelFamilyId: parseString(contract.modelFamilyId, "checkpointContract.modelFamilyId"),
-    sourceModelId: parseString(contract.sourceModelId, "checkpointContract.sourceModelId"),
-    sourceModelRevision: parseString(
-      contract.sourceModelRevision,
-      "checkpointContract.sourceModelRevision"
-    ),
-    sourceAdapterId: contract.sourceAdapterId,
-    promptRepresentation: "role-content-messages",
-    portableAcrossAdapters: true
   };
 }
 

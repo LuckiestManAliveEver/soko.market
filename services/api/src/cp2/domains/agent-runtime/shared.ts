@@ -75,15 +75,11 @@ import type {
   AgentMemoryPolicy,
   AgentModelBindingPermissions,
   AgentModelBindingSummary,
-  AgentModelReadinessStatus,
   AgentModelRuntimeBackend,
   AgentPersonality,
   AgentRuntimeVersion,
   AgentSkillBinding,
   AiModelSummary,
-  BrowserCheckpointCompatibilityContract,
-  BrowserInferenceAssignmentSummary,
-  BrowserRuntimeContract,
   BusinessSummary,
   CatalogueQueryResult,
   ChannelProvider,
@@ -1057,14 +1053,6 @@ export function cloneBusinessAgentProfile(
   };
 }
 
-export function agentModelAssignmentKey(businessId: string, deviceId: string): string {
-  return `${businessId}:${deviceId}`;
-}
-
-export function browserInferenceAssignmentKey(businessId: string, deviceId: string): string {
-  return `${businessId}:${deviceId}`;
-}
-
 export function normalizeModelCatalogSearch(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
@@ -1082,166 +1070,6 @@ export function cloneAgentModelBinding(
     ...binding,
     permissions: { ...binding.permissions }
   };
-}
-
-export function cloneBrowserInferenceAssignment(
-  assignment: BrowserInferenceAssignmentSummary
-): BrowserInferenceAssignmentSummary {
-  return {
-    ...assignment,
-    runtimeContract:
-      assignment.runtimeContract === null
-        ? null
-        : {
-            ...assignment.runtimeContract,
-            checkpointKinds: [...assignment.runtimeContract.checkpointKinds]
-          },
-    checkpointCompatibilityContract:
-      assignment.checkpointCompatibilityContract === null
-        ? null
-        : { ...assignment.checkpointCompatibilityContract }
-  };
-}
-
-export function normalizeBrowserRuntimeContract(
-  contract: BrowserRuntimeContract
-): BrowserRuntimeContract {
-  if (
-    contract.schemaVersion !== 1 ||
-    (contract.adapterId !== "transformers-js" && contract.adapterId !== "webllm") ||
-    normalizeRequiredBoundedText(contract.adapterVersion, "browser adapter version", 80) !==
-      contract.adapterVersion ||
-    (contract.libraryRevision !== null &&
-      normalizeRequiredBoundedText(contract.libraryRevision, "browser library revision", 180) !==
-        contract.libraryRevision) ||
-    (contract.runtime !== "browser-webgpu" && contract.runtime !== "browser-wasm") ||
-    (contract.backend !== "webgpu" && contract.backend !== "wasm") ||
-    contract.streaming !== true ||
-    contract.cancellation !== true ||
-    (contract.tokenCounting !== "exact" && contract.tokenCounting !== "estimated") ||
-    !Array.isArray(contract.checkpointKinds) ||
-    contract.checkpointKinds.length !== 1 ||
-    contract.checkpointKinds[0] !== "task-state" ||
-    contract.nativeStateFormat !== null
-  ) {
-    throw new Cp2Error(
-      400,
-      "browser_runtime_contract_invalid",
-      "The browser runtime contract is invalid."
-    );
-  }
-  if (
-    (contract.backend === "webgpu" && contract.runtime !== "browser-webgpu") ||
-    (contract.backend === "wasm" && contract.runtime !== "browser-wasm") ||
-    (contract.adapterId === "webllm" &&
-      (contract.backend !== "webgpu" || contract.libraryRevision === null))
-  ) {
-    throw new Cp2Error(
-      409,
-      "browser_runtime_contract_incompatible",
-      "The browser runtime contract contains an incompatible adapter and backend."
-    );
-  }
-  return { ...contract, checkpointKinds: ["task-state"] };
-}
-
-export function normalizeBrowserCheckpointContract(
-  contract: BrowserCheckpointCompatibilityContract
-): BrowserCheckpointCompatibilityContract {
-  if (
-    contract.schemaVersion !== 1 ||
-    contract.checkpointKind !== "task-state" ||
-    contract.taskStateSchema !== "soko.browser-task-state.v2" ||
-    normalizeRequiredBoundedText(contract.modelFamilyId, "browser model family ID", 180) !==
-      contract.modelFamilyId ||
-    normalizeRequiredBoundedText(contract.sourceModelId, "browser source model ID", 180) !==
-      contract.sourceModelId ||
-    normalizeRequiredBoundedText(contract.sourceModelRevision, "browser source revision", 180) !==
-      contract.sourceModelRevision ||
-    (contract.sourceAdapterId !== "transformers-js" && contract.sourceAdapterId !== "webllm") ||
-    contract.promptRepresentation !== "role-content-messages" ||
-    contract.portableAcrossAdapters !== true
-  ) {
-    throw new Cp2Error(
-      400,
-      "browser_checkpoint_contract_invalid",
-      "The browser checkpoint compatibility contract is invalid."
-    );
-  }
-  return { ...contract };
-}
-
-export function validateBrowserInferenceAssignment(input: {
-  enabled: boolean;
-  selectedModelId: string | null;
-  modelFamilyId: string | null;
-  modelRevision: string | null;
-  runtimeContract: BrowserRuntimeContract | null;
-  checkpointCompatibilityContract: BrowserCheckpointCompatibilityContract | null;
-  readinessStatus: AgentModelReadinessStatus;
-  lastSuccessfulInferenceAt: string | null;
-}): void {
-  const modelContractFields = [
-    input.selectedModelId,
-    input.modelFamilyId,
-    input.modelRevision,
-    input.runtimeContract,
-    input.checkpointCompatibilityContract
-  ];
-  const populatedContractFields = modelContractFields.filter((value) => value !== null).length;
-  if (populatedContractFields !== 0 && populatedContractFields !== modelContractFields.length) {
-    throw new Cp2Error(
-      400,
-      "browser_inference_contract_incomplete",
-      "The browser inference assignment requires a complete model and runtime contract."
-    );
-  }
-  if (input.enabled && populatedContractFields === 0) {
-    throw new Cp2Error(
-      400,
-      "browser_inference_model_required",
-      "An enabled browser inference assignment requires a model."
-    );
-  }
-  if (
-    input.selectedModelId !== null &&
-    input.modelFamilyId !== null &&
-    input.modelRevision !== null &&
-    input.runtimeContract !== null &&
-    input.checkpointCompatibilityContract !== null &&
-    (input.checkpointCompatibilityContract.sourceModelId !== input.selectedModelId ||
-      input.checkpointCompatibilityContract.modelFamilyId !== input.modelFamilyId ||
-      input.checkpointCompatibilityContract.sourceModelRevision !== input.modelRevision ||
-      input.checkpointCompatibilityContract.sourceAdapterId !== input.runtimeContract.adapterId)
-  ) {
-    throw new Cp2Error(
-      409,
-      "browser_inference_contract_mismatch",
-      "The browser model, runtime, and checkpoint contracts do not describe the same artifact."
-    );
-  }
-  if (
-    input.readinessStatus === "READY" &&
-    (!input.enabled || input.lastSuccessfulInferenceAt === null)
-  ) {
-    throw new Cp2Error(
-      409,
-      "browser_inference_not_verified",
-      "A ready browser assignment requires a successful local readiness inference."
-    );
-  }
-}
-
-export function normalizeBrowserInferenceTimestamp(value: string): string {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    throw new Cp2Error(
-      400,
-      "browser_inference_timestamp_invalid",
-      "The browser inference timestamp is invalid."
-    );
-  }
-  return new Date(timestamp).toISOString();
 }
 
 export function validateAgentModelBindingConfiguration(
@@ -1269,13 +1097,6 @@ export function validateAgentModelBindingConfiguration(
       400,
       "MODEL_CONFIGURATION_INVALID",
       "Cloud-only execution requires the backend execution target."
-    );
-  }
-  if (input.executionTarget === "installed-app" && !input.permissions.allowInstalledApp) {
-    throw new Cp2Error(
-      403,
-      "POLICY_DENIED",
-      "Installed-app inference is not permitted by this binding."
     );
   }
   if (input.executionTarget === "remote-shop-device" && !input.permissions.allowRemoteShopDevice) {
@@ -1495,22 +1316,6 @@ export function normalizeInstalledAgentModel(
         : normalizeRequiredBoundedText(input.lastVerifiedAt, "model verified at", 80),
     validationError: normalizeNullable(input.validationError, "model validation error", 120)
   };
-}
-
-export function assertModelCanBeAssigned(model: InstalledAgentModelSummary): void {
-  if (model.installationStatus !== "INSTALLED") {
-    throw new Cp2Error(409, "model_not_installed", "The selected model is not installed.");
-  }
-  if (model.compatibilityStatus !== "COMPATIBLE") {
-    throw new Cp2Error(409, "model_incompatible", "The selected model is not compatible.");
-  }
-  if (!model.commercialUseAllowed) {
-    throw new Cp2Error(
-      409,
-      "model_license_restricted",
-      "The selected model is not approved for commercial use."
-    );
-  }
 }
 
 export function normalizeExecutionMode(mode: PreferredExecutionMode): PreferredExecutionMode {

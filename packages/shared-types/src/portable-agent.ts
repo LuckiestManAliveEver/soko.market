@@ -95,7 +95,7 @@ export function portableAgentManifestFromOssAgent(agent: OssAgentSummary): Porta
       hostedAllowed: true
     },
     executionRequirements: {
-      preferredTargets: ["installed-app", "browser-local", "remote-shop-device", "backend"],
+      preferredTargets: ["remote-shop-device", "backend"],
       requiresNetwork: false,
       requiresFilesystem: false,
       requiresNativeBridge: false
@@ -116,12 +116,7 @@ export function portableAgentManifestFromOssAgent(agent: OssAgentSummary): Porta
   };
 }
 
-const executionTargets = new Set<ModelExecutionTarget>([
-  "backend",
-  "browser-local",
-  "installed-app",
-  "remote-shop-device"
-]);
+const executionTargets = new Set<ModelExecutionTarget>(["backend", "remote-shop-device"]);
 const memoryScopes = new Set(["conversation", "user", "shop", "agent"]);
 const toolApprovalModes = new Set(["always", "writes", "never"]);
 const networkModes = new Set(["none", "restricted", "allowed"]);

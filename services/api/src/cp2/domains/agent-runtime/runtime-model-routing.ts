@@ -1,8 +1,5 @@
 import type {
-  AgentModelAssignmentSummary,
   AgentModelBindingSummary,
-  BrowserInferenceAssignmentSummary,
-  ClientInferenceCompletion,
   ModelExecutionTarget,
   RuntimeContextSummary,
   RuntimeModelCompletionResult,
@@ -19,8 +16,7 @@ import type {
 import { isRetryableInferenceCategory, normalizeInferenceErrorCode } from "@soko/shared-types";
 import {
   parseRuntimeModelOutput,
-  type createRuntimeToolProposal,
-  type RuntimeToolProposal
+  type createRuntimeToolProposal
 } from "@soko/tool-core";
 
 import { Cp2Error } from "../../cp2-error.js";
@@ -29,21 +25,11 @@ import {
   type retrieveAgentContext
 } from "../../agent-business-runtime.js";
 import type { ExecutionTargetResolutionSource } from "./native-runtime-routing.js";
-import {
-  agentModelAssignmentKey,
-  browserInferenceAssignmentKey,
-  buildRuntimeModelPrompt,
-  modelTraceFromCompletion
-} from "./shared.js";
+import { buildRuntimeModelPrompt, modelTraceFromCompletion } from "./shared.js";
 import {
   runtimeAdapterIdForAgent,
   type AgentRuntimeAdapter
 } from "../../../agent-runtime/agent-runtime-adapter.js";
-
-interface ClientInferenceAssignmentState {
-  agentModelAssignments: Map<string, AgentModelAssignmentSummary>;
-  browserInferenceAssignments: Map<string, BrowserInferenceAssignmentSummary>;
-}
 
 interface RuntimeModelRouteState {
   resolveRuntimeModelProvider: (
@@ -62,123 +48,6 @@ interface RuntimeModelRouteState {
     fallbackIndex: number;
   };
   resolveAgentRuntimeAdapter: (adapterId: string) => AgentRuntimeAdapter | undefined;
-}
-
-export function requireReadyClientInferenceCompletion(
-  state: ClientInferenceAssignmentState,
-  input: {
-    completion: ClientInferenceCompletion;
-    businessId: string;
-    accountId: string;
-    userId: string;
-  }
-): ClientInferenceCompletion {
-  const completion = input.completion;
-  if (completion.installationId !== undefined) {
-    const assignment = state.agentModelAssignments.get(
-      agentModelAssignmentKey(input.businessId, completion.deviceId)
-    );
-    if (
-      assignment === undefined ||
-      assignment.accountId !== input.accountId ||
-      assignment.userId !== input.userId ||
-      assignment.readinessStatus !== "READY" ||
-      assignment.lastSuccessfulInferenceAt === null ||
-      assignment.activeModelInstallationId !== completion.installationId ||
-      assignment.modelId !== completion.modelId ||
-      (assignment.runtimeBackend === "LLAMA_CPP_BROWSER"
-        ? completion.runtime !== "browser-wasm"
-        : assignment.runtimeBackend === "LLAMA_CPP_ANDROID"
-          ? completion.runtime !== "native-llama-cpp"
-          : true)
-    ) {
-      throw new Cp2Error(
-        409,
-        "CLIENT_MODEL_ASSIGNMENT_NOT_READY",
-        "The client model completion does not match a ready device assignment."
-      );
-    }
-    return completion;
-  }
-
-  const assignment = state.browserInferenceAssignments.get(
-    browserInferenceAssignmentKey(input.businessId, completion.deviceId)
-  );
-  if (
-    assignment === undefined ||
-    assignment.accountId !== input.accountId ||
-    assignment.userId !== input.userId ||
-    assignment.enabled !== true ||
-    assignment.readinessStatus !== "READY" ||
-    assignment.lastSuccessfulInferenceAt === null ||
-    assignment.selectedModelId !== completion.modelId ||
-    assignment.runtimeContract?.runtime !== completion.runtime
-  ) {
-    throw new Cp2Error(
-      409,
-      "CLIENT_MODEL_ASSIGNMENT_NOT_READY",
-      "The browser model completion does not match a ready browser assignment."
-    );
-  }
-  return completion;
-}
-
-export function createClientInferenceModelRoute(
-  completion: ClientInferenceCompletion,
-  appendTelemetry: (
-    state: RuntimeTelemetryEvent["state"],
-    status: RuntimeTelemetryEvent["status"],
-    toolName: RuntimeToolName | null,
-    risk: RuntimePlannedAction["risk"] | null,
-    metadata?: RuntimeTelemetryEvent["metadata"]
-  ) => void
-): {
-  proposal: RuntimeToolProposal;
-  trace: RuntimeModelTrace;
-} {
-  appendTelemetry("model.inference_started", "completed", null, null, {
-    provider: completion.runtime,
-    modelId: completion.modelId,
-    requestId: completion.requestId,
-    executionTarget: completion.runtime === "native-llama-cpp" ? "installed-app" : "browser-local"
-  });
-  const parsed = parseRuntimeModelOutput(completion.outputText);
-  if (!parsed.ok || parsed.output === null) {
-    appendTelemetry("model.completed", "blocked", null, null, {
-      provider: completion.runtime,
-      adapterStatus: "malformed",
-      durationMs: completion.durationMs,
-      errorCode: "MODEL_RESPONSE_PARSE_FAILED"
-    });
-    throw new Cp2Error(
-      422,
-      "MODEL_RESPONSE_PARSE_FAILED",
-      "The local model returned an invalid structured response.",
-      true
-    );
-  }
-  appendTelemetry("model.completed", "completed", null, null, {
-    provider: completion.runtime,
-    adapterStatus: "available",
-    durationMs: completion.durationMs,
-    errorCode: null
-  });
-  return {
-    proposal: parsed.output.proposal,
-    trace: {
-      provider: completion.runtime === "native-llama-cpp" ? "llama.cpp" : "browser",
-      status: "available",
-      durationMs: completion.durationMs,
-      outputKind: parsed.output.kind,
-      errorCode: null,
-      modelId: completion.modelId,
-      ...(completion.promptTokens === undefined ? {} : { promptTokens: completion.promptTokens }),
-      ...(completion.completionTokens === undefined
-        ? {}
-        : { completionTokens: completion.completionTokens }),
-      executionTarget: completion.runtime === "native-llama-cpp" ? "installed-app" : "browser-local"
-    }
-  };
 }
 
 /** Shared by createRuntimeModelRoute and the public storefront agent reply path. */

@@ -89,24 +89,6 @@ export interface InferenceRequest {
   signal?: AbortSignal;
 }
 
-/**
- * Untrusted output produced on an authenticated client device. The API must verify the matching
- * ready assignment and run this text through the canonical model-output, policy, confirmation,
- * and tool pipeline before it can affect business data.
- */
-export interface ClientInferenceCompletion {
-  requestId: string;
-  runtime: Extract<InferenceRuntime, "browser-webgpu" | "browser-wasm" | "native-llama-cpp">;
-  modelId: string;
-  deviceId: string;
-  installationId?: string;
-  outputText: string;
-  durationMs: number;
-  promptTokens?: number;
-  completionTokens?: number;
-  workspaceFiles?: ClientWorkspaceFileTransfer[];
-}
-
 /** Bytes supplied by an authenticated local runtime for a server-validated workspace.deliver. */
 export interface ClientWorkspaceFileTransfer {
   path: string;
@@ -983,18 +965,13 @@ export type AgentModelRuntimeBackend =
 
 export type PreferredExecutionMode = "LOCAL_ONLY" | "LOCAL_FIRST" | "CLOUD_ONLY";
 
-export type AgentModelReadinessStatus = "ATTACHED" | "LOADING" | "READY" | "FAILED";
-
 export type AgentModelBindingStatus =
   "inactive" | "verifying" | "active" | "failed" | "unavailable";
 
-export type ModelExecutionTarget =
-  "backend" | "browser-local" | "installed-app" | "remote-shop-device";
+export type ModelExecutionTarget = "backend" | "remote-shop-device";
 
 export const modelExecutionTargets = [
   "backend",
-  "browser-local",
-  "installed-app",
   "remote-shop-device"
 ] as const satisfies readonly ModelExecutionTarget[];
 
@@ -1002,58 +979,8 @@ export function isModelExecutionTarget(value: unknown): value is ModelExecutionT
   return (modelExecutionTargets as readonly unknown[]).includes(value);
 }
 
-export type BrowserInferenceBackend = "webgpu" | "wasm";
+/** Minimum hardware tier an agent profile requires, independent of execution target. */
 export type BrowserDeviceTier = "low" | "medium" | "high";
-export type BrowserRuntimeAdapterId = "transformers-js" | "webllm";
-export type BrowserCheckpointKind = "task-state" | "token-replay" | "native-kv";
-
-export interface BrowserRuntimeContract {
-  schemaVersion: 1;
-  adapterId: BrowserRuntimeAdapterId;
-  adapterVersion: string;
-  libraryRevision: string | null;
-  runtime: Extract<InferenceRuntime, "browser-webgpu" | "browser-wasm">;
-  backend: BrowserInferenceBackend;
-  streaming: true;
-  cancellation: true;
-  tokenCounting: "exact" | "estimated";
-  checkpointKinds: BrowserCheckpointKind[];
-  nativeStateFormat: string | null;
-}
-
-export interface BrowserCheckpointCompatibilityContract {
-  schemaVersion: 1;
-  checkpointKind: "task-state";
-  taskStateSchema: "soko.browser-task-state.v2";
-  modelFamilyId: string;
-  sourceModelId: string;
-  sourceModelRevision: string;
-  sourceAdapterId: BrowserRuntimeAdapterId;
-  promptRepresentation: "role-content-messages";
-  portableAcrossAdapters: true;
-}
-
-export interface BrowserInferenceAssignmentSummary {
-  id: string;
-  agentId: string;
-  businessId: string;
-  accountId: string;
-  userId: string;
-  deviceId: string;
-  enabled: boolean;
-  selectedModelId: string | null;
-  modelFamilyId: string | null;
-  modelRevision: string | null;
-  runtimeContract: BrowserRuntimeContract | null;
-  checkpointCompatibilityContract: BrowserCheckpointCompatibilityContract | null;
-  deviceTier: BrowserDeviceTier | null;
-  readinessStatus: AgentModelReadinessStatus;
-  lastSuccessfulInferenceAt: string | null;
-  lastErrorCode: string | null;
-  createdAt: string;
-  updatedAt: string;
-  updatedBy: string;
-}
 
 export interface RuntimeModelDefinition {
   id: string;
@@ -1109,7 +1036,6 @@ export function resolveRuntimeModel(modelId: string): RuntimeModelDefinition | n
 }
 
 export interface AgentModelBindingPermissions {
-  allowInstalledApp: boolean;
   allowRemoteShopDevice: boolean;
 }
 
@@ -1229,23 +1155,6 @@ export interface CloudModelArtifactSummary {
   status: CloudModelArtifactStatus;
   createdAt: string;
   completedAt: string | null;
-}
-
-export interface AgentModelAssignmentSummary {
-  agentId: string;
-  businessId: string;
-  accountId: string;
-  userId: string;
-  deviceId: string;
-  activeModelInstallationId: string | null;
-  modelId: string | null;
-  preferredExecutionMode: PreferredExecutionMode;
-  readinessStatus: AgentModelReadinessStatus;
-  runtimeBackend: AgentModelRuntimeBackend | null;
-  lastSuccessfulInferenceAt: string | null;
-  lastErrorCode: string | null;
-  updatedAt: string;
-  updatedBy: string;
 }
 
 export interface AgentModelReadinessResult {

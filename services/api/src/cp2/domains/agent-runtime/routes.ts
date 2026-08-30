@@ -1,16 +1,22 @@
 /**
  * Twelfth domain slice of in-process modularization for services/api/src/cp2/routes.ts (see
  * docs/architecture/routes-modularization-roadmap.md). Owns the AI-model catalogue/installation
- * routes, agent-model bindings, browser-inference assignments, agent profile/runtime metadata
- * (context sources, owner corrections, feedback), and runtime sessions/turns - everything that
- * calls into `domains/agent-runtime/store.ts`'s
+ * routes, agent-model bindings, agent profile/runtime metadata (context sources, owner
+ * corrections, feedback), and runtime sessions/turns - everything that calls into
+ * `domains/agent-runtime/store.ts`'s
  * `AgentRuntimeDomain` on the store.ts side, which this file's routes were already delegating to
  * before this extraction.
  *
- * Split into two clusters in the original file (AI-models/agent-model/browser-inference/agent
- * profile at one point, runtime sessions/turns much later, right after commerce's registration
- * call) - both clusters are combined into a single `registerAgentRuntimeRoutes` call here, matching
- * every other domain's single-registration-point convention.
+ * Split into two clusters in the original file (AI-models/agent-model/agent profile at one
+ * point, runtime sessions/turns much later, right after commerce's registration call) - both
+ * clusters are combined into a single `registerAgentRuntimeRoutes` call here, matching every
+ * other domain's single-registration-point convention.
+ *
+ * The per-device `/businesses/:businessId/agent-model` and `/businesses/:businessId/
+ * browser-inference[/executions]` routes (and their backing `AgentRuntimeDomain` methods) were
+ * removed when Soko retired its private on-device/browser model-assignment architecture in favor
+ * of a hosted-first, device-independent runtime; the surviving shop-scoped path is
+ * `/api/agents/:agentId/model-binding` below.
  *
  * `parseRuntimeTurnBody` and `RuntimeTurnBody` are exported since the messaging domain's
  * `POST /v1/messages` route (still in routes.ts) parses an embedded agent-authored turn via
@@ -19,7 +25,6 @@
  * `parseProductBody` (sales) and `parseLogisticsBody` (logistics).
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { ClientInferenceCompletion } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
 import type { GitHubModelCatalog } from "../../github-model-catalog.js";
@@ -34,12 +39,8 @@ import {
   parseAgentCorrectionBody,
   parseAgentFeedbackBody,
   parseAgentModelBindingPermissions,
-  parseAgentModelReadinessStatus,
   parseAgentProfileBody,
   parseAgentRuntimeAdapterId,
-  parseBrowserCheckpointContract,
-  parseBrowserDeviceTier,
-  parseBrowserRuntimeContract,
   parseInstalledModelBody,
   parseModelCatalogEntry,
   parseModelCompatibilityStatus,
@@ -55,7 +56,6 @@ import {
   type InstalledModelBody
 } from "./route-body-parsers.js";
 import {
-  parseBoolean,
   parseIntegerString,
   parseIsoTimestamp,
   parseNullableString,
@@ -96,41 +96,6 @@ interface ModelArtifactChunkParams extends InstalledModelParams {
 
 interface ModelArtifactChunkBody {
   contentBase64?: unknown;
-}
-
-interface AgentModelQuery {
-  deviceId?: string;
-}
-
-interface AgentModelAssignmentBody {
-  deviceId?: unknown;
-  installationId?: unknown;
-  preferredExecutionMode?: unknown;
-  readinessStatus?: unknown;
-  lastSuccessfulInferenceAt?: unknown;
-  lastErrorCode?: unknown;
-}
-
-interface BrowserInferenceAssignmentBody {
-  deviceId?: unknown;
-  enabled?: unknown;
-  selectedModelId?: unknown;
-  modelFamilyId?: unknown;
-  modelRevision?: unknown;
-  runtimeContract?: unknown;
-  checkpointCompatibilityContract?: unknown;
-  deviceTier?: unknown;
-  readinessStatus?: unknown;
-  lastSuccessfulInferenceAt?: unknown;
-  lastErrorCode?: unknown;
-}
-
-interface BrowserInferenceExecutionBody {
-  deviceId?: unknown;
-  modelId?: unknown;
-  successful?: unknown;
-  errorCode?: unknown;
-  occurredAt?: unknown;
 }
 
 interface AgentModelOperationParams {
@@ -182,7 +147,6 @@ export interface RuntimeTurnBody {
   conversationId?: string;
   message?: string;
   confirmationToken?: string;
-  clientInferenceCompletion?: ClientInferenceCompletion;
 }
 
 export function registerAgentRuntimeRoutes(
@@ -544,161 +508,6 @@ export function registerAgentRuntimeRoutes(
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           modelId: parseString(request.body.modelId, "modelId")
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/businesses/:businessId/agent-model",
-    async (
-      request: FastifyRequest<{ Params: BusinessParams; Querystring: AgentModelQuery }>,
-      reply
-    ) => {
-      try {
-        return store.getAgentModelAssignment({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          deviceId: parseString(request.query.deviceId, "deviceId")
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.put(
-    "/businesses/:businessId/agent-model",
-    async (
-      request: FastifyRequest<{ Params: BusinessParams; Body: AgentModelAssignmentBody }>,
-      reply
-    ) => {
-      try {
-        return store.assignAgentModel({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          deviceId: parseString(request.body.deviceId, "deviceId"),
-          installationId: parseString(request.body.installationId, "installationId"),
-          preferredExecutionMode: parsePreferredExecutionMode(request.body.preferredExecutionMode),
-          readinessStatus: parseAgentModelReadinessStatus(request.body.readinessStatus),
-          lastSuccessfulInferenceAt: parseNullableString(request.body.lastSuccessfulInferenceAt),
-          lastErrorCode: parseNullableString(request.body.lastErrorCode)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.delete(
-    "/businesses/:businessId/agent-model",
-    async (
-      request: FastifyRequest<{ Params: BusinessParams; Querystring: AgentModelQuery }>,
-      reply
-    ) => {
-      try {
-        return store.removeAgentModelAssignment({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          deviceId: parseString(request.query.deviceId, "deviceId")
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/businesses/:businessId/browser-inference",
-    async (
-      request: FastifyRequest<{ Params: BusinessParams; Querystring: AgentModelQuery }>,
-      reply
-    ) => {
-      try {
-        return {
-          assignment: store.getBrowserInferenceAssignment({
-            sessionId: readSessionCookie(request.headers.cookie),
-            businessId: request.params.businessId,
-            deviceId: parseString(request.query.deviceId, "deviceId")
-          })
-        };
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.put(
-    "/businesses/:businessId/browser-inference",
-    async (
-      request: FastifyRequest<{
-        Params: BusinessParams;
-        Body: BrowserInferenceAssignmentBody;
-      }>,
-      reply
-    ) => {
-      try {
-        return store.upsertBrowserInferenceAssignment({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          deviceId: parseString(request.body.deviceId, "deviceId"),
-          enabled: parseBoolean(request.body.enabled, "enabled"),
-          selectedModelId: parseNullableString(request.body.selectedModelId),
-          modelFamilyId: parseNullableString(request.body.modelFamilyId),
-          modelRevision: parseNullableString(request.body.modelRevision),
-          runtimeContract: parseBrowserRuntimeContract(request.body.runtimeContract),
-          checkpointCompatibilityContract: parseBrowserCheckpointContract(
-            request.body.checkpointCompatibilityContract
-          ),
-          deviceTier: parseBrowserDeviceTier(request.body.deviceTier),
-          readinessStatus: parseAgentModelReadinessStatus(request.body.readinessStatus),
-          lastSuccessfulInferenceAt: parseNullableString(request.body.lastSuccessfulInferenceAt),
-          lastErrorCode: parseNullableString(request.body.lastErrorCode)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/browser-inference/executions",
-    async (
-      request: FastifyRequest<{
-        Params: BusinessParams;
-        Body: BrowserInferenceExecutionBody;
-      }>,
-      reply
-    ) => {
-      try {
-        return store.recordBrowserInferenceExecution({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          deviceId: parseString(request.body.deviceId, "deviceId"),
-          modelId: parseString(request.body.modelId, "modelId"),
-          successful: parseBoolean(request.body.successful, "successful"),
-          errorCode: parseNullableString(request.body.errorCode),
-          occurredAt: parseString(request.body.occurredAt, "occurredAt")
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.delete(
-    "/businesses/:businessId/browser-inference",
-    async (
-      request: FastifyRequest<{ Params: BusinessParams; Querystring: AgentModelQuery }>,
-      reply
-    ) => {
-      try {
-        return store.removeBrowserInferenceAssignment({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          deviceId: parseString(request.query.deviceId, "deviceId")
         });
       } catch (error) {
         return sendCp2Error(reply, error);
