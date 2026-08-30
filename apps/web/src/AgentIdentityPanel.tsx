@@ -1,7 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 import type { OssAgentSearchResult, OssAgentSummary } from "@soko/shared-types";
 
-import type { LocalAiModel } from "./ai-model-manager";
 import { applyOssAgent, rankPortableOssAgents } from "./agent-catalog";
 import { getJson } from "./api-helpers";
 import { listInstalledOssAgentManifests } from "./oss-agent-installation";
@@ -13,7 +12,6 @@ export interface AgentIdentityPanelProps {
   isEditing: boolean;
   updateAgent: (patch: Partial<AgentSettings>) => void;
   activeAiModelId: string;
-  activeInstalledModel: LocalAiModel | null;
   activeAiModel: AiModelSummary | undefined;
   backendAvailable: boolean;
 }
@@ -23,7 +21,6 @@ export function AgentIdentityPanel({
   isEditing,
   updateAgent,
   activeAiModelId,
-  activeInstalledModel,
   activeAiModel,
   backendAvailable
 }: AgentIdentityPanelProps) {
@@ -212,13 +209,13 @@ export function AgentIdentityPanel({
       <label>
         Current conversational model
         <input
-          value={activeInstalledModel?.displayName ?? activeAiModel?.label ?? activeAiModelId}
+          value={activeAiModel?.label ?? activeAiModelId}
           disabled
           aria-label="Current conversational model"
         />
         <small className="model-select-hint">
-          The selected model is synchronized with the backend. Local models become ready only after
-          backend validation and a real runtime test succeed.
+          The selected model runs on the Soko backend, not on this device. It becomes active only
+          after a real backend activation test succeeds.
         </small>
       </label>
       <label>

@@ -9,23 +9,6 @@ import {
   type SokoMode
 } from "./app-shell";
 
-import {
-  browserGgufRuntimeSupported,
-  listLocalAiModels,
-  getOrCreateDeviceModelScopeId
-} from "./ai-model-manager";
-import {
-  assignmentAfterReadiness,
-  readDeviceAgentModelAssignment,
-  saveDeviceAgentModelAssignment
-} from "./agent-model-assignment";
-import { testAgentModelRuntime, type AgentModelRuntime } from "./agent-model-runtime";
-import { getSharedAgentModelRuntime } from "./browser-gguf-runtime";
-import {
-  cancelBrowserGeneration,
-  clearBrowserInferenceAccountData
-} from "./browser-inference-session";
-
 import { ensureE2eeIdentity, type E2eeIdentity } from "./e2ee";
 import {
   authenticationRoute,
@@ -52,7 +35,6 @@ import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
 import { useImportsState } from "./hooks/useImportsState";
 import { useInvoicesState } from "./hooks/useInvoicesState";
-import { useAgentModelState } from "./hooks/useAgentModelState";
 import { useBusinessSetupState } from "./hooks/useBusinessSetupState";
 import { useBuyCartState } from "./hooks/useBuyCartState";
 import { useChatAttachmentsState } from "./hooks/useChatAttachmentsState";
@@ -248,8 +230,6 @@ export function OwnerApp() {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
-  const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
-  const restoredModelInstallationRef = useRef<string | null>(null);
 
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Guest";
@@ -721,7 +701,12 @@ export function OwnerApp() {
     setBuyFeed,
     setChatMessages
   });
-  const { isBrowserGenerating, sendChatDraft, confirmRuntimeAction } = useChatRuntimeState({
+  const {
+    isBrowserGenerating,
+    sendChatDraft,
+    confirmRuntimeAction,
+    cancelGeneration
+  } = useChatRuntimeState({
     business,
     mode,
     session,
@@ -729,7 +714,6 @@ export function OwnerApp() {
     ensureAuthenticatedSession,
     rejectDefinitiveAuthenticationFailure,
     agentSettings,
-    chatModelRuntimeRef,
     setStatusMessage,
     navigateToView,
     requireMessagingSignIn,
@@ -799,7 +783,6 @@ export function OwnerApp() {
     initialCountryCode,
     registerReset: domainResetRegistry.registerReset
   });
-  const { restoreDeviceModelForLaunch } = useAgentModelState();
 
   useEffect(() => {
     function openAuthenticationFromHash() {
@@ -1163,72 +1146,10 @@ export function OwnerApp() {
             );
           }
         });
-
-      void restoreDeviceModelForLaunch(businessId)
-        .then((restoredAssignment) => {
-          const modelId = restoredAssignment.modelId;
-          if (cancelled) return;
-          if (modelId !== null) {
-            setAgentSettings((current) => ({ ...current, model: modelId }));
-          }
-        })
-        .catch((error) => {
-          if (cancelled) return;
-          console.info(
-            JSON.stringify({
-              event: "model.device_fallback_restore_failed",
-              accountId,
-              businessId,
-              errorCode: getErrorMessage(error)
-            })
-          );
-        });
     }
-
-    const deviceId = getOrCreateDeviceModelScopeId();
-    const assignment = readDeviceAgentModelAssignment(businessId, deviceId);
-    const installation =
-      assignment?.activeModelInstallationId === null ||
-      assignment?.activeModelInstallationId === undefined
-        ? null
-        : (listLocalAiModels().find((model) => model.id === assignment.activeModelInstallationId) ??
-          null);
-
-    if (
-      assignment !== null &&
-      installation !== null &&
-      (window.SokoAgentModelRuntime !== undefined || browserGgufRuntimeSupported()) &&
-      restoredModelInstallationRef.current !== installation.id
-    ) {
-      restoredModelInstallationRef.current = installation.id;
-      console.info(
-        JSON.stringify({
-          event: "model.activation.started",
-          accountId,
-          businessId,
-          modelId: installation.modelId,
-          reason: "launch_restore"
-        })
-      );
-      const runtime =
-        chatModelRuntimeRef.current ?? (chatModelRuntimeRef.current = getSharedAgentModelRuntime());
-      void testAgentModelRuntime(runtime, installation).then((result) => {
-        saveDeviceAgentModelAssignment(assignmentAfterReadiness(assignment, result));
-        if (cancelled) return;
-        console.info(
-          JSON.stringify({
-            event: result.success ? "model.activation.completed" : "model.activation.failed",
-            accountId,
-            businessId,
-            modelId: installation.modelId,
-            errorCode: result.errorCode
-          })
-        );
-        if (!result.success) {
-          setStatusMessage(`${result.message} Your account remains signed in.`);
-        }
-      });
-    }
+    // The agent's model is always resolved server-side (see ensureDefaultRuntimeForTurn in
+    // services/api/src/cp2/domains/agent-runtime/store.ts) - there is no private per-device model
+    // installation to restore or re-activate on launch.
 
     return () => {
       cancelled = true;
@@ -1355,10 +1276,7 @@ export function OwnerApp() {
 
   async function resetClientToStartup(accountId: string | null, message: string) {
     if (accountId !== null) {
-      await Promise.all([
-        clearBrowserInferenceAccountData(accountId).catch(() => undefined),
-        syncRepositoryRef.current?.clearAllAccountData(accountId).catch(() => undefined)
-      ]);
+      await syncRepositoryRef.current?.clearAllAccountData(accountId).catch(() => undefined);
       clearMessagingOutbox(accountId);
     }
     await clearPersistentApiRequestCache();
@@ -1989,7 +1907,7 @@ export function OwnerApp() {
                   )
                 }
                 channelEndpoints={activeConversation?.channels ?? []}
-                onCancelGeneration={() => void cancelBrowserGeneration()}
+                onCancelGeneration={() => cancelGeneration()}
                 onSmsHandoff={recordSmsHandoff}
                 onPlatformHandoff={recordPlatformHandoff}
               >
@@ -2036,7 +1954,6 @@ export function OwnerApp() {
                         onBack={returnToChat}
                         onEnableNotifications={requestMessagingNotifications}
                         onDisableNotifications={disableMessagingNotifications}
-                        onEnsureRuntimeSession={() => ensureRuntimeSession(setRuntimeSessionId)}
                         onLogout={() => void runAction("logout", logout)}
                         onLogoutAll={() => void runAction("logout-all", () => logout(true))}
                         onScheduleAccountDeletion={scheduleAccountDeletion}

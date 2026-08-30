@@ -6,8 +6,7 @@ import type {
   AgentEvaluationSummary,
   AgentOwnerCorrection,
   AgentRuntimeReadiness,
-  AgentRuntimeVersion,
-  AgentModelAssignmentSummary
+  AgentRuntimeVersion
 } from "@soko/shared-types";
 
 import { copyTextToClipboard } from "./misc-browser-utils";
@@ -25,18 +24,6 @@ import { QuickRuntimeSwitcher } from "./QuickRuntimeSwitcher";
 import { YourShopsPanel } from "./YourShopsPanel";
 
 import {
-  listLocalAiModels,
-  getOrCreateDeviceModelScopeId,
-  type LocalAiModel
-} from "./ai-model-manager";
-import {
-  assignmentFromServer,
-  readDeviceAgentModelAssignment,
-  saveDeviceAgentModelAssignment,
-  type DeviceAgentModelAssignment
-} from "./agent-model-assignment";
-
-import {
   AgentModelPanel,
   IdentitySecurityPanel,
   type ActiveBusiness,
@@ -51,7 +38,6 @@ import { postJson, putJson, getJson } from "./api-helpers";
 import { createStorefrontUrl, normalizeSokoId } from "./sokoid-and-storefront";
 import { agentSettingsFromBusinessProfile } from "./owner-app-bootstrap";
 import { getErrorMessage } from "./chat-message-plumbing";
-import { installedModelRequest } from "./agent-model-panel-utils";
 import { buildAgentProfileUpdate } from "./agent-profile-payload";
 
 export interface AgentProfileSurfaceProps {
@@ -73,7 +59,6 @@ export interface AgentProfileSurfaceProps {
   onBack: () => void;
   onDisableNotifications: () => Promise<void>;
   onEnableNotifications: () => Promise<void>;
-  onEnsureRuntimeSession: () => Promise<string>;
   onLogout: () => void;
   onLogoutAll: () => void;
   onScheduleAccountDeletion: (input: {
@@ -103,7 +88,6 @@ export function AgentProfileSurface({
   onBack,
   onDisableNotifications,
   onEnableNotifications,
-  onEnsureRuntimeSession,
   onLogout,
   onLogoutAll,
   onScheduleAccountDeletion,
@@ -136,12 +120,6 @@ export function AgentProfileSurface({
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [activeAiModelId, setActiveAiModelId] = useState(agent.model);
-  const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
-  const [deviceId] = useState(() => getOrCreateDeviceModelScopeId());
-  const [agentModelAssignment, setAgentModelAssignment] =
-    useState<DeviceAgentModelAssignment | null>(() =>
-      readDeviceAgentModelAssignment(business.id, getOrCreateDeviceModelScopeId())
-    );
 
   useEffect(() => {
     if (!isEditing) {
@@ -152,7 +130,6 @@ export function AgentProfileSurface({
   useEffect(() => {
     void loadAgentProfile();
     void loadAgentRuntimeDetails();
-    void loadAgentModelAssignment();
   }, [accountId, business.id]);
 
   async function runProfileAction(key: string, action: () => Promise<void>) {
@@ -272,72 +249,6 @@ export function AgentProfileSurface({
     }
   }
 
-  async function loadAgentModelAssignment() {
-    const local = readDeviceAgentModelAssignment(business.id, deviceId);
-    if (local !== null) setAgentModelAssignment(local);
-    if (!navigator.onLine) return;
-    try {
-      if (
-        local?.activeModelInstallationId !== null &&
-        local?.activeModelInstallationId !== undefined &&
-        local.readinessStatus === "READY" &&
-        local.lastSuccessfulInferenceAt !== null
-      ) {
-        const installation = listLocalAiModels().find(
-          (model) => model.id === local.activeModelInstallationId
-        );
-        if (installation !== undefined) {
-          await registerInstalledModel(installation);
-          const saved = await putJson<AgentModelAssignmentSummary>(
-            `/businesses/${business.id}/agent-model`,
-            {
-              deviceId,
-              installationId: installation.id,
-              preferredExecutionMode: local.preferredExecutionMode,
-              readinessStatus: local.readinessStatus,
-              lastSuccessfulInferenceAt: local.lastSuccessfulInferenceAt,
-              lastErrorCode: local.lastErrorCode
-            }
-          );
-          const synchronized = assignmentFromServer(saved);
-          saveDeviceAgentModelAssignment(synchronized);
-          setAgentModelAssignment(synchronized);
-          return;
-        }
-      }
-      const server = await getJson<AgentModelAssignmentSummary>(
-        `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
-      );
-      if (server.activeModelInstallationId === null) {
-        const restored = assignmentFromServer(server);
-        saveDeviceAgentModelAssignment(restored);
-        setAgentModelAssignment(restored);
-        if (restored.modelId !== null) {
-          setActiveAiModelId(restored.modelId);
-          updateAgent({ model: restored.modelId });
-          onAgentChange({ ...agent, model: restored.modelId });
-        }
-        setProfileMessage(
-          "No downloaded model is connected on this device. Download and test a GGUF model to make it the agent default."
-        );
-        return;
-      }
-      const restored = assignmentFromServer(server);
-      saveDeviceAgentModelAssignment(restored);
-      setAgentModelAssignment(restored);
-    } catch (error) {
-      if (local === null) setProfileMessage(getErrorMessage(error));
-    }
-  }
-
-  async function registerInstalledModel(model: LocalAiModel, signal?: AbortSignal): Promise<void> {
-    await postJson(
-      "/v1/models/installed",
-      installedModelRequest(model),
-      signal === undefined ? {} : { signal }
-    );
-  }
-
   function updateAgent(patch: Partial<AgentSettings>) {
     setDraftAgent((currentAgent) => ({ ...currentAgent, ...patch }));
   }
@@ -391,13 +302,6 @@ export function AgentProfileSurface({
     }
   }
 
-  const activeInstalledModel =
-    agentModelAssignment?.activeModelInstallationId === null ||
-    agentModelAssignment?.activeModelInstallationId === undefined
-      ? null
-      : (localAiModels.find(
-          (model) => model.id === agentModelAssignment.activeModelInstallationId
-        ) ?? null);
   const activeAiModel = aiModels.find((model) => model.id === activeAiModelId);
   const hasUnsavedRuntimeChanges = JSON.stringify(draftAgent) !== JSON.stringify(agent);
 
@@ -490,7 +394,6 @@ export function AgentProfileSurface({
             isEditing={isEditing}
             updateAgent={updateAgent}
             activeAiModelId={activeAiModelId}
-            activeInstalledModel={activeInstalledModel}
             activeAiModel={activeAiModel}
             // Agent-runtime readiness describes Soko's bounded prompt/tool runtime. It does not
             // prove that arbitrary repository source has a configured isolated backend adapter.
@@ -568,8 +471,6 @@ export function AgentProfileSurface({
               isEditing={isEditing}
               updateAgent={updateAgent}
               onAgentChange={onAgentChange}
-              ownerUser={ownerUser}
-              onEnsureRuntimeSession={onEnsureRuntimeSession}
               profileMessage={profileMessage}
               setProfileMessage={setProfileMessage}
               pendingProfileAction={pendingProfileAction}
@@ -577,14 +478,8 @@ export function AgentProfileSurface({
               copyStorefrontValue={copyStorefrontValue}
               aiModels={aiModels}
               setAiModels={setAiModels}
-              localAiModels={localAiModels}
-              setLocalAiModels={setLocalAiModels}
               activeAiModelId={activeAiModelId}
               setActiveAiModelId={setActiveAiModelId}
-              agentModelAssignment={agentModelAssignment}
-              setAgentModelAssignment={setAgentModelAssignment}
-              deviceId={deviceId}
-              registerInstalledModel={registerInstalledModel}
             />
           </Suspense>
         </SettingsGroup>

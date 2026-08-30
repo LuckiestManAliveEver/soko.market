@@ -1,11 +1,10 @@
-import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 
 import type { RuntimeToolName } from "@soko/tool-core";
 import { renderRuntimeModelOutputInstructions, runtimeToolRegistry } from "@soko/tool-core";
 import type {
   AuthBootstrapState,
   ChannelProvider,
-  ClientInferenceCompletion,
   ConversationAttachment,
   ConversationMessageContent,
   ConversationMessageSummary,
@@ -15,40 +14,15 @@ import type {
   InferenceRouteDecision
 } from "@soko/shared-types";
 
-import { unavailableBrowserInferenceCapability } from "../browser-inference-types";
 import {
   createAgentHelpReply,
   extractAgentHelpCommand,
   resolveAgentHelpDestination,
   viewLabel
 } from "../agent-command-engine";
-import {
-  readDeviceAgentModelAssignment,
-  saveDeviceAgentModelAssignment
-} from "../agent-model-assignment";
-import { buildLocalAgentPrompt, type AgentModelRuntime } from "../agent-model-runtime";
 import { parseChatModuleCommand } from "../chat-module-commands";
-import {
-  browserGgufRuntimeSupported,
-  getOrCreateDeviceModelScopeId,
-  listLocalAiModels
-} from "../ai-model-manager";
 import { postJson } from "../api-helpers";
 import { type ChatAttachment, type ChatMessage, type ShellView, type SokoMode } from "../app-shell";
-import { getSharedAgentModelRuntime } from "../browser-gguf-runtime";
-import { recordBrowserInferenceDiagnostic } from "../browser-inference-diagnostics";
-import {
-  requestNeedsComplexReasoning,
-  requestRequiresServerTool
-} from "../browser-inference-routing";
-import {
-  browserInferenceEnabled,
-  cancelBrowserGeneration,
-  generateBrowserAgentResponse,
-  listCachedBrowserModelIds,
-  loadBrowserInferenceState
-} from "../browser-inference-session";
-import { recordSyncedBrowserInferenceExecution } from "../browser-inference-sync";
 import {
   agentProcessingFailureMessage,
   appendAttachmentSummary,
@@ -63,6 +37,8 @@ import {
   isRedundantAgentErrorMessage,
   mapConversationMessage,
   mergePersistedEncryptedMessage,
+  requestNeedsComplexReasoning,
+  requestRequiresServerTool,
   runtimeManagerKey
 } from "../chat-message-plumbing";
 import { encryptDirectMessage } from "../e2ee";
@@ -72,12 +48,9 @@ import {
   formatLatency,
   formatRuntimeTurnStatus
 } from "../formatters";
-import { normalizeDeviceInferenceCapabilities } from "../inference/capabilities";
 import { executeInferenceRoute } from "../inference/executor";
 import { readClientInferencePreferences } from "../inference/preferences";
 import { createRemoteInferenceProvider } from "../inference/remote-provider";
-import { decideClientInferenceRoute, defaultInferencePriority } from "../inference/router";
-import { collectClientWorkspaceFileTransfers } from "../local-workspace-files";
 import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "../lib/api";
 import { queueMessagingOutbox } from "../messaging/outbox";
 import {
@@ -98,7 +71,6 @@ interface UseChatRuntimeStateDeps {
   ensureAuthenticatedSession: () => Promise<SessionResponse | null>;
   rejectDefinitiveAuthenticationFailure: (error: unknown) => boolean;
   agentSettings: AgentSettings;
-  chatModelRuntimeRef: MutableRefObject<AgentModelRuntime | null>;
   setStatusMessage: (message: string) => void;
   navigateToView: (nextView: ShellView, options?: { replace?: boolean; mode?: SokoMode }) => void;
   requireMessagingSignIn: () => void;
@@ -173,6 +145,7 @@ function customerIdFromToolResult(toolResult: unknown): string | undefined {
 
 export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
+  const activeClientInferenceCancelRef = useRef<(() => void) | null>(null);
 
   const {
     business,
@@ -182,7 +155,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     ensureAuthenticatedSession,
     rejectDefinitiveAuthenticationFailure,
     agentSettings,
-    chatModelRuntimeRef,
     setStatusMessage,
     navigateToView,
     requireMessagingSignIn,
@@ -356,21 +328,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
       return;
     }
-    const localDeviceId = getOrCreateDeviceModelScopeId();
-    const localAssignment =
-      business === null ? null : readDeviceAgentModelAssignment(business.id, localDeviceId);
-    const readyLocalAssignment =
-      localAssignment?.readinessStatus === "READY" &&
-      localAssignment.lastSuccessfulInferenceAt !== null
-        ? localAssignment
-        : null;
-    const localInstallation =
-      readyLocalAssignment?.activeModelInstallationId !== null &&
-      readyLocalAssignment?.activeModelInstallationId !== undefined
-        ? (listLocalAiModels().find(
-            (model) => model.id === readyLocalAssignment.activeModelInstallationId
-          ) ?? null)
-        : null;
     let resolvedInferenceRuntimeSessionId = runtimeSessionId;
     if (!hasHumanRecipient && business !== null) {
       if (navigator.onLine) {
@@ -385,37 +342,25 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           }
           return;
         }
-      } else {
-        resolvedInferenceRuntimeSessionId = `local:${business.id}:${getOrCreateDeviceModelScopeId()}`;
       }
+      // Offline: leave resolvedInferenceRuntimeSessionId as-is rather than fabricating a
+      // synthetic id for a local runtime that no longer exists. The plain server turn below
+      // (or the messaging outbox retry) resolves a real session once the connection returns.
     }
     const inferencePreferences =
       business === null
-        ? {
-            nativePermission: false,
-            ownerNodeAllowed: false
-          }
+        ? { ownerNodeAllowed: false }
         : readClientInferencePreferences(session.account.id, business.id);
     const requiresServerTool = requestRequiresServerTool(runtimeMessage);
     const availableRuntimeTools = requiresServerTool
       ? (Object.keys(runtimeToolRegistry) as RuntimeToolName[])
       : [];
     const needsComplexReasoning = requestNeedsComplexReasoning(runtimeMessage);
-    const browserPreference =
-      !hasHumanRecipient &&
-      business !== null &&
-      clientInferenceFeatureFlags.clientFirst &&
-      (await browserInferenceEnabled(session.account.id, business.id).catch(() => false));
-    const [browserState, cachedBrowserModelIds] = await Promise.all([
-      browserPreference && business !== null
-        ? loadBrowserInferenceState(session.account.id, business.id).catch(() => null)
-        : Promise.resolve(null),
-      browserPreference
-        ? listCachedBrowserModelIds(session.account.id).catch(() => [])
-        : Promise.resolve<string[]>([])
-    ]);
-    const inferenceModelId =
-      localInstallation?.modelId ?? browserState?.settings?.selectedModelId ?? agentSettings.model;
+    const inferenceModelId = agentSettings.model;
+    // Every model this app can run is backend-hosted. The one surviving client-side inference
+    // route is a shop-owned, authenticated device (owner-node) registered as an execution host -
+    // private per-browser or per-device model execution was retired. Every other message falls
+    // through to the plain server turn below.
     const ownerNodeReachable =
       !hasHumanRecipient &&
       business !== null &&
@@ -432,26 +377,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             .then((result) => result.reachable)
             .catch(() => false)
         : false;
-    const browserCapability = browserState?.capability ?? unavailableBrowserInferenceCapability();
-    const browserGgufAvailable = localInstallation !== null && browserGgufRuntimeSupported();
-    const localGgufRuntime =
-      browserGgufAvailable &&
-      (localInstallation.runtimeBackend === "LLAMA_CPP_BROWSER" ||
-        window.SokoAgentModelRuntime === undefined)
-        ? ("browser-wasm" as const)
-        : ("native-llama-cpp" as const);
-    const inferenceCapabilities = normalizeDeviceInferenceCapabilities({
-      browser: browserCapability,
-      cachedModelIds: [
-        ...cachedBrowserModelIds,
-        ...(localInstallation === null ? [] : [localInstallation.modelId])
-      ],
-      nativeBridgeAvailable:
-        localInstallation !== null && window.SokoAgentModelRuntime !== undefined,
-      browserGgufAvailable,
-      ownerNodeReachable,
-      online: navigator.onLine
-    });
     const inferenceRequest: InferenceRequest | null =
       hasHumanRecipient || business === null
         ? null
@@ -492,182 +417,9 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             temperature: 0.2,
             taskType: needsComplexReasoning ? "reasoning" : "conversation"
           };
-    let browserTokenListener: (token: string) => void = () => undefined;
     const inferenceProviders: InferenceProvider[] = [];
 
-    if (
-      inferenceRequest !== null &&
-      browserState?.settings?.enabled === true &&
-      browserState.settings.selectedModelId !== null &&
-      browserCapability.backend !== "none" &&
-      (!requiresServerTool || navigator.onLine) &&
-      !needsComplexReasoning &&
-      document.visibilityState === "visible" &&
-      (browserCapability.backend === "webgpu"
-        ? clientInferenceFeatureFlags.browserWebGpu
-        : clientInferenceFeatureFlags.browserWasm)
-    ) {
-      const browserRuntime =
-        browserCapability.backend === "webgpu"
-          ? ("browser-webgpu" as const)
-          : ("browser-wasm" as const);
-      inferenceProviders.push({
-        id: browserRuntime,
-        runtime: browserRuntime,
-        async isAvailable() {
-          return true;
-        },
-        async supports(modelId) {
-          return modelId === browserState.settings!.selectedModelId!;
-        },
-        async *generate(request) {
-          if (business === null) throw new Error("A shop is required for browser inference.");
-          const selectedModelId = browserState.settings!.selectedModelId!;
-          try {
-            const response = await generateBrowserAgentResponse({
-              requestId: request.requestId,
-              accountId: session.account.id,
-              businessId: business.id,
-              conversationId: request.conversationId,
-              agentIdentity: `${agentSettings.name}; role=${agentSettings.role}`,
-              shopIdentity: `${business.name}; Soko ID=${business.sokoId}`,
-              systemPrompt: request.systemPrompt ?? "",
-              message: runtimeMessage,
-              recentMessages: chatMessages
-                .filter((item) => item.author === "merchant" || item.author === "sokoclaw")
-                .map((item) => ({
-                  id: item.id,
-                  role: item.author === "merchant" ? ("user" as const) : ("assistant" as const),
-                  content: item.body
-                })),
-              // Business reads and mutations always go through the authorized server capability
-              // runtime. Browser inference is limited to conversational generation and therefore
-              // receives no independently cached domain snapshot here.
-              catalogueRecords: [],
-              nativeReady: false,
-              allowServerToolHandoff: requiresServerTool && navigator.onLine,
-              onToken: (token) => browserTokenListener(token)
-            });
-            if (navigator.onLine) {
-              void recordSyncedBrowserInferenceExecution({
-                businessId: business.id,
-                modelId: selectedModelId,
-                successful: true
-              }).catch(() => undefined);
-            }
-            yield {
-              requestId: request.requestId,
-              text: response.result.text,
-              done: true,
-              runtime: browserRuntime,
-              modelId: selectedModelId,
-              usage: {
-                ...(response.result.promptTokenCount === null
-                  ? {}
-                  : { promptTokens: response.result.promptTokenCount }),
-                ...(response.result.generatedTokenCount === null
-                  ? {}
-                  : { completionTokens: response.result.generatedTokenCount })
-              }
-            };
-          } catch (error) {
-            if (navigator.onLine) {
-              void recordSyncedBrowserInferenceExecution({
-                businessId: business.id,
-                modelId: selectedModelId,
-                successful: false,
-                errorCode:
-                  typeof error === "object" &&
-                  error !== null &&
-                  "code" in error &&
-                  typeof error.code === "string"
-                    ? error.code
-                    : "BROWSER_INFERENCE_FAILED"
-              }).catch(() => undefined);
-            }
-            throw error;
-          }
-        },
-        cancel: () => cancelBrowserGeneration()
-      });
-    }
-
-    if (
-      inferenceRequest !== null &&
-      readyLocalAssignment !== null &&
-      localInstallation !== null &&
-      readyLocalAssignment.preferredExecutionMode !== "CLOUD_ONLY" &&
-      (!requiresServerTool || navigator.onLine)
-    ) {
-      inferenceProviders.push({
-        id: `${localGgufRuntime}:${localInstallation.id}`,
-        runtime: localGgufRuntime,
-        async isAvailable() {
-          return true;
-        },
-        async supports(modelId) {
-          return modelId === localInstallation.modelId;
-        },
-        async *generate(request) {
-          const runtime =
-            chatModelRuntimeRef.current ??
-            (chatModelRuntimeRef.current = getSharedAgentModelRuntime());
-          await runtime.load(localInstallation);
-          const generation = await runtime.generate({
-            installationId: localInstallation.id,
-            prompt: buildLocalAgentPrompt({
-              role: agentSettings.role,
-              instructions: agentSettings.instructions,
-              message: runtimeMessage,
-              ...(availableRuntimeTools.length === 0
-                ? {}
-                : { availableTools: availableRuntimeTools }),
-              recentMessages: chatMessages
-                .filter((item) => item.author === "merchant" || item.author === "sokoclaw")
-                .map((item) => ({
-                  role: item.author === "merchant" ? ("user" as const) : ("assistant" as const),
-                  content: item.body
-                }))
-            }),
-            maxTokens: request.maxTokens ?? 192,
-            temperature: request.temperature ?? 0.2,
-            onToken: (token) => browserTokenListener(token),
-            ...(request.signal === undefined ? {} : { signal: request.signal })
-          });
-          const usedAt = new Date().toISOString();
-          saveDeviceAgentModelAssignment({
-            ...readyLocalAssignment,
-            readinessStatus: "READY",
-            lastSuccessfulInferenceAt: usedAt,
-            lastErrorCode: null,
-            updatedAt: usedAt
-          });
-          yield {
-            requestId: request.requestId,
-            text: generation.text,
-            done: true,
-            runtime: localGgufRuntime,
-            modelId: request.modelId,
-            usage: {
-              ...(generation.inputTokenCount === null
-                ? {}
-                : { promptTokens: generation.inputTokenCount }),
-              ...(generation.outputTokenCount === null
-                ? {}
-                : { completionTokens: generation.outputTokenCount })
-            }
-          };
-        }
-      });
-    }
-
-    if (
-      inferenceRequest !== null &&
-      business !== null &&
-      ownerNodeReachable &&
-      readyLocalAssignment?.preferredExecutionMode !== "LOCAL_ONLY" &&
-      !requiresServerTool
-    ) {
+    if (inferenceRequest !== null && business !== null && ownerNodeReachable && !requiresServerTool) {
       inferenceProviders.push(
         createRemoteInferenceProvider({
           id: "owner-node",
@@ -679,31 +431,16 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       );
     }
 
-    const localOnly = readyLocalAssignment?.preferredExecutionMode === "LOCAL_ONLY";
-    const routingPolicy = {
-      priority: defaultInferencePriority,
-      maximumFallbacks: clientInferenceFeatureFlags.maximumFallbacks,
-      allowNativeBridge: clientInferenceFeatureFlags.nativeBridge,
-      allowOwnerNode: clientInferenceFeatureFlags.ownerNode && !localOnly,
-      requireCachedBrowserModelWhenOffline: true,
-      privacyMode: inferencePreferences.ownerNodeAllowed
-        ? ("tenant-devices" as const)
-        : ("local-only" as const)
-    };
-    let inferenceRoute: InferenceRouteDecision | null = null;
-    if (
-      inferenceRoute === null &&
-      inferenceRequest !== null &&
-      clientInferenceFeatureFlags.clientFirst
-    ) {
-      inferenceRoute = await decideClientInferenceRoute({
-        modelId: inferenceRequest.modelId,
-        capabilities: inferenceCapabilities,
-        providers: inferenceProviders,
-        policy: routingPolicy,
-        nativePermission: inferencePreferences.nativePermission
-      }).catch(() => null);
-    }
+    const inferenceRoute: InferenceRouteDecision | null =
+      inferenceRequest !== null && inferenceProviders.length > 0
+        ? {
+            providerId: "owner-node",
+            runtime: "owner-node",
+            modelId: inferenceRequest.modelId,
+            reason: "The authenticated shop-owner device is reachable.",
+            fallbackProviderIds: []
+          }
+        : null;
     const shouldResolveClientInference = inferenceRoute !== null;
     const shouldRequestServerInference = !shouldResolveClientInference;
     let activeServerRuntimeSessionId = resolvedInferenceRuntimeSessionId;
@@ -1154,12 +891,14 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           );
         });
       };
-      setStatusMessage("Browser model · Generating");
-      browserTokenListener = (token) => {
-        if (!requiresServerTool) updateStreamingMessage(streamedText + token);
+      setStatusMessage(`${formatInferenceRuntimeLabel("owner-node")} · Generating`);
+      // Owner-node is excluded from candidacy whenever requiresServerTool is true (see the
+      // provider-push condition above), so this route never needs to submit an authorized tool
+      // proposal - a tool-requiring message always falls through to the plain server turn.
+      activeClientInferenceCancelRef.current = () => {
+        void inferenceProviders[0]?.cancel?.(inferenceRequest.requestId);
       };
       try {
-        const clientInferenceStartedAt = performance.now();
         const execution = await executeInferenceRoute({
           decision: inferenceRoute,
           providers: inferenceProviders,
@@ -1172,13 +911,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             );
           },
           onChunk(chunk) {
-            if (
-              !requiresServerTool &&
-              chunk.runtime !== "browser-webgpu" &&
-              chunk.runtime !== "browser-wasm"
-            ) {
-              updateStreamingMessage(streamedText + chunk.text);
-            }
+            updateStreamingMessage(streamedText + chunk.text);
           }
         });
         if (streamingFrame !== null) {
@@ -1186,44 +919,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           streamingFrame = null;
         }
         setChatMessages((messages) => messages.filter((item) => item.id !== streamingMessageId));
-        if (requiresServerTool) {
-          if (
-            execution.runtime !== "browser-webgpu" &&
-            execution.runtime !== "browser-wasm" &&
-            execution.runtime !== "native-llama-cpp"
-          ) {
-            throw new Error("This inference runtime cannot submit an authorized tool proposal.");
-          }
-          if (business === null) {
-            throw new Error("Select a shop before delivering a local workspace file.");
-          }
-          const workspaceFiles = await collectClientWorkspaceFileTransfers({
-            outputText: execution.text,
-            runtime: execution.runtime,
-            businessId: business.id,
-            ...(window.SokoAgentModelRuntime === undefined
-              ? {}
-              : { nativeBridge: window.SokoAgentModelRuntime })
-          });
-          const clientInferenceCompletion: ClientInferenceCompletion = {
-            requestId: inferenceRequest.requestId,
-            runtime: execution.runtime,
-            modelId: inferenceRequest.modelId,
-            deviceId: localDeviceId,
-            ...(localInstallation !== null && execution.providerId.includes(localInstallation.id)
-              ? { installationId: localInstallation.id }
-              : {}),
-            outputText: execution.text,
-            durationMs: Math.min(
-              120_000,
-              Math.max(0, Math.round(performance.now() - clientInferenceStartedAt))
-            ),
-            ...(workspaceFiles.length === 0 ? {} : { workspaceFiles })
-          };
-          const authorized = await runRoutedRuntimeTurn(clientInferenceCompletion);
-          await applyRuntimeResult(authorized, true);
-          return;
-        }
         await appendAgentMessage(execution.text);
         setStatusMessage(
           `${formatInferenceRuntimeLabel(execution.runtime)} · In use${
@@ -1233,57 +928,20 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         return;
       } catch {
         setChatMessages((messages) => messages.filter((item) => item.id !== streamingMessageId));
-        if (localAssignment !== null && localInstallation !== null) {
-          saveDeviceAgentModelAssignment({
-            ...localAssignment,
-            readinessStatus: "FAILED",
-            lastErrorCode: "MODEL_LOAD_FAILED",
-            updatedAt: new Date().toISOString()
-          });
-        }
-        if (localOnly) {
-          await appendAgentMessage(
-            "No permitted local inference provider could process this message. Check the model and device runtime, then try again."
-          );
-          setStatusMessage("Local inference unavailable");
-          return;
-        }
         localFallbackStatus = "INFERENCE_UNAVAILABLE";
-        recordBrowserInferenceDiagnostic({
-          type: "fallback",
-          route: "server",
-          reasonCode: "INFERENCE_UNAVAILABLE"
-        });
+        console.info(
+          JSON.stringify({
+            event: "inference.client_fallback",
+            route: "server",
+            reasonCode: "INFERENCE_UNAVAILABLE"
+          })
+        );
         setStatusMessage("Client inference unavailable · Using safe server fallback");
       } finally {
         if (streamingFrame !== null) window.cancelAnimationFrame(streamingFrame);
         setIsBrowserGenerating(false);
+        activeClientInferenceCancelRef.current = null;
       }
-    }
-
-    async function runRoutedRuntimeTurn(
-      clientInferenceCompletion?: ClientInferenceCompletion
-    ): Promise<RuntimeTurnResult> {
-      if (business === null) {
-        throw new Error("Select a shop before using server inference.");
-      }
-      const routedMessage = await appendExtractedDocumentContent(
-        runtimeMessage,
-        attachments,
-        business.id
-      );
-      const key = runtimeManagerKey(activeSession.account.id, business.id);
-      return runtimeManager.runWithSession(
-        key,
-        createManagedRuntimeSession,
-        (managedRuntimeSessionId) =>
-          postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
-            runtimeSessionId: managedRuntimeSessionId,
-            ...(activeConversationId === null ? {} : { conversationId: activeConversationId }),
-            message: routedMessage,
-            ...(clientInferenceCompletion === undefined ? {} : { clientInferenceCompletion })
-          })
-      );
     }
 
     async function applyRuntimeResult(result: RuntimeTurnResult, appendResponse: boolean) {
@@ -1538,13 +1196,19 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     }
   }
 
+  function cancelGeneration() {
+    activeClientInferenceCancelRef.current?.();
+  }
+
   deps.registerReset("chat-runtime", () => {
     setIsBrowserGenerating(false);
+    activeClientInferenceCancelRef.current = null;
   });
 
   return {
     isBrowserGenerating,
     sendChatDraft,
-    confirmRuntimeAction
+    confirmRuntimeAction,
+    cancelGeneration
   };
 }

@@ -1,152 +1,61 @@
 import { describe, expect, it, vi } from "vitest";
-import type {
-  DeviceInferenceCapabilities,
-  InferenceProvider,
-  InferenceRequest,
-  InferenceRoutingPolicy
-} from "../packages/shared-types/src/index";
+import type { InferenceProvider, InferenceRequest } from "../packages/shared-types/src/index";
 import { executeInferenceRoute } from "../apps/web/src/inference/executor";
 import { readClientInferenceFeatureFlags } from "../apps/web/src/inference/feature-flags";
 import { mapInferenceError } from "../apps/web/src/inference/error-mapping";
-import {
-  decideClientInferenceRoute,
-  InferenceUnavailableError
-} from "../apps/web/src/inference/router";
-import {
-  createNativeLlamaProvider,
-  detectNativeLlamaBridge
-} from "../apps/web/src/inference/native-bridge";
+import { createRemoteInferenceProvider } from "../apps/web/src/inference/remote-provider";
 
-const capabilities: DeviceInferenceCapabilities = {
-  webgpu: true,
-  wasm: true,
-  nativeBridge: false,
-  ownerNodeReachable: false,
-  online: true,
-  estimatedMemoryClass: "medium",
-  hardwareConcurrency: 8,
-  cachedModelIds: ["model"]
-};
-
-const policy: InferenceRoutingPolicy = {
-  priority: ["native-llama-cpp", "browser-webgpu", "browser-wasm", "owner-node"],
-  maximumFallbacks: 2,
-  allowNativeBridge: true,
-  allowOwnerNode: true,
-  requireCachedBrowserModelWhenOffline: true,
-  privacyMode: "tenant-devices"
-};
-
-function provider(
-  id: string,
-  runtime: InferenceProvider["runtime"],
-  available = true
-): InferenceProvider {
-  return {
-    id,
-    runtime,
-    async isAvailable() {
-      return available;
-    },
-    async supports() {
-      return true;
-    },
-    async *generate() {}
-  };
-}
-
+// The private on-device inference architecture (browser WebGPU/WASM, the installed-app native
+// bridge, and the capability-based router that chose among them) was retired - see
+// apps/web/src/inference/router.ts, inference/capabilities.ts, and inference/native-bridge.ts,
+// all deleted. owner-node (a shop-owned, authenticated device registered as an execution host) is
+// the one surviving client-side inference route, and it no longer needs a router: the chat send
+// path (hooks/useChatRuntimeState.ts) builds its InferenceRouteDecision directly whenever
+// owner-node is reachable, so this suite covers what remains - the provider-agnostic executor,
+// error mapping, feature flags, and the owner-node provider factory itself.
 describe("client-first inference", () => {
-  it("routes deterministically and bounds fallbacks", async () => {
-    const route = await decideClientInferenceRoute({
-      modelId: "model",
-      capabilities,
-      providers: [
-        provider("wasm", "browser-wasm"),
-        provider("webgpu", "browser-webgpu"),
-        provider("owner", "owner-node")
-      ],
-      policy,
-      nativePermission: false
-    });
-
-    expect(route).toMatchObject({
-      providerId: "webgpu",
-      runtime: "browser-webgpu",
-      fallbackProviderIds: ["wasm"]
-    });
-  });
-
-  it("lets low-end tenant policy move an owner node ahead of WASM", async () => {
-    const route = await decideClientInferenceRoute({
-      modelId: "model",
-      capabilities: {
-        ...capabilities,
-        webgpu: false,
-        ownerNodeReachable: true,
-        estimatedMemoryClass: "low"
-      },
-      providers: [provider("wasm", "browser-wasm"), provider("owner", "owner-node")],
-      policy: {
-        ...policy,
-        priority: ["owner-node", "browser-wasm"],
-        maximumFallbacks: 1
-      },
-      nativePermission: false
-    });
-
-    expect(route.providerId).toBe("owner");
-    expect(route.fallbackProviderIds).toEqual(["wasm"]);
-  });
-
-  it("uses a cached WASM model offline and rejects an uncached one", async () => {
-    const wasm = provider("wasm", "browser-wasm");
-    const route = await decideClientInferenceRoute({
-      modelId: "model",
-      capabilities: { ...capabilities, webgpu: false, online: false },
-      providers: [wasm],
-      policy,
-      nativePermission: false
-    });
-    expect(route.runtime).toBe("browser-wasm");
-
-    await expect(
-      decideClientInferenceRoute({
-        modelId: "uncached",
-        capabilities: { ...capabilities, webgpu: false, online: false },
-        providers: [wasm],
-        policy,
-        nativePermission: false
-      })
-    ).rejects.toBeInstanceOf(InferenceUnavailableError);
-  });
-
-  it("keeps all new providers disabled unless their flags are explicit", () => {
+  it("keeps owner-node disabled by default and requires an explicit flag", () => {
     expect(readClientInferenceFeatureFlags({})).toMatchObject({
-      clientFirst: false,
-      browserWebGpu: false,
-      browserWasm: false,
-      nativeBridge: false,
-      ownerNode: false
+      ownerNode: false,
+      maximumFallbacks: 3
     });
     expect(
       readClientInferenceFeatureFlags({
-        VITE_INFERENCE_CLIENT_FIRST: "true",
-        VITE_INFERENCE_BROWSER_WEBGPU_ENABLED: "true",
-        VITE_INFERENCE_BROWSER_WASM_ENABLED: "true"
+        VITE_INFERENCE_OWNER_NODE_ENABLED: "true",
+        VITE_INFERENCE_MAX_FALLBACKS: "1"
       })
-    ).toMatchObject({ browserWebGpu: true, browserWasm: true });
-  });
-
-  it("returns a safe unavailable native provider when no installed bridge exists", async () => {
-    const native = createNativeLlamaProvider(detectNativeLlamaBridge(), true);
-    expect(await native.isAvailable()).toBe(false);
-    expect(await native.supports("model")).toBe(false);
+    ).toMatchObject({ ownerNode: true, maximumFallbacks: 1 });
   });
 
   it("maps private provider failures to bounded UI states", () => {
-    expect(mapInferenceError({ code: "STORAGE_QUOTA_EXCEEDED" })).toBe("not-enough-storage");
+    expect(mapInferenceError({ code: "OWNER_NODE_UNREACHABLE" })).toBe("shop-device-offline");
     expect(mapInferenceError(new Error("private prompt contents"))).toBe("inference-unavailable");
     vi.restoreAllMocks();
+  });
+
+  it("builds an owner-node provider that reports availability and supported models", async () => {
+    const provider = createRemoteInferenceProvider({
+      id: "owner-node",
+      runtime: "owner-node",
+      endpoint: "https://api.example.test/v1/inference/owner-node/jobs",
+      enabled: true,
+      modelIds: ["smollm2-360m"]
+    });
+    expect(provider.id).toBe("owner-node");
+    expect(provider.runtime).toBe("owner-node");
+    expect(await provider.supports("smollm2-360m")).toBe(true);
+    expect(await provider.supports("unregistered-model")).toBe(false);
+  });
+
+  it("reports an owner-node provider unavailable when disabled, without a network call", async () => {
+    const provider = createRemoteInferenceProvider({
+      id: "owner-node",
+      runtime: "owner-node",
+      endpoint: "https://api.example.test/v1/inference/owner-node/jobs",
+      enabled: false,
+      modelIds: ["smollm2-360m"]
+    });
+    expect(await provider.isAvailable()).toBe(false);
   });
 
   it("executes the selected provider and then its bounded fallback", async () => {
@@ -161,24 +70,24 @@ describe("client-first inference", () => {
     const attempts: string[] = [];
     const failures: Array<{ id: string; state: string }> = [];
     const failing: InferenceProvider = {
-      id: "native",
-      runtime: "native-llama-cpp",
+      id: "owner-node-primary",
+      runtime: "owner-node",
       isAvailable: async () => true,
       supports: async () => true,
       async *generate() {
         yield {
           requestId: request.requestId,
-          text: "Partial native response",
+          text: "Partial owner-node response",
           done: false,
-          runtime: "native-llama-cpp",
+          runtime: "owner-node",
           modelId: request.modelId
         };
-        throw new Error("private native bridge error");
+        throw new Error("owner-node device dropped the connection");
       }
     };
-    const browser: InferenceProvider = {
-      id: "browser",
-      runtime: "browser-webgpu",
+    const fallback: InferenceProvider = {
+      id: "owner-node-secondary",
+      runtime: "owner-node",
       isAvailable: async () => true,
       supports: async () => true,
       async *generate() {
@@ -186,7 +95,7 @@ describe("client-first inference", () => {
           requestId: request.requestId,
           text: "Fallback response",
           done: true,
-          runtime: "browser-webgpu",
+          runtime: "owner-node",
           modelId: request.modelId
         };
       }
@@ -195,24 +104,24 @@ describe("client-first inference", () => {
     await expect(
       executeInferenceRoute({
         decision: {
-          providerId: "native",
-          runtime: "native-llama-cpp",
+          providerId: "owner-node-primary",
+          runtime: "owner-node",
           modelId: request.modelId,
-          reason: "Native is preferred.",
-          fallbackProviderIds: ["browser"]
+          reason: "The authenticated shop-owner device is reachable.",
+          fallbackProviderIds: ["owner-node-secondary"]
         },
-        providers: [browser, failing],
+        providers: [fallback, failing],
         request,
         onAttempt: (candidate) => attempts.push(candidate.id),
         onFailure: (candidate, state) => failures.push({ id: candidate.id, state })
       })
     ).resolves.toMatchObject({
-      providerId: "browser",
-      runtime: "browser-webgpu",
+      providerId: "owner-node-secondary",
+      runtime: "owner-node",
       text: "Fallback response",
       fallbackCount: 1
     });
-    expect(attempts).toEqual(["native", "browser"]);
-    expect(failures).toEqual([{ id: "native", state: "inference-unavailable" }]);
+    expect(attempts).toEqual(["owner-node-primary", "owner-node-secondary"]);
+    expect(failures).toEqual([{ id: "owner-node-primary", state: "inference-unavailable" }]);
   });
 });

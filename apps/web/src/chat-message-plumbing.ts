@@ -460,3 +460,25 @@ export function dataUrlPayload(dataUrl: string): string {
   const separatorIndex = dataUrl.indexOf(",");
   return separatorIndex === -1 ? dataUrl : dataUrl.slice(separatorIndex + 1);
 }
+
+// Relocated from the retired browser-inference-routing.ts (private on-device inference removal):
+// these two classifiers are plain message-text heuristics with no browser-runtime dependency, and
+// the surviving send path (see hooks/useChatRuntimeState.ts) still needs them to size generation
+// parameters and to gate the owner-node inference route away from tool-requiring requests.
+export function requestRequiresServerTool(message: string): boolean {
+  return (
+    /^\s*#/.test(message) ||
+    /\b(create|add|delete|remove|update|change|refund|pay|send|invite|sync|order|receipt)\b/i.test(
+      message
+    )
+  );
+}
+
+export function requestNeedsComplexReasoning(message: string): boolean {
+  return (
+    message.length > 1_500 ||
+    /\b(analy[sz]e deeply|forecast|legal advice|tax advice|multi-step|background task)\b/i.test(
+      message
+    )
+  );
+}

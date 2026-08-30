@@ -143,11 +143,11 @@ export function formatExecutionTarget(value: AgentModelBindingSummary["execution
     (
       {
         backend: "Soko backend",
-        "browser-local": "this browser",
-        "installed-app": "installed Soko app",
         "remote-shop-device": "signed-in shop device",
-        // A tab open across the migration-069 deploy can still hold this stale value in memory
-        // until it refetches; label it rather than showing the raw enum string.
+        // A tab open across the on-device-retirement deploy can still hold a stale value in
+        // memory until it refetches; label these rather than showing the raw enum string.
+        "browser-local": "Soko backend (legacy)",
+        "installed-app": "Soko backend (legacy)",
         openai: "Soko backend (legacy)"
       } as Record<string, string>
     )[raw] ?? raw
