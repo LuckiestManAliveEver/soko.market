@@ -5,7 +5,7 @@ import type { RuntimeRegistryImport } from "@soko/shared-types";
 /**
  * Persists RuntimeRegistryImport rows. Two implementations, same interface: an in-memory one (used
  * by default/in tests, mirroring account-ai-asset-store.ts's createMemoryAccountAiAssetStore), and a
- * Postgres-backed one against cp2_runtime_registry_imports (infra/db/migrations/073_runtime_registry_imports.sql),
+ * Postgres-backed one against cp2_runtime_registry_imports (infra/db/migrations/074_runtime_registry_imports.sql),
  * which follows the exact entity_id/business_id/account_id/user_id/parent_id/record/updated_at
  * convention documented in that migration and in infra/db/migrations/071_platform_catalog.sql.
  */
@@ -71,7 +71,7 @@ export function createMemoryRuntimeRegistryImportStore(): RuntimeRegistryImportS
 }
 
 // Only entity_id/business_id/account_id/user_id/parent_id/record/updated_at exist as real columns
-// (see infra/db/migrations/073_runtime_registry_imports.sql and 071_platform_catalog.sql's comment
+// (see infra/db/migrations/074_runtime_registry_imports.sql and 071_platform_catalog.sql's comment
 // on this being the fixed contract every generic cp2_* table must have) - there is no separate
 // created_at column, so `createdAt` lives inside `record` like every other cp2_* JSONB field that
 // isn't one of the seven fixed columns.
