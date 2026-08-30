@@ -1,5 +1,9 @@
 # Browser-local inference PRD
 
+> **Retired.** This PRD's feature was built and later retired — see
+> ADR-device-independent-runtime-and-registry-discovery.md. `ModelExecutionTarget` no longer
+> includes `browser-local`; do not use this document to plan new work. Kept as historical record.
+
 ## Current architecture
 
 Soko's PWA is a React 19 application built by Vite. `OwnerApp` owns the current account, business,

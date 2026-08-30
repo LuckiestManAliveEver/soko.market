@@ -1,5 +1,8 @@
 # Client-first inference audit
 
+> **Superseded.** The client-first inference architecture this audit examines was retired — see
+> ADR-device-independent-runtime-and-registry-discovery.md. Kept as historical record.
+
 Date: 2026-07-19
 
 ## Executive finding

@@ -1,9 +1,16 @@
 # Native agent/model runtime
 
+> **Partially superseded.** The zero-setup hosted-first description below still holds. The
+> `browser-local` and `installed-app` execution targets it references were retired — see
+> ADR-device-independent-runtime-and-registry-discovery.md. `ModelExecutionTarget` is now
+> `"backend" | "remote-shop-device"` only; `remote-shop-device` means a shop-owned machine
+> registered as an execution host, never the currently-open browser/device. Kept as historical
+> record where it describes the retired paths.
+
 Soko AI is zero-setup for an eligible signed-in shop when at least one server-reachable inference
 adapter is configured. A merchant can open chat and send a first message without installing an
-agent, downloading a model, or activating a binding. Browser, installed-app, and shop-device
-execution remain optional optimizations.
+agent, downloading a model, or activating a binding. A shop-registered execution host remains an
+optional optimization; a private per-device model copy is not part of the architecture.
 
 ## Runtime graph
 

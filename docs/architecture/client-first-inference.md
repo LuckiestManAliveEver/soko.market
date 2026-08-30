@@ -1,5 +1,12 @@
 # Client-first inference architecture
 
+> **Superseded.** Client-first inference ordering (native bridge → browser WebGPU/WASM → owner
+> device → cloud fallback) was retired along with the `browser-local`/`installed-app` execution
+> targets it depended on — see ADR-device-independent-runtime-and-registry-discovery.md. The
+> owner-device broker (`services/api/src/inference/owner-node-broker.ts`) survives as a legitimate
+> `remote-shop-device` execution host; everything else this document describes was removed. Kept as
+> historical record.
+
 ## Runtime order
 
 Soko selects inference deterministically from an explicit policy:

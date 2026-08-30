@@ -2,6 +2,7 @@ export type RuntimeName = "api" | "sync" | "ai-runtime" | "web";
 
 export * from "./phone-number.js";
 export * from "./portable-agent.js";
+export * from "./runtime-registry.js";
 export * from "./store-links.js";
 
 import type { PortableAgentManifest } from "./portable-agent.js";
@@ -988,13 +989,18 @@ export type AgentModelReadinessStatus = "ATTACHED" | "LOADING" | "READY" | "FAIL
 export type AgentModelBindingStatus =
   "inactive" | "verifying" | "active" | "failed" | "unavailable";
 
-export type ModelExecutionTarget =
-  "backend" | "browser-local" | "installed-app" | "remote-shop-device";
+/**
+ * "backend": Soko-operated inference infrastructure (the normal, zero-setup default).
+ * "remote-shop-device": a shop-owned machine registered as an execution host (e.g. a
+ * merchant's laptop running Ollama, added via native-runtime execution hosts). This is
+ * distinct from -- and replaces -- the retired "browser-local"/"installed-app" targets,
+ * which meant "run privately on whichever device/browser happens to be open right now."
+ * A client device never needs a private model copy to use normal agent chat.
+ */
+export type ModelExecutionTarget = "backend" | "remote-shop-device";
 
 export const modelExecutionTargets = [
   "backend",
-  "browser-local",
-  "installed-app",
   "remote-shop-device"
 ] as const satisfies readonly ModelExecutionTarget[];
 

@@ -97,7 +97,7 @@
           "maxItems": 4,
           "uniqueItems": true,
           "items": {
-            "enum": ["backend", "browser-local", "installed-app", "remote-shop-device"]
+            "enum": ["backend", "remote-shop-device"]
           }
         },
         "requiresNetwork": { "type": "boolean" },

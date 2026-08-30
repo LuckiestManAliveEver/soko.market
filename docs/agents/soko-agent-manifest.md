@@ -34,10 +34,8 @@ modelRequirements:
   localAllowed: true
 executionRequirements:
   preferredTargets:
-    - installed-app
-    - browser-local
-    - remote-shop-device
     - backend
+    - remote-shop-device
   requiresNetwork: false
   requiresFilesystem: false
   requiresNativeBridge: false

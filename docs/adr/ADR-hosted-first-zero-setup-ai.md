@@ -11,8 +11,10 @@ fallback. Provider-specific `openai` values had historically leaked into executi
 
 Hosted execution is the default connected experience. On first authenticated shop chat, Soko
 idempotently provisions a shop-scoped native binding from models that a configured generic adapter
-can actually run. `backend`, `browser-local`, `installed-app`, and `remote-shop-device` are the only
-execution locations. Providers and engines remain replaceable adapter details.
+can actually run. `backend` and `remote-shop-device` are the only execution locations (`browser-local`
+and `installed-app` were retired by ADR-device-independent-runtime-and-registry-discovery.md; a
+client device never needs a private model copy to chat). Providers and engines remain replaceable
+adapter details.
 
 Local execution is optional and preferred when the current device is ready. Only explicit
 `LOCAL_ONLY` disables hosted fallback. Conversations retain a runtime binding and resolve the

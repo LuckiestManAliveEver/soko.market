@@ -56,13 +56,13 @@ vendor unions. Adding a provider registers metadata and an adapter; it does not 
 platform provider enum. The web application imports `ModelExecutionTarget`, `ModelProviderId`, and
 `RuntimeModelProviderName` from `@soko/shared-types` rather than maintaining parallel unions.
 
-The only native execution targets are:
+The only native execution targets are (as of ADR-device-independent-runtime-and-registry-discovery.md,
+`browser-local` and `installed-app` were retired — a client device never needs a private model copy
+to chat):
 
 | Target               | Meaning                                                                                                                     |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `browser-local`      | Inference runs in the merchant browser through WebGPU, WASM, or another compatible browser runtime.                         |
-| `installed-app`      | Inference runs through the trusted `window.SokoAgentModelRuntime` bridge.                                                   |
-| `remote-shop-device` | Inference runs on an eligible authenticated device in the same shop runtime graph.                                          |
+| `remote-shop-device` | Inference runs on a shop-owned machine registered as an execution host in the shop runtime graph (e.g. a merchant's laptop running Ollama) — never the currently-open browser/device. |
 | `backend`            | Inference is dispatched through an eligible server-side execution path, then through the selected model's provider adapter. |
 
 `backend` does not mean OpenAI, Ollama, or any other provider. Multiple model/provider bindings can
@@ -146,8 +146,8 @@ network dependency over, since no adapter lookup happens in that shape at all.
 
 `Cp2Store.activateGlobalDefaultModel(input)` → `NativeRuntimeBindingStore.activateGlobalDefaultModel`
 assigns (or swaps) the primary model for the global default slot: it upserts the catalog model,
-upserts a verified execution host and installation for the given `executionTarget` (any target -
-`backend`, `browser-local`, `installed-app`, or `remote-shop-device`), validates the
+upserts a verified execution host and installation for the given `executionTarget` (`backend` or
+`remote-shop-device`), validates the
 model's capabilities against the built-in agent's requirements, replaces the existing primary role
 if any, and promotes the binding from `"draft"` to `"active"`. Calling it again with a different
 model replaces the primary role in place - **the binding's id never changes**, so every

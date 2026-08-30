@@ -1,5 +1,11 @@
 # Browser inference architecture
 
+> **Superseded.** Private in-browser model execution (`browser-local`) was retired in favor of a
+> device-independent hosted runtime — see ADR-device-independent-runtime-and-registry-discovery.md.
+> `ModelExecutionTarget` no longer includes `browser-local`; the files this document describes
+> (`apps/web/src/browser-inference-*.ts`, `browser-model-registry.ts`, `browser-gguf-runtime.ts`)
+> have been removed. Kept as historical record of the architecture that predated that decision.
+
 ## Runtime path
 
 ```text
