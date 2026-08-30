@@ -193,7 +193,7 @@ function executionTargetFromEnv(
   fallback: ModelExecutionTarget
 ): ModelExecutionTarget {
   const value = stringFromEnv(name, fallback).trim();
-  if (["backend", "browser-local", "installed-app", "remote-shop-device"].includes(value)) {
+  if (["backend", "remote-shop-device"].includes(value)) {
     return value as ModelExecutionTarget;
   }
   throw new Error(`${name} is not a supported model execution target.`);

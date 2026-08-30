@@ -67,7 +67,7 @@ describe("agent runtime harness selection", () => {
           executionTarget: "backend",
           executionMode: "LOCAL_FIRST",
           agentRuntimeAdapterId: "soko",
-          permissions: { allowInstalledApp: false, allowRemoteShopDevice: false }
+          permissions: { allowRemoteShopDevice: false }
         })
       });
       expect(activated.statusCode).toBe(200);
@@ -89,7 +89,7 @@ describe("agent runtime harness selection", () => {
           shopId: actor.businessId,
           executionTarget: "backend",
           executionMode: "CLOUD_ONLY",
-          permissions: { allowInstalledApp: false, allowRemoteShopDevice: false }
+          permissions: { allowRemoteShopDevice: false }
         })
       });
       expect(reactivatedSameModel.statusCode).toBe(200);
@@ -121,7 +121,7 @@ describe("agent runtime harness selection", () => {
           executionTarget: "backend",
           executionMode: "LOCAL_FIRST",
           agentRuntimeAdapterId: "not-a-real-adapter",
-          permissions: { allowInstalledApp: false, allowRemoteShopDevice: false }
+          permissions: { allowRemoteShopDevice: false }
         })
       });
       expect(response.statusCode).toBe(404);
@@ -144,7 +144,7 @@ describe("agent runtime harness selection", () => {
           executionTarget: "backend",
           executionMode: "LOCAL_FIRST",
           agentRuntimeAdapterId: "Not Valid!",
-          permissions: { allowInstalledApp: false, allowRemoteShopDevice: false }
+          permissions: { allowRemoteShopDevice: false }
         })
       });
       expect(response.statusCode).toBe(400);

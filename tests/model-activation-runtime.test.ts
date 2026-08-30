@@ -626,7 +626,7 @@ describe("agent model activation runtime", () => {
     await app.close();
   });
 
-  it("rejects unbound chat, cross-shop activation, browser activation, and absent bridges", async () => {
+  it("rejects unbound chat, cross-shop activation, retired execution targets, and absent bridges", async () => {
     const adapter = healthyAdapter(primaryModelId);
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId }) =>
@@ -676,25 +676,22 @@ describe("agent model activation runtime", () => {
     expect(unconfiguredBackend.statusCode).toBe(503);
     expect(unconfiguredBackend.json()).toMatchObject({ code: "RUNTIME_NOT_CONFIGURED" });
 
-    for (const [executionTarget, code, statusCode] of [
-      ["browser-local", "BROWSER_RUNTIME_DISABLED", 409],
-      ["installed-app", "BRIDGE_UNAVAILABLE", 503]
-    ] as const) {
+    // "browser-local" and "installed-app" were retired execution targets (private on-device/
+    // browser model assignment); the API now rejects them as plain invalid input rather than
+    // routing them to a disabled-runtime or absent-bridge error, since no such runtime concept
+    // exists anymore.
+    for (const executionTarget of ["browser-local", "installed-app"]) {
       const response = await app.inject({
         method: "POST",
         url: `/api/agents/${first.businessId}/models/${primaryModelId}/activate`,
         headers: jsonHeaders(first.cookie),
         payload: JSON.stringify({
           ...activationPayload(first.businessId),
-          executionTarget,
-          permissions: {
-            ...activationPayload(first.businessId).permissions,
-            allowInstalledApp: executionTarget === "installed-app"
-          }
+          executionTarget
         })
       });
-      expect(response.statusCode).toBe(statusCode);
-      expect(response.json()).toMatchObject({ code });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ code: "execution_target_invalid" });
     }
 
     await app.close();
@@ -714,7 +711,7 @@ describe("agent model activation runtime", () => {
       headers: jsonHeaders(owner.cookie),
       payload: JSON.stringify({
         ...activationPayload(owner.businessId),
-        executionTarget: "browser-local"
+        executionTarget: "remote-shop-device"
       })
     });
     expect(response.statusCode).toBe(409);
@@ -737,7 +734,7 @@ describe("agent model activation runtime", () => {
       headers: jsonHeaders(owner.cookie),
       payload: JSON.stringify({
         ...activationPayload(owner.businessId),
-        executionTarget: "browser-local",
+        executionTarget: "remote-shop-device",
         executionMode: "CLOUD_ONLY"
       })
     });
@@ -1035,7 +1032,6 @@ function activationPayload(shopId: string) {
     executionTarget: "backend" as ModelExecutionTarget,
     executionMode: "LOCAL_FIRST",
     permissions: {
-      allowInstalledApp: false,
       allowRemoteShopDevice: false
     }
   };

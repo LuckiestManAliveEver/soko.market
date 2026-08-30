@@ -70,7 +70,6 @@ import {
   cloneAgentContextSource,
   cloneAgentModelBinding,
   cloneAgentRuntimeVersion,
-  cloneBrowserInferenceAssignment,
   cloneBusinessAgentProfile,
   cloneInstalledAgentModel,
   contextCharacterBudgetForModel,
@@ -118,7 +117,6 @@ import type {
   AgentOwnerCorrection,
   AgentRuntimeVersion,
   AgentModelBindingSummary,
-  AgentModelAssignmentSummary,
   ActiveAiModelSummary,
   AccountDeletionRequestSummary,
   AuthChannel,
@@ -130,7 +128,6 @@ import type {
   BetaReadinessReportSummary,
   BetaSupportTicketSummary,
   BetaTelemetryEventSummary,
-  BrowserInferenceAssignmentSummary,
   BusinessKnowledgeSummary,
   BusinessNotificationSummary,
   BusinessReportSummary,
@@ -560,8 +557,6 @@ export interface Cp2Snapshot {
   agentEvaluationEvents?: AgentEvaluationEvent[];
   agentOwnerCorrections?: AgentOwnerCorrection[];
   installedAgentModels?: InstalledAgentModelSummary[];
-  agentModelAssignments?: AgentModelAssignmentSummary[];
-  browserInferenceAssignments?: BrowserInferenceAssignmentSummary[];
   agentModelBindings?: AgentModelBindingSummary[];
   nativeRuntimeAgents?: NativeRuntimeAgentSummary[];
   nativeRuntimeModels?: NativeRuntimeModelSummary[];
@@ -1229,9 +1224,9 @@ export class Cp2Store {
   private readonly messagingDomain: MessagingDomain;
   private readonly marketplaceIntroStates = new Map<string, MarketplaceIntroStateSummary>();
   // activeAiModels/agentProfiles/agentRuntimeVersions/agentContextSources/
-  // agentEvaluationEvents/agentOwnerCorrections/installedAgentModels/agentModelAssignments/
-  // browserInferenceAssignments/agentModelBindings (+ the ephemeral agentModelActivationLocks
-  // mutex Set)/runtimeSessions/runtimeTurns/pendingRuntimeActions now live inside
+  // agentEvaluationEvents/agentOwnerCorrections/installedAgentModels/agentModelBindings
+  // (+ the ephemeral agentModelActivationLocks mutex Set)/runtimeSessions/runtimeTurns/
+  // pendingRuntimeActions now live inside
   // `agentRuntimeDomain` (services/api/src/cp2/domains/agent-runtime/store.ts) - accessed via its
   // map getters for the generic snapshot/restore/Postgres-persistence/account-deletion sweeps
   // below. `mcpAccessTokens`/`mcpTokenIdByHash` deliberately stay here (see that domain's header
@@ -3324,41 +3319,6 @@ export class Cp2Store {
     ...args: Parameters<AgentRuntimeDomain["validateInstalledAgentModel"]>
   ): ReturnType<AgentRuntimeDomain["validateInstalledAgentModel"]> {
     return this.agentRuntimeDomain.validateInstalledAgentModel(...args);
-  }
-  getAgentModelAssignment(
-    ...args: Parameters<AgentRuntimeDomain["getAgentModelAssignment"]>
-  ): ReturnType<AgentRuntimeDomain["getAgentModelAssignment"]> {
-    return this.agentRuntimeDomain.getAgentModelAssignment(...args);
-  }
-  assignAgentModel(
-    ...args: Parameters<AgentRuntimeDomain["assignAgentModel"]>
-  ): ReturnType<AgentRuntimeDomain["assignAgentModel"]> {
-    return this.agentRuntimeDomain.assignAgentModel(...args);
-  }
-  removeAgentModelAssignment(
-    ...args: Parameters<AgentRuntimeDomain["removeAgentModelAssignment"]>
-  ): ReturnType<AgentRuntimeDomain["removeAgentModelAssignment"]> {
-    return this.agentRuntimeDomain.removeAgentModelAssignment(...args);
-  }
-  getBrowserInferenceAssignment(
-    ...args: Parameters<AgentRuntimeDomain["getBrowserInferenceAssignment"]>
-  ): ReturnType<AgentRuntimeDomain["getBrowserInferenceAssignment"]> {
-    return this.agentRuntimeDomain.getBrowserInferenceAssignment(...args);
-  }
-  upsertBrowserInferenceAssignment(
-    ...args: Parameters<AgentRuntimeDomain["upsertBrowserInferenceAssignment"]>
-  ): ReturnType<AgentRuntimeDomain["upsertBrowserInferenceAssignment"]> {
-    return this.agentRuntimeDomain.upsertBrowserInferenceAssignment(...args);
-  }
-  recordBrowserInferenceExecution(
-    ...args: Parameters<AgentRuntimeDomain["recordBrowserInferenceExecution"]>
-  ): ReturnType<AgentRuntimeDomain["recordBrowserInferenceExecution"]> {
-    return this.agentRuntimeDomain.recordBrowserInferenceExecution(...args);
-  }
-  removeBrowserInferenceAssignment(
-    ...args: Parameters<AgentRuntimeDomain["removeBrowserInferenceAssignment"]>
-  ): ReturnType<AgentRuntimeDomain["removeBrowserInferenceAssignment"]> {
-    return this.agentRuntimeDomain.removeBrowserInferenceAssignment(...args);
   }
   getAgentProfile(
     ...args: Parameters<AgentRuntimeDomain["getAgentProfile"]>
@@ -5502,14 +5462,6 @@ export class Cp2Store {
       installedAgentModels: [...this.agentRuntimeDomain.installedAgentModelsMap.values()].map(
         cloneInstalledAgentModel
       ),
-      agentModelAssignments: [...this.agentRuntimeDomain.agentModelAssignmentsMap.values()].map(
-        (assignment) => ({
-          ...assignment
-        })
-      ),
-      browserInferenceAssignments: [
-        ...this.agentRuntimeDomain.browserInferenceAssignmentsMap.values()
-      ].map(cloneBrowserInferenceAssignment),
       agentModelBindings: [...this.agentRuntimeDomain.agentModelBindingsMap.values()].map(
         cloneAgentModelBinding
       ),
@@ -8619,15 +8571,6 @@ export class Cp2Store {
       }
     }
 
-    for (const [
-      key,
-      assignment
-    ] of this.agentRuntimeDomain.browserInferenceAssignmentsMap.entries()) {
-      if (assignment.businessId === businessId) {
-        this.agentRuntimeDomain.browserInferenceAssignmentsMap.delete(key);
-      }
-    }
-
     for (const [id, product] of this.salesDomain.productsMap.entries()) {
       if (product.businessId === businessId) {
         this.salesDomain.productsMap.delete(id);
@@ -8911,14 +8854,6 @@ export class Cp2Store {
       );
       deletedRecordCount += deleteScopedMapRecords(
         this.agentRuntimeDomain.installedAgentModelsMap,
-        scope
-      );
-      deletedRecordCount += deleteScopedMapRecords(
-        this.agentRuntimeDomain.agentModelAssignmentsMap,
-        scope
-      );
-      deletedRecordCount += deleteScopedMapRecords(
-        this.agentRuntimeDomain.browserInferenceAssignmentsMap,
         scope
       );
       deletedRecordCount += deleteScopedMapRecords(

@@ -87,8 +87,6 @@ export const normalizedCollections: NormalizedCollection[] = [
   { key: "agentEvaluationEvents", tableName: "cp2_agent_evaluation_events" },
   { key: "agentOwnerCorrections", tableName: "cp2_agent_owner_corrections" },
   { key: "installedAgentModels", tableName: "cp2_installed_agent_models" },
-  { key: "agentModelAssignments", tableName: "cp2_agent_model_assignments" },
-  { key: "browserInferenceAssignments", tableName: "cp2_browser_inference_assignments" },
   { key: "agentModelBindings", tableName: "cp2_agent_model_bindings" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
@@ -287,9 +285,6 @@ const mutatingMethodNames = new Set([
   "activateAgentModel",
   "activateGlobalDefaultModel",
   "removeAgentModelBinding",
-  "assignAgentModel",
-  "upsertBrowserInferenceAssignment",
-  "recordBrowserInferenceExecution",
   "authenticateMcpAccessToken",
   "updateAgentProfile",
   "upsertModelCatalogEntry",
@@ -336,8 +331,6 @@ const mutatingMethodNames = new Set([
   "revokeE2eeDevice",
   "registerPushSubscription",
   "registerInstalledAgentModel",
-  "removeAgentModelAssignment",
-  "removeBrowserInferenceAssignment",
   "validateInstalledAgentModel",
   "removePushSubscription"
 ]);
@@ -3979,8 +3972,6 @@ function emptySnapshot(): Cp2Snapshot {
     agentEvaluationEvents: [],
     agentOwnerCorrections: [],
     installedAgentModels: [],
-    agentModelAssignments: [],
-    browserInferenceAssignments: [],
     agentModelBindings: [],
     nativeRuntimeAgents: [],
     nativeRuntimeModels: [],
@@ -4128,10 +4119,6 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
     key === "agentOwnerCorrections"
   ) {
     return requiredText(record, "id");
-  }
-
-  if (key === "agentModelAssignments" || key === "browserInferenceAssignments") {
-    return [requiredText(record, "businessId"), requiredText(record, "deviceId")].join(":");
   }
 
   if (

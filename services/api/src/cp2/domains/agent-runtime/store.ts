@@ -65,20 +65,13 @@ import type {
   AgentEvaluationEventType,
   AgentEvaluationSummary,
   AgentModelActivationResult,
-  AgentModelAssignmentSummary,
   AgentModelBindingPermissions,
   AgentModelBindingRemovalResult,
   AgentModelBindingSummary,
-  AgentModelReadinessStatus,
   AgentOwnerCorrection,
   AgentRuntimeReadiness,
   AgentRuntimeVersion,
   AiModelSummary,
-  BrowserCheckpointCompatibilityContract,
-  BrowserDeviceTier,
-  BrowserInferenceAssignmentSummary,
-  BrowserRuntimeContract,
-  ClientInferenceCompletion,
   InstalledAgentModelSummary,
   ModelExecutionTarget,
   ModelRuntimeHealthSummary,
@@ -106,8 +99,7 @@ import {
   parseRuntimeHashtagInvocation,
   productContextScriptMatchToParseResult,
   receiptContextScriptMatchToParseResult,
-  runtimeToolRegistry,
-  type RuntimeToolProposal
+  runtimeToolRegistry
 } from "@soko/tool-core";
 import { queryCatalogueProducts, roleCan, type BusinessPermission } from "@soko/business-core";
 import { Cp2Error } from "../../cp2-error.js";
@@ -126,11 +118,7 @@ import {
   buildShopAgentRuntime as buildShopAgentRuntimeModule,
   contextSourcesForRuntime as contextSourcesForRuntimeModule
 } from "./runtime-context.js";
-import {
-  createClientInferenceModelRoute,
-  createRuntimeModelRoute,
-  requireReadyClientInferenceCompletion
-} from "./runtime-model-routing.js";
+import { createRuntimeModelRoute } from "./runtime-model-routing.js";
 import {
   assertResolvedRuntimeAvailable,
   resolveNativeRuntimeModelProvider,
@@ -145,16 +133,12 @@ import {
   createRuntimeReceiptProposal
 } from "./planning.js";
 import {
-  agentModelAssignmentKey,
-  assertModelCanBeAssigned,
-  browserInferenceAssignmentKey,
   cloneAgentContextSource,
   cloneAgentInstructions,
   cloneAgentModelBinding,
   cloneAgentPersonality,
   cloneAgentRuntimeVersion,
   cloneAgentSkillBinding,
-  cloneBrowserInferenceAssignment,
   cloneBusinessAgentProfile,
   cloneInstalledAgentModel,
   contextCharacterBudgetForModel,
@@ -172,9 +156,6 @@ import {
   isUnavailableRuntimeCode,
   maxRuntimeTurnsPerSession,
   modelHealthError,
-  normalizeBrowserCheckpointContract,
-  normalizeBrowserInferenceTimestamp,
-  normalizeBrowserRuntimeContract,
   normalizeBusinessAgentProfile,
   normalizeExecutionMode,
   normalizeInstalledAgentModel,
@@ -184,7 +165,6 @@ import {
   runtimeEvaluationSampled,
   runtimeStatusFromPlan,
   validateAgentModelBindingConfiguration,
-  validateBrowserInferenceAssignment,
   type BusinessAgentProfileInput,
   type BusinessAgentProfileSummary,
   type PendingRuntimeAction
@@ -197,11 +177,6 @@ export class AgentRuntimeDomain {
   private readonly agentEvaluationEvents = new Map<string, AgentEvaluationEvent>();
   private readonly agentOwnerCorrections = new Map<string, AgentOwnerCorrection>();
   private readonly installedAgentModels = new Map<string, InstalledAgentModelSummary>();
-  private readonly agentModelAssignments = new Map<string, AgentModelAssignmentSummary>();
-  private readonly browserInferenceAssignments = new Map<
-    string,
-    BrowserInferenceAssignmentSummary
-  >();
   private readonly agentModelBindings = new Map<string, AgentModelBindingSummary>();
   private readonly agentModelActivationLocks = new Set<string>();
   private readonly runtimeSessions = new Map<string, RuntimeSessionSummary>();
@@ -238,14 +213,6 @@ export class AgentRuntimeDomain {
     return this.installedAgentModels;
   }
 
-  get agentModelAssignmentsMap(): Map<string, AgentModelAssignmentSummary> {
-    return this.agentModelAssignments;
-  }
-
-  get browserInferenceAssignmentsMap(): Map<string, BrowserInferenceAssignmentSummary> {
-    return this.browserInferenceAssignments;
-  }
-
   get agentModelBindingsMap(): Map<string, AgentModelBindingSummary> {
     return this.agentModelBindings;
   }
@@ -270,8 +237,6 @@ export class AgentRuntimeDomain {
     this.agentEvaluationEvents.clear();
     this.agentOwnerCorrections.clear();
     this.installedAgentModels.clear();
-    this.agentModelAssignments.clear();
-    this.browserInferenceAssignments.clear();
     this.agentModelBindings.clear();
     this.agentModelActivationLocks.clear();
     this.runtimeSessions.clear();
@@ -312,20 +277,6 @@ export class AgentRuntimeDomain {
 
     for (const model of snapshot.installedAgentModels ?? []) {
       this.installedAgentModels.set(model.id, cloneInstalledAgentModel(model));
-    }
-
-    for (const assignment of snapshot.agentModelAssignments ?? []) {
-      this.agentModelAssignments.set(
-        agentModelAssignmentKey(assignment.businessId, assignment.deviceId),
-        { ...assignment }
-      );
-    }
-
-    for (const assignment of snapshot.browserInferenceAssignments ?? []) {
-      this.browserInferenceAssignments.set(
-        browserInferenceAssignmentKey(assignment.businessId, assignment.deviceId),
-        cloneBrowserInferenceAssignment(assignment)
-      );
     }
 
     for (const binding of snapshot.agentModelBindings ?? []) {
@@ -642,7 +593,6 @@ export class AgentRuntimeDomain {
       existingActive.modelId === input.modelId &&
       existingActive.executionTarget === input.executionTarget &&
       existingActive.executionMode === normalizeExecutionMode(input.executionMode) &&
-      existingActive.permissions.allowInstalledApp === input.permissions.allowInstalledApp &&
       existingActive.permissions.allowRemoteShopDevice === input.permissions.allowRemoteShopDevice
     ) {
       input.onStage?.("runtime_probe_started", Date.now() - startedAt);
@@ -960,477 +910,6 @@ export class AgentRuntimeDomain {
     };
     this.installedAgentModels.set(updated.id, updated);
     return cloneInstalledAgentModel(updated);
-  }
-
-  getAgentModelAssignment(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceId: string;
-    now?: Date;
-  }): AgentModelAssignmentSummary {
-    const now = input.now ?? new Date();
-    const session = this.deps.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "business:read",
-      now
-    );
-    const existing = this.agentModelAssignments.get(
-      agentModelAssignmentKey(input.businessId, input.deviceId)
-    );
-    if (
-      existing !== undefined &&
-      existing.activeModelInstallationId !== null &&
-      existing.runtimeBackend !== "CLOUD"
-    ) {
-      return {
-        ...existing,
-        preferredExecutionMode:
-          existing.preferredExecutionMode === "CLOUD_ONLY"
-            ? "LOCAL_FIRST"
-            : existing.preferredExecutionMode
-      };
-    }
-
-    const preferredModelId = this.agentProfiles.get(input.businessId)?.modelId ?? defaultAiModelId;
-    const preferredModel = this.deps.resolveCatalogModel(preferredModelId);
-    const modelId =
-      preferredModel?.provider === "local" && preferredModel.available
-        ? preferredModel.id
-        : downloadableAiModelIdPattern.test(preferredModelId)
-          ? preferredModelId
-          : defaultAiModelId;
-    return {
-      agentId: input.businessId,
-      businessId: input.businessId,
-      accountId: session.account.id,
-      userId: session.user.id,
-      deviceId: input.deviceId,
-      activeModelInstallationId: null,
-      modelId,
-      preferredExecutionMode: "LOCAL_FIRST",
-      readinessStatus: "ATTACHED",
-      runtimeBackend: null,
-      lastSuccessfulInferenceAt: null,
-      lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE",
-      updatedAt: now.toISOString(),
-      updatedBy: session.user.id
-    };
-  }
-
-  assignAgentModel(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceId: string;
-    installationId: string;
-    preferredExecutionMode: PreferredExecutionMode;
-    readinessStatus: AgentModelReadinessStatus;
-    lastSuccessfulInferenceAt: string | null;
-    lastErrorCode: string | null;
-    now?: Date;
-  }): AgentModelAssignmentSummary {
-    const now = input.now ?? new Date();
-    const session = this.deps.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "membership:manage",
-      now
-    );
-    const installation = this.requireOwnedModelInstallation(
-      session.account.id,
-      session.user.id,
-      input.deviceId,
-      input.installationId
-    );
-    assertModelCanBeAssigned(installation);
-    if (input.readinessStatus === "READY" && input.lastSuccessfulInferenceAt === null) {
-      throw new Cp2Error(
-        409,
-        "agent_model_not_ready",
-        "Run a successful local test inference before activating this model."
-      );
-    }
-    if (input.readinessStatus === "READY") {
-      const readiness = this.getAgentRuntimeReadiness({
-        sessionId: input.sessionId,
-        businessId: input.businessId,
-        now
-      });
-      if (!readiness.ready) {
-        throw new Cp2Error(
-          409,
-          "agent_runtime_not_ready",
-          readiness.issues.map((issue) => issue.message).join(" ")
-        );
-      }
-    }
-    const assignment: AgentModelAssignmentSummary = {
-      agentId: input.businessId,
-      businessId: input.businessId,
-      accountId: session.account.id,
-      userId: session.user.id,
-      deviceId: input.deviceId,
-      activeModelInstallationId: installation.id,
-      modelId: installation.modelId,
-      preferredExecutionMode: normalizeExecutionMode(input.preferredExecutionMode),
-      readinessStatus: input.readinessStatus,
-      runtimeBackend: installation.runtimeBackend,
-      lastSuccessfulInferenceAt:
-        input.readinessStatus === "READY" ? input.lastSuccessfulInferenceAt : null,
-      lastErrorCode:
-        input.lastErrorCode === null
-          ? null
-          : normalizeRequiredBoundedText(input.lastErrorCode, "model error code", 120),
-      updatedAt: now.toISOString(),
-      updatedBy: session.user.id
-    };
-    this.agentModelAssignments.set(
-      agentModelAssignmentKey(input.businessId, input.deviceId),
-      assignment
-    );
-    this.deps.recordAuditEvent({
-      type:
-        assignment.readinessStatus === "READY" ? "agent_model.assigned" : "agent_model.attached",
-      aggregateType: "business",
-      aggregateId: input.businessId,
-      actorId: session.user.id,
-      occurredAt: assignment.updatedAt,
-      payload: {
-        installationId: installation.id,
-        modelId: installation.modelId,
-        deviceId: installation.deviceId,
-        runtimeBackend: installation.runtimeBackend,
-        readinessStatus: assignment.readinessStatus,
-        preferredExecutionMode: assignment.preferredExecutionMode
-      }
-    });
-    if (assignment.readinessStatus === "READY") {
-      const profile = this.currentAgentProfile(input.businessId, now);
-      const revised = {
-        ...profile,
-        modelId: installation.modelId,
-        runtimeVersion: profile.runtimeVersion + 1,
-        updatedAt: now.toISOString(),
-        updatedBy: session.user.id
-      };
-      if (this.runtimeVersionsForBusiness(input.businessId).length === 0) {
-        this.recordAgentRuntimeVersion(profile, session.user.id, "Initial business runtime");
-      }
-      this.agentProfiles.set(input.businessId, revised);
-      this.recordAgentRuntimeVersion(revised, session.user.id, "Active model changed");
-    }
-    return { ...assignment };
-  }
-
-  removeAgentModelAssignment(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceId: string;
-    now?: Date;
-  }): { removed: true } {
-    const now = input.now ?? new Date();
-    const session = this.deps.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "membership:manage",
-      now
-    );
-    const key = agentModelAssignmentKey(input.businessId, input.deviceId);
-    const existing = this.agentModelAssignments.get(key);
-    if (
-      existing !== undefined &&
-      (existing.accountId !== session.account.id || existing.userId !== session.user.id)
-    ) {
-      throw new Cp2Error(403, "agent_model_owner_mismatch", "Agent model access was denied.");
-    }
-    this.agentModelAssignments.delete(key);
-    this.deps.recordAuditEvent({
-      type: "agent_model.removed",
-      aggregateType: "business",
-      aggregateId: input.businessId,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        installationId: existing?.activeModelInstallationId ?? null,
-        deviceId: input.deviceId
-      }
-    });
-    if (existing !== undefined) {
-      const profile = this.currentAgentProfile(input.businessId, now);
-      const revised = {
-        ...profile,
-        runtimeVersion: profile.runtimeVersion + 1,
-        updatedAt: now.toISOString(),
-        updatedBy: session.user.id
-      };
-      this.agentProfiles.set(input.businessId, revised);
-      this.recordAgentRuntimeVersion(revised, session.user.id, "Device model assignment removed");
-    }
-    return { removed: true };
-  }
-
-  getBrowserInferenceAssignment(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceId: string;
-    now?: Date;
-  }): BrowserInferenceAssignmentSummary | null {
-    const now = input.now ?? new Date();
-    const session = this.deps.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "business:read",
-      now
-    );
-    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
-    const assignment = this.browserInferenceAssignments.get(
-      browserInferenceAssignmentKey(input.businessId, deviceId)
-    );
-    if (
-      assignment === undefined ||
-      assignment.accountId !== session.account.id ||
-      assignment.userId !== session.user.id
-    ) {
-      return null;
-    }
-    return cloneBrowserInferenceAssignment(assignment);
-  }
-
-  upsertBrowserInferenceAssignment(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceId: string;
-    enabled: boolean;
-    selectedModelId: string | null;
-    modelFamilyId: string | null;
-    modelRevision: string | null;
-    runtimeContract: BrowserRuntimeContract | null;
-    checkpointCompatibilityContract: BrowserCheckpointCompatibilityContract | null;
-    deviceTier: BrowserDeviceTier | null;
-    readinessStatus: AgentModelReadinessStatus;
-    lastSuccessfulInferenceAt: string | null;
-    lastErrorCode: string | null;
-    now?: Date;
-  }): BrowserInferenceAssignmentSummary {
-    const now = input.now ?? new Date();
-    const session = this.deps.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "membership:manage",
-      now
-    );
-    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
-    const key = browserInferenceAssignmentKey(input.businessId, deviceId);
-    const existing = this.browserInferenceAssignments.get(key);
-    if (
-      existing !== undefined &&
-      (existing.accountId !== session.account.id || existing.userId !== session.user.id)
-    ) {
-      throw new Cp2Error(
-        403,
-        "browser_inference_owner_mismatch",
-        "Browser inference access was denied."
-      );
-    }
-    const runtimeContract =
-      input.runtimeContract === null
-        ? null
-        : normalizeBrowserRuntimeContract(input.runtimeContract);
-    const checkpointCompatibilityContract =
-      input.checkpointCompatibilityContract === null
-        ? null
-        : normalizeBrowserCheckpointContract(input.checkpointCompatibilityContract);
-    const selectedModelId =
-      input.selectedModelId === null
-        ? null
-        : normalizeRequiredBoundedText(input.selectedModelId, "browser model ID", 180);
-    const modelFamilyId =
-      input.modelFamilyId === null
-        ? null
-        : normalizeRequiredBoundedText(input.modelFamilyId, "browser model family ID", 180);
-    const modelRevision =
-      input.modelRevision === null
-        ? null
-        : normalizeRequiredBoundedText(input.modelRevision, "browser model revision", 180);
-
-    validateBrowserInferenceAssignment({
-      enabled: input.enabled,
-      selectedModelId,
-      modelFamilyId,
-      modelRevision,
-      runtimeContract,
-      checkpointCompatibilityContract,
-      readinessStatus: input.readinessStatus,
-      lastSuccessfulInferenceAt: input.lastSuccessfulInferenceAt
-    });
-    const occurredAt = now.toISOString();
-    const profile = this.currentAgentProfile(input.businessId, now);
-    const assignment: BrowserInferenceAssignmentSummary = {
-      id: existing?.id ?? randomUUID(),
-      agentId: profile.agentId,
-      businessId: input.businessId,
-      accountId: session.account.id,
-      userId: session.user.id,
-      deviceId,
-      enabled: input.enabled,
-      selectedModelId,
-      modelFamilyId,
-      modelRevision,
-      runtimeContract,
-      checkpointCompatibilityContract,
-      deviceTier: input.deviceTier,
-      readinessStatus: input.readinessStatus,
-      lastSuccessfulInferenceAt:
-        input.lastSuccessfulInferenceAt === null
-          ? null
-          : normalizeBrowserInferenceTimestamp(input.lastSuccessfulInferenceAt),
-      lastErrorCode:
-        input.lastErrorCode === null
-          ? null
-          : normalizeRequiredBoundedText(input.lastErrorCode, "browser inference error code", 120),
-      createdAt: existing?.createdAt ?? occurredAt,
-      updatedAt: occurredAt,
-      updatedBy: session.user.id
-    };
-    this.browserInferenceAssignments.set(key, assignment);
-    this.deps.recordAuditEvent({
-      type: input.enabled
-        ? assignment.readinessStatus === "READY"
-          ? "browser_inference.ready"
-          : "browser_inference.updated"
-        : "browser_inference.disabled",
-      aggregateType: "business",
-      aggregateId: input.businessId,
-      actorId: session.user.id,
-      occurredAt,
-      payload: {
-        deviceId,
-        modelId: selectedModelId,
-        modelFamilyId,
-        runtime: runtimeContract?.runtime ?? null,
-        adapterId: runtimeContract?.adapterId ?? null,
-        adapterVersion: runtimeContract?.adapterVersion ?? null,
-        readinessStatus: assignment.readinessStatus,
-        enabled: assignment.enabled
-      }
-    });
-    return cloneBrowserInferenceAssignment(assignment);
-  }
-
-  recordBrowserInferenceExecution(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceId: string;
-    modelId: string;
-    successful: boolean;
-    errorCode: string | null;
-    occurredAt: string;
-    now?: Date;
-  }): BrowserInferenceAssignmentSummary {
-    const now = input.now ?? new Date();
-    const session = this.deps.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "business:read",
-      now
-    );
-    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
-    const modelId = normalizeRequiredBoundedText(input.modelId, "browser model ID", 180);
-    const key = browserInferenceAssignmentKey(input.businessId, deviceId);
-    const existing = this.browserInferenceAssignments.get(key);
-    if (
-      existing === undefined ||
-      existing.accountId !== session.account.id ||
-      existing.userId !== session.user.id ||
-      existing.selectedModelId !== modelId
-    ) {
-      throw new Cp2Error(
-        409,
-        "browser_inference_assignment_mismatch",
-        "The browser inference execution does not match the active device assignment."
-      );
-    }
-    if (!existing.enabled) {
-      throw new Cp2Error(
-        409,
-        "browser_inference_assignment_inactive",
-        "The browser inference assignment is disabled."
-      );
-    }
-    const occurredAt = normalizeBrowserInferenceTimestamp(input.occurredAt);
-    const updated: BrowserInferenceAssignmentSummary = {
-      ...existing,
-      readinessStatus: input.successful ? "READY" : existing.readinessStatus,
-      lastSuccessfulInferenceAt: input.successful ? occurredAt : existing.lastSuccessfulInferenceAt,
-      lastErrorCode:
-        input.successful || input.errorCode === null
-          ? null
-          : normalizeRequiredBoundedText(
-              input.errorCode,
-              "browser inference execution error code",
-              120
-            ),
-      updatedAt: now.toISOString(),
-      updatedBy: session.user.id
-    };
-    this.browserInferenceAssignments.set(key, updated);
-    this.deps.recordAuditEvent({
-      type: input.successful
-        ? "browser_inference.execution_succeeded"
-        : "browser_inference.execution_failed",
-      aggregateType: "business",
-      aggregateId: input.businessId,
-      actorId: session.user.id,
-      occurredAt: updated.updatedAt,
-      payload: {
-        deviceId,
-        modelId,
-        successful: input.successful,
-        errorCode: updated.lastErrorCode
-      }
-    });
-    return cloneBrowserInferenceAssignment(updated);
-  }
-
-  removeBrowserInferenceAssignment(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceId: string;
-    now?: Date;
-  }): { removed: true } {
-    const now = input.now ?? new Date();
-    const session = this.deps.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "membership:manage",
-      now
-    );
-    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
-    const key = browserInferenceAssignmentKey(input.businessId, deviceId);
-    const existing = this.browserInferenceAssignments.get(key);
-    if (
-      existing !== undefined &&
-      (existing.accountId !== session.account.id || existing.userId !== session.user.id)
-    ) {
-      throw new Cp2Error(
-        403,
-        "browser_inference_owner_mismatch",
-        "Browser inference access was denied."
-      );
-    }
-    this.browserInferenceAssignments.delete(key);
-    this.deps.recordAuditEvent({
-      type: "browser_inference.removed",
-      aggregateType: "business",
-      aggregateId: input.businessId,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        deviceId,
-        modelId: existing?.selectedModelId ?? null
-      }
-    });
-    return { removed: true };
   }
 
   getAgentProfile(input: {
@@ -2300,7 +1779,6 @@ export class AgentRuntimeDomain {
     message: string;
     conversationHistory?: RuntimeModelConversationMessage[];
     confirmationToken?: string;
-    clientInferenceCompletion?: ClientInferenceCompletion;
     signal?: AbortSignal;
     now?: Date;
   }): Promise<RuntimeTurnResult> {
@@ -2335,7 +1813,6 @@ export class AgentRuntimeDomain {
     const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
     if (
       input.conversationId !== undefined &&
-      input.clientInferenceCompletion === undefined &&
       input.confirmationToken === undefined &&
       hashtagInvocation === null
     ) {
@@ -2353,20 +1830,10 @@ export class AgentRuntimeDomain {
       storedAgentProfile,
       input.conversationId
     );
-    const clientInferenceCompletion =
-      input.clientInferenceCompletion === undefined
-        ? null
-        : this.requireReadyClientInferenceCompletion({
-            completion: input.clientInferenceCompletion,
-            businessId: input.businessId,
-            accountId: auth.account.id,
-            userId: auth.user.id
-          });
     if (
       input.conversationId === undefined &&
       this.deps.modelRuntimeAdapterResolver !== undefined &&
       activeBinding === null &&
-      clientInferenceCompletion === null &&
       input.confirmationToken === undefined &&
       hashtagInvocation === null
     ) {
@@ -2378,7 +1845,7 @@ export class AgentRuntimeDomain {
         { agentId: storedAgentProfile.agentId, shopId: input.businessId }
       );
     }
-    const runtimeModelId = clientInferenceCompletion?.modelId ?? activeModelId;
+    const runtimeModelId = activeModelId;
     const agentProfile = runtimeAgentProfileFromStored(storedAgentProfile, runtimeModelId);
     const shopRuntime = this.buildShopAgentRuntime(
       storedAgentProfile,
@@ -2565,26 +2032,22 @@ export class AgentRuntimeDomain {
       networkProposal === null &&
       commerceProposal === null &&
       effectiveContextScriptMatch === null
-        ? clientInferenceCompletion === null
-          ? await this.createRuntimeModelRoute({
-              message: input.message,
-              ...(input.conversationId === undefined
-                ? {}
-                : { conversationId: input.conversationId }),
-              ...(input.conversationHistory === undefined
-                ? {}
-                : { conversationHistory: input.conversationHistory }),
-              modelId: runtimeModelId,
-              ...(input.signal === undefined ? {} : { signal: input.signal }),
-              context,
-              now,
-              appendTelemetry,
-              shopRuntime,
-              retrievedContext,
-              memory: runtimeMemory,
-              intent: parserResult.intent
-            })
-          : this.createClientInferenceModelRoute(clientInferenceCompletion, appendTelemetry)
+        ? await this.createRuntimeModelRoute({
+            message: input.message,
+            ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
+            ...(input.conversationHistory === undefined
+              ? {}
+              : { conversationHistory: input.conversationHistory }),
+            modelId: runtimeModelId,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+            context,
+            now,
+            appendTelemetry,
+            shopRuntime,
+            retrievedContext,
+            memory: runtimeMemory,
+            intent: parserResult.intent
+          })
         : {
             proposal: null,
             trace: null
@@ -2712,9 +2175,6 @@ export class AgentRuntimeDomain {
           sessionId: input.sessionId,
           businessId: input.businessId,
           ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
-          ...(clientInferenceCompletion?.workspaceFiles === undefined
-            ? {}
-            : { workspaceFiles: clientInferenceCompletion.workspaceFiles }),
           action: plan,
           now
         })
@@ -2947,24 +2407,6 @@ export class AgentRuntimeDomain {
     agentId: string;
     businessId: string;
   }): ModelRuntimeAdapter {
-    if (input.executionTarget === "browser-local") {
-      throw new Cp2Error(
-        409,
-        "BROWSER_RUNTIME_DISABLED",
-        "Browser-local activation must be verified on a deployment where browser inference is enabled.",
-        false,
-        { modelId: input.modelId, executionTarget: input.executionTarget }
-      );
-    }
-    if (input.executionTarget === "installed-app") {
-      throw new Cp2Error(
-        503,
-        "BRIDGE_UNAVAILABLE",
-        "A trusted installed Soko app bridge is required for this model.",
-        true,
-        { modelId: input.modelId, executionTarget: input.executionTarget }
-      );
-    }
     const adapter = this.deps.modelRuntimeAdapterResolver?.({
       modelId: input.modelId,
       executionTarget: input.executionTarget,
@@ -3215,7 +2657,6 @@ export class AgentRuntimeDomain {
     return buildShopAgentRuntimeModule(
       {
         deps: this.deps,
-        agentModelAssignments: this.agentModelAssignments,
         activeBinding: this.activeAgentModelBinding(profile.agentId),
         contextSources
       },
@@ -3347,36 +2788,6 @@ export class AgentRuntimeDomain {
     return { ...event, metadata: { ...event.metadata } };
   }
 
-  /** Shared by createRuntimeModelRoute and the public storefront agent reply path. */
-  private requireReadyClientInferenceCompletion(input: {
-    completion: ClientInferenceCompletion;
-    businessId: string;
-    accountId: string;
-    userId: string;
-  }): ClientInferenceCompletion {
-    return requireReadyClientInferenceCompletion(
-      {
-        agentModelAssignments: this.agentModelAssignments,
-        browserInferenceAssignments: this.browserInferenceAssignments
-      },
-      input
-    );
-  }
-  private createClientInferenceModelRoute(
-    completion: ClientInferenceCompletion,
-    appendTelemetry: (
-      state: RuntimeTelemetryEvent["state"],
-      status: RuntimeTelemetryEvent["status"],
-      toolName: RuntimeToolName | null,
-      risk: RuntimePlannedAction["risk"] | null,
-      metadata?: RuntimeTelemetryEvent["metadata"]
-    ) => void
-  ): {
-    proposal: RuntimeToolProposal;
-    trace: RuntimeModelTrace;
-  } {
-    return createClientInferenceModelRoute(completion, appendTelemetry);
-  }
   resolveRuntimeModelProvider(
     shopRuntime: ShopAgentRuntime,
     modelId: string,

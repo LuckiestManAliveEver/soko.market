@@ -1,7 +1,6 @@
 import type {
   AgentAudience,
   AgentContextSource,
-  AgentModelAssignmentSummary,
   AgentModelBindingSummary,
   AgentOwnerCorrection,
   ShopAgentRuntime
@@ -21,7 +20,6 @@ import {
 
 interface ShopRuntimeState {
   deps: AgentRuntimeDomainDeps;
-  agentModelAssignments: Map<string, AgentModelAssignmentSummary>;
   activeBinding: AgentModelBindingSummary | null;
   contextSources: AgentContextSource[];
 }
@@ -40,12 +38,6 @@ export function buildShopAgentRuntime(
   modelId = profile.modelId
 ): ShopAgentRuntime {
   const business = state.deps.requireBusiness(profile.businessId);
-  const assignment = [...state.agentModelAssignments.values()]
-    .filter(
-      (candidate) =>
-        candidate.businessId === profile.businessId && candidate.readinessStatus === "READY"
-    )
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
   const activeBinding = state.activeBinding;
   const model = state.deps.resolveCatalogModel(modelId);
   const sources = state.contextSources.filter((source) =>
@@ -80,12 +72,10 @@ export function buildShopAgentRuntime(
       modelId: activeBinding?.modelId ?? modelId,
       provider:
         activeBinding?.executionTarget ??
-        assignment?.runtimeBackend ??
         model?.provider ??
         (downloadableAiModelIdPattern.test(modelId) ? "device" : "deterministic"),
-      executionMode:
-        activeBinding?.executionMode ?? assignment?.preferredExecutionMode ?? "LOCAL_FIRST",
-      deviceAssignmentId: assignment?.activeModelInstallationId ?? null
+      executionMode: activeBinding?.executionMode ?? "LOCAL_FIRST",
+      deviceAssignmentId: null
     },
     version: profile.runtimeVersion,
     status: profile.status,

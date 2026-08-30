@@ -30,7 +30,7 @@ const manifest: PortableAgentManifest = {
     hostedAllowed: true
   },
   executionRequirements: {
-    preferredTargets: ["installed-app", "browser-local", "remote-shop-device", "backend"],
+    preferredTargets: ["remote-shop-device", "backend"],
     requiresNetwork: false,
     requiresFilesystem: false,
     requiresNativeBridge: false
