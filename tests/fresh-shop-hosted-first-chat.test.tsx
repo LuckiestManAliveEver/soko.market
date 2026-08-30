@@ -5,7 +5,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useChatRuntimeState } from "../apps/web/src/hooks/useChatRuntimeState";
-import type { ActiveBusiness, AgentSettings, SessionResponse } from "../apps/web/src/soko-application-shared";
+import type {
+  ActiveBusiness,
+  AgentSettings,
+  SessionResponse
+} from "../apps/web/src/soko-application-shared";
 
 // Regression coverage for the private on-device model architecture's removal: a fresh shop's
 // first AI message must reach the plain server runtime turn with zero client-side model state -
@@ -84,8 +88,10 @@ describe("fresh shop, first AI message: hosted-first with no client model state"
           runtime: null
         });
       }
-      throw new Error(`Unexpected fetch to ${path} - a fresh shop's first message should only ` +
-        "call POST /v1/messages, never an owner-node/device endpoint.");
+      throw new Error(
+        `Unexpected fetch to ${path} - a fresh shop's first message should only ` +
+          "call POST /v1/messages, never an owner-node/device endpoint."
+      );
     });
     vi.stubGlobal("fetch", fetchMock);
 

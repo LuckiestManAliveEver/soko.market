@@ -81,10 +81,7 @@ export function validateSokoHarnessManifest(value: unknown): SokoHarnessManifest
   rejectProhibitedKeys(root, "$", issues, 0);
 
   if (root.schemaVersion !== "1") issue(issues, "$.schemaVersion", 'must equal "1"');
-  if (
-    !isBoundedString(root.adapterId, 1, 80) ||
-    !adapterIdPattern.test(root.adapterId as string)
-  ) {
+  if (!isBoundedString(root.adapterId, 1, 80) || !adapterIdPattern.test(root.adapterId as string)) {
     issue(issues, "$.adapterId", "must be a lowercase portable adapter identifier");
   }
   if (!isBoundedString(root.displayName, 1, 160)) {

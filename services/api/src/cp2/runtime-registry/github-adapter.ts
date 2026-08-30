@@ -180,7 +180,10 @@ async function inspectHarnessCandidate(
     license: agent.license,
     verified: agent.licenseVerified,
     imported: false,
-    compatibility: { status: inspection.status, ...(inspection.reason ? { reason: inspection.reason } : {}) }
+    compatibility: {
+      status: inspection.status,
+      ...(inspection.reason ? { reason: inspection.reason } : {})
+    }
   };
 }
 
@@ -237,7 +240,10 @@ async function fetchHarnessManifest(
       body.encoding !== "base64" ||
       (typeof body.size === "number" && body.size > 200_000)
     ) {
-      return { status: "inspection_required", reason: "soko.harness.json was not a readable file." };
+      return {
+        status: "inspection_required",
+        reason: "soko.harness.json was not a readable file."
+      };
     }
     let decoded: string;
     try {
@@ -295,7 +301,7 @@ async function inspectGitHubModel(
     stars: (repository.stargazers_count as number | undefined) ?? null,
     downloads: null,
     updatedAt: (repository.pushed_at as string | null) ?? null,
-    license: ((repository.license as { spdx_id?: string | null } | null)?.spdx_id ?? null),
+    license: (repository.license as { spdx_id?: string | null } | null)?.spdx_id ?? null,
     verified:
       ((repository.license as { spdx_id?: string | null } | null)?.spdx_id ?? null) ===
       "Apache-2.0",
@@ -329,15 +335,23 @@ async function inspectGitHubRepository(
     ref.kind === "harness"
       ? fetchHarnessManifest(fullName, deps)
       : Promise.resolve<HarnessInspectionResult>({ status: "unknown" }),
-    ref.kind === "agent" ? fetchRepositoryFile(fullName, "soko.agent.json", deps) : Promise.resolve(null)
+    ref.kind === "agent"
+      ? fetchRepositoryFile(fullName, "soko.agent.json", deps)
+      : Promise.resolve(null)
   ]);
   const license = (repository.license as { spdx_id?: string | null } | null)?.spdx_id ?? null;
   const compatibility =
     ref.kind === "harness"
-      ? { status: harnessInspection.status, ...(harnessInspection.reason ? { reason: harnessInspection.reason } : {}) }
+      ? {
+          status: harnessInspection.status,
+          ...(harnessInspection.reason ? { reason: harnessInspection.reason } : {})
+        }
       : license !== null
         ? { status: "compatible" as const }
-        : { status: "inspection_required" as const, reason: "License needs confirmation before import." };
+        : {
+            status: "inspection_required" as const,
+            reason: "License needs confirmation before import."
+          };
 
   return {
     provider: "github",
@@ -412,10 +426,13 @@ async function fetchRepositoryFile(
   deps: { fetcher: typeof fetch; token: string | undefined; requestTimeoutMs: number }
 ): Promise<unknown | null> {
   try {
-    const response = await deps.fetcher(`https://api.github.com/repos/${fullName}/contents/${path}`, {
-      headers: githubHeaders(deps.token),
-      signal: AbortSignal.timeout(deps.requestTimeoutMs)
-    });
+    const response = await deps.fetcher(
+      `https://api.github.com/repos/${fullName}/contents/${path}`,
+      {
+        headers: githubHeaders(deps.token),
+        signal: AbortSignal.timeout(deps.requestTimeoutMs)
+      }
+    );
     if (!response.ok) return null;
     const body = (await response.json()) as {
       content?: string;

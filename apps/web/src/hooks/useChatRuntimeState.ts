@@ -419,7 +419,12 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           };
     const inferenceProviders: InferenceProvider[] = [];
 
-    if (inferenceRequest !== null && business !== null && ownerNodeReachable && !requiresServerTool) {
+    if (
+      inferenceRequest !== null &&
+      business !== null &&
+      ownerNodeReachable &&
+      !requiresServerTool
+    ) {
       inferenceProviders.push(
         createRemoteInferenceProvider({
           id: "owner-node",

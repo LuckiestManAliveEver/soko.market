@@ -86,7 +86,12 @@ export function createPostgresRuntimeRegistryImportStore(pool: Pool): RuntimeReg
   return {
     async create(input, now) {
       const id = randomUUID();
-      const record: RuntimeRegistryImport = { ...structuredClone(input), id, createdAt: now, updatedAt: now };
+      const record: RuntimeRegistryImport = {
+        ...structuredClone(input),
+        id,
+        createdAt: now,
+        updatedAt: now
+      };
       await pool.query(
         `insert into cp2_runtime_registry_imports
            (entity_id, business_id, account_id, user_id, parent_id, record, updated_at)
@@ -114,7 +119,13 @@ export function createPostgresRuntimeRegistryImportStore(pool: Pool): RuntimeReg
       );
       const row = existing.rows[0];
       if (row === undefined) throw new RuntimeRegistryImportNotFoundError(id);
-      const merged: RuntimeRegistryImport = { ...row.record, ...patch, id, accountId, updatedAt: now };
+      const merged: RuntimeRegistryImport = {
+        ...row.record,
+        ...patch,
+        id,
+        accountId,
+        updatedAt: now
+      };
       await pool.query(
         `update cp2_runtime_registry_imports
          set record = $3::jsonb, updated_at = $4

@@ -65,19 +65,22 @@ describe("Render Blueprint", () => {
     );
 
     expect(staging).toContain("VITE_DEPLOYMENT_ENV\n        value: staging");
-    expect(staging).toContain('VITE_BROWSER_LOCAL_INFERENCE_ENABLED\n        value: "true"');
     expect(staging).toContain("Content-Security-Policy");
-    expect(staging).toContain("script-src 'self' 'wasm-unsafe-eval'");
-    expect(staging).toContain("https://*.huggingface.co");
-    expect(staging).toContain("https://raw.githubusercontent.com");
-    expect(staging).toContain("https://*.hf.co");
     expect(staging).toContain("Cross-Origin-Embedder-Policy");
     expect(staging).toContain("Cross-Origin-Opener-Policy");
-    expect(production).toContain('VITE_BROWSER_LOCAL_INFERENCE_ENABLED\n        value: "true"');
-    expect(production).toContain('VITE_INFERENCE_CLIENT_FIRST\n        value: "true"');
     expect(production).toContain("Content-Security-Policy");
-    expect(production).toContain("https://*.huggingface.co");
-    expect(production).toContain("https://raw.githubusercontent.com");
+    // Browser-local inference was retired (see
+    // docs/adr/ADR-device-independent-runtime-and-registry-discovery.md): the browser never talks
+    // to GitHub/Hugging Face or runs WASM directly, so neither the client-inference feature flags
+    // nor the CSP allowances they required belong in the Blueprint anymore.
+    expect(blueprint).not.toContain("VITE_BROWSER_LOCAL_INFERENCE_ENABLED");
+    expect(blueprint).not.toContain("VITE_INFERENCE_CLIENT_FIRST");
+    expect(blueprint).not.toContain("VITE_INFERENCE_BROWSER_WEBGPU_ENABLED");
+    expect(blueprint).not.toContain("VITE_INFERENCE_BROWSER_WASM_ENABLED");
+    expect(blueprint).not.toContain("VITE_INFERENCE_NATIVE_BRIDGE_ENABLED");
+    expect(blueprint).not.toContain("wasm-unsafe-eval");
+    expect(blueprint).not.toContain("huggingface.co");
+    expect(blueprint).not.toContain("raw.githubusercontent.com");
     expect(blueprint).not.toContain("LOCAL_MODEL_");
     expect(blueprint).toContain("corepack pnpm build:production");
     expect(rootManifest.scripts["build:production"]).toContain("check:render-inference-boundaries");
@@ -102,7 +105,6 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(blueprint).not.toContain("INFERENCE_CLOUD_FALLBACK_ENABLED");
     expect(blueprint).toContain("INFERENCE_JOB_SIGNING_SECRET\n        generateValue: true");
-    expect(production).toContain('VITE_INFERENCE_NATIVE_BRIDGE_ENABLED\n        value: "true"');
     expect(production).toContain('VITE_INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(production).toContain('VITE_INFERENCE_MAX_FALLBACKS\n        value: "3"');
   });

@@ -34,7 +34,7 @@ rather than the hosted registration path.
 
 1. **Narrow `ModelExecutionTarget` to `"backend" | "remote-shop-device"`.** `browser-local` and
    `installed-app` are retired. `remote-shop-device` is kept and redefined precisely: it names a
-   shop-owned machine *registered as an execution host* (e.g. a merchant's laptop running Ollama,
+   shop-owned machine _registered as an execution host_ (e.g. a merchant's laptop running Ollama,
    added through the existing native-runtime execution-host graph), never "whichever browser or
    phone happens to be open right now." A client device never needs a private model copy to use
    normal agent chat — inference always resolves to a host the shop's runtime binding already
@@ -72,7 +72,7 @@ rather than the hosted registration path.
    Import for a harness proceeds through discover → inspect → validate → register, and then
    deliberately stops: this codebase has no isolated execution environment (no `isolated-vm`,
    container, or equivalent sandbox) to safely run untrusted third-party code inside the API
-   process, so automatic sandboxed provisioning of a *new* harness implementation is explicitly out
+   process, so automatic sandboxed provisioning of a _new_ harness implementation is explicitly out
    of scope here. Activating a newly-discovered harness still requires deploying it through the
    existing trusted `AgentRuntimeAdapterRegistry.register()` code path — a real code change, not a
    runtime-triggered import. Building a false sense of isolation would be worse than naming this gap
@@ -116,8 +116,8 @@ on-device branches of `AgentModelPanel.tsx`/`useChatRuntimeState.ts`).
 
 The trade-off: a shop that genuinely wants offline or fully private inference on a specific device
 now needs that device registered as a `remote-shop-device` execution host rather than getting it for
-free via ad hoc browser capability detection. Harness discovery is real end-to-end for *finding* and
-*validating* a compatible adapter, but activating a brand-new third-party harness still requires an
+free via ad hoc browser capability detection. Harness discovery is real end-to-end for _finding_ and
+_validating_ a compatible adapter, but activating a brand-new third-party harness still requires an
 operator-driven deploy step until real sandboxed provisioning infrastructure is built — this is a
 named, deliberate gap, not an oversight.
 
@@ -144,7 +144,7 @@ itself for the exact number applied) adds `cp2_external_registry_connections` (m
 metadata blob) and `cp2_runtime_registry_imports` (modeled on the generic `entity_id/record
 jsonb`-per-row convention used by `cp2_model_catalog`/`cp2_agent_catalog`). No already-applied
 migration is edited. Existing `cp2_model_artifacts`/`cp2_model_artifact_chunks` rows are preserved
-untouched — this decision stops *new* GGUF-chunk-into-Postgres writes going forward; it does not
+untouched — this decision stops _new_ GGUF-chunk-into-Postgres writes going forward; it does not
 retroactively migrate or delete historical rows, which remain readable for any code that still
 depends on them until a dedicated artifact-storage migration follows up. Pi + SmolLM2 360M remain
 the repository default; nothing here changes `repositoryDefaultRuntimePolicy`.

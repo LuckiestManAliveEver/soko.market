@@ -12,8 +12,12 @@ import type { GitHubModelCatalog } from "../services/api/src/cp2/github-model-ca
 import type { GitHubAgentCatalog } from "../services/api/src/cp2/github-agent-catalog";
 import { createSokoCatalogRegistryAdapter } from "../services/api/src/cp2/runtime-registry/soko-adapter";
 import { createGitHubRegistryAdapter } from "../services/api/src/cp2/runtime-registry/github-adapter";
+import { createHuggingFaceRegistryAdapter } from "../services/api/src/cp2/runtime-registry/huggingface-adapter";
 import { createRuntimeRegistrySearchService } from "../services/api/src/cp2/runtime-registry/search";
-import type { RuntimeRegistryAdapter } from "../services/api/src/cp2/runtime-registry/types.js";
+import {
+  RuntimeRegistryAccessRequiredError,
+  type RuntimeRegistryAdapter
+} from "../services/api/src/cp2/runtime-registry/types.js";
 import {
   createRuntimeRegistryImportService,
   harnessProvisioningBoundaryReason
@@ -41,7 +45,10 @@ function fakeAdapter(
   };
 }
 
-function fakeItem(provider: "github" | "huggingface" | "soko", name: string): RuntimeRegistrySearchItem {
+function fakeItem(
+  provider: "github" | "huggingface" | "soko",
+  name: string
+): RuntimeRegistrySearchItem {
   return {
     provider,
     kind: "model",
@@ -76,10 +83,7 @@ describe("runtime registry unified search fan-out", () => {
 
     const result = await service.search({ query: "model" }, publicContext);
 
-    expect(result.items.map((item) => item.externalId).sort()).toEqual([
-      "gh-model",
-      "soko-model"
-    ]);
+    expect(result.items.map((item) => item.externalId).sort()).toEqual(["gh-model", "soko-model"]);
     expect(result.providers.github).toEqual({ status: "ok" });
     expect(result.providers.soko).toEqual({ status: "ok" });
     expect(result.providers.huggingface).toEqual({
@@ -126,8 +130,14 @@ describe("runtime registry unified search fan-out", () => {
     const publicResult = await service.search(query, { accountId: "acct-a", connected: false });
     const accountAResult = await service.search(query, { accountId: "acct-a", connected: true });
     const accountBResult = await service.search(query, { accountId: "acct-b", connected: true });
-    const publicResultAgain = await service.search(query, { accountId: "acct-a", connected: false });
-    const accountAResultAgain = await service.search(query, { accountId: "acct-a", connected: true });
+    const publicResultAgain = await service.search(query, {
+      accountId: "acct-a",
+      connected: false
+    });
+    const accountAResultAgain = await service.search(query, {
+      accountId: "acct-a",
+      connected: true
+    });
 
     expect(callCount).toBe(3);
     expect(publicResult.items[0]?.externalId).toBe("call-1");
@@ -265,11 +275,24 @@ describe("GitHub/Hugging Face adapters never download an artifact merely to prod
       return new Response(null, { status: 404 });
     });
 
-    const modelCatalog = createGitHubModelCatalog({ fetcher: fetcher as typeof fetch, now: () => 1 });
-    const agentCatalog = createGitHubAgentCatalog({ fetcher: fetcher as typeof fetch, now: () => 1 });
-    const adapter = createGitHubRegistryAdapter({ modelCatalog, agentCatalog, fetcher: fetcher as typeof fetch });
+    const modelCatalog = createGitHubModelCatalog({
+      fetcher: fetcher as typeof fetch,
+      now: () => 1
+    });
+    const agentCatalog = createGitHubAgentCatalog({
+      fetcher: fetcher as typeof fetch,
+      now: () => 1
+    });
+    const adapter = createGitHubRegistryAdapter({
+      modelCatalog,
+      agentCatalog,
+      fetcher: fetcher as typeof fetch
+    });
 
-    const items = await adapter.search({ query: "example", kinds: ["model", "agent"] }, publicContext);
+    const items = await adapter.search(
+      { query: "example", kinds: ["model", "agent"] },
+      publicContext
+    );
 
     expect(items).toEqual(
       expect.arrayContaining([
@@ -296,6 +319,92 @@ describe("GitHub/Hugging Face adapters never download an artifact merely to prod
       expect(url).not.toContain("codeload.github.com");
       expect(url).not.toMatch(/\/(tarball|zipball)\//);
       expect(url).not.toMatch(/\.(gguf|js|ts|py)(\?|$)/);
+    }
+  });
+});
+
+describe("model import never touches Postgres bytea artifact storage", () => {
+  it("stops at PROVISIONING with captured provenance, never writing a chunk or downloading the weight file", async () => {
+    const calledUrls: string[] = [];
+    const fetcher = vi.fn(async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      calledUrls.push(url);
+      if (url === "https://api.github.com/repos/example/model-repo") {
+        return Response.json({
+          full_name: "example/model-repo",
+          default_branch: "main",
+          description: "An example model repo",
+          license: { spdx_id: "Apache-2.0" },
+          pushed_at: "2026-01-01T00:00:00.000Z"
+        });
+      }
+      if (url === "https://api.github.com/repos/example/model-repo/releases?per_page=10") {
+        return Response.json([
+          {
+            name: "v1",
+            tag_name: "v1",
+            html_url: "https://github.com/example/model-repo/releases/tag/v1",
+            draft: false,
+            prerelease: false,
+            assets: [
+              {
+                name: "example-q4_k_m.gguf",
+                size: 420 * 1024 ** 2,
+                state: "uploaded",
+                browser_download_url:
+                  "https://github.com/example/model-repo/releases/download/v1/example-q4_k_m.gguf",
+                digest: "sha256:deadbeef"
+              }
+            ]
+          }
+        ]);
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const modelCatalog = createGitHubModelCatalog({
+      fetcher: fetcher as typeof fetch,
+      now: () => 1
+    });
+    const agentCatalog = createGitHubAgentCatalog({
+      fetcher: fetcher as typeof fetch,
+      now: () => 1
+    });
+    const github = createGitHubRegistryAdapter({
+      modelCatalog,
+      agentCatalog,
+      fetcher: fetcher as typeof fetch
+    });
+    const importService = createRuntimeRegistryImportService({
+      store: createMemoryRuntimeRegistryImportStore(),
+      adapters: { github }
+    });
+
+    const record = await importService.startImport({
+      accountId: "acct-1",
+      userId: "user-1",
+      ref: {
+        provider: "github",
+        kind: "model",
+        externalId: "example/model-repo#example-q4_k_m.gguf"
+      }
+    });
+
+    expect(record.state).toBe("PROVISIONING");
+    expect(record.stateReason).toMatch(/not wired/i);
+    expect(record.provenance).toMatchObject({
+      provider: "github",
+      filename: "example-q4_k_m.gguf",
+      checksum: "sha256:deadbeef"
+    });
+
+    // The whole point of this test: no URL fetched during import is a weight-file download, and no
+    // account-ai-asset-store (Postgres bytea chunk) module is even imported by import-service.ts,
+    // so a REGISTERED/PROVISIONING model import structurally cannot have written GGUF bytes to
+    // Postgres - there is no code path for it to have done so.
+    for (const url of calledUrls) {
+      expect(url).not.toContain("/releases/download/");
+      expect(url).not.toMatch(/\.gguf(\?|$)/);
     }
   });
 });
@@ -489,5 +598,58 @@ describe("agent import", () => {
       repositoryUrl: "https://github.com/example/agent-repo",
       importedBy: "user-1"
     });
+  });
+});
+
+describe("gated/private Hugging Face model access is refused, never circumvented", () => {
+  it("inspect() throws RuntimeRegistryAccessRequiredError on a 403, never falling back to a public read", async () => {
+    const fetcher = vi.fn(async (): Promise<Response> => new Response(null, { status: 403 }));
+    const adapter = createHuggingFaceRegistryAdapter({
+      modelCatalog: { searchModels: async () => ({ models: [] }) },
+      agentCatalog: { searchAgents: async () => ({ agents: [] }) },
+      fetcher
+    });
+
+    await expect(
+      adapter.inspect(
+        {
+          provider: "huggingface",
+          kind: "model",
+          externalId: "gated-org/gated-model#weights.gguf"
+        },
+        publicContext
+      )
+    ).rejects.toBeInstanceOf(RuntimeRegistryAccessRequiredError);
+    // Only ever the metadata endpoint - never retried against a weight-file/download URL.
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(String(fetcher.mock.calls[0]![0])).toContain(
+      "https://huggingface.co/api/models/gated-org/gated-model"
+    );
+  });
+
+  it("the import pipeline maps a gated/private resource to ACCESS_REQUIRED, not a generic failure or a fabricated READY state", async () => {
+    const fetcher = vi.fn(async (): Promise<Response> => new Response(null, { status: 403 }));
+    const huggingface = createHuggingFaceRegistryAdapter({
+      modelCatalog: { searchModels: async () => ({ models: [] }) },
+      agentCatalog: { searchAgents: async () => ({ agents: [] }) },
+      fetcher
+    });
+    const importService = createRuntimeRegistryImportService({
+      store: createMemoryRuntimeRegistryImportStore(),
+      adapters: { huggingface }
+    });
+
+    const record = await importService.startImport({
+      accountId: "acct-1",
+      userId: "user-1",
+      ref: {
+        provider: "huggingface",
+        kind: "model",
+        externalId: "gated-org/gated-model#weights.gguf"
+      }
+    });
+
+    expect(record.state).toBe("ACCESS_REQUIRED");
+    expect(record.stateReason).toMatch(/access/i);
   });
 });

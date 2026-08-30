@@ -14,7 +14,11 @@ import type {
 import { Cp2Error } from "../cp2-error.js";
 import { readSessionCookie } from "../store.js";
 import { parseString, sendCp2Error } from "../route-helpers.js";
-import { RuntimeRegistryResourceNotFoundError, type RuntimeRegistryAdapter } from "./types.js";
+import {
+  RuntimeRegistryAccessRequiredError,
+  RuntimeRegistryResourceNotFoundError,
+  type RuntimeRegistryAdapter
+} from "./types.js";
 import type { RuntimeRegistrySearchService } from "./search.js";
 import type { createRuntimeRegistryImportService } from "./import-service.js";
 
@@ -124,6 +128,12 @@ export function registerRuntimeRegistryRoutes(
             new Cp2Error(404, "runtime_registry_resource_not_found", error.message)
           );
         }
+        if (error instanceof RuntimeRegistryAccessRequiredError) {
+          return sendCp2Error(
+            reply,
+            new Cp2Error(403, "runtime_registry_access_required", error.message)
+          );
+        }
         return sendCp2Error(reply, error);
       }
     }
@@ -139,7 +149,8 @@ export function registerRuntimeRegistryRoutes(
         const provider = parseProviderId(request.body.provider);
         const kind = parseKind(request.body.kind);
         const externalId = parseString(request.body.externalId, "externalId");
-        const revision = typeof request.body.revision === "string" ? request.body.revision : undefined;
+        const revision =
+          typeof request.body.revision === "string" ? request.body.revision : undefined;
         return await deps.importService.startImport({
           accountId,
           userId,
@@ -165,10 +176,7 @@ export function registerRuntimeRegistryRoutes(
     async (request: FastifyRequest<{ Params: ImportParams }>, reply) => {
       try {
         const { accountId } = deps.requireAccount(readSessionCookie(request.headers.cookie));
-        const importRecord = await deps.importService.getImport(
-          request.params.importId,
-          accountId
-        );
+        const importRecord = await deps.importService.getImport(request.params.importId, accountId);
         if (importRecord === null) {
           throw new Cp2Error(
             404,
@@ -227,5 +235,9 @@ function parseKind(value: unknown): RuntimeAssetKind {
   if (typeof value === "string" && (assetKinds as readonly string[]).includes(value)) {
     return value as RuntimeAssetKind;
   }
-  throw new Cp2Error(400, "runtime_registry_kind_invalid", "kind must be one of agent, harness, model.");
+  throw new Cp2Error(
+    400,
+    "runtime_registry_kind_invalid",
+    "kind must be one of agent, harness, model."
+  );
 }

@@ -668,7 +668,9 @@ export function AgentModelPanel({
                               {backendModelRuntimeStatusMessage(runtime.errorCode)}
                             </small>
                           ) : runtime?.status === "available" ? (
-                            <small>Model verified in {formatLatency(runtime.latencyMs ?? 0)}.</small>
+                            <small>
+                              Model verified in {formatLatency(runtime.latencyMs ?? 0)}.
+                            </small>
                           ) : null}
                           {failedActivationModelId === model.id ? (
                             <small role="status">
@@ -796,8 +798,8 @@ export function AgentModelPanel({
                       <h4>{model.label}</h4>
                       <p>{model.description}</p>
                       <small>
-                        {formatModelBytes(model.fileSizeBytes)} · {model.minimumMemoryGb} GB
-                        minimum RAM · {model.capabilities.join(" · ")}
+                        {formatModelBytes(model.fileSizeBytes)} · {model.minimumMemoryGb} GB minimum
+                        RAM · {model.capabilities.join(" · ")}
                       </small>
                       <small role="status">
                         Not yet available for hosted activation on this deployment.

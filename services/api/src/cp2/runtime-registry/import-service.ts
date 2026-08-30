@@ -9,10 +9,16 @@ import type {
   RuntimeRegistryResourceDetails,
   RuntimeRegistryResourceRef
 } from "@soko/shared-types";
-import { portableAgentManifestFromOssAgent, validatePortableAgentManifest } from "@soko/shared-types";
+import {
+  portableAgentManifestFromOssAgent,
+  validatePortableAgentManifest
+} from "@soko/shared-types";
 import { Cp2Error } from "../cp2-error.js";
 import type { RuntimeRegistryAdapter } from "./types.js";
-import { RuntimeRegistryResourceNotFoundError } from "./types.js";
+import {
+  RuntimeRegistryAccessRequiredError,
+  RuntimeRegistryResourceNotFoundError
+} from "./types.js";
 import type { RuntimeRegistryImportStore } from "./import-store.js";
 
 /**
@@ -101,6 +107,12 @@ export function createRuntimeRegistryImportService(deps: RuntimeRegistryImportSe
       try {
         details = await adapter.inspect(input.ref, context);
       } catch (error) {
+        if (error instanceof RuntimeRegistryAccessRequiredError) {
+          // Access is denied, not merely unimplemented - never attempt to circumvent it (e.g. by
+          // retrying with a different credential this caller doesn't own). The record stops here;
+          // a caller can retry the same import once their connected account is actually authorized.
+          return transition(record, "ACCESS_REQUIRED", error.message);
+        }
         const message =
           error instanceof RuntimeRegistryResourceNotFoundError
             ? error.message
@@ -196,9 +208,7 @@ async function importAgent(
 
   const declaredManifest = readEmbeddedManifest(details, "sokoAgentManifest");
   const manifestValidation =
-    declaredManifest === undefined
-      ? null
-      : validatePortableAgentManifest(declaredManifest);
+    declaredManifest === undefined ? null : validatePortableAgentManifest(declaredManifest);
   if (manifestValidation !== null && !manifestValidation.valid) {
     return transition(
       record,

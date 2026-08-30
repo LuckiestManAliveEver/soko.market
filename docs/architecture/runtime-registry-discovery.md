@@ -23,11 +23,11 @@ RuntimeRegistryAdapter
 Three adapters implement it, each wrapping pre-existing catalog code rather than re-implementing
 provider access:
 
-| Adapter                     | Wraps                                                                    |
-| ---------------------------- | ------------------------------------------------------------------------ |
-| `SokoCatalogRegistryAdapter` | `cp2_model_catalog`, `cp2_agent_catalog`, `AgentRuntimeAdapterRegistry`   |
-| `GitHubRegistryAdapter`      | `github-model-catalog.ts`, `github-agent-catalog.ts`                     |
-| `HuggingFaceRegistryAdapter` | `huggingface-model-catalog.ts`, `huggingface-agent-catalog.ts`           |
+| Adapter                      | Wraps                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `SokoCatalogRegistryAdapter` | `cp2_model_catalog`, `cp2_agent_catalog`, `AgentRuntimeAdapterRegistry` |
+| `GitHubRegistryAdapter`      | `github-model-catalog.ts`, `github-agent-catalog.ts`                    |
+| `HuggingFaceRegistryAdapter` | `huggingface-model-catalog.ts`, `huggingface-agent-catalog.ts`          |
 
 `search` results are normalized into `RuntimeRegistrySearchItem` — provider, kind, identity,
 ownership, popularity/recency signals, license, and a `compatibility` verdict. Provider-specific raw
@@ -42,7 +42,7 @@ provider concurrently and never lets one provider's failure fail the whole reque
 
 ```json
 {
-  "items": [ /* normalized RuntimeRegistrySearchItem[] */ ],
+  "items": [/* normalized RuntimeRegistrySearchItem[] */],
   "providers": {
     "soko": { "status": "ok" },
     "github": { "status": "error", "errorMessage": "..." },

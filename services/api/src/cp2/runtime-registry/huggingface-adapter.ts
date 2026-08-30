@@ -12,7 +12,11 @@ import type {
   HuggingFaceAiModelSummary
 } from "../huggingface-model-catalog.js";
 import type { HuggingFaceAgentCatalog } from "../huggingface-agent-catalog.js";
-import { RuntimeRegistryResourceNotFoundError, type RuntimeRegistryAdapter } from "./types.js";
+import {
+  RuntimeRegistryAccessRequiredError,
+  RuntimeRegistryResourceNotFoundError,
+  type RuntimeRegistryAdapter
+} from "./types.js";
 
 export interface HuggingFaceRegistryAdapterOptions {
   modelCatalog: HuggingFaceModelCatalog;
@@ -86,7 +90,9 @@ export function createHuggingFaceRegistryAdapter(
 // Normalization
 // ---------------------------------------------------------------------------
 
-function huggingFaceModelToItem(model: HuggingFaceAiModelSummary): RuntimeRegistrySearchItem | null {
+function huggingFaceModelToItem(
+  model: HuggingFaceAiModelSummary
+): RuntimeRegistrySearchItem | null {
   const parsed = parseHuggingFaceDownloadUrl(model.downloadUrl);
   if (parsed === null) return null;
   return {
@@ -146,6 +152,7 @@ async function inspectHuggingFaceModel(
   if (parsed === null) throw new RuntimeRegistryResourceNotFoundError(ref);
   const details = await fetchJson(
     `https://huggingface.co/api/models/${encodeRepositoryPath(parsed.repositoryId)}?blobs=true`,
+    ref,
     deps
   );
   if (details === null) throw new RuntimeRegistryResourceNotFoundError(ref);
@@ -194,6 +201,7 @@ async function inspectHuggingFaceSpace(
   }
   const details = await fetchJson(
     `https://huggingface.co/api/spaces/${encodeRepositoryPath(repositoryId)}`,
+    ref,
     deps
   );
   if (details === null) throw new RuntimeRegistryResourceNotFoundError(ref);
@@ -213,8 +221,7 @@ async function inspectHuggingFaceSpace(
     externalId: repositoryId,
     name: repositoryId,
     displayName: cardData?.title?.trim() || (repositoryId.split("/")[1] as string) || repositoryId,
-    description:
-      cardData?.short_description?.trim() || `${repositoryId} public agent Space.`,
+    description: cardData?.short_description?.trim() || `${repositoryId} public agent Space.`,
     owner: repositoryId.split("/")[0] ?? null,
     repositoryId,
     revision: "main",
@@ -240,8 +247,17 @@ function readLicenseTag(details: Record<string, unknown>): string | null {
   return licenseTag?.slice("license:".length) ?? null;
 }
 
+/**
+ * A gated/private Hugging Face repository responds 401/403 (access denied, existence confirmed)
+ * rather than 404 (does not exist) - unlike GitHub, which deliberately collapses both into 404 for
+ * a private repo to avoid confirming existence to an unauthorized caller. That distinction is real
+ * signal here, so it is preserved as RuntimeRegistryAccessRequiredError rather than folded into the
+ * generic "not found" case; callers map it to the import state machine's ACCESS_REQUIRED, never an
+ * attempt to work around it.
+ */
 async function fetchJson(
   url: string,
+  ref: RuntimeRegistryResourceRef,
   deps: { fetcher: typeof fetch; token: string | undefined; requestTimeoutMs: number }
 ): Promise<Record<string, unknown> | null> {
   try {
@@ -249,9 +265,13 @@ async function fetchJson(
       headers: huggingFaceHeaders(deps.token),
       signal: AbortSignal.timeout(deps.requestTimeoutMs)
     });
+    if (response.status === 401 || response.status === 403) {
+      throw new RuntimeRegistryAccessRequiredError(ref);
+    }
     if (!response.ok) return null;
     return (await response.json()) as Record<string, unknown>;
-  } catch {
+  } catch (error) {
+    if (error instanceof RuntimeRegistryAccessRequiredError) throw error;
     return null;
   }
 }
@@ -294,7 +314,9 @@ function parseHuggingFaceDownloadUrl(
   }
 }
 
-function parseModelExternalId(externalId: string): { repositoryId: string; fileName: string } | null {
+function parseModelExternalId(
+  externalId: string
+): { repositoryId: string; fileName: string } | null {
   const separatorIndex = externalId.indexOf("#");
   if (separatorIndex <= 0 || separatorIndex === externalId.length - 1) return null;
   const repositoryId = externalId.slice(0, separatorIndex);

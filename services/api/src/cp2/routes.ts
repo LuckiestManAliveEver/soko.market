@@ -9,7 +9,8 @@ import type {
   SokoMode,
   SyncRealtimeReadyEvent,
   InferenceRequest,
-  OwnerInferenceNodeMessage
+  OwnerInferenceNodeMessage,
+  RuntimeRegistryProviderId
 } from "@soko/shared-types";
 import { getStoreLinks } from "@soko/shared-types";
 import { isSyncMutationType } from "@soko/sync-core";
@@ -94,6 +95,17 @@ import type { ReceiptOCRProcessor } from "./receipt-ocr-provider.js";
 import type { BinaryUploadPipeline } from "./binary-upload-pipeline.js";
 import type { OwnerNodeBroker } from "../inference/owner-node-broker.js";
 import { readAuthRuntimeConfig } from "./auth-runtime-config.js";
+import { registerRuntimeRegistryRoutes } from "./runtime-registry/routes.js";
+import { createSokoCatalogRegistryAdapter } from "./runtime-registry/soko-adapter.js";
+import { createGitHubRegistryAdapter } from "./runtime-registry/github-adapter.js";
+import { createHuggingFaceRegistryAdapter } from "./runtime-registry/huggingface-adapter.js";
+import { createRuntimeRegistrySearchService } from "./runtime-registry/search.js";
+import { createRuntimeRegistryImportService } from "./runtime-registry/import-service.js";
+import {
+  createMemoryRuntimeRegistryImportStore,
+  type RuntimeRegistryImportStore
+} from "./runtime-registry/import-store.js";
+import type { RuntimeRegistryAdapter } from "./runtime-registry/types.js";
 
 export interface Cp2RouteOptions {
   binaryUploadPipeline?: BinaryUploadPipeline;
@@ -105,6 +117,9 @@ export interface Cp2RouteOptions {
   oauthAllowedRedirectOrigins?: string[];
   ownerNodeBroker?: OwnerNodeBroker;
   realtimeAllowedOrigins?: string[];
+  /** Defaults to an in-memory store; pass a Postgres-backed one
+   *  (createPostgresRuntimeRegistryImportStore) in a deployment that persists imports. */
+  runtimeRegistryImportStore?: RuntimeRegistryImportStore;
   receiptOCRProcessor?: ReceiptOCRProcessor;
   store?: Cp2Store;
   vapidPublicKey?: string;
@@ -265,6 +280,40 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     options.huggingFaceModelCatalog ?? createHuggingFaceModelCatalogFromEnvironment();
   const huggingFaceAgentCatalog =
     options.huggingFaceAgentCatalog ?? createHuggingFaceAgentCatalogFromEnvironment();
+  // Deployment-wide GitHub/Hugging Face credentials only, today - a connected account's own token
+  // (services/api/src/cp2/domains/external-connections/) improves cache isolation (see
+  // RuntimeRegistryContext.connected in search.ts's cache key) but does not yet raise this
+  // process's own rate limit or unlock that account's private/gated resources for search. Doing so
+  // requires the four underlying catalogs (github-model-catalog.ts, huggingface-model-catalog.ts,
+  // github-agent-catalog.ts, huggingface-agent-catalog.ts) to accept a per-call token override
+  // instead of one baked in at construction - a real, contained follow-up, not done here to avoid
+  // rushing a change to already-tested, already-working catalog code during integration.
+  const runtimeRegistryAdapters: Partial<
+    Record<RuntimeRegistryProviderId, RuntimeRegistryAdapter>
+  > = {
+    soko: createSokoCatalogRegistryAdapter({
+      listModels: () => store.listModelCatalog(),
+      listAgents: () => store.listAgentCatalog(),
+      listHarnesses: () => store.listAgentRuntimeAdapters()
+    }),
+    github: createGitHubRegistryAdapter({
+      modelCatalog: githubModelCatalog,
+      agentCatalog: githubAgentCatalog
+    }),
+    huggingface: createHuggingFaceRegistryAdapter({
+      modelCatalog: huggingFaceModelCatalog,
+      agentCatalog: huggingFaceAgentCatalog
+    })
+  };
+  const runtimeRegistrySearchService = createRuntimeRegistrySearchService({
+    adapters: runtimeRegistryAdapters
+  });
+  const runtimeRegistryImportStore =
+    options.runtimeRegistryImportStore ?? createMemoryRuntimeRegistryImportStore();
+  const runtimeRegistryImportService = createRuntimeRegistryImportService({
+    store: runtimeRegistryImportStore,
+    adapters: runtimeRegistryAdapters
+  });
   const emailProvider = options.emailProvider ?? createEmailProviderFromEnvironment();
   const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
   const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
@@ -1508,6 +1557,28 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     githubAgentCatalog,
     huggingFaceAgentCatalog
   );
+
+  registerRuntimeRegistryRoutes(app, {
+    searchService: runtimeRegistrySearchService,
+    adapters: runtimeRegistryAdapters,
+    importService: runtimeRegistryImportService,
+    resolveContext(sessionId) {
+      const session = store.getSession(sessionId);
+      if (session === null) return { accountId: "", connected: false };
+      const connections = store.listExternalConnections({ sessionId });
+      return {
+        accountId: session.account.id,
+        connected: connections.some((connection) => connection.status === "connected")
+      };
+    },
+    requireAccount(sessionId) {
+      const session = store.getSession(sessionId);
+      if (session === null) {
+        throw new Cp2Error(401, "unauthenticated", "Sign in to import a runtime asset.");
+      }
+      return { accountId: session.account.id, userId: session.user.id };
+    }
+  });
 
   registerMessagingRoutes(app, store, oauthAllowedRedirectOrigins, options.vapidPublicKey);
 

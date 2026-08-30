@@ -19,51 +19,19 @@ The backend is a Node/Fastify API in `services/api`.
 The frontend service is a Render Static Site. It must not run the Vite development
 server in production.
 
-## Browser-inference staging service
+## Browser-inference staging service (retired feature, service definition needs review)
 
-The Blueprint also defines `soko-market-web-staging` on `agent/passkey-auth`. It is intentionally
-separate from `soko-market-web` and:
-
-- builds with `VITE_DEPLOYMENT_ENV=staging`;
-- enables `VITE_BROWSER_LOCAL_INFERENCE_ENABLED=true`;
-- requires a staging-only `VITE_API_BASE_URL` value during Blueprint sync;
-- applies CSP, COOP and COEP headers needed for model downloads, worker execution, threaded WASM and
-  memory measurement;
-- has no production custom domain.
-
-Do not point `VITE_API_BASE_URL` at the production API. Create or select an isolated staging API,
-then sync the Blueprint and confirm the staging static-site URL. Production remains on `main` with
-browser-local inference disabled.
-
-After deployment, verify headers:
-
-```bash
-curl -sSI https://<staging-static-site>.onrender.com/
-```
-
-Then run each backend in a fresh browser process so a timed-out WebGPU queue cannot delay the WASM
-measurement:
-
-```bash
-pnpm benchmark:browser-inference -- \
-  --url=https://<staging-static-site>.onrender.com \
-  --api-origin=https://<staging-api>.onrender.com \
-  --profile=pixel-5 \
-  --backends=webgpu \
-  --max-new-tokens=32 \
-  --output=/tmp/soko-browser-inference-webgpu.json
-
-pnpm benchmark:browser-inference -- \
-  --url=https://<staging-static-site>.onrender.com \
-  --api-origin=https://<staging-api>.onrender.com \
-  --profile=pixel-5 \
-  --backends=wasm \
-  --max-new-tokens=32 \
-  --output=/tmp/soko-browser-inference-wasm.json
-```
-
-The Pixel/Galaxy profiles emulate viewport, user agent, reported memory and processor count. They do
-not substitute for physical Android GPU, thermal or memory-pressure testing.
+The Blueprint still defines `soko-market-web-staging` on `agent/passkey-auth`, built for staging
+the now-retired browser-local inference feature (see
+ADR-device-independent-runtime-and-registry-discovery.md). `VITE_BROWSER_LOCAL_INFERENCE_ENABLED`
+has no effect on any code path anymore, and `pnpm benchmark:browser-inference` (used for WebGPU/WASM
+timing measurement against this service) no longer exists. This service's `render.yaml` block was
+left in place rather than deleted here, since removing a live Render service definition is an
+infrastructure change outside the scope of a documentation/code cleanup pass — decide with Julien
+whether to decommission `soko-market-web-staging` or repurpose it for something else. Its
+Content-Security-Policy was tightened alongside the production site's (dropped `'wasm-unsafe-eval'`,
+`worker-src`/`child-src blob:`, and the `huggingface.co`/`raw.githubusercontent.com` `connect-src`
+allowances, since nothing in the current frontend uses any of them).
 
 ## Required Render dashboard checks
 

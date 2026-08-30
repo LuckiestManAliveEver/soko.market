@@ -60,10 +60,10 @@ The only native execution targets are (as of ADR-device-independent-runtime-and-
 `browser-local` and `installed-app` were retired — a client device never needs a private model copy
 to chat):
 
-| Target               | Meaning                                                                                                                     |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Target               | Meaning                                                                                                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `remote-shop-device` | Inference runs on a shop-owned machine registered as an execution host in the shop runtime graph (e.g. a merchant's laptop running Ollama) — never the currently-open browser/device. |
-| `backend`            | Inference is dispatched through an eligible server-side execution path, then through the selected model's provider adapter. |
+| `backend`            | Inference is dispatched through an eligible server-side execution path, then through the selected model's provider adapter.                                                           |
 
 `backend` does not mean OpenAI, Ollama, or any other provider. Multiple model/provider bindings can
 use the same target, and a compatible model can use a different target without changing model

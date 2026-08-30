@@ -14,10 +14,7 @@ import type {
   NativeRuntimeAgentSummary
 } from "@soko/shared-types";
 import { isRetryableInferenceCategory, normalizeInferenceErrorCode } from "@soko/shared-types";
-import {
-  parseRuntimeModelOutput,
-  type createRuntimeToolProposal
-} from "@soko/tool-core";
+import { parseRuntimeModelOutput, type createRuntimeToolProposal } from "@soko/tool-core";
 
 import { Cp2Error } from "../../cp2-error.js";
 import {

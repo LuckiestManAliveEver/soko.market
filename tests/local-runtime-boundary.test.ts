@@ -13,19 +13,20 @@ describe("optional client-side runtime boundary", () => {
   const chatRuntime = readFileSync("apps/web/src/hooks/useChatRuntimeState.ts", "utf8");
 
   it("excludes owner-node from candidacy for a tool-requiring request", () => {
-    expect(chatRuntime).toContain(
-      "if (inferenceRequest !== null && business !== null && ownerNodeReachable && !requiresServerTool) {"
-    );
+    expect(chatRuntime).toContain("inferenceRequest !== null &&");
+    expect(chatRuntime).toContain("business !== null &&");
+    expect(chatRuntime).toContain("ownerNodeReachable &&");
+    expect(chatRuntime).toContain("!requiresServerTool");
   });
 
   it("falls through to the plain server turn whenever no client route was selected", () => {
-    expect(chatRuntime).toContain(
-      "const shouldResolveClientInference = inferenceRoute !== null;"
-    );
+    expect(chatRuntime).toContain("const shouldResolveClientInference = inferenceRoute !== null;");
     expect(chatRuntime).toContain(
       "const shouldRequestServerInference = !shouldResolveClientInference;"
     );
-    expect(chatRuntime).toContain('postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`');
+    expect(chatRuntime).toContain(
+      "postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`"
+    );
   });
 
   it("does not reintroduce the retired per-device execution-mode preference", () => {

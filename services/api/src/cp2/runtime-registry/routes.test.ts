@@ -129,7 +129,10 @@ describe("registerRuntimeRegistryRoutes", () => {
     registerRuntimeRegistryRoutes(app, {
       searchService: createRuntimeRegistrySearchService({ adapters: { github } }),
       adapters: { github },
-      importService: createRuntimeRegistryImportService({ store: importStore, adapters: { github } }),
+      importService: createRuntimeRegistryImportService({
+        store: importStore,
+        adapters: { github }
+      }),
       resolveContext: () => publicContext,
       requireAccount: () => ({ accountId: "acct-1", userId: "user-1" })
     });

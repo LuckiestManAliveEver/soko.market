@@ -1,5 +1,10 @@
 # Browser model troubleshooting
 
+> **Retired.** Browser-local model inference was retired — see
+> ADR-device-independent-runtime-and-registry-discovery.md. `scripts/benchmark-browser-inference.mjs`
+> and the `pnpm benchmark:browser-inference` command this runbook references no longer exist. Kept
+> as historical record; do not use this to troubleshoot a current deployment.
+
 ## Supported baseline
 
 - Current Chromium-based browser with WebGPU, or WebAssembly for the conservative fallback.

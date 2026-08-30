@@ -63,10 +63,7 @@ export interface RuntimeRegistryContext {
 }
 
 export type RuntimeRegistryCompatibilityStatus =
-  | "compatible"
-  | "incompatible"
-  | "unknown"
-  | "inspection_required";
+  "compatible" | "incompatible" | "unknown" | "inspection_required";
 
 export interface RuntimeRegistrySearchItem {
   provider: RuntimeRegistryProviderId;
