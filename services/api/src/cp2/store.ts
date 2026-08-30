@@ -88,6 +88,8 @@ import { SalesDomain } from "./domains/sales/store.js";
 import { type ProductMediaRecord } from "./domains/sales/shared.js";
 import { McpTokensDomain } from "./domains/mcp-tokens/store.js";
 import { type McpAccessTokenRecord } from "./domains/mcp-tokens/shared.js";
+import { ExternalConnectionsDomain } from "./domains/external-connections/store.js";
+import { type ExternalConnectionRecord } from "./domains/external-connections/shared.js";
 import { PasskeyDomain } from "./domains/passkeys/store.js";
 import {
   type PasskeyCeremonyRecord,
@@ -640,6 +642,7 @@ export interface Cp2Snapshot {
   contactHashes: ContactHashSummary[];
   externalIdentities: ExternalIdentitySummary[];
   sokoIdentityLinks: SokoIdentityLinkSummary[];
+  externalRegistryConnections: ExternalConnectionRecord[];
   auditEvents: BusinessEvent[];
 }
 
@@ -882,6 +885,10 @@ export class Cp2Store {
       recordAuditEvent: (input) => this.recordAuditEvent(input),
       listAccountShops: (input) => this.listAccountShops(input),
       requireIntegrationPrincipal: (input) => this.requireIntegrationPrincipal(input)
+    });
+    this.externalConnectionsDomain = new ExternalConnectionsDomain({
+      requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
+      recordAuditEvent: (input) => this.recordAuditEvent(input)
     });
     this.passkeyDomain = new PasskeyDomain({
       requireAnySession: (sessionId, now) => this.requireAnySession(sessionId, now),
@@ -1248,6 +1255,12 @@ export class Cp2Store {
   // generic snapshot/Postgres-persistence/account-deletion sweeps below. hydrateSnapshot()
   // deliberately does NOT call its clear() - see that domain's shared.ts header comment.
   private readonly mcpTokensDomain: McpTokensDomain;
+  // externalRegistryConnections lives inside `externalConnectionsDomain`
+  // (services/api/src/cp2/domains/external-connections/store.ts) - a real Postgres table
+  // (cp2_external_registry_connections), not the generic entity_id/record convention, the same
+  // shape userIdentities/mcpAccessTokens use. Unlike mcpTokensDomain, hydrateSnapshot() DOES
+  // clear() this domain before restoring - there is no pre-existing gap to preserve here.
+  private readonly externalConnectionsDomain: ExternalConnectionsDomain;
   private readonly syncChangeListeners = new Map<
     string,
     Set<(event: SyncRealtimeChangesAvailableEvent) => void>
@@ -2666,6 +2679,31 @@ export class Cp2Store {
     ...args: Parameters<McpTokensDomain["authenticateMcpAccessToken"]>
   ): ReturnType<McpTokensDomain["authenticateMcpAccessToken"]> {
     return this.mcpTokensDomain.authenticateMcpAccessToken(...args);
+  }
+  listExternalConnections(
+    ...args: Parameters<ExternalConnectionsDomain["list"]>
+  ): ReturnType<ExternalConnectionsDomain["list"]> {
+    return this.externalConnectionsDomain.list(...args);
+  }
+  connectExternalConnection(
+    ...args: Parameters<ExternalConnectionsDomain["connect"]>
+  ): ReturnType<ExternalConnectionsDomain["connect"]> {
+    return this.externalConnectionsDomain.connect(...args);
+  }
+  disconnectExternalConnection(
+    ...args: Parameters<ExternalConnectionsDomain["disconnect"]>
+  ): ReturnType<ExternalConnectionsDomain["disconnect"]> {
+    return this.externalConnectionsDomain.disconnect(...args);
+  }
+  /**
+   * Internal-only accessor for server-side registry adapters (not a route). Never call this from
+   * a route handler directly - go through connectExternalConnection/disconnectExternalConnection/
+   * listExternalConnections for anything a browser can trigger.
+   */
+  resolveExternalConnectionToken(
+    ...args: Parameters<ExternalConnectionsDomain["resolveToken"]>
+  ): ReturnType<ExternalConnectionsDomain["resolveToken"]> {
+    return this.externalConnectionsDomain.resolveToken(...args);
   }
 
   assertMcpShopAccess(principal: McpPrincipal, shopId: string, now = new Date()): void {
@@ -5557,6 +5595,7 @@ export class Cp2Store {
       contactHashes: [...this.networkDomain.contactHashesMap.values()],
       externalIdentities: [...this.networkDomain.externalIdentitiesMap.values()],
       sokoIdentityLinks: [...this.networkDomain.sokoIdentityLinksMap.values()],
+      externalRegistryConnections: [...this.externalConnectionsDomain.connectionsMap.values()],
       auditEvents: [...this.auditEvents]
     };
   }
@@ -5608,6 +5647,7 @@ export class Cp2Store {
     this.oauthDomain.clear();
     this.accountPinHashes.clear();
     this.networkDomain.clear();
+    this.externalConnectionsDomain.clear();
     this.auditEvents.splice(0, this.auditEvents.length);
 
     for (const account of snapshot.accounts) {
@@ -5929,6 +5969,7 @@ export class Cp2Store {
     }
 
     this.mcpTokensDomain.restore(snapshot);
+    this.externalConnectionsDomain.restore(snapshot);
 
     if (this.syncChanges.length === 0) {
       this.backfillSyncChanges();
@@ -8885,6 +8926,10 @@ export class Cp2Store {
         scope
       );
       deletedRecordCount += deleteScopedMapRecords(this.mcpTokensDomain.mcpAccessTokensMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.externalConnectionsDomain.connectionsMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productFieldSchemasMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productMediaMap, scope);
@@ -9026,6 +9071,8 @@ export class Cp2Store {
     this.oauthDomain.rebuildIdentityIndex();
 
     this.mcpTokensDomain.rebuildTokenIndex();
+
+    this.externalConnectionsDomain.rebuildIndex();
 
     this.networkDomain.rebuildDerivedIndexes();
 
