@@ -10,6 +10,7 @@ import type {
   PasskeySummary
 } from "@soko/shared-types";
 
+import { ConnectedSourcesPanel } from "./ConnectedSourcesPanel";
 import { normalizeOwnerPhoneInput } from "./phone-identity";
 import { formatDate } from "./formatters";
 import { PhoneNumberField } from "./PhoneNumberField";
@@ -1168,6 +1169,7 @@ export function IdentitySecurityPanel({
             );
           })}
       </div>
+      <ConnectedSourcesPanel />
       <div className="section-heading">
         <p className="eyebrow">Connected email channel</p>
         <h4>Mailboxes for customer conversations</h4>

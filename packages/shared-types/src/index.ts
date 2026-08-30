@@ -3,6 +3,7 @@ export type RuntimeName = "api" | "sync" | "ai-runtime" | "web";
 export * from "./phone-number.js";
 export * from "./portable-agent.js";
 export * from "./store-links.js";
+export * from "./runtime-registry.js";
 
 import type { PortableAgentManifest } from "./portable-agent.js";
 

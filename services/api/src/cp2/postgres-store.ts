@@ -2073,6 +2073,40 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     lastUsedAt: row.last_used_at === null ? null : timestampToIso(row.last_used_at),
     revokedAt: row.revoked_at === null ? null : timestampToIso(row.revoked_at)
   }));
+
+  const externalRegistryConnectionsResult = await timedQuery<{
+    id: string;
+    account_id: string;
+    provider: "github" | "huggingface";
+    external_account_id: string | null;
+    external_username: string | null;
+    status: "connected" | "expired" | "revoked" | "error";
+    scopes: string[];
+    encrypted_token: string | null;
+    created_at: Date;
+    updated_at: Date;
+  }>(
+    pool,
+    "load external registry connections",
+    `
+      select id, account_id, provider, external_account_id, external_username, status, scopes,
+             encrypted_token, created_at, updated_at
+      from cp2_external_registry_connections
+      order by account_id, created_at, id
+    `
+  );
+  snapshot.externalRegistryConnections = externalRegistryConnectionsResult.rows.map((row) => ({
+    id: row.id,
+    accountId: row.account_id,
+    provider: row.provider,
+    externalAccountId: row.external_account_id,
+    externalUsername: row.external_username,
+    status: row.status,
+    scopes: row.scopes,
+    encryptedToken: row.encrypted_token,
+    createdAt: timestampToIso(row.created_at),
+    updatedAt: timestampToIso(row.updated_at)
+  }));
 }
 
 /**
@@ -2538,6 +2572,11 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   await saveShopDeletionArchives(client, snapshotRecords(snapshot.accountDeletionRequests));
 
   await deleteMissingRows(client, "mcp_access_tokens", snapshotRecords(snapshot.mcpAccessTokens));
+  await deleteMissingRows(
+    client,
+    "cp2_external_registry_connections",
+    snapshotRecords(snapshot.externalRegistryConnections)
+  );
   await deleteMissingRows(client, "receipt_line_items", snapshotRecords(snapshot.receiptLineItems));
   await deleteMissingRows(client, "payments", snapshotRecords(snapshot.payments));
   await deleteMissingInvoiceRows(client, snapshotRecords(snapshot.invoices));
@@ -3067,6 +3106,37 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         token.expiresAt,
         token.lastUsedAt,
         token.revokedAt
+      ]
+    );
+  }
+
+  for (const connection of snapshot.externalRegistryConnections) {
+    await client.query(
+      `
+        insert into cp2_external_registry_connections (
+          id, account_id, provider, external_account_id, external_username, status, scopes,
+          encrypted_token, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10)
+        on conflict (id) do update set
+          external_account_id = excluded.external_account_id,
+          external_username = excluded.external_username,
+          status = excluded.status,
+          scopes = excluded.scopes,
+          encrypted_token = excluded.encrypted_token,
+          updated_at = excluded.updated_at
+      `,
+      [
+        connection.id,
+        connection.accountId,
+        connection.provider,
+        connection.externalAccountId,
+        connection.externalUsername,
+        connection.status,
+        connection.scopes,
+        connection.encryptedToken,
+        connection.createdAt,
+        connection.updatedAt
       ]
     );
   }
@@ -3988,6 +4058,7 @@ function emptySnapshot(): Cp2Snapshot {
     contactHashes: [],
     externalIdentities: [],
     sokoIdentityLinks: [],
+    externalRegistryConnections: [],
     auditEvents: []
   };
 }
