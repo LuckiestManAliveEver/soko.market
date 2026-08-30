@@ -1,4 +1,4 @@
-import { resolveRuntimeModel } from "@soko/shared-types";
+import { repositoryDefaultRuntimePolicy, resolveRuntimeModel } from "@soko/shared-types";
 
 export interface InferenceServiceConfig {
   host: string;
@@ -32,7 +32,9 @@ export function readInferenceServiceConfig(
     environment.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434",
     "OLLAMA_BASE_URL"
   );
-  const primaryModelId = (environment.SOKO_PRIMARY_MODEL_ID ?? "qwen2.5-0.5b-android").trim();
+  const primaryModelId = (
+    environment.SOKO_PRIMARY_MODEL_ID ?? repositoryDefaultRuntimePolicy.modelId
+  ).trim();
   const primaryModel = resolveRuntimeModel(primaryModelId);
   if (primaryModel === null || !primaryModel.enabled) {
     throw new Error("SOKO_PRIMARY_MODEL_ID must identify an enabled runtime model.");

@@ -13,7 +13,8 @@ import type {
   RuntimeTelemetryEvent,
   RuntimeToolName,
   RuntimeTurnSummary,
-  ShopAgentRuntime
+  ShopAgentRuntime,
+  NativeRuntimeAgentSummary
 } from "@soko/shared-types";
 import { isRetryableInferenceCategory, normalizeInferenceErrorCode } from "@soko/shared-types";
 import {
@@ -34,6 +35,10 @@ import {
   buildRuntimeModelPrompt,
   modelTraceFromCompletion
 } from "./shared.js";
+import {
+  runtimeAdapterIdForAgent,
+  type AgentRuntimeAdapter
+} from "../../../agent-runtime/agent-runtime-adapter.js";
 
 interface ClientInferenceAssignmentState {
   agentModelAssignments: Map<string, AgentModelAssignmentSummary>;
@@ -56,6 +61,7 @@ interface RuntimeModelRouteState {
     executionHostId: string | null;
     fallbackIndex: number;
   };
+  resolveAgentRuntimeAdapter: (adapterId: string) => AgentRuntimeAdapter | undefined;
 }
 
 export function requireReadyClientInferenceCompletion(
@@ -181,6 +187,7 @@ export async function createRuntimeModelRoute(
   state: RuntimeModelRouteState,
   input: {
     conversationHistory?: RuntimeModelConversationMessage[];
+    conversationId?: string;
     message: string;
     modelId: string;
     context: RuntimeContextSummary;
@@ -189,6 +196,8 @@ export async function createRuntimeModelRoute(
     memory: string[];
     intent: RuntimeTurnSummary["parserIntent"];
     now: Date;
+    agent: NativeRuntimeAgentSummary;
+    signal?: AbortSignal;
     appendTelemetry: (
       state: RuntimeTelemetryEvent["state"],
       status: RuntimeTelemetryEvent["status"],
@@ -223,6 +232,17 @@ export async function createRuntimeModelRoute(
   const fallbackIndex = input.fallbackIndex ?? resolvedFallbackIndex;
   const fallbackUsed = fallbackIndex > 0;
   const fallbackReason = fallbackUsed ? ("retryable-execution-failure" as const) : null;
+  const agentAdapterId = runtimeAdapterIdForAgent(input.agent);
+  const agentAdapter = state.resolveAgentRuntimeAdapter(agentAdapterId);
+  if (agentAdapter === undefined) {
+    throw new Cp2Error(
+      503,
+      "AGENT_RUNTIME_ADAPTER_UNAVAILABLE",
+      "The selected agent runtime adapter is not registered.",
+      false,
+      { agentId: input.agent.id, agentAdapterId }
+    );
+  }
   const sharedTraceFields = (): Pick<
     RuntimeModelTrace,
     | "modelId"
@@ -233,6 +253,8 @@ export async function createRuntimeModelRoute(
     | "bindingId"
     | "resolutionReason"
     | "executionTarget"
+    | "agentId"
+    | "agentAdapterId"
   > => ({
     ...(runtimeBindingId === null ? {} : { bindingId: runtimeBindingId }),
     modelId: resolvedModelId,
@@ -240,6 +262,8 @@ export async function createRuntimeModelRoute(
     fallbackIndex,
     fallbackUsed,
     fallbackReason,
+    agentId: input.agent.id,
+    agentAdapterId,
     ...(resolutionSource === null ? {} : { resolutionReason: resolutionSource }),
     ...(nativeExecutionTarget === undefined ? {} : { executionTarget: nativeExecutionTarget }),
     ...(binding === null
@@ -324,6 +348,11 @@ export async function createRuntimeModelRoute(
   let completion: RuntimeModelCompletionResult;
 
   try {
+    input.appendTelemetry("agent.started", "completed", null, null, {
+      agentId: input.agent.id,
+      agentAdapterId,
+      modelId: resolvedModelId
+    });
     input.appendTelemetry("model.inference_started", "completed", null, null, {
       provider: provider.name,
       bindingId: binding?.id ?? null,
@@ -332,22 +361,59 @@ export async function createRuntimeModelRoute(
       fallbackIndex,
       runtimeBindingId,
       modelId: resolvedModelId,
-      executionHostId
+      executionHostId,
+      agentId: input.agent.id,
+      agentAdapterId
     });
-    completion = await provider.complete(prompt);
-  } catch {
+    const agentAvailability = await agentAdapter.canRun({
+      agent: input.agent,
+      modelId: resolvedModelId,
+      conversationId: input.conversationId ?? "runtime-unbound",
+      shopId: input.shopRuntime.shopId
+    });
+    if (!agentAvailability.available) {
+      throw new Cp2Error(
+        503,
+        agentAvailability.errorCode ?? "AGENT_RUNTIME_UNAVAILABLE",
+        agentAvailability.message ?? "The selected agent runtime is unavailable.",
+        true
+      );
+    }
+    const agentResult = await agentAdapter.execute({
+      agent: input.agent,
+      bindingId: runtimeBindingId ?? binding?.id ?? "runtime-unbound",
+      executionHostId,
+      modelId: resolvedModelId,
+      conversationId: input.conversationId ?? "runtime-unbound",
+      shopId: input.shopRuntime.shopId,
+      userMessage: input.message,
+      prompt,
+      model: provider,
+      allowedTools,
+      ...(input.signal === undefined ? {} : { signal: input.signal })
+    });
+    completion = agentResult.completion;
+    input.appendTelemetry("agent.completed", "completed", null, null, {
+      agentId: input.agent.id,
+      agentAdapterId,
+      agentEventCount: agentResult.eventTypes.length
+    });
+  } catch (error) {
+    const errorCode = error instanceof Cp2Error ? error.code : "provider_exception";
     input.appendTelemetry("model.completed", "blocked", null, null, {
       provider: provider.name,
       adapterStatus: "error",
       durationMs: 0,
-      errorCode: "provider_exception",
-      failureCategory: "provider_exception",
+      errorCode,
+      failureCategory: errorCode,
       runtimeBindingId,
       modelId: resolvedModelId,
       executionHostId,
       executionTarget: nativeExecutionTarget ?? null,
       resolutionReason: resolutionSource,
-      fallbackIndex
+      fallbackIndex,
+      agentId: input.agent.id,
+      agentAdapterId
     });
 
     return {
@@ -357,7 +423,7 @@ export async function createRuntimeModelRoute(
         status: "error",
         durationMs: 0,
         outputKind: null,
-        errorCode: "provider_exception",
+        errorCode,
         ...sharedTraceFields()
       }
     };

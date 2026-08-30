@@ -49,7 +49,7 @@ describe("Render Blueprint", () => {
     expect(api).toContain('SOKO_EMAIL_FROM\n        value: "Soko <messages@soko.market>"');
   });
 
-  it("keeps downloaded inference off Render and allows only the cloud proxy", async () => {
+  it("keeps hosted inference private and separately deployable", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
     const rootManifest = JSON.parse(
       await readFile(new URL("../package.json", import.meta.url), "utf8")
@@ -82,16 +82,21 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("corepack pnpm build:production");
     expect(rootManifest.scripts["build:production"]).toContain("check:render-inference-boundaries");
 
-    expect(blueprint).not.toContain("name: soko-market-inference");
-    expect(blueprint).not.toContain("services/ai-runtime/Dockerfile");
-    expect(blueprint).not.toContain("mountPath: /var/lib/soko-models");
-    expect(blueprint).not.toContain("BACKEND_INFERENCE_ENABLED");
-    expect(blueprint).not.toContain("BACKEND_INFERENCE_BASE_URL");
-    expect(blueprint).not.toContain("OLLAMA_");
+    expect(blueprint).toContain("type: pserv\n    name: soko-market-inference");
+    expect(blueprint).toContain("dockerfilePath: ./services/ai-runtime/Dockerfile");
+    expect(blueprint).toContain("mountPath: /var/lib/soko-models");
+    expect(blueprint).toContain('BACKEND_INFERENCE_ENABLED\n        value: "true"');
+    expect(blueprint).toContain("BACKEND_INFERENCE_BASE_URL");
+    expect(blueprint).toContain("property: hostport");
+    expect(blueprint).toContain("SOKO_PRIMARY_MODEL_ID\n        value: smollm2-360m");
+    expect(blueprint).toContain(
+      "SOKO_PRIMARY_PROVIDER_MODEL_ID\n        value: smollm2:360m-instruct-q4_0"
+    );
     expect(blueprint).not.toContain("VITE_INFERENCE_SERVICE_TOKEN");
 
-    // Render may proxy a configured cloud model, but must never execute downloaded model weights.
-    expect(api.toLowerCase()).not.toContain("ollama");
+    // The API has only a private gateway URL/token; Ollama remains inside the inference container.
+    expect(api).not.toContain("OLLAMA_BASE_URL");
+    expect(api).toContain("envVarKey: INFERENCE_SERVICE_TOKEN");
     expect(api).toContain('BACKEND_INFERENCE_REQUIRED\n        value: "false"');
 
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');

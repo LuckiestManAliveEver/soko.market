@@ -1,4 +1,9 @@
-import { resolveRuntimeModel, type EnvironmentConfig } from "@soko/shared-types";
+import {
+  repositoryDefaultRuntimePolicy,
+  resolveRuntimeModel,
+  type EnvironmentConfig,
+  type ModelExecutionTarget
+} from "@soko/shared-types";
 
 function numberFromEnv(name: string, fallback: number): number {
   const value = process.env[name];
@@ -105,7 +110,7 @@ export function readEnvironment(): EnvironmentConfig {
   }
   const backendInferenceModelId = stringFromEnv(
     "BACKEND_INFERENCE_MODEL_ID",
-    "qwen2.5-0.5b-android"
+    repositoryDefaultRuntimePolicy.modelId
   );
   const runtimeModel = resolveRuntimeModel(backendInferenceModelId);
   if (backendInferenceEnabled && (runtimeModel === null || !runtimeModel.enabled)) {
@@ -149,8 +154,49 @@ export function readEnvironment(): EnvironmentConfig {
     inferenceJobTimeoutMs: numberFromEnv("INFERENCE_JOB_TIMEOUT_MS", 120_000),
     workspaceDeliveryMaxFileBytes: numberFromEnv("WORKSPACE_DELIVERY_MAX_FILE_BYTES", 10_000_000),
     workspaceRoot: stringFromEnv("SOKO_WORKSPACE_ROOT", "").trim(),
-    redisUrl: readRedisUrl()
+    redisUrl: readRedisUrl(),
+    platformDefaultRuntime: {
+      agentId: portableIdFromEnv(
+        "PLATFORM_DEFAULT_AGENT_ID",
+        repositoryDefaultRuntimePolicy.agentId
+      ),
+      agentName: stringFromEnv(
+        "PLATFORM_DEFAULT_AGENT_NAME",
+        repositoryDefaultRuntimePolicy.agentName
+      ).trim(),
+      agentRuntimeAdapterId: portableIdFromEnv(
+        "PLATFORM_DEFAULT_AGENT_ADAPTER_ID",
+        repositoryDefaultRuntimePolicy.agentRuntimeAdapterId
+      ),
+      modelId: portableIdFromEnv(
+        "PLATFORM_DEFAULT_MODEL_ID",
+        repositoryDefaultRuntimePolicy.modelId
+      ),
+      executionTarget: executionTargetFromEnv(
+        "PLATFORM_DEFAULT_EXECUTION_TARGET",
+        repositoryDefaultRuntimePolicy.executionTarget
+      )
+    }
   };
+}
+
+function portableIdFromEnv(name: string, fallback: string): string {
+  const value = stringFromEnv(name, fallback).trim();
+  if (!/^[a-z0-9][a-z0-9:._-]{0,199}$/u.test(value)) {
+    throw new Error(`${name} must be a portable lowercase identifier.`);
+  }
+  return value;
+}
+
+function executionTargetFromEnv(
+  name: string,
+  fallback: ModelExecutionTarget
+): ModelExecutionTarget {
+  const value = stringFromEnv(name, fallback).trim();
+  if (["backend", "browser-local", "installed-app", "remote-shop-device"].includes(value)) {
+    return value as ModelExecutionTarget;
+  }
+  throw new Error(`${name} is not a supported model execution target.`);
 }
 
 // Rate limiting requires a real, shared Redis so counters survive process restarts and are

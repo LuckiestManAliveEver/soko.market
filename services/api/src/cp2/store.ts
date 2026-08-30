@@ -14,7 +14,8 @@ import {
   defaultAgentDefinition,
   defaultAgentDefinitionId,
   isAccountSyncCollection,
-  isAgentDefinitionId
+  isAgentDefinitionId,
+  repositoryDefaultRuntimePolicy
 } from "@soko/shared-types";
 import { Cp2Error, assertValid } from "./cp2-error.js";
 import { roundMoney } from "./money.js";
@@ -58,6 +59,8 @@ import {
   type MessageNotificationDelivery
 } from "./domains/messaging/shared.js";
 import { AgentRuntimeDomain } from "./domains/agent-runtime/store.js";
+import { createDefaultAgentRuntimeAdapterRegistry } from "../agent-runtime/default-agent-runtime-adapters.js";
+import type { AgentRuntimeAdapter } from "../agent-runtime/agent-runtime-adapter.js";
 import {
   aiModelRegistry,
   computeModelAvailability,
@@ -164,6 +167,7 @@ import type {
   McpPrincipal,
   MembershipSummary,
   ModelExecutionTarget,
+  PlatformDefaultRuntimePolicy,
   NetworkEdgeSummary,
   NetworkNodeSummary,
   NetworkPermissionSummary,
@@ -647,6 +651,8 @@ export interface Cp2StoreOptions {
     agentId: string;
     shopId: string;
   }) => ModelRuntimeAdapter | undefined;
+  agentRuntimeAdapterResolver?: (adapterId: string) => AgentRuntimeAdapter | undefined;
+  platformDefaultRuntime?: PlatformDefaultRuntimePolicy;
   pushNotificationSender?: PushNotificationSender;
   messageEmailNotificationSender?: MessageEmailNotificationSender;
   networkInviteSender?: NetworkInviteSender;
@@ -751,8 +757,12 @@ export class Cp2Store {
   private readonly conversationAttachmentBlobStore: ConversationAttachmentBlobStore;
   private readonly accountAiAssetStore: AccountAiAssetStore;
   private readonly mcpPrincipalContext = new AsyncLocalStorage<McpPrincipal>();
+  private readonly defaultAgentRuntimeAdapters = createDefaultAgentRuntimeAdapterRegistry();
 
   constructor(private readonly options: Cp2StoreOptions = {}) {
+    this.nativeRuntimeBindings = new NativeRuntimeBindingStore(
+      options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy
+    );
     this.channelGateway = options.channelGateway ?? createChannelGatewayFromEnvironment({});
     this.emailMailboxProviderClient =
       options.emailMailboxProviderClient ?? createEmailMailboxProviderClient({});
@@ -999,6 +1009,7 @@ export class Cp2Store {
         : { workspaceDeliveryMaxFileBytes: this.options.workspaceDeliveryMaxFileBytes })
     });
     this.agentRuntimeDomain = new AgentRuntimeDomain({
+      platformDefaultRuntime: this.options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy,
       listModelCatalog: () => this.listModelCatalog(),
       resolveCatalogModel: (modelId) => this.resolveCatalogModel(modelId),
       resolveAgentCatalogEntry: (agentDefinitionId) =>
@@ -1163,6 +1174,9 @@ export class Cp2Store {
       ...(this.options.modelRuntimeAdapterResolver === undefined
         ? {}
         : { modelRuntimeAdapterResolver: this.options.modelRuntimeAdapterResolver }),
+      agentRuntimeAdapterResolver:
+        this.options.agentRuntimeAdapterResolver ??
+        ((adapterId) => this.defaultAgentRuntimeAdapters.resolve(adapterId)),
       ...(this.options.runtimeModelProviderResolver === undefined
         ? {}
         : { runtimeModelProviderResolver: this.options.runtimeModelProviderResolver }),
@@ -1212,7 +1226,7 @@ export class Cp2Store {
   // below. `mcpAccessTokens`/`mcpTokenIdByHash` deliberately stay here (see that domain's header
   // comment for why).
   private readonly agentRuntimeDomain: AgentRuntimeDomain;
-  private readonly nativeRuntimeBindings = new NativeRuntimeBindingStore();
+  private readonly nativeRuntimeBindings: NativeRuntimeBindingStore;
   // DB-hosted model/agent catalog (see infra/db/migrations/071_platform_catalog.sql) and the
   // platform-operator grants that authorize editing it - see requirePlatformOperator,
   // listModelCatalog/upsertModelCatalogEntry/removeModelCatalogEntry, and the agent-catalog

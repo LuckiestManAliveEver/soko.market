@@ -357,7 +357,7 @@ describe("zero-setup hosted-first runtime provisioning", () => {
   it("provisions a verified generic backend binding for first chat without manual activation", async () => {
     const backendGenerate = vi.fn(async () => ({
       text: JSON.stringify({ type: "response", message: "Soko AI is ready." }),
-      modelId,
+      modelId: "smollm2-360m",
       provider: "test-hosted-adapter",
       executionTarget: "backend" as const,
       latencyMs: 2
@@ -423,7 +423,7 @@ describe("zero-setup hosted-first runtime provisioning", () => {
         response: "Soko AI is ready.",
         model: {
           status: "available",
-          modelId,
+          modelId: "smollm2-360m",
           executionTarget: "backend",
           fallbackIndex: 0
         }

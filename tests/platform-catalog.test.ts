@@ -15,6 +15,7 @@ describe("DB-hosted platform model/agent catalog", () => {
     expect(models.map((model) => model.id).sort()).toEqual(
       [
         "smollm2-360m-android",
+        "smollm2-360m",
         "tinyllama-1.1b-chat-q3-k-m-android",
         "tinyllama-1.1b-chat-q4-k-m-android",
         "qwen2.5-0.5b-android",
@@ -128,7 +129,7 @@ describe("DB-hosted platform model/agent catalog", () => {
 
       const removeDefaultModel = await app.inject({
         method: "DELETE",
-        url: "/v1/platform/model-catalog/qwen2.5-0.5b-android",
+        url: "/v1/platform/model-catalog/smollm2-360m",
         headers: { cookie: operator.cookie }
       });
       expect(removeDefaultModel.statusCode).toBe(409);

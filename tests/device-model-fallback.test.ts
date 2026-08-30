@@ -149,7 +149,7 @@ describe("device model fallback", () => {
     expect(deviceB).toMatchObject({
       deviceId: "device-b",
       activeModelInstallationId: null,
-      modelId: "qwen2.5-0.5b-android",
+      modelId: "smollm2-360m",
       preferredExecutionMode: "LOCAL_FIRST",
       readinessStatus: "ATTACHED",
       runtimeBackend: null,

@@ -1,6 +1,6 @@
 FROM ollama/ollama:0.32.3 AS ollama
 
-FROM node:20.19.0-bookworm-slim AS build
+FROM node:22.19.0-bookworm-slim AS build
 ENV COREPACK_DEFAULT_TO_LATEST=0
 WORKDIR /workspace
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
@@ -12,7 +12,7 @@ COPY packages/shared-types packages/shared-types
 COPY services/ai-runtime services/ai-runtime
 RUN pnpm --filter @soko/ai-runtime build
 
-FROM node:20.19.0-bookworm-slim AS runtime
+FROM node:22.19.0-bookworm-slim AS runtime
 ENV NODE_ENV=production
 ENV AI_RUNTIME_HOST=0.0.0.0
 ENV AI_RUNTIME_PORT=4002

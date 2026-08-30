@@ -113,4 +113,22 @@ describe("native runtime binding migration", () => {
     expect(rollback).toContain("drop table if exists cp2_agent_catalog");
     expect(rollback).toContain("drop table if exists cp2_model_catalog");
   });
+
+  it("materializes Pi and SmolLM without rewriting tenant bindings", async () => {
+    const migration = await readFile(
+      new URL("../infra/db/migrations/072_pi_smollm_default_runtime.sql", import.meta.url),
+      "utf8"
+    );
+    const rollback = await readFile(
+      new URL("../infra/db/rollbacks/072_pi_smollm_default_runtime.down.sql", import.meta.url),
+      "utf8"
+    );
+    expect(migration).toContain("'builtin:pi:v1'");
+    expect(migration).toContain("'smollm2-360m'");
+    expect(migration).toContain("smollm2:360m-instruct-q4_0");
+    expect(migration).toContain('"runtimeAdapterId":"pi"');
+    expect(migration).toContain("where entity_id = 'builtin:soko-default-runtime:v1'");
+    expect(migration).not.toContain("where business_id is not null");
+    expect(rollback).toContain("parent_id = 'builtin:soko-agent:v1'");
+  });
 });

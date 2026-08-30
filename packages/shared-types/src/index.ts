@@ -33,7 +33,25 @@ export interface EnvironmentConfig {
   workspaceDeliveryMaxFileBytes: number;
   workspaceRoot: string;
   redisUrl: string;
+  platformDefaultRuntime: PlatformDefaultRuntimePolicy;
 }
+
+/** Deployment policy selects defaults; runtime records and adapters remain independently swappable. */
+export interface PlatformDefaultRuntimePolicy {
+  agentId: string;
+  agentName: string;
+  agentRuntimeAdapterId: string;
+  modelId: string;
+  executionTarget: ModelExecutionTarget;
+}
+
+export const repositoryDefaultRuntimePolicy: PlatformDefaultRuntimePolicy = {
+  agentId: "builtin:pi:v1",
+  agentName: "Pi",
+  agentRuntimeAdapterId: "pi",
+  modelId: "smollm2-360m",
+  executionTarget: "backend"
+};
 
 export type InferenceRuntime =
   "browser-webgpu" | "browser-wasm" | "native-llama-cpp" | "owner-node";
@@ -1035,8 +1053,6 @@ export interface RuntimeModelDefinition {
   displayName: string;
   provider: "ollama";
   providerModelId: string;
-  executionTarget: "backend";
-  deploymentTarget: "render-private-inference";
   contextWindow: number;
   enabled: boolean;
 }
@@ -1047,8 +1063,6 @@ export const runtimeModels = {
     displayName: "Qwen2.5 0.5B",
     provider: "ollama",
     providerModelId: "qwen2.5:0.5b",
-    executionTarget: "backend",
-    deploymentTarget: "render-private-inference",
     contextWindow: 32_768,
     enabled: true
   },
@@ -1057,18 +1071,23 @@ export const runtimeModels = {
     displayName: "Qwen2.5 1.5B",
     provider: "ollama",
     providerModelId: "qwen2.5:1.5b",
-    executionTarget: "backend",
-    deploymentTarget: "render-private-inference",
     contextWindow: 32_768,
     enabled: false
   },
-  "smollm2-360m-android": {
-    id: "smollm2-360m-android",
+  "smollm2-360m": {
+    id: "smollm2-360m",
     displayName: "SmolLM2 360M",
     provider: "ollama",
-    providerModelId: "smollm2:360m",
-    executionTarget: "backend",
-    deploymentTarget: "render-private-inference",
+    providerModelId: "smollm2:360m-instruct-q4_0",
+    contextWindow: 8_192,
+    enabled: true
+  },
+  /** Compatibility ID retained for installed clients; new bindings use smollm2-360m. */
+  "smollm2-360m-android": {
+    id: "smollm2-360m-android",
+    displayName: "SmolLM2 360M (legacy ID)",
+    provider: "ollama",
+    providerModelId: "smollm2:360m-instruct-q4_0",
     contextWindow: 8_192,
     enabled: false
   }
@@ -3195,6 +3214,8 @@ export type RuntimePlanStatus =
 export type RuntimeTelemetryState =
   | "turn.received"
   | "context.built"
+  | "agent.started"
+  | "agent.completed"
   | "model.prompt_built"
   | "model.inference_started"
   | "model.completed"
@@ -3409,7 +3430,7 @@ export interface RuntimeModelCompletionResult {
 
 export interface RuntimeModelProvider {
   name: RuntimeModelProviderName;
-  complete(prompt: RuntimeModelPrompt): Promise<RuntimeModelCompletionResult>;
+  complete(prompt: RuntimeModelPrompt, signal?: AbortSignal): Promise<RuntimeModelCompletionResult>;
   diagnose?(runInference?: boolean): Promise<RuntimeModelDiagnostic>;
 }
 
@@ -3431,6 +3452,8 @@ export interface RuntimeModelTrace {
   resolutionReason?: string;
   fallbackUsed?: boolean;
   fallbackReason?: string | null;
+  agentId?: string;
+  agentAdapterId?: string;
 }
 
 export interface RuntimePlannedAction {
@@ -3983,6 +4006,7 @@ export interface NativeRuntimeActivationInput {
   accountId: string;
   agentId: string;
   agentName: string;
+  agentRuntimeAdapterId?: string;
   model: AiModelSummary;
   executionTarget: ModelExecutionTarget;
   fallbackModel: AiModelSummary | null;
@@ -4007,6 +4031,7 @@ export interface NativeDefaultRuntimeProvisioningInput {
   accountId: string;
   agentId: string;
   agentName: string;
+  agentRuntimeAdapterId?: string;
   candidates: NativeRuntimeProvisioningCandidate[];
   updatedBy: string;
   checkedAt: string;

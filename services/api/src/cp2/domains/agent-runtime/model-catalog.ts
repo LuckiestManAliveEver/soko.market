@@ -3,7 +3,7 @@ import { resolveRuntimeModel } from "@soko/shared-types";
 
 import { readBoundedSecurityInteger } from "../../text-normalization.js";
 
-export const defaultAiModelId = "qwen2.5-0.5b-android";
+export const defaultAiModelId = "smollm2-360m";
 export const downloadableAiModelIdPattern =
   /^(?:custom:[a-z0-9][a-z0-9._-]{0,79}|github:[a-z0-9][a-z0-9._-]{0,149}|huggingface:[a-z0-9][a-z0-9._-]{0,167})$/;
 export const documentUploadContextScript = [
@@ -199,6 +199,25 @@ export const aiModelRegistry: AiModelSummary[] = [
   },
   {
     id: defaultAiModelId,
+    label: "SmolLM2 360M Instruct Q4_0",
+    provider: "local",
+    description: "Small Apache-2.0 instruction model used by the default hosted runtime.",
+    capabilities: ["chat", "english", "instruction-following"],
+    available: true,
+    source: "hosted",
+    format: "remote",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct/blob/main/LICENSE",
+    modelCardUrl: "https://ollama.com/library/smollm2:360m-instruct-q4_0",
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: 229_000_000,
+    minimumMemoryGb: null,
+    recommended: true,
+    contextWindow: 8_192
+  },
+  {
+    id: "qwen2.5-0.5b-android",
     label: "Qwen2.5 0.5B (Android recommended)",
     provider: "local",
     description: "Balanced multilingual on-device agent model for mainstream Android phones.",
@@ -214,8 +233,7 @@ export const aiModelRegistry: AiModelSummary[] = [
     fileName: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
     fileSizeBytes: 491_000_000,
     minimumMemoryGb: 3,
-    recommended: true,
-    // Matches the backend/Ollama runtimeModels declaration for this same model id.
+    recommended: false,
     contextWindow: 32_768
   },
   {

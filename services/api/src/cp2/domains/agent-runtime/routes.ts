@@ -1196,14 +1196,20 @@ export function registerAgentRuntimeRoutes(
   app.post(
     "/businesses/:businessId/runtime/turns",
     async (request: FastifyRequest<{ Params: BusinessParams; Body: RuntimeTurnBody }>, reply) => {
+      const cancellation = new AbortController();
+      const abort = () => cancellation.abort();
+      request.raw.once("aborted", abort);
       try {
         return await store.createRuntimeTurn({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
+          signal: cancellation.signal,
           ...parseRuntimeTurnBody(request.body)
         });
       } catch (error) {
         return sendCp2Error(reply, error);
+      } finally {
+        request.raw.off("aborted", abort);
       }
     }
   );

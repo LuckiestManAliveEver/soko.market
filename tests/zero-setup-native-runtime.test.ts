@@ -2,13 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
+import type { AgentRuntimeAdapter } from "../services/api/src/agent-runtime/agent-runtime-adapter";
 import {
   ModelRuntimeError,
   type ModelRuntimeAdapter
 } from "../services/api/src/inference/model-runtime";
 
-const primaryModelId = "qwen2.5-0.5b-android";
-const fallbackModelId = "qwen2.5-1.5b-android";
+const primaryModelId = "smollm2-360m";
+const fallbackModelId = "qwen2.5-0.5b-android";
 
 describe("zero-setup native runtime", () => {
   it("completes a brand-new user's first /v1/messages chat without a download or activation", async () => {
@@ -43,7 +44,9 @@ describe("zero-setup native runtime", () => {
             model: {
               status: "available",
               modelId: primaryModelId,
-              executionTarget: "backend"
+              executionTarget: "backend",
+              agentId: "builtin:pi:v1",
+              agentAdapterId: "pi"
             }
           }
         },
@@ -51,7 +54,84 @@ describe("zero-setup native runtime", () => {
       });
       expect(generate).toHaveBeenCalledOnce();
       expect(tenantDefaultBindings(store, actor.businessId)).toHaveLength(1);
+      expect(
+        store.snapshot().nativeRuntimeAgents.find((agent) => agent.id === "builtin:pi:v1")
+      ).toMatchObject({
+        provider: "pi",
+        configuration: { runtimeAdapterId: "pi", requiredModelCapabilities: ["chat"] }
+      });
       expect(store.snapshot().agentModelBindings).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("resolves a swapped platform default agent through the exact same first-chat path as Pi", async () => {
+    const betaExecute = vi.fn(async (input: Parameters<AgentRuntimeAdapter["execute"]>[0]) => ({
+      completion: await input.model.complete(input.prompt, input.signal),
+      eventTypes: ["beta.turn_start", "beta.turn_end"]
+    }));
+    const betaAdapter: AgentRuntimeAdapter = {
+      id: "beta",
+      canRun: async () => ({ available: true, errorCode: null, message: null }),
+      execute: betaExecute
+    };
+    const generate = vi.fn(async () => generation(primaryModelId, "Agent B is ready."));
+    const store = createCp2Store({
+      platformDefaultRuntime: {
+        agentId: "builtin:agent-b:v1",
+        agentName: "Agent B",
+        agentRuntimeAdapterId: "beta",
+        modelId: primaryModelId,
+        executionTarget: "backend"
+      },
+      agentRuntimeAdapterResolver: (adapterId) => (adapterId === "beta" ? betaAdapter : undefined),
+      modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
+        modelId === primaryModelId && executionTarget === "backend"
+          ? adapter(modelId, generate)
+          : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+    try {
+      const actor = await createActorAndShop(app, "+254700008111", "Swapped Agent Shop");
+      const conversationId = await createConversation(app, actor.cookie, actor.businessId);
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/messages",
+        headers: jsonHeaders(actor.cookie),
+        payload: JSON.stringify({
+          conversationId,
+          clientMessageId: "first-chat-message",
+          content: { type: "text", text: "Hello" },
+          agent: { businessId: actor.businessId, message: "Hello" }
+        })
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        agentMessage: { content: { type: "text", text: "Agent B is ready." } },
+        runtime: {
+          turn: {
+            model: {
+              status: "available",
+              modelId: primaryModelId,
+              executionTarget: "backend",
+              agentId: "builtin:agent-b:v1",
+              agentAdapterId: "beta"
+            }
+          }
+        },
+        processing: { status: "completed", errorCode: null }
+      });
+      expect(betaExecute).toHaveBeenCalledOnce();
+      expect(generate).toHaveBeenCalledOnce();
+      expect(
+        store.snapshot().nativeRuntimeAgents.find((agent) => agent.id === "builtin:agent-b:v1")
+      ).toMatchObject({
+        provider: "soko-business-agent",
+        packageRef: null,
+        configuration: { runtimeAdapterId: "beta", requiredModelCapabilities: ["chat"] }
+      });
     } finally {
       await app.close();
     }

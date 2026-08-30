@@ -475,10 +475,13 @@ export function runtimeProviderFromAdapter(input: {
 }): RuntimeModelProvider {
   return {
     name: input.adapter.provider as RuntimeModelProvider["name"],
-    async complete(prompt) {
+    async complete(prompt, signal) {
       const startedAt = Date.now();
       try {
-        const result = await input.adapter.generate({ context: input.context, prompt });
+        const result = await input.adapter.generate({
+          context: { ...input.context, ...(signal === undefined ? {} : { signal }) },
+          prompt
+        });
         return {
           provider: result.provider as RuntimeModelCompletionResult["provider"],
           status: "available",

@@ -1,6 +1,6 @@
 const baseUrl = required("SOKO_INFERENCE_URL").replace(/\/+$/u, "");
 const token = required("INFERENCE_SERVICE_TOKEN");
-const modelId = process.env.SOKO_MODEL_ID?.trim() || "qwen2.5-0.5b-android";
+const modelId = process.env.SOKO_MODEL_ID?.trim() || "smollm2-360m";
 const response = await fetch(`${baseUrl}/v1/models/${encodeURIComponent(modelId)}/probe`, {
   method: "POST",
   headers: {

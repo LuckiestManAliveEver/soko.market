@@ -8,6 +8,7 @@ import type {
   BusinessSummary,
   MembershipSummary,
   ModelExecutionTarget,
+  PlatformDefaultRuntimePolicy,
   NativeRuntimeBindingSummary,
   NativeRuntimeActivationInput,
   NativeDefaultRuntimeProvisioningInput,
@@ -20,10 +21,12 @@ import type {
 import type { BusinessPermission } from "@soko/business-core";
 
 import type { ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
+import type { AgentRuntimeAdapter } from "../../../agent-runtime/agent-runtime-adapter.js";
 import type { SessionRecord } from "../../store.js";
 import type { AgentRuntimeCommerceDeps } from "./domain-deps-commerce.js";
 
 export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
+  platformDefaultRuntime: PlatformDefaultRuntimePolicy;
   // DB-hosted model catalog (see infra/db/migrations/071_platform_catalog.sql,
   // Cp2Store.modelCatalog) - the source of truth every aiModelRegistry.find()/.filter() call in
   // this domain used to read directly now goes through these instead, so a platform operator's
@@ -98,6 +101,7 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
     agentId: string;
     shopId: string;
   }) => ModelRuntimeAdapter | undefined;
+  agentRuntimeAdapterResolver: (adapterId: string) => AgentRuntimeAdapter | undefined;
   runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
   runtimeModelProvider?: RuntimeModelProvider;
 }

@@ -1,6 +1,8 @@
 const command = process.argv[2];
 const baseUrl = (process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434").replace(/\/+$/u, "");
-const providerModelId = (process.env.SOKO_PRIMARY_PROVIDER_MODEL_ID ?? "qwen2.5:0.5b").trim();
+const providerModelId = (
+  process.env.SOKO_PRIMARY_PROVIDER_MODEL_ID ?? "smollm2:360m-instruct-q4_0"
+).trim();
 
 if (command === "wait") {
   const deadline = Date.now() + Number(process.env.OLLAMA_START_TIMEOUT_MS ?? 90_000);

@@ -4,7 +4,7 @@ const inferenceToken = required("INFERENCE_SERVICE_TOKEN");
 const sessionToken = required("SOKO_TEST_TOKEN");
 const agentId = required("SOKO_TEST_AGENT_ID");
 const shopId = required("SOKO_TEST_SHOP_ID");
-const modelId = process.env.SOKO_MODEL_ID?.trim() || "qwen2.5-0.5b-android";
+const modelId = process.env.SOKO_MODEL_ID?.trim() || "smollm2-360m";
 const cookie = sessionToken.includes("=") ? sessionToken : `soko_session=${sessionToken}`;
 
 const apiReadiness = await getJson(`${apiUrl}/health/ready`);

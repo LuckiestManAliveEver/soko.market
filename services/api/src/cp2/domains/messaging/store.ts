@@ -240,6 +240,7 @@ export interface MessagingDomainDeps {
     runtimeSessionId?: string;
     message: string;
     conversationHistory?: RuntimeModelConversationMessage[];
+    signal?: AbortSignal;
     now?: Date;
   }) => Promise<RuntimeTurnResult>;
   agentModelRecoveryGuidance: (businessId: string, error: Cp2Error) => string;

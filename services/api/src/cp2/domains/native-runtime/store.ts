@@ -4,6 +4,7 @@ import type {
   AiModelSummary,
   ConversationSummary,
   ModelExecutionTarget,
+  PlatformDefaultRuntimePolicy,
   NativeDefaultRuntimeProvisioningInput,
   NativeDefaultRuntimeProvisioningResult,
   NativeRuntimeAvailabilityStatus,
@@ -17,11 +18,13 @@ import type {
   ResolvedNativeRuntimeBinding,
   ResolvedNativeRuntimeModel
 } from "@soko/shared-types";
+import { repositoryDefaultRuntimePolicy, resolveRuntimeModel } from "@soko/shared-types";
 
 import { Cp2Error } from "../../cp2-error.js";
 
 export const nativeRuntimeContractVersion = "1";
-export const builtinRuntimeAgentId = "builtin:soko-agent:v1";
+export const builtinRuntimeAgentId = "builtin:pi:v1";
+export const legacyBuiltinRuntimeAgentId = "builtin:soko-agent:v1";
 export const globalDefaultRuntimeBindingId = "builtin:soko-default-runtime:v1";
 
 export interface NativeRuntimeSnapshot {
@@ -41,7 +44,9 @@ export class NativeRuntimeBindingStore {
   private readonly bindings = new Map<string, NativeRuntimeBindingSummary>();
   private readonly bindingModels = new Map<string, NativeRuntimeBindingModelSummary>();
 
-  constructor() {
+  constructor(
+    private readonly defaultRuntimePolicy: PlatformDefaultRuntimePolicy = repositoryDefaultRuntimePolicy
+  ) {
     this.ensureGlobalDefault();
   }
 
@@ -56,18 +61,23 @@ export class NativeRuntimeBindingStore {
   // openai-fast default) into this same unconfigured state.
   ensureGlobalDefault(now: Date = new Date()): NativeRuntimeBindingSummary {
     const timestamp = now.toISOString();
-    const existingAgent = this.agents.get(builtinRuntimeAgentId);
-    this.agents.set(builtinRuntimeAgentId, {
-      id: builtinRuntimeAgentId,
+    const agentId = this.defaultRuntimePolicy.agentId;
+    const adapterId = this.defaultRuntimePolicy.agentRuntimeAdapterId;
+    const existingAgent = this.agents.get(agentId);
+    this.agents.set(agentId, {
+      id: agentId,
       businessId: null,
       accountId: null,
-      name: "Soko built-in agent",
-      provider: "soko",
-      packageRef: null,
+      name: this.defaultRuntimePolicy.agentName,
+      provider: adapterId === "pi" ? "pi" : "soko-business-agent",
+      packageRef: adapterId === "pi" ? "npm:@earendil-works/pi-agent-core@0.84.4" : null,
       version: "1",
       runtimeContractVersion: nativeRuntimeContractVersion,
       capabilities: ["tools", "mcp"],
-      configuration: { requiredModelCapabilities: ["chat", "tool-routing"] },
+      configuration: {
+        runtimeAdapterId: this.defaultRuntimePolicy.agentRuntimeAdapterId,
+        requiredModelCapabilities: ["chat"]
+      },
       status: "active",
       createdAt: existingAgent?.createdAt ?? timestamp,
       updatedAt: timestamp
@@ -78,8 +88,8 @@ export class NativeRuntimeBindingStore {
         id: globalDefaultRuntimeBindingId,
         businessId: null,
         accountId: null,
-        agentId: builtinRuntimeAgentId,
-        name: "Soko default runtime",
+        agentId,
+        name: `${this.defaultRuntimePolicy.agentName} default runtime`,
         status: "draft",
         isDefault: true,
         configuration: { source: "repository-default" },
@@ -105,7 +115,7 @@ export class NativeRuntimeBindingStore {
     updatedBy: string;
   }): NativeRuntimeBindingSummary {
     const binding = this.bindings.get(globalDefaultRuntimeBindingId);
-    const agent = this.agents.get(builtinRuntimeAgentId);
+    const agent = this.agents.get(this.defaultRuntimePolicy.agentId);
     if (binding === undefined || agent === undefined) {
       throw new Cp2Error(
         503,
@@ -146,12 +156,16 @@ export class NativeRuntimeBindingStore {
       businessId: input.businessId,
       accountId: input.accountId,
       name: input.agentName,
-      provider: "soko-business-agent",
-      packageRef: null,
+      provider: input.agentRuntimeAdapterId === "pi" ? "pi" : "soko-business-agent",
+      packageRef:
+        input.agentRuntimeAdapterId === "pi" ? "npm:@earendil-works/pi-agent-core@0.84.4" : null,
       version: "1",
       runtimeContractVersion: nativeRuntimeContractVersion,
       capabilities: ["tools", "mcp"],
-      configuration: { requiredModelCapabilities: ["tool-routing"] },
+      configuration: {
+        runtimeAdapterId: input.agentRuntimeAdapterId ?? "soko",
+        requiredModelCapabilities: ["chat"]
+      },
       status: "active",
       createdAt: timestamp,
       updatedAt: timestamp
@@ -337,6 +351,9 @@ export class NativeRuntimeBindingStore {
       accountId: input.accountId,
       agentId: input.agentId,
       agentName: input.agentName,
+      ...(input.agentRuntimeAdapterId === undefined
+        ? {}
+        : { agentRuntimeAdapterId: input.agentRuntimeAdapterId }),
       model: primary.model,
       executionTarget: primary.executionTarget,
       fallbackModel: fallbacks[0]?.model ?? null,
@@ -720,11 +737,12 @@ export class NativeRuntimeBindingStore {
     timestamp: string
   ): NativeRuntimeModelSummary {
     const existing = this.models.get(model.id);
+    const providerMapping = resolveRuntimeModel(model.id);
     const next: NativeRuntimeModelSummary = {
       id: model.id,
       name: model.label,
-      provider: model.provider,
-      providerModelId: model.id,
+      provider: providerMapping?.provider ?? model.provider,
+      providerModelId: providerMapping?.providerModelId ?? model.id,
       runtimeContractVersion: nativeRuntimeContractVersion,
       capabilities: [...model.capabilities],
       configuration: {

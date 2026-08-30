@@ -240,6 +240,12 @@ describe("Render private inference service", () => {
 });
 
 describe("Render inference configuration", () => {
+  it("uses the canonical SmolLM deployment default", () => {
+    expect(readInferenceServiceConfig({ INFERENCE_SERVICE_TOKEN: token })).toMatchObject({
+      primaryModelId: "smollm2-360m"
+    });
+  });
+
   it("validates the canonical provider mapping and persistent production configuration", () => {
     expect(
       readInferenceServiceConfig({

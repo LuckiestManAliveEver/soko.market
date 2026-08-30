@@ -103,7 +103,7 @@ distinct, non-overlapping job, enforced by the actual UI flow
 > reachable without a prior real-inference success gate. Neither is still true. Zero-setup hosted
 > execution (`docs/architecture/native-agent-model-runtime.md`) removed the local-model
 > prerequisite from ordinary chat, and its own gate is deliberately weaker than layers 1-2's: `
-> AgentRuntimeDomain.ensureDefaultRuntimeForTurn` (`store.ts`) only requires a configured adapter's
+AgentRuntimeDomain.ensureDefaultRuntimeForTurn` (`store.ts`) only requires a configured adapter's
 > `canRun(...)` to report available — an advisory availability probe, not a completed real
 > inference — before `NativeRuntimeBindingStore.ensureDefaultRuntimeBinding` provisions a binding.
 > This is intentional: the alternative is a real inference call, with its cost and latency, on

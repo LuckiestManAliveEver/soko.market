@@ -82,6 +82,7 @@ import type {
   InstalledAgentModelSummary,
   ModelExecutionTarget,
   ModelRuntimeHealthSummary,
+  NativeRuntimeAgentSummary,
   PreferredExecutionMode,
   RuntimeContextSummary,
   RuntimeModelConversationMessage,
@@ -2263,6 +2264,7 @@ export class AgentRuntimeDomain {
     conversationHistory?: RuntimeModelConversationMessage[];
     confirmationToken?: string;
     clientInferenceCompletion?: ClientInferenceCompletion;
+    signal?: AbortSignal;
     now?: Date;
   }): Promise<RuntimeTurnResult> {
     const now = input.now ?? new Date();
@@ -2536,6 +2538,7 @@ export class AgentRuntimeDomain {
                 ? {}
                 : { conversationHistory: input.conversationHistory }),
               modelId: runtimeModelId,
+              ...(input.signal === undefined ? {} : { signal: input.signal }),
               context,
               now,
               appendTelemetry,
@@ -2752,6 +2755,7 @@ export class AgentRuntimeDomain {
     context: RuntimeContextSummary;
     message: string;
     now: Date;
+    signal?: AbortSignal;
     runtimeSession: RuntimeSessionSummary;
     telemetry: RuntimeTelemetryEvent[];
     turnId: string;
@@ -3017,13 +3021,64 @@ export class AgentRuntimeDomain {
     if (explicitBinding?.executionMode === "LOCAL_ONLY") return;
     if (this.deps.modelRuntimeAdapterResolver === undefined) return;
 
+    const usesPlatformDefaultAgent = input.profile.agentDefinitionId === defaultAgentDefinitionId;
+    const agentId = usesPlatformDefaultAgent
+      ? this.deps.platformDefaultRuntime.agentId
+      : input.profile.agentId;
+    const agentName = usesPlatformDefaultAgent
+      ? this.deps.platformDefaultRuntime.agentName
+      : input.profile.name;
+    const agentRuntimeAdapterId = usesPlatformDefaultAgent
+      ? this.deps.platformDefaultRuntime.agentRuntimeAdapterId
+      : "soko";
+    const agentAdapter = this.deps.agentRuntimeAdapterResolver(agentRuntimeAdapterId);
+    if (
+      agentAdapter === undefined ||
+      this.deps.platformDefaultRuntime.executionTarget !== "backend"
+    ) {
+      return;
+    }
+    const agent: NativeRuntimeAgentSummary = {
+      id: agentId,
+      businessId: input.businessId,
+      accountId: input.accountId,
+      name: agentName,
+      provider: usesPlatformDefaultAgent ? "pi" : "soko-business-agent",
+      packageRef: null,
+      version: "1",
+      runtimeContractVersion: "1",
+      capabilities: ["tools", "mcp"],
+      configuration: {
+        runtimeAdapterId: agentRuntimeAdapterId,
+        requiredModelCapabilities: ["chat"]
+      },
+      status: "active",
+      createdAt: input.now.toISOString(),
+      updatedAt: input.now.toISOString()
+    };
+    let agentAvailable = false;
+    try {
+      agentAvailable = (
+        await agentAdapter.canRun({
+          agent,
+          modelId: this.deps.platformDefaultRuntime.modelId,
+          conversationId: input.conversationId,
+          shopId: input.businessId
+        })
+      ).available;
+    } catch {
+      return;
+    }
+    if (!agentAvailable) return;
+
     const preferredIds = uniqueModelIds([
-      input.profile.modelId,
       this.activeAiModels.get(input.businessId)?.modelId,
+      usesPlatformDefaultAgent ? this.deps.platformDefaultRuntime.modelId : input.profile.modelId,
+      input.profile.modelId,
       defaultAiModelId,
       ...this.deps
         .listModelCatalog()
-        .filter((model) => model.available && model.capabilities.includes("tool-routing"))
+        .filter((model) => model.available && model.capabilities.includes("chat"))
         .sort((left, right) => Number(right.recommended) - Number(left.recommended))
         .map((model) => model.id)
     ]);
@@ -3034,20 +3089,20 @@ export class AgentRuntimeDomain {
     }> = [];
     for (const modelId of preferredIds) {
       const model = this.deps.resolveCatalogModel(modelId);
-      if (model === undefined || !model.available || !model.capabilities.includes("tool-routing")) {
+      if (model === undefined || !model.available || !model.capabilities.includes("chat")) {
         continue;
       }
       const adapter = this.deps.modelRuntimeAdapterResolver({
         modelId,
         executionTarget: "backend",
-        agentId: input.profile.agentId,
+        agentId,
         shopId: input.businessId
       });
       if (adapter === undefined) continue;
       try {
         const availability = await adapter.canRun({
           modelId,
-          agentId: input.profile.agentId,
+          agentId,
           shopId: input.businessId
         });
         if (availability.available) {
@@ -3068,8 +3123,9 @@ export class AgentRuntimeDomain {
       conversationId: input.conversationId,
       businessId: input.businessId,
       accountId: input.accountId,
-      agentId: input.profile.agentId,
-      agentName: input.profile.name,
+      agentId,
+      agentName,
+      agentRuntimeAdapterId,
       candidates,
       updatedBy: input.userId,
       checkedAt: input.now.toISOString()
@@ -3104,7 +3160,8 @@ export class AgentRuntimeDomain {
     if (stored !== undefined) return hydrateBusinessAgentProfile(stored);
     return createDefaultBusinessAgentProfile({
       business: this.deps.requireBusiness(businessId),
-      modelId: this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId,
+      modelId:
+        this.activeAiModels.get(businessId)?.modelId ?? this.deps.platformDefaultRuntime.modelId,
       updatedAt: now.toISOString(),
       updatedBy: "00000000-0000-4000-8000-000000000000",
       agentDefinition: this.deps.resolveAgentCatalogEntry(defaultAgentDefinitionId)
@@ -3346,6 +3403,26 @@ export class AgentRuntimeDomain {
     proposal: ReturnType<typeof createRuntimeToolProposal> | null;
     trace: RuntimeModelTrace | null;
   }> {
+    const resolvedAgent =
+      input.conversationId === undefined
+        ? null
+        : this.deps.resolveNativeRuntimeBinding(input.conversationId, input.shopRuntime.shopId)
+            ?.agent;
+    const agent: NativeRuntimeAgentSummary = resolvedAgent ?? {
+      id: input.shopRuntime.agentId,
+      businessId: input.shopRuntime.shopId,
+      accountId: null,
+      name: input.shopRuntime.identity.agentName,
+      provider: "soko-legacy-runtime",
+      packageRef: null,
+      version: String(input.shopRuntime.version),
+      runtimeContractVersion: "1",
+      capabilities: ["tools", "mcp"],
+      configuration: { runtimeAdapterId: "soko" },
+      status: "active",
+      createdAt: input.now.toISOString(),
+      updatedAt: input.now.toISOString()
+    };
     return createRuntimeModelRoute(
       {
         resolveRuntimeModelProvider: (runtime, modelId, attemptedRuntimeKeys) =>
@@ -3354,9 +3431,10 @@ export class AgentRuntimeDomain {
             modelId,
             input.conversationId,
             attemptedRuntimeKeys
-          )
+          ),
+        resolveAgentRuntimeAdapter: (adapterId) => this.deps.agentRuntimeAdapterResolver(adapterId)
       },
-      input
+      { ...input, agent }
     );
   }
   private requireRuntimeSession(

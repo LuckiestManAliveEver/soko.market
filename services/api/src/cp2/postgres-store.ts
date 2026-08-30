@@ -454,6 +454,9 @@ export async function createPostgresCp2Store(
       ...(options.modelRuntimeAdapterResolver === undefined
         ? {}
         : { modelRuntimeAdapterResolver: options.modelRuntimeAdapterResolver }),
+      ...(options.agentRuntimeAdapterResolver === undefined
+        ? {}
+        : { agentRuntimeAdapterResolver: options.agentRuntimeAdapterResolver }),
       ...(options.pushNotificationSender === undefined
         ? {}
         : { pushNotificationSender: options.pushNotificationSender }),

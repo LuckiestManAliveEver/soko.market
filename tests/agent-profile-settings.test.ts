@@ -41,7 +41,7 @@ describe("business agent settings", () => {
     expect(defaultProfile).toMatchObject({
       agentDefinitionId: "builtin:shopkeeper",
       businessId,
-      modelId: "qwen2.5-0.5b-android",
+      modelId: "smollm2-360m",
       status: "active"
     });
     expect(defaultProfile.contextScripts).toEqual(

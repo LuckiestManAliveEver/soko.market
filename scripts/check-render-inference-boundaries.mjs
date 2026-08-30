@@ -43,26 +43,41 @@ for (const root of ["services/api/src", "services/api/dist"]) {
 }
 
 const blueprint = readFileSync("render.yaml", "utf8");
-for (const forbidden of [
+for (const required of [
   "BACKEND_INFERENCE_ENABLED",
   "BACKEND_INFERENCE_BASE_URL",
   "soko-market-inference",
   "services/ai-runtime/Dockerfile",
-  "OLLAMA_"
+  "type: pserv",
+  "mountPath: /var/lib/soko-models",
+  "INFERENCE_SERVICE_TOKEN"
 ]) {
-  if (blueprint.includes(forbidden)) {
-    violations.push(
-      `Render Blueprint provisions forbidden server-local inference marker ${forbidden}`
-    );
+  if (!blueprint.includes(required)) {
+    violations.push(`Render Blueprint is missing private inference marker ${required}`);
   }
 }
 const apiStart = blueprint.indexOf("name: soko-market-api");
 const nextService = blueprint.indexOf("\n  - type:", apiStart);
 const apiService = blueprint.slice(apiStart, nextService === -1 ? undefined : nextService);
-for (const forbidden of ["LOCAL_MODEL_", "llama.cpp", "ollama", ".gguf"]) {
+for (const forbidden of ["LOCAL_MODEL_", "llama.cpp", ".gguf", "OLLAMA_BASE_URL"]) {
   if (apiService.toLowerCase().includes(forbidden.toLowerCase())) {
     violations.push(`Render API service contains forbidden local-inference marker ${forbidden}`);
   }
+}
+if (!apiService.includes("type: pserv") || !apiService.includes("property: hostport")) {
+  violations.push("Render API must resolve inference through the private service hostport");
+}
+if (blueprint.includes("VITE_INFERENCE_SERVICE_TOKEN")) {
+  violations.push("The browser must never receive the inference service token");
+}
+const inferenceStart = blueprint.indexOf("\n    name: soko-market-inference\n    runtime: docker");
+const inferenceNext = blueprint.indexOf("\n  - type:", inferenceStart);
+const inferenceService = blueprint.slice(
+  inferenceStart,
+  inferenceNext === -1 ? undefined : inferenceNext
+);
+if (inferenceService.includes("domains:") || inferenceService.includes("type: web")) {
+  violations.push("The inference runtime must remain a private service without public domains");
 }
 
 if (violations.length > 0) {
@@ -71,7 +86,7 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log("Render API contains no local or browser inference runtime imports.");
+console.log("Render keeps model execution in an authenticated private inference service.");
 
 function listCodeFiles(directory) {
   let entries;

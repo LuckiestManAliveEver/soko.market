@@ -124,6 +124,7 @@ const cp2StoreOptions = {
   emailMailboxProviderClient,
   runtimeModelProviderResolver,
   modelRuntimeAdapterResolver,
+  platformDefaultRuntime: config.platformDefaultRuntime,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
   messageEmailNotificationSender:
     emailProvider.sendEncryptedMessageNotification.bind(emailProvider),
