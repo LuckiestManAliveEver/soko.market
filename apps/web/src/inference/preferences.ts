@@ -1,5 +1,4 @@
 export interface ClientInferencePreferences {
-  nativePermission: boolean;
   ownerNodeAllowed: boolean;
 }
 
@@ -68,14 +67,12 @@ function normalizePreferences(value: unknown): ClientInferencePreferences {
       ? (value as Partial<ClientInferencePreferences>)
       : {};
   return {
-    nativePermission: record.nativePermission === true,
     ownerNodeAllowed: record.ownerNodeAllowed === true
   };
 }
 
 function defaultPreferences(): ClientInferencePreferences {
   return {
-    nativePermission: false,
     ownerNodeAllowed: false
   };
 }

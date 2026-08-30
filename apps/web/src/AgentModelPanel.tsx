@@ -1,61 +1,11 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type {
   AgentModelActivationResult,
-  AgentModelAssignmentSummary,
   AgentModelBindingRemovalResult,
   AgentModelBindingSummary,
-  BrowserInferenceAssignmentSummary,
-  ModelRuntimeHealthSummary,
-  PreferredExecutionMode,
-  InstalledAgentModelSummary,
-  CloudModelArtifactSummary
+  ModelRuntimeHealthSummary
 } from "@soko/shared-types";
-
-import {
-  canRunCatalogModel,
-  browserGgufRuntimeSupported,
-  defaultOfflineAiModels,
-  downloadCatalogModel,
-  importCustomGgufModel,
-  inspectDeviceModelCapability,
-  listBrowserModels,
-  listLocalAiModels,
-  rankCatalogModelsForDevice,
-  removeLocalAiModel,
-  validateLocalAiModel,
-  type DeviceModelCapability,
-  type LocalAiModel,
-  type ModelTransferProgress
-} from "./ai-model-manager";
-import {
-  assignmentAfterReadiness,
-  assignmentFromServer,
-  clearDeviceAgentModelAssignment,
-  createPendingDeviceAssignment,
-  readDeviceAgentModelAssignment,
-  saveDeviceAgentModelAssignment,
-  type DeviceAgentModelAssignment
-} from "./agent-model-assignment";
-import { testAgentModelRuntime } from "./agent-model-runtime";
-import { getSharedAgentModelRuntime } from "./browser-gguf-runtime";
-import {
-  cancelBrowserModelLoad,
-  disableBrowserInference,
-  enableBrowserInference,
-  loadBrowserInferenceState,
-  removeBrowserModel,
-  type BrowserInferenceState
-} from "./browser-inference-session";
-
-import {
-  loadSyncedBrowserInferenceAssignment,
-  removeSyncedBrowserInferenceAssignment,
-  synchronizeBrowserInferenceAssignment
-} from "./browser-inference-sync";
-import { browserLocalInferenceDeploymentEnabled } from "./browser-model-registry";
-
-import type { BrowserModelProgress } from "./browser-inference-types";
 
 import {
   readClientInferencePreferences,
@@ -65,16 +15,9 @@ import {
 
 import { navigateToBrowserUrl } from "./browser-navigation";
 
-import { ApiRequestError, apiFetch } from "./lib/api";
+import { ApiRequestError } from "./lib/api";
 
-import {
-  ModelActivationCoordinator,
-  ModelActivationError,
-  recordModelActivationStage,
-  withActivationTimeout,
-  type ModelActivationStage,
-  type ModelActivationState
-} from "./model-activation-state";
+import { type ModelActivationState } from "./model-activation-state";
 
 import {
   type ActiveAiModelSummary,
@@ -82,20 +25,12 @@ import {
   type AgentSettings,
   type AiModelSummary,
   type CatalogAiModelSearchResponse,
-  type SessionResponse,
   backendModelProbeRequestTimeoutMs,
   clientInferenceFeatureFlags
 } from "./soko-application-shared";
 
-import { postJson, putJson, deleteJson, getJson } from "./api-helpers";
-import {
-  formatDate,
-  formatLatency,
-  formatModelBytes,
-  formatModelParameters,
-  formatModelStatus,
-  formatExecutionTarget
-} from "./formatters";
+import { postJson, deleteJson, getJson } from "./api-helpers";
+import { formatDate, formatLatency, formatModelBytes, formatExecutionTarget } from "./formatters";
 import { isAgentModel } from "./owner-app-bootstrap";
 import { normalizeSearchText } from "./agent-command-engine";
 import { getErrorMessage } from "./chat-message-plumbing";
@@ -105,12 +40,6 @@ import {
 } from "./agent-model-panel-utils";
 import { backendModelRuntimeStatusMessage } from "./backend-model-runtime-status";
 import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
-import { modelLifecycleActionLabel, resolveModelLifecycleState } from "./model-lifecycle";
-import {
-  listAccountModelArtifacts,
-  restoreAccountModelToDevice,
-  uploadLocalModelToAccount
-} from "./account-ai-assets";
 
 export interface AgentModelPanelProps {
   accountId: string;
@@ -119,8 +48,6 @@ export interface AgentModelPanelProps {
   isEditing: boolean;
   updateAgent: (patch: Partial<AgentSettings>) => void;
   onAgentChange: (agent: AgentSettings) => void;
-  ownerUser: SessionResponse["user"] | null;
-  onEnsureRuntimeSession: () => Promise<string>;
   profileMessage: string;
   setProfileMessage: (message: string) => void;
   pendingProfileAction: string | null;
@@ -128,16 +55,19 @@ export interface AgentModelPanelProps {
   copyStorefrontValue: (value: string, label: string) => Promise<void>;
   aiModels: AiModelSummary[];
   setAiModels: (models: AiModelSummary[]) => void;
-  localAiModels: LocalAiModel[];
-  setLocalAiModels: (models: LocalAiModel[]) => void;
   activeAiModelId: string;
   setActiveAiModelId: (modelId: string) => void;
-  agentModelAssignment: DeviceAgentModelAssignment | null;
-  setAgentModelAssignment: (assignment: DeviceAgentModelAssignment | null) => void;
-  deviceId: string;
-  registerInstalledModel: (model: LocalAiModel, signal?: AbortSignal) => Promise<void>;
 }
 
+/**
+ * The advanced counterpart to QuickRuntimeSwitcher.tsx's simple "pick a harness + hosted model"
+ * dropdown: this panel shows the full backend model binding (with a real test/activate/remove
+ * round trip against /api/agents/:agentId/models/:modelId/{test,activate} and
+ * /api/agents/:agentId/model-binding), plus GitHub and Hugging Face model discovery. Every model
+ * this app can run is backend-hosted - there is no private per-device model copy. A discovered
+ * model activates through the same hosted flow as a catalog model when the deployment has it
+ * configured; otherwise it is shown browse-only until it is registered.
+ */
 export function AgentModelPanel({
   accountId,
   business,
@@ -145,8 +75,6 @@ export function AgentModelPanel({
   isEditing,
   updateAgent,
   onAgentChange,
-  ownerUser,
-  onEnsureRuntimeSession,
   profileMessage,
   setProfileMessage,
   pendingProfileAction,
@@ -154,14 +82,8 @@ export function AgentModelPanel({
   copyStorefrontValue,
   aiModels,
   setAiModels,
-  localAiModels,
-  setLocalAiModels,
   activeAiModelId,
-  setActiveAiModelId,
-  agentModelAssignment,
-  setAgentModelAssignment,
-  deviceId,
-  registerInstalledModel
+  setActiveAiModelId
 }: AgentModelPanelProps) {
   const canonicalRuntimeAgentId = business.id;
   const [visibleAiModels, setVisibleAiModels] = useState<AiModelSummary[]>([]);
@@ -184,31 +106,11 @@ export function AgentModelPanel({
   const [modelLibraryLoaded, setModelLibraryLoaded] = useState(false);
   const [modelLibraryLoading, setModelLibraryLoading] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
-  const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
-  const [modelChooserOpen, setModelChooserOpen] = useState(false);
   const [modelRuntimeBusy, setModelRuntimeBusy] = useState(false);
   const modelRuntimeBusyRef = useRef(false);
-  const modelActivationCoordinator = useRef(new ModelActivationCoordinator());
-  const activatingInstallationIdRef = useRef<string | null>(null);
-  const [browserInferenceState, setBrowserInferenceState] = useState<BrowserInferenceState | null>(
-    null
-  );
-  const [syncedBrowserInference, setSyncedBrowserInference] =
-    useState<BrowserInferenceAssignmentSummary | null>(null);
-  const [selectedBrowserModelId, setSelectedBrowserModelId] = useState(
-    () => listBrowserModels()[0]?.id ?? ""
-  );
   const [inferencePreferences, setInferencePreferences] = useState<ClientInferencePreferences>(() =>
     readClientInferencePreferences(accountId, business.id)
   );
-  const [browserModelProgress, setBrowserModelProgress] = useState<BrowserModelProgress | null>(
-    null
-  );
-  const browserModelOptions = browserInferenceState?.modelOptions ?? [];
-  const selectedBrowserModel =
-    browserModelOptions.find((option) => option.model.id === selectedBrowserModelId)?.model ??
-    listBrowserModels().find((model) => model.id === selectedBrowserModelId) ??
-    null;
   const [githubModelDiscovery, setGitHubModelDiscovery] = useState<CatalogAiModelSearchResponse>({
     models: [],
     status: "unavailable",
@@ -222,12 +124,6 @@ export function AgentModelPanel({
       connection: "public",
       message: "Hugging Face model discovery has not run yet."
     });
-  const [modelTransfers, setModelTransfers] = useState<Record<string, ModelTransferProgress>>({});
-  const [accountModelArtifacts, setAccountModelArtifacts] = useState<CloudModelArtifactSummary[]>(
-    []
-  );
-  const [customLicenseConfirmed, setCustomLicenseConfirmed] = useState(false);
-  const customModelInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setInferencePreferences(readClientInferencePreferences(accountId, business.id));
@@ -236,16 +132,6 @@ export function AgentModelPanel({
     const initialSearch = params.get("ai_search") ?? "";
     setModelSearch(initialSearch);
   }, [accountId, business.id]);
-
-  useEffect(
-    () => () => {
-      modelActivationCoordinator.current.cancel();
-      modelRuntimeBusyRef.current = false;
-      const installationId = activatingInstallationIdRef.current;
-      if (installationId !== null) void getModelRuntime().unload(installationId);
-    },
-    []
-  );
 
   useEffect(() => {
     if (!modelLibraryLoaded) return;
@@ -270,100 +156,13 @@ export function AgentModelPanel({
     setProfileMessage("Opening model settings…");
     try {
       const initialSearch = new URLSearchParams(location.search).get("ai_search") ?? "";
-      const [browserState, capability, syncedAssignment, artifacts] = await Promise.all([
-        loadBrowserInferenceState(accountId, business.id),
-        inspectDeviceModelCapability(),
-        loadSyncedBrowserInferenceAssignment(business.id).catch(() => null),
-        listAccountModelArtifacts().catch(() => []),
-        loadAiModels(initialSearch)
-      ]);
-      setBrowserInferenceState(browserState);
-      setSyncedBrowserInference(syncedAssignment);
-      setSelectedBrowserModelId(
-        browserState.settings?.selectedModelId ??
-          syncedAssignment?.selectedModelId ??
-          browserState.modelOptions.find((option) => option.compatible)?.model.id ??
-          ""
-      );
-      setDeviceCapability(capability);
-      setAccountModelArtifacts(artifacts);
+      await loadAiModels(initialSearch);
       setModelLibraryLoaded(true);
       setProfileMessage("Model settings ready.");
-      if (navigator.onLine && browserState.settings !== null) {
-        void synchronizeBrowserInferenceAssignment({
-          businessId: business.id,
-          state: browserState
-        })
-          .then(setSyncedBrowserInference)
-          .catch(() => undefined);
-      }
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
       setModelLibraryLoading(false);
-    }
-  }
-
-  async function setBrowserInferenceEnabled(enabled: boolean) {
-    if (modelRuntimeBusy) return;
-    setModelRuntimeBusy(true);
-    setBrowserModelProgress(null);
-    try {
-      if (!enabled) {
-        const state = await disableBrowserInference(accountId, business.id);
-        setBrowserInferenceState(state);
-        if (navigator.onLine) {
-          setSyncedBrowserInference(
-            await synchronizeBrowserInferenceAssignment({
-              businessId: business.id,
-              state
-            })
-          );
-        }
-        setProfileMessage(
-          "Browser-local inference is off. Allowed native, owner-device, or cloud routing remains."
-        );
-        return;
-      }
-      const model = listBrowserModels().find(
-        (candidate) => candidate.id === selectedBrowserModelId
-      );
-      if (model === undefined) throw new Error("No approved browser model is configured.");
-      const option = browserInferenceState?.modelOptions.find(
-        (candidate) => candidate.model.id === model.id
-      );
-      if (option?.compatible === false) {
-        throw new Error(option.reason ?? "This browser model is incompatible with this device.");
-      }
-      setProfileMessage(
-        `Downloading ${model.displayName} after your consent. Keep Soko open until it is ready.`
-      );
-      const state = await enableBrowserInference({
-        accountId,
-        businessId: business.id,
-        modelId: model.id,
-        onProgress: setBrowserModelProgress
-      });
-      setBrowserInferenceState(state);
-      if (navigator.onLine) {
-        setSyncedBrowserInference(
-          await synchronizeBrowserInferenceAssignment({
-            businessId: business.id,
-            state
-          })
-        );
-      }
-      setProfileMessage(
-        navigator.onLine
-          ? `${model.displayName} is ready and connected to this shop's browser inference workflow.`
-          : `${model.displayName} is ready locally. Reconnect to synchronize its database assignment.`
-      );
-    } catch (error) {
-      setBrowserInferenceState(await loadBrowserInferenceState(accountId, business.id));
-      setProfileMessage(getErrorMessage(error));
-    } finally {
-      setBrowserModelProgress(null);
-      setModelRuntimeBusy(false);
     }
   }
 
@@ -376,38 +175,12 @@ export function AgentModelPanel({
     setProfileMessage("Client-first inference preferences saved.");
   }
 
-  async function deleteBrowserModel() {
-    if (modelRuntimeBusy) return;
-    setModelRuntimeBusy(true);
-    try {
-      const state = await removeBrowserModel(accountId, business.id);
-      setBrowserInferenceState(state);
-      if (navigator.onLine) {
-        await removeSyncedBrowserInferenceAssignment(business.id);
-        setSyncedBrowserInference(null);
-      }
-      setProfileMessage(
-        navigator.onLine
-          ? "The cached browser model and its database assignment were removed. Chat history was left unchanged."
-          : "The cached browser model was removed locally. Reconnect to clear its database assignment."
-      );
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    } finally {
-      setModelRuntimeBusy(false);
-    }
-  }
-
-  const getModelRuntime = getSharedAgentModelRuntime;
-
   async function loadAiModels(search?: string) {
     // Only used below in the catch block, as a bare-minimum offline fallback when the fetch to
     // GET /v1/ai-models fails entirely - the DB-hosted catalog (services/api/src/cp2/store.ts
     // listModelCatalog, infra/db/migrations/071_platform_catalog.sql) is authoritative once that
-    // fetch succeeds. It used to also be merged into the successful-fetch result as `primary`,
-    // which meant this hand-maintained, already-stale copy's label/description/capabilities
-    // silently overrode the live catalog's for these two model ids on every load.
-    const offlineDefaults: AiModelSummary[] = defaultOfflineAiModels;
+    // fetch succeeds.
+    const offlineDefaults: AiModelSummary[] = [];
     try {
       const normalizedSearch = search?.trim() ?? "";
       const [
@@ -457,9 +230,7 @@ export function AgentModelPanel({
         ),
         registry.models
       );
-      const deviceSelection = readDeviceAgentModelAssignment(business.id, deviceId);
-      const effectiveModelId =
-        canonicalBinding.binding?.modelId ?? deviceSelection?.modelId ?? active.modelId;
+      const effectiveModelId = canonicalBinding.binding?.modelId ?? active.modelId;
       setAiModels(allModels);
       setVisibleAiModels(visibleModels);
       setActiveAiModelId(effectiveModelId);
@@ -530,122 +301,6 @@ export function AgentModelPanel({
     await loadAiModels(s);
   }
 
-  async function predownloadAiModel(model: AiModelSummary) {
-    try {
-      setProfileMessage(`Downloading ${model.label} to this device…`);
-      const installed = await downloadCatalogModel(model, (progress) => {
-        setModelTransfers((current) => ({ ...current, [model.id]: progress }));
-      });
-      const verified = await validateLocalAiModel(installed, deviceCapability);
-      setLocalAiModels(listLocalAiModels());
-      if (navigator.onLine) {
-        setProfileMessage(`Saving ${model.label} to your account's Neon storage…`);
-        const artifact = await uploadLocalModelToAccount(verified, (progress) => {
-          setModelTransfers((current) => ({ ...current, [model.id]: progress }));
-        });
-        setAccountModelArtifacts((current) => [
-          artifact,
-          ...current.filter((candidate) => candidate.id !== artifact.id)
-        ]);
-        await registerInstalledModel(verified);
-      }
-      setProfileMessage(
-        navigator.onLine
-          ? "Installed on this device. Choose ‘Activate on this device’ when ready. A copy is saved to your account for another device to restore."
-          : "Installed locally while offline. Reconnect and download it again to save a cross-device copy."
-      );
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    } finally {
-      setModelTransfers((current) => {
-        const next = { ...current };
-        delete next[model.id];
-        return next;
-      });
-    }
-  }
-
-  async function importCustomModel(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (file === undefined) return;
-    if (deviceCapability?.customModelsAllowed !== true || !customLicenseConfirmed) {
-      setProfileMessage("Custom model import requires a capable device and license confirmation.");
-      return;
-    }
-    const transferId = "custom-import";
-    try {
-      setProfileMessage(`Importing ${file.name} into private device storage…`);
-      const model = await importCustomGgufModel(file, (progress) => {
-        setModelTransfers((current) => ({ ...current, [transferId]: progress }));
-      });
-      const verified = await validateLocalAiModel(model, deviceCapability);
-      setLocalAiModels(listLocalAiModels());
-      if (navigator.onLine) {
-        setProfileMessage(`Saving ${file.name} to your account's Neon storage…`);
-        const artifact = await uploadLocalModelToAccount(verified, (progress) => {
-          setModelTransfers((current) => ({ ...current, [transferId]: progress }));
-        });
-        setAccountModelArtifacts((current) => [
-          artifact,
-          ...current.filter((candidate) => candidate.id !== artifact.id)
-        ]);
-        await registerInstalledModel(verified);
-      }
-      setProfileMessage(
-        navigator.onLine
-          ? "Installed on this device. Choose ‘Activate on this device’ when ready. A copy is saved to your account for another device to restore."
-          : "Installed locally while offline. Reconnect to save a cross-device copy."
-      );
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    } finally {
-      setModelTransfers((current) => {
-        const next = { ...current };
-        delete next[transferId];
-        return next;
-      });
-    }
-  }
-
-  async function restoreAccountModel(artifact: CloudModelArtifactSummary) {
-    const transferId = `account:${artifact.id}`;
-    try {
-      setProfileMessage(`Restoring ${artifact.displayName} from your account…`);
-      const restored = await restoreAccountModelToDevice(artifact, (progress) => {
-        setModelTransfers((current) => ({ ...current, [transferId]: progress }));
-      });
-      const verified = await validateLocalAiModel(restored, deviceCapability);
-      await registerInstalledModel(verified);
-      setLocalAiModels(listLocalAiModels());
-      setProfileMessage(
-        `${artifact.displayName} is restored on this device. You can now activate it for the agent.`
-      );
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    } finally {
-      setModelTransfers((current) => {
-        const next = { ...current };
-        delete next[transferId];
-        return next;
-      });
-    }
-  }
-
-  async function deleteDeviceModel(model: LocalAiModel) {
-    try {
-      if (agentModelAssignment?.activeModelInstallationId === model.id) {
-        await removeModelFromAgent();
-      }
-      await getModelRuntime().unload(model.id);
-      await removeLocalAiModel(model);
-      setLocalAiModels(listLocalAiModels());
-      setProfileMessage(`${model.label} was removed from this device.`);
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    }
-  }
-
   async function loadCanonicalAgentModelBinding(): Promise<AgentModelBindingSummary | null> {
     if (!navigator.onLine) return activeAgentModelBinding;
     try {
@@ -662,348 +317,6 @@ export function AgentModelPanel({
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
       return null;
-    }
-  }
-
-  async function validateInstalledModelOnBackend(
-    model: LocalAiModel,
-    signal?: AbortSignal
-  ): Promise<InstalledAgentModelSummary> {
-    return postJson<InstalledAgentModelSummary>(
-      `/v1/models/${encodeURIComponent(model.id)}/validate`,
-      {
-        deviceId,
-        installationStatus: model.installationStatus,
-        compatibilityStatus: model.compatibilityStatus,
-        validationError: model.validationError
-      },
-      signal === undefined ? {} : { signal }
-    );
-  }
-
-  async function synchronizeAgentModelAssignment(
-    assignment: DeviceAgentModelAssignment,
-    signal?: AbortSignal
-  ): Promise<DeviceAgentModelAssignment> {
-    if (!navigator.onLine) return assignment;
-    const saved = await putJson<AgentModelAssignmentSummary>(
-      `/businesses/${business.id}/agent-model`,
-      {
-        deviceId,
-        installationId: assignment.activeModelInstallationId,
-        preferredExecutionMode: assignment.preferredExecutionMode,
-        readinessStatus: assignment.readinessStatus,
-        lastSuccessfulInferenceAt: assignment.lastSuccessfulInferenceAt,
-        lastErrorCode: assignment.lastErrorCode
-      },
-      signal === undefined ? {} : { signal }
-    );
-    return assignmentFromServer(saved);
-  }
-
-  async function activationApiReachable(signal?: AbortSignal): Promise<boolean> {
-    if (!navigator.onLine) return false;
-    try {
-      await withActivationTimeout(
-        (timeoutSignal) => apiFetch<SessionResponse>("/session", { signal: timeoutSignal }),
-        8_000,
-        signal
-      );
-      return true;
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      if (error instanceof TypeError) return false;
-      if (error instanceof ModelActivationError && error.code === "ACTIVATION_TIMEOUT") {
-        return false;
-      }
-      throw error;
-    }
-  }
-
-  function cancelModelActivation() {
-    modelActivationCoordinator.current.cancel();
-    setProfileMessage("Cancelling model activation…");
-  }
-
-  async function useModelWithAgent(model: LocalAiModel) {
-    const activation = modelActivationCoordinator.current.begin(model.id);
-    if (activation === null) return;
-    const previous = agentModelAssignment;
-    const phaseDurations: Partial<Record<ModelActivationState, number>> = {};
-    let phase: ModelActivationState = "idle";
-    let phaseStartedAt = performance.now();
-    let runtimeSessionId: string | null = null;
-    let apiReachable = false;
-    let activeDiagnosticStage: ModelActivationStage | null = null;
-    let diagnosticStageStartedAt = new Date().toISOString();
-    const diagnosticStage = (stage: ModelActivationStage) => {
-      const now = new Date().toISOString();
-      if (activeDiagnosticStage !== null) {
-        recordModelActivationStage({
-          modelId: model.modelId,
-          stage: activeDiagnosticStage,
-          startedAt: diagnosticStageStartedAt,
-          completedAt: now
-        });
-      }
-      activeDiagnosticStage = stage;
-      diagnosticStageStartedAt = now;
-      recordModelActivationStage({
-        modelId: model.modelId,
-        stage,
-        startedAt: now
-      });
-    };
-    const completeDiagnosticStage = (errorCode?: string, errorMessage?: string) => {
-      if (activeDiagnosticStage === null) return;
-      recordModelActivationStage({
-        modelId: model.modelId,
-        stage: activeDiagnosticStage,
-        startedAt: diagnosticStageStartedAt,
-        completedAt: new Date().toISOString(),
-        ...(errorCode === undefined ? {} : { errorCode }),
-        ...(errorMessage === undefined ? {} : { errorMessage })
-      });
-      activeDiagnosticStage = null;
-    };
-    const transition = (next: ModelActivationState, message: string) => {
-      if (activation.signal.aborted || !modelActivationCoordinator.current.isCurrent(activation))
-        return;
-      phaseDurations[phase] = Math.round(performance.now() - phaseStartedAt);
-      phase = next;
-      phaseStartedAt = performance.now();
-      setModelActivationState(next);
-      setProfileMessage(message);
-    };
-    const assertCurrent = () => {
-      if (activation.signal.aborted || !modelActivationCoordinator.current.isCurrent(activation)) {
-        throw new ModelActivationError("ACTIVATION_ABORTED", "Model activation was cancelled.");
-      }
-    };
-    modelRuntimeBusyRef.current = true;
-    activatingInstallationIdRef.current = model.id;
-    setModelRuntimeBusy(true);
-    setActivatingModelId(model.modelId);
-    setFailedActivationModelId(null);
-    setModelActivationState("validating");
-    setModelChooserOpen(false);
-    try {
-      diagnosticStage("VERIFY_ARTIFACT");
-      transition("validating", "Checking model…");
-      const verified = await validateLocalAiModel(model, deviceCapability);
-      assertCurrent();
-      setLocalAiModels(listLocalAiModels());
-      if (
-        verified.installationStatus !== "INSTALLED" ||
-        verified.compatibilityStatus !== "COMPATIBLE"
-      ) {
-        throw new ModelActivationError(
-          verified.validationError === "MODEL_FILE_MISSING" ||
-            verified.installationStatus === "CORRUPT"
-            ? "MODEL_FILES_MISSING"
-            : "MODEL_RUNTIME_FAILED",
-          verified.validationError === "MODEL_FILE_MISSING" ||
-            verified.installationStatus === "CORRUPT"
-            ? "The model files are missing or incomplete. Download the model again."
-            : verified.compatibilityStatus === "INSUFFICIENT_MEMORY"
-              ? "This device does not have enough memory for the model."
-              : "The installed model is not compatible with this device."
-        );
-      }
-      if (!verified.commercialUseAllowed) {
-        throw new Error("This model is not approved for commercial use.");
-      }
-      if (window.SokoAgentModelRuntime === undefined && !browserGgufRuntimeSupported()) {
-        throw new ModelActivationError(
-          "MODEL_RUNTIME_FAILED",
-          "This browser does not provide WebAssembly workers or the installed-app GGUF runtime."
-        );
-      }
-
-      apiReachable = await activationApiReachable(activation.signal);
-      assertCurrent();
-      if (apiReachable) {
-        diagnosticStage("REGISTER_RUNTIME");
-        await withActivationTimeout(
-          (signal) => registerInstalledModel(verified, signal),
-          45_000,
-          activation.signal
-        );
-        const backendValidation = await withActivationTimeout(
-          (signal) => validateInstalledModelOnBackend(verified, signal),
-          45_000,
-          activation.signal
-        );
-        assertCurrent();
-        if (
-          backendValidation.installationStatus !== "INSTALLED" ||
-          backendValidation.compatibilityStatus !== "COMPATIBLE"
-        ) {
-          throw new Error(
-            backendValidation.validationError ??
-              "The backend could not validate this model installation."
-          );
-        }
-      }
-
-      if (
-        verified.runtimeBackend === "LLAMA_CPP_ANDROID" &&
-        clientInferenceFeatureFlags.nativeBridge &&
-        !inferencePreferences.nativePermission
-      ) {
-        const nextPreferences = saveClientInferencePreferences(accountId, business.id, {
-          ...inferencePreferences,
-          nativePermission: true
-        });
-        setInferencePreferences(nextPreferences);
-      }
-      transition("creating_runtime", "Starting runtime…");
-      if (apiReachable) {
-        runtimeSessionId = await withActivationTimeout(
-          () => onEnsureRuntimeSession(),
-          45_000,
-          activation.signal
-        );
-        if (runtimeSessionId.trim().length === 0) {
-          throw new ModelActivationError(
-            "RUNTIME_SESSION_INVALID",
-            "The runtime session could not be created."
-          );
-        }
-      } else {
-        runtimeSessionId = `local:${business.id}:${deviceId}:${activation.id}`;
-      }
-      assertCurrent();
-
-      transition("loading_model", `Loading ${verified.displayName}…`);
-      const result = await withActivationTimeout(
-        (signal) =>
-          testAgentModelRuntime(getModelRuntime(), verified, {
-            signal,
-            onEvent: (event) => {
-              if (event.type === "MODEL_LOAD_PROGRESS" && event.progress !== null) {
-                transition("loading_model", `Loading ${verified.displayName}… ${event.progress}%`);
-              }
-            },
-            onStage: diagnosticStage
-          }),
-        120_000,
-        activation.signal
-      );
-      assertCurrent();
-      if (!result.success) {
-        throw new ModelActivationError(
-          result.errorCode === "MODEL_FILE_MISSING"
-            ? "MODEL_FILES_MISSING"
-            : "MODEL_RUNTIME_FAILED",
-          result.errorCode === "MODEL_FILE_MISSING"
-            ? "The model files are missing or incomplete. Download the model again."
-            : result.message
-        );
-      }
-      transition("binding_agent", "Connecting model to agent…");
-      diagnosticStage("PERSIST_BINDING");
-      const pending = createPendingDeviceAssignment({
-        businessId: business.id,
-        deviceId,
-        installation: verified,
-        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_ONLY",
-        runtimeSessionId,
-        syncStatus: apiReachable ? "SYNCED" : "PENDING"
-      });
-      let readyAssignment = assignmentAfterReadiness(pending, result);
-      if (apiReachable) {
-        readyAssignment = await withActivationTimeout(
-          (signal) => synchronizeAgentModelAssignment(readyAssignment, signal),
-          45_000,
-          activation.signal
-        );
-        readyAssignment.runtimeSessionId = runtimeSessionId;
-      }
-      assertCurrent();
-      saveDeviceAgentModelAssignment(readyAssignment);
-      setAgentModelAssignment(readyAssignment);
-      setActiveAiModelId(readyAssignment.modelId ?? verified.modelId);
-      if (
-        previous?.activeModelInstallationId !== null &&
-        previous?.activeModelInstallationId !== undefined &&
-        previous.activeModelInstallationId !== verified.id
-      ) {
-        await getModelRuntime().unload(previous.activeModelInstallationId);
-      }
-      updateAgent({ model: verified.modelId });
-      onAgentChange({ ...agent, model: verified.modelId });
-      setModelActivationState("active");
-      diagnosticStage("READY");
-      completeDiagnosticStage();
-      setFailedActivationModelId(null);
-      setProfileMessage(`${verified.displayName} is now connected to ${business.name}.`);
-      recordModelActivationDiagnostic({
-        activationRequestId: activation.id,
-        userId: ownerUser?.id ?? accountId,
-        shopId: business.id,
-        agentId: readyAssignment.agentId,
-        modelId: model.modelId,
-        modelSource: model.provider,
-        runtimeType: model.runtimeBackend,
-        runtimeSessionId,
-        online: apiReachable,
-        phaseDurations: {
-          ...phaseDurations,
-          [phase]: Math.round(performance.now() - phaseStartedAt)
-        },
-        failureCode: null
-      });
-    } catch (error) {
-      // Only clean up this attempt's runtime handle when no newer activation has taken over the
-      // same model id - a superseded attempt's stale unload can otherwise race a fresh attempt's
-      // load and tear down the model it just successfully bound.
-      const supersededBySameModel =
-        !modelActivationCoordinator.current.isCurrent(activation) &&
-        modelActivationCoordinator.current.activeModelId() === model.id;
-      if (!supersededBySameModel) {
-        void getModelRuntime().unload(model.id);
-      }
-      if (!modelActivationCoordinator.current.isCurrent(activation)) return;
-      setModelActivationState("failed");
-      setFailedActivationModelId(model.modelId);
-      const message = getErrorMessage(error);
-      completeDiagnosticStage(
-        error instanceof ModelActivationError ? error.code : "MODEL_RUNTIME_FAILED",
-        message
-      );
-      if (previous === null) {
-        clearDeviceAgentModelAssignment(business.id, deviceId);
-        setAgentModelAssignment(null);
-      } else {
-        saveDeviceAgentModelAssignment(previous);
-        setAgentModelAssignment(previous);
-      }
-      setProfileMessage(`${message} The previous working model was left unchanged.`);
-      recordModelActivationDiagnostic({
-        activationRequestId: activation.id,
-        userId: ownerUser?.id ?? accountId,
-        shopId: business.id,
-        agentId: previous?.agentId ?? business.id,
-        modelId: model.modelId,
-        modelSource: model.provider,
-        runtimeType: model.runtimeBackend,
-        runtimeSessionId,
-        online: apiReachable,
-        phaseDurations: {
-          ...phaseDurations,
-          [phase]: Math.round(performance.now() - phaseStartedAt)
-        },
-        failureCode: error instanceof ModelActivationError ? error.code : "MODEL_RUNTIME_FAILED"
-      });
-    } finally {
-      if (modelActivationCoordinator.current.isCurrent(activation)) {
-        modelActivationCoordinator.current.finish(activation);
-        modelRuntimeBusyRef.current = false;
-        activatingInstallationIdRef.current = null;
-        setActivatingModelId(null);
-        setModelRuntimeBusy(false);
-      }
     }
   }
 
@@ -1077,7 +390,7 @@ export function AgentModelPanel({
           executionTarget: "backend",
           executionMode: "LOCAL_FIRST",
           permissions: {
-            allowInstalledApp: inferencePreferences.nativePermission,
+            allowInstalledApp: false,
             allowRemoteShopDevice: inferencePreferences.ownerNodeAllowed
           }
         },
@@ -1159,122 +472,25 @@ export function AgentModelPanel({
     }
   }
 
-  async function testAssignedModel() {
-    const assignment = agentModelAssignment;
-    if (modelRuntimeBusy || assignment === null || assignment.activeModelInstallationId === null) {
-      return;
-    }
-    const model = localAiModels.find(
-      (candidate) => candidate.id === assignment.activeModelInstallationId
-    );
-    if (model === undefined) {
-      setProfileMessage("The attached model file is missing from this device.");
-      return;
-    }
-    setModelRuntimeBusy(true);
-    try {
-      setProfileMessage(`Testing ${model.displayName} with a real local inference…`);
-      const result = await testAgentModelRuntime(getModelRuntime(), model);
-      const next = assignmentAfterReadiness(assignment, result);
-      saveDeviceAgentModelAssignment(next);
-      setAgentModelAssignment(next);
-      setProfileMessage(result.message);
-    } finally {
-      setModelRuntimeBusy(false);
-    }
-  }
-
-  async function removeModelFromAgent() {
-    const installationId = agentModelAssignment?.activeModelInstallationId;
-    if (installationId === null || installationId === undefined) return;
-    if (modelRuntimeBusyRef.current) return;
-    if (!navigator.onLine) {
-      throw new Error("Connect to the internet to synchronize removal from this agent.");
-    }
-    modelRuntimeBusyRef.current = true;
-    setModelRuntimeBusy(true);
-    try {
-      await deleteJson(
-        `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
-      );
-      const fallback = assignmentFromServer(
-        await getJson<AgentModelAssignmentSummary>(
-          `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
-        )
-      );
-      await getModelRuntime().unload(installationId);
-      saveDeviceAgentModelAssignment(fallback);
-      setAgentModelAssignment(fallback);
-      const fallbackModelId = fallback.modelId ?? "sokoclaw-local";
-      setActiveAiModelId(fallbackModelId);
-      updateAgent({ model: fallbackModelId });
-      onAgentChange({ ...agent, model: fallbackModelId });
-      setProfileMessage(
-        "The downloaded model was removed. Download and test another GGUF model to reconnect the agent."
-      );
-    } finally {
-      modelRuntimeBusyRef.current = false;
-      setModelRuntimeBusy(false);
-    }
-  }
-
-  async function updateAgentModelPolicy(
-    patch: Partial<Pick<DeviceAgentModelAssignment, "preferredExecutionMode">>
-  ) {
-    if (agentModelAssignment === null) return;
-    const next = { ...agentModelAssignment, ...patch, updatedAt: new Date().toISOString() };
-    saveDeviceAgentModelAssignment(next);
-    setAgentModelAssignment(next);
-    if (navigator.onLine && next.activeModelInstallationId !== null) {
-      const saved = await putJson<AgentModelAssignmentSummary>(
-        `/businesses/${business.id}/agent-model`,
-        {
-          deviceId,
-          installationId: next.activeModelInstallationId,
-          preferredExecutionMode: next.preferredExecutionMode,
-          readinessStatus: next.readinessStatus,
-          lastSuccessfulInferenceAt: next.lastSuccessfulInferenceAt,
-          lastErrorCode: next.lastErrorCode
-        }
-      );
-      const synchronized = assignmentFromServer(saved);
-      saveDeviceAgentModelAssignment(synchronized);
-      setAgentModelAssignment(synchronized);
-    }
-  }
-
-  const activeInstalledModel =
-    agentModelAssignment?.activeModelInstallationId === null ||
-    agentModelAssignment?.activeModelInstallationId === undefined
-      ? null
-      : (localAiModels.find(
-          (model) => model.id === agentModelAssignment.activeModelInstallationId
-        ) ?? null);
   const activeAiModel = aiModels.find((model) => model.id === activeAiModelId);
   const activeBackendBinding =
     activeAgentModelBinding?.status === "active" &&
     activeAgentModelBinding.executionTarget === "backend";
   const activeBackendConfigured =
     activeBackendBinding && activeAiModel?.runtimeAvailability?.backend === "configured";
-  const bestFitModels =
-    deviceCapability === null
-      ? []
-      : rankCatalogModelsForDevice(visibleAiModels, deviceCapability).slice(0, 3);
-  const offlineStarter =
-    deviceCapability === null
-      ? defaultOfflineAiModels[0]
-      : rankCatalogModelsForDevice(defaultOfflineAiModels, deviceCapability)[0]?.model;
-  const offlineStarterInstalled =
-    offlineStarter !== undefined &&
-    localAiModels.some((localModel) => localModel.modelId === offlineStarter.id);
   const serverBackendModels = visibleAiModels.filter(
     (model) => model.runtimeAvailability?.backend === "configured"
   );
-  const orderedInstalledModels = [...localAiModels].sort((left, right) => {
-    const leftCompatible = left.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
-    const rightCompatible = right.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
-    return leftCompatible - rightCompatible || left.displayName.localeCompare(right.displayName);
-  });
+  // A discovered GitHub/Hugging Face result that isn't yet server-registered has no hosted
+  // activation path - list it as browse-only rather than offering a device download.
+  // TODO(runtime-registry): route through unified registry search once it consolidates this
+  // discovery surface.
+  const browseOnlyDiscoveryModels = visibleAiModels.filter(
+    (model) =>
+      isDownloadableCatalogModel(model) &&
+      model.license === "Apache-2.0" &&
+      model.runtimeAvailability?.backend !== "configured"
+  );
 
   return (
     <>
@@ -1283,8 +499,8 @@ export function AgentModelPanel({
           <p className="eyebrow">Soko AI · Ready</p>
           <h3>Advanced model preferences</h3>
           <p>
-            Execution is automatic. Local models are optional privacy, offline, latency, and cost
-            optimizations.
+            Execution is automatic and always backend-hosted. There is no private per-device model
+            copy to install or manage.
           </p>
         </div>
         {modelActivationState !== "idle" && profileMessage.length > 0 ? (
@@ -1292,110 +508,68 @@ export function AgentModelPanel({
             {profileMessage}
           </p>
         ) : null}
-        {modelRuntimeBusy && activatingModelId !== null ? (
-          <button className="secondary" type="button" onClick={cancelModelActivation}>
-            Cancel activation
-          </button>
-        ) : null}
-        {activeInstalledModel === null ? (
-          <article className="agent-model-current">
-            <div>
-              <span className="model-badge">Current model</span>
-              <span className={`model-badge status-${activeAgentModelBinding?.status ?? "failed"}`}>
-                {activeAgentModelBinding?.status === "active"
-                  ? `Active for ${agent.name}`
-                  : "Automatic"}
-              </span>
-            </div>
-            <h4>
-              {activeAgentModelBinding === null
-                ? "Soko AI is ready"
-                : (activeAiModel?.label ?? activeAgentModelBinding.modelId)}
-            </h4>
-            <p>
-              {activeAgentModelBinding === null
-                ? "A compatible execution host and model are selected automatically when you chat."
-                : `Running on: ${formatExecutionTarget(activeAgentModelBinding.executionTarget)}`}
-            </p>
-            <small>
-              {activeAgentModelBinding?.lastVerifiedAt === null ||
-              activeAgentModelBinding?.lastVerifiedAt === undefined
-                ? "No download or activation required"
-                : `Verified ${formatDate(activeAgentModelBinding.lastVerifiedAt)}`}
+        <article className="agent-model-current">
+          <div>
+            <span className="model-badge">Current model</span>
+            <span className={`model-badge status-${activeAgentModelBinding?.status ?? "failed"}`}>
+              {activeAgentModelBinding?.status === "active"
+                ? `Active for ${agent.name}`
+                : "Automatic"}
+            </span>
+          </div>
+          <h4>
+            {activeAgentModelBinding === null
+              ? "Soko AI is ready"
+              : (activeAiModel?.label ?? activeAgentModelBinding.modelId)}
+          </h4>
+          <p>
+            {activeAgentModelBinding === null
+              ? "A compatible execution host and model are selected automatically when you chat."
+              : `Running on: ${formatExecutionTarget(activeAgentModelBinding.executionTarget)}`}
+          </p>
+          <small>
+            {activeAgentModelBinding?.lastVerifiedAt === null ||
+            activeAgentModelBinding?.lastVerifiedAt === undefined
+              ? "No download or activation required"
+              : `Verified ${formatDate(activeAgentModelBinding.lastVerifiedAt)}`}
+          </small>
+          {activeBackendBinding && !activeBackendConfigured ? (
+            <small role="status">
+              Backend inference is no longer configured for this deployment. Remove this binding or
+              switch to an available model.
             </small>
-            {activeBackendBinding && !activeBackendConfigured ? (
-              <small role="status">
-                Backend inference is no longer configured for this deployment. Remove this binding
-                or switch to an available model.
-              </small>
-            ) : null}
-            <div className="ai-model-card-actions">
-              {!activeBackendBinding || activeBackendConfigured ? (
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={activeAgentModelBinding === null || modelRuntimeBusy}
-                  onClick={() => {
-                    const model = aiModels.find(
-                      (candidate) => candidate.id === activeAgentModelBinding?.modelId
-                    );
-                    if (model !== undefined) void testServerBackendModel(model);
-                  }}
-                >
-                  Test model
-                </button>
-              ) : null}
-              {activeBackendBinding && activeAiModel !== undefined ? (
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={modelRuntimeBusy}
-                  onClick={() => void removeServerBackendModelFromAgent(activeAiModel)}
-                >
-                  Remove from agent
-                </button>
-              ) : null}
-              <button type="button" onClick={() => void openModelLibrary()}>
-                Switch model
-              </button>
-            </div>
-          </article>
-        ) : (
-          <article className="agent-model-current">
-            <div>
-              <span className="model-badge">Local</span>
-              <span
-                className={`model-badge status-${agentModelAssignment?.readinessStatus.toLowerCase()}`}
+          ) : null}
+          <div className="ai-model-card-actions">
+            {!activeBackendBinding || activeBackendConfigured ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={activeAgentModelBinding === null || modelRuntimeBusy}
+                onClick={() => {
+                  const model = aiModels.find(
+                    (candidate) => candidate.id === activeAgentModelBinding?.modelId
+                  );
+                  if (model !== undefined) void testServerBackendModel(model);
+                }}
               >
-                {agentModelAssignment?.readinessStatus === "READY"
-                  ? modelActivationState === "active"
-                    ? "Active"
-                    : "Validated · runtime starts on use"
-                  : agentModelAssignment?.readinessStatus === "LOADING"
-                    ? "Loading"
-                    : agentModelAssignment?.readinessStatus === "FAILED"
-                      ? "Failed"
-                      : "Attached to agent"}
-              </span>
-            </div>
-            <h4>{activeInstalledModel.displayName}</h4>
-            <p>
-              {formatModelBytes(activeInstalledModel.fileSizeBytes)}
-              {activeInstalledModel.quantization === null
-                ? ""
-                : ` · ${activeInstalledModel.quantization}`}
-              {` · ${formatModelStatus(activeInstalledModel.installationStatus)}`}
-              {` · ${formatModelStatus(activeInstalledModel.compatibilityStatus)}`}
-            </p>
-            <small>
-              Last successful inference:{" "}
-              {agentModelAssignment?.lastSuccessfulInferenceAt === null ||
-              agentModelAssignment?.lastSuccessfulInferenceAt === undefined
-                ? "Not yet"
-                : formatDate(agentModelAssignment.lastSuccessfulInferenceAt)}
-            </small>
-          </article>
-        )}
+                Test model
+              </button>
+            ) : null}
+            {activeBackendBinding && activeAiModel !== undefined ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={modelRuntimeBusy}
+                onClick={() => void removeServerBackendModelFromAgent(activeAiModel)}
+              >
+                Remove from agent
+              </button>
+            ) : null}
+            <button type="button" onClick={() => void openModelLibrary()}>
+              Switch model
+            </button>
+          </div>
+        </article>
         <McpAccessTokensPanel
           accountId={accountId}
           businessId={business.id}
@@ -1406,138 +580,15 @@ export function AgentModelPanel({
         />
         <details className="agent-model-advanced">
           <summary>Advanced routing</summary>
-          <section className="browser-model-control" aria-label="Browser-local inference">
-            <div>
-              <strong>Browser-local inference</strong>
-              <p>
-                Run inference on this device. A compatible model downloads only after you turn this
-                on. Render may authorize a proposed business tool, but it does not generate the
-                proposal or chat response.
-              </p>
-            </div>
-            {browserLocalInferenceDeploymentEnabled ? (
-              <label>
-                Browser model
-                <select
-                  value={selectedBrowserModelId}
-                  disabled={modelRuntimeBusy || browserInferenceState?.settings?.enabled === true}
-                  onChange={(event) => setSelectedBrowserModelId(event.target.value)}
-                >
-                  {browserModelOptions.map((option) => (
-                    <option
-                      key={option.model.id}
-                      value={option.model.id}
-                      disabled={!option.compatible}
-                    >
-                      {option.model.displayName}
-                      {option.compatible ? "" : ` — ${option.reason ?? "incompatible"}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            {browserLocalInferenceDeploymentEnabled ? (
-              <label className="browser-model-toggle">
-                <input
-                  type="checkbox"
-                  checked={browserInferenceState?.settings?.enabled === true}
-                  disabled={modelRuntimeBusy}
-                  onChange={(event) => void setBrowserInferenceEnabled(event.target.checked)}
-                />
-                Use the browser model on this device
-              </label>
-            ) : (
-              <p>Browser-local inference is unavailable in this deployment</p>
-            )}
-            <small>
-              {browserLocalInferenceDeploymentEnabled
-                ? browserInferenceState?.capability.supported === true
-                  ? `${browserInferenceState.capability.browser.name} · ${browserInferenceState.capability.backend.toUpperCase()} · ${browserInferenceState.capability.deviceTier} device`
-                  : (browserInferenceState?.capability.reasons[0] ??
-                    "Checking device compatibility…")
-                : "Disabled by deployment"}
-            </small>
-            <small>
-              Status:{" "}
-              {browserModelProgress === null
-                ? (browserInferenceState?.settings?.status ?? "Not downloaded")
-                : `${browserModelProgress.status} ${Math.round(browserModelProgress.percent)}%`}
-              {selectedBrowserModel === null
-                ? ""
-                : ` · ${selectedBrowserModel.displayName} · about ${Math.round(
-                    selectedBrowserModel.approximateDownloadBytes / 1_000_000
-                  )} MB download · about ${Math.round(
-                    selectedBrowserModel.approximateRuntimeMemoryBytes / 1_000_000
-                  )} MB working memory`}
-            </small>
-            <small>
-              Database workflow:{" "}
-              {syncedBrowserInference === null
-                ? "Not synchronized"
-                : `${syncedBrowserInference.enabled ? "Enabled" : "Disabled"} · ${
-                    syncedBrowserInference.readinessStatus
-                  } · ${syncedBrowserInference.runtimeContract?.adapterId ?? "no adapter"} ${
-                    syncedBrowserInference.runtimeContract?.adapterVersion ?? ""
-                  }`}
-            </small>
-            <small>
-              Only device, model, runtime-contract, readiness, and failure metadata are
-              synchronized. Prompts and generated replies remain outside this record.
-            </small>
-            <div className="ai-model-card-actions">
-              {browserModelProgress !== null ? (
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => {
-                    cancelBrowserModelLoad();
-                    setProfileMessage(
-                      "Browser model download cancelled. Partial engine cache can be removed below."
-                    );
-                  }}
-                >
-                  Cancel download
-                </button>
-              ) : null}
-              <button
-                className="secondary"
-                type="button"
-                disabled={
-                  modelRuntimeBusy ||
-                  browserInferenceState?.settings?.selectedModelId === null ||
-                  browserInferenceState?.settings === null ||
-                  browserInferenceState === null
-                }
-                onClick={() => void deleteBrowserModel()}
-              >
-                Delete browser model
-              </button>
-            </div>
-          </section>
           <section className="browser-model-control" aria-label="Client-first inference routing">
             <div>
               <strong>Client-first route permissions</strong>
               <p>
-                Soko uses the downloaded GGUF model through its llama.cpp-compatible harness first.
-                Another owner device or a hosted backend model can only be used as an allowed
-                fallback. Server tools remain confirmation-gated.
+                Soko routes chat through the configured backend-hosted model. A signed-in,
+                shop-owned device (for example a merchant's own laptop) can additionally be
+                registered as an allowed execution host. Server tools remain confirmation-gated.
               </p>
             </div>
-            <label className="browser-model-toggle">
-              <input
-                type="checkbox"
-                checked={inferencePreferences.nativePermission}
-                disabled={!clientInferenceFeatureFlags.nativeBridge || modelRuntimeBusy}
-                onChange={(event) =>
-                  updateInferencePreferences({ nativePermission: event.target.checked })
-                }
-              />
-              Allow installed-app GGUF inference
-            </label>
-            <small>
-              Requires the trusted Soko installed-app bridge. Ordinary browsers reject GGUF
-              activation without loading the model.
-            </small>
             <label className="browser-model-toggle">
               <input
                 type="checkbox"
@@ -1554,151 +605,22 @@ export function AgentModelPanel({
               model.
             </small>
           </section>
-          <label>
-            Execution mode
-            <select
-              value={agentModelAssignment?.preferredExecutionMode ?? "LOCAL_FIRST"}
-              disabled={agentModelAssignment === null || modelRuntimeBusy}
-              onChange={(event) =>
-                void updateAgentModelPolicy({
-                  preferredExecutionMode: event.target.value as PreferredExecutionMode
-                }).catch((error) => setProfileMessage(getErrorMessage(error)))
-              }
-            >
-              <option value="LOCAL_ONLY">Local only</option>
-              <option value="LOCAL_FIRST">Local first</option>
-            </select>
-          </label>
         </details>
-        <div className="ai-model-card-actions">
-          <button
-            type="button"
-            disabled={modelRuntimeBusy}
-            onClick={() => setModelChooserOpen(true)}
-          >
-            Choose model
-          </button>
-          <button
-            className="secondary"
-            type="button"
-            disabled={activeInstalledModel === null || modelRuntimeBusy}
-            onClick={() => void testAssignedModel()}
-          >
-            Test model
-          </button>
-          <button
-            className="secondary"
-            type="button"
-            disabled={activeInstalledModel === null || modelRuntimeBusy}
-            onClick={() =>
-              void removeModelFromAgent().catch((error) =>
-                setProfileMessage(getErrorMessage(error))
-              )
-            }
-          >
-            Remove from agent
-          </button>
-        </div>
-        {modelChooserOpen ? (
-          <div
-            className="agent-model-chooser"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Choose model"
-          >
-            <div className="section-heading">
-              <h4>Installed models</h4>
-              <button
-                className="secondary"
-                type="button"
-                aria-label="Close model chooser"
-                onClick={() => setModelChooserOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-            {orderedInstalledModels.map((model) => {
-              const usable =
-                model.installationStatus === "INSTALLED" &&
-                (model.compatibilityStatus === "COMPATIBLE" ||
-                  model.compatibilityStatus === "UNKNOWN") &&
-                model.commercialUseAllowed;
-              const modelInUse =
-                agentModelAssignment?.activeModelInstallationId === model.id &&
-                agentModelAssignment.readinessStatus === "READY";
-              const modelActivating = activatingModelId === model.modelId;
-              const lifecycleState = resolveModelLifecycleState({
-                installation: model,
-                assignment: agentModelAssignment,
-                activationState: modelActivationState,
-                activationMatches: modelActivating || failedActivationModelId === model.modelId,
-                downloading: false
-              });
-              return (
-                <article className="agent-model-choice" key={model.id}>
-                  <div>
-                    <strong>{model.displayName}</strong>
-                    <small>
-                      {formatModelParameters(model.parameterCount)} ·{" "}
-                      {model.quantization ?? "Quantization unknown"} ·{" "}
-                      {formatModelBytes(model.fileSizeBytes)}
-                    </small>
-                    <small>
-                      {model.license} ·{" "}
-                      {model.commercialUseAllowed
-                        ? "Commercial use allowed"
-                        : "Commercial use restricted"}{" "}
-                      · estimated {formatModelBytes(Math.ceil(model.fileSizeBytes * 2.5))} RAM
-                    </small>
-                    <small>
-                      {formatModelStatus(model.compatibilityStatus)} ·{" "}
-                      {agentModelAssignment?.activeModelInstallationId === model.id
-                        ? formatModelStatus(agentModelAssignment.readinessStatus)
-                        : "Installed, not attached"}
-                    </small>
-                  </div>
-                  <button
-                    className={`model-use-button ${
-                      modelInUse ? "in-use" : modelActivating ? "activating" : "not-in-use"
-                    }`}
-                    type="button"
-                    aria-pressed={modelInUse}
-                    disabled={!usable || modelRuntimeBusy || modelInUse}
-                    title={
-                      usable ? undefined : (model.validationError ?? "Model is not compatible")
-                    }
-                    onClick={() => void useModelWithAgent(model)}
-                  >
-                    {modelLifecycleActionLabel(lifecycleState)}
-                  </button>
-                </article>
-              );
-            })}
-            {orderedInstalledModels.length === 0 ? (
-              <p>No installed local models. Install one from the library below.</p>
-            ) : null}
-          </div>
-        ) : null}
       </div>
 
       <div className="record-form ai-model-library">
         <div className="section-heading">
-          <p className="eyebrow">Private on-device AI</p>
-          <h3>Android model library</h3>
+          <p className="eyebrow">Backend-hosted AI</p>
+          <h3>Model library</h3>
           <p>
-            Find commercially permissible small OSS models in the curated catalog, Hugging Face Hub,
-            and verified GitHub release assets, then install the best fit into browser-private
-            storage.
-          </p>
-          <p>
-            Device activation validates and runs a downloaded GGUF model in this browser or the
-            installed app. It is separate from the persisted backend “Use with agent” binding above.
+            Browse Soko's hosted catalog, Hugging Face Hub, and verified GitHub release assets.
+            Every model runs on the Soko backend - nothing downloads to this device.
           </p>
         </div>
 
         {!modelLibraryLoaded ? (
           <div className="deferred-model-library">
-            <p>Device checks and remote model catalogs stay paused until you open this library.</p>
+            <p>Remote model catalogs stay paused until you open this library.</p>
             <button
               type="button"
               disabled={modelLibraryLoading}
@@ -1710,56 +632,6 @@ export function AgentModelPanel({
           </div>
         ) : (
           <>
-            <section aria-label="Account model storage">
-              <div className="section-subheading">
-                <h4>Available from your account</h4>
-                <p>
-                  These GGUF files are stored in your existing Neon database. Restore a private
-                  device copy before running local inference; the account copy remains available to
-                  your other signed-in devices.
-                </p>
-              </div>
-              <div className="ai-model-catalog">
-                {accountModelArtifacts
-                  .filter(
-                    (artifact) => !localAiModels.some((model) => model.modelId === artifact.modelId)
-                  )
-                  .map((artifact) => {
-                    const transfer = modelTransfers[`account:${artifact.id}`];
-                    const compatible =
-                      deviceCapability === null ||
-                      canRunCatalogModel(deviceCapability, null, artifact.fileSizeBytes);
-                    return (
-                      <article className="ai-model-card" key={`account:${artifact.id}`}>
-                        <div>
-                          <p className="eyebrow">Neon account storage · Ready</p>
-                          <h4>{artifact.displayName}</h4>
-                          <small>
-                            {formatModelBytes(artifact.fileSizeBytes)} · {artifact.license} · saved{" "}
-                            {artifact.completedAt === null
-                              ? "recently"
-                              : formatDate(artifact.completedAt)}
-                          </small>
-                        </div>
-                        <div className="ai-model-card-actions">
-                          <button
-                            type="button"
-                            disabled={!compatible || transfer !== undefined}
-                            onClick={() => void restoreAccountModel(artifact)}
-                          >
-                            {transfer === undefined
-                              ? "Restore to this device"
-                              : `Restoring ${transfer.percent}%`}
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  })}
-                {accountModelArtifacts.length === 0 ? (
-                  <p>No account-saved models yet. Installing a model below saves the GGUF here.</p>
-                ) : null}
-              </div>
-            </section>
             {serverBackendModels.length > 0 ? (
               <section aria-label="Soko backend models">
                 <div className="section-subheading">
@@ -1796,8 +668,12 @@ export function AgentModelPanel({
                               {backendModelRuntimeStatusMessage(runtime.errorCode)}
                             </small>
                           ) : runtime?.status === "available" ? (
-                            <small>
-                              Model verified in {formatLatency(runtime.latencyMs ?? 0)}.
+                            <small>Model verified in {formatLatency(runtime.latencyMs ?? 0)}.</small>
+                          ) : null}
+                          {failedActivationModelId === model.id ? (
+                            <small role="status">
+                              Activation failed. The previous working model remains active - try
+                              again or pick a different model.
                             </small>
                           ) : null}
                         </div>
@@ -1835,41 +711,6 @@ export function AgentModelPanel({
                 </div>
               </section>
             ) : null}
-            <section
-              className={`offline-starter-card ${offlineStarterInstalled ? "installed" : ""}`}
-              aria-label="Offline starter model"
-            >
-              <div>
-                <p className="eyebrow">
-                  {offlineStarterInstalled ? "Installed on this device" : "One-time setup"}
-                </p>
-                <h4>
-                  {offlineStarterInstalled
-                    ? `${offlineStarter?.label ?? "Offline model"} is installed`
-                    : "Install an offline starter"}
-                </h4>
-                <p>
-                  {offlineStarterInstalled
-                    ? "The file is in private storage. Choose ‘Activate on this device’ to validate it and run a local readiness check."
-                    : offlineStarter === undefined
-                      ? "This device does not report enough storage for a default offline model."
-                      : `${offlineStarter.label} is the best default for this device (${formatModelBytes(
-                          offlineStarter.fileSizeBytes
-                        )}). Download it once while connected, then keep it available on the go.`}
-                </p>
-              </div>
-              {!offlineStarterInstalled && offlineStarter !== undefined ? (
-                <button
-                  type="button"
-                  disabled={modelTransfers[offlineStarter.id] !== undefined}
-                  onClick={() => void predownloadAiModel(offlineStarter)}
-                >
-                  {modelTransfers[offlineStarter.id] === undefined
-                    ? "Install offline starter"
-                    : `Installing ${modelTransfers[offlineStarter.id]?.percent ?? 0}%`}
-                </button>
-              ) : null}
-            </section>
 
             <div className="ai-model-search">
               <label>
@@ -1934,272 +775,53 @@ export function AgentModelPanel({
               <span>{huggingFaceModelDiscovery.message}</span>
             </div>
 
-            {deviceCapability === null ? (
-              <p className="model-device-status">Checking this device…</p>
-            ) : (
-              <div className={`model-device-status ${deviceCapability.level}`}>
-                <strong>{deviceCapability.level} device profile</strong>
-                <span>{deviceCapability.reason}</span>
-                <small>
-                  {deviceCapability.deviceMemoryGb === null
-                    ? "RAM not reported"
-                    : `${deviceCapability.deviceMemoryGb} GB RAM reported`}
-                  {` · ${deviceCapability.hardwareConcurrency} CPU threads`}
-                  {deviceCapability.freeStorageBytes === null
-                    ? " · storage not reported"
-                    : ` · ${formatModelBytes(deviceCapability.freeStorageBytes)} free`}
-                </small>
-              </div>
-            )}
-
             <div className="ai-model-best-fit">
               <div className="section-subheading">
-                <h4>Best fit models</h4>
+                <h4>Discovered models</h4>
                 <p>
-                  Ranked across the Soko and GitHub catalogs using reported RAM, CPU, storage, model
-                  size, and useful agent capabilities.
+                  Results from Hugging Face Hub and verified GitHub release assets that are not yet
+                  registered on the Soko backend. Browse them here; activation follows once a model
+                  is server-registered.
                 </p>
               </div>
-              {deviceCapability === null ? (
-                <p className="model-device-status">Checking compatibility…</p>
-              ) : (
-                <div className="ai-model-best-fit-list">
-                  {bestFitModels.map(({ model, reasons }) => (
-                    <div className="ai-model-best-fit-card" key={model.id}>
-                      <strong>
-                        {model.label} · {model.source === "github" ? "GitHub" : "Hugging Face"}
-                      </strong>
-                      <span>{model.description}</span>
-                      <small>{reasons.slice(0, 2).join(" · ")}</small>
+              <div className="ai-model-catalog">
+                {browseOnlyDiscoveryModels.map((model) => (
+                  <article className="ai-model-card" key={model.id}>
+                    <div>
+                      <p className="eyebrow">
+                        Browse only ·{" "}
+                        {model.source === "github" ? "GitHub release · " : "Hugging Face · "}
+                        {model.license} · {model.format}
+                      </p>
+                      <h4>{model.label}</h4>
+                      <p>{model.description}</p>
+                      <small>
+                        {formatModelBytes(model.fileSizeBytes)} · {model.minimumMemoryGb} GB
+                        minimum RAM · {model.capabilities.join(" · ")}
+                      </small>
+                      <small role="status">
+                        Not yet available for hosted activation on this deployment.
+                      </small>
                     </div>
-                  ))}
-                  {bestFitModels.length === 0 ? (
-                    <p>No compatible catalog models were found for this device.</p>
-                  ) : null}
-                </div>
-              )}
-            </div>
-
-            <div className="ai-model-catalog">
-              {visibleAiModels
-                .filter((model) => {
-                  if (!isDownloadableCatalogModel(model) || model.license !== "Apache-2.0") {
-                    return false;
-                  }
-                  // A model already installed on this device stays listed regardless of current
-                  // compatibility (so it can still be managed/removed) - only a model nobody has
-                  // downloaded here yet is hidden once it's known this device can't run it.
-                  const alreadyInstalled = localAiModels.some(
-                    (candidate) => candidate.modelId === model.id
-                  );
-                  if (alreadyInstalled) return true;
-                  return (
-                    deviceCapability === null ||
-                    canRunCatalogModel(deviceCapability, model.minimumMemoryGb, model.fileSizeBytes)
-                  );
-                })
-                .map((model) => {
-                  const localModel = localAiModels.find(
-                    (candidate) => candidate.modelId === model.id
-                  );
-                  const transfer = modelTransfers[model.id];
-                  const localModelInUse =
-                    localModel !== undefined &&
-                    agentModelAssignment?.activeModelInstallationId === localModel.id &&
-                    agentModelAssignment.readinessStatus === "READY";
-                  const localModelActivating = activatingModelId === localModel?.modelId;
-                  const lifecycleState = resolveModelLifecycleState({
-                    installation: localModel ?? null,
-                    assignment: agentModelAssignment,
-                    activationState: modelActivationState,
-                    activationMatches:
-                      localModelActivating || failedActivationModelId === localModel?.modelId,
-                    downloading: transfer !== undefined
-                  });
-                  const compatible =
-                    deviceCapability === null ||
-                    canRunCatalogModel(
-                      deviceCapability,
-                      model.minimumMemoryGb,
-                      model.fileSizeBytes
-                    );
-                  return (
-                    <article className="ai-model-card" key={model.id}>
-                      <div>
-                        <p className="eyebrow">
-                          {localModel === undefined ? "Available to install · " : "Installed · "}
-                          {model.recommended ? "Recommended · " : ""}
-                          {model.source === "github" ? "GitHub release · " : "Hugging Face · "}
-                          {model.license} · {model.format}
-                        </p>
-                        <h4>{model.label}</h4>
-                        <p>{model.description}</p>
-                        <small>
-                          {formatModelBytes(model.fileSizeBytes)} · {model.minimumMemoryGb} GB
-                          minimum RAM · {model.capabilities.join(" · ")}
-                        </small>
-                      </div>
-                      <div className="ai-model-card-actions">
-                        {model.modelCardUrl !== null ? (
-                          <a href={model.modelCardUrl} target="_blank" rel="noreferrer">
-                            {model.source === "github" ? "GitHub release" : "Model card"}
-                          </a>
-                        ) : null}
-                        {localModel === undefined ? (
-                          <button
-                            type="button"
-                            disabled={!compatible || transfer !== undefined}
-                            onClick={() => void predownloadAiModel(model)}
-                          >
-                            {transfer === undefined
-                              ? "Predownload & install"
-                              : `Installing ${transfer.percent}%`}
-                          </button>
-                        ) : (
-                          <>
-                            <button
-                              className={`model-use-button ${
-                                localModelInUse
-                                  ? "in-use"
-                                  : localModelActivating
-                                    ? "activating"
-                                    : "not-in-use"
-                              }`}
-                              type="button"
-                              aria-pressed={localModelInUse}
-                              disabled={modelRuntimeBusy || localModelInUse}
-                              onClick={() => void useModelWithAgent(localModel)}
-                            >
-                              {modelLifecycleActionLabel(lifecycleState)}
-                            </button>
-                            <button
-                              className="secondary"
-                              type="button"
-                              disabled={modelRuntimeBusy}
-                              onClick={() => void deleteDeviceModel(localModel)}
-                            >
-                              Remove
-                            </button>
-                          </>
-                        )}
-                      </div>
-                      {!compatible ? (
-                        <p className="model-compatibility-warning">
-                          This model exceeds the reported memory or storage available on this
-                          device.
-                        </p>
+                    <div className="ai-model-card-actions">
+                      {model.modelCardUrl !== null ? (
+                        <a href={model.modelCardUrl} target="_blank" rel="noreferrer">
+                          {model.source === "github" ? "GitHub release" : "Model card"}
+                        </a>
                       ) : null}
-                    </article>
-                  );
-                })}
-            </div>
-
-            <div className="custom-model-import">
-              <div>
-                <h4>Add a custom AI model</h4>
-                <p>
-                  High-capability devices can import a GGUF file. Soko saves an account copy in Neon
-                  after your license confirmation, but does not independently verify custom model
-                  licenses.
-                </p>
-              </div>
-              <label className="license-confirmation">
-                <input
-                  type="checkbox"
-                  checked={customLicenseConfirmed}
-                  disabled={deviceCapability?.customModelsAllowed !== true}
-                  onChange={(event) => setCustomLicenseConfirmed(event.target.checked)}
-                />
-                I confirm this model's license permits my commercial use.
-              </label>
-              <input
-                ref={customModelInput}
-                className="model-file-input"
-                type="file"
-                accept=".gguf,application/octet-stream"
-                onChange={(event) => void importCustomModel(event)}
-              />
-              <button
-                type="button"
-                disabled={
-                  deviceCapability?.customModelsAllowed !== true ||
-                  !customLicenseConfirmed ||
-                  modelTransfers["custom-import"] !== undefined
-                }
-                onClick={() => customModelInput.current?.click()}
-              >
-                {modelTransfers["custom-import"] === undefined
-                  ? "Choose custom GGUF"
-                  : `Importing ${modelTransfers["custom-import"].percent}%`}
-              </button>
-              {localAiModels
-                .filter((model) => model.provider === "custom")
-                .map((model) => {
-                  const modelInUse =
-                    agentModelAssignment?.activeModelInstallationId === model.id &&
-                    agentModelAssignment.readinessStatus === "READY";
-                  const modelActivating = activatingModelId === model.modelId;
-                  const lifecycleState = resolveModelLifecycleState({
-                    installation: model,
-                    assignment: agentModelAssignment,
-                    activationState: modelActivationState,
-                    activationMatches: modelActivating || failedActivationModelId === model.modelId,
-                    downloading: false
-                  });
-                  return (
-                    <div className="custom-model-row" key={model.id}>
-                      <span>
-                        <strong>{model.label}</strong>
-                        <small>
-                          {formatModelBytes(model.fileSizeBytes)} · stored on this device
-                        </small>
-                      </span>
-                      <button
-                        className={`model-use-button ${
-                          modelInUse ? "in-use" : modelActivating ? "activating" : "not-in-use"
-                        }`}
-                        type="button"
-                        aria-pressed={modelInUse}
-                        disabled={modelRuntimeBusy || modelInUse}
-                        onClick={() => void useModelWithAgent(model)}
-                      >
-                        {modelLifecycleActionLabel(lifecycleState)}
-                      </button>
-                      <button
-                        className="secondary"
-                        type="button"
-                        disabled={modelRuntimeBusy}
-                        onClick={() => void deleteDeviceModel(model)}
-                      >
-                        Remove
-                      </button>
                     </div>
-                  );
-                })}
+                  </article>
+                ))}
+                {browseOnlyDiscoveryModels.length === 0 ? (
+                  <p>No additional discovered models right now. Try a different search.</p>
+                ) : null}
+              </div>
             </div>
           </>
         )}
       </div>
     </>
   );
-}
-
-export interface ModelActivationDiagnostic {
-  activationRequestId: string;
-  userId: string;
-  shopId: string;
-  agentId: string;
-  modelId: string;
-  modelSource: string;
-  runtimeType: string;
-  runtimeSessionId: string | null;
-  online: boolean;
-  phaseDurations: Partial<Record<ModelActivationState, number>>;
-  failureCode: string | null;
-}
-
-export function recordModelActivationDiagnostic(diagnostic: ModelActivationDiagnostic): void {
-  console.info("model_activation", diagnostic);
 }
 
 export function mergeAiModelCatalogs(

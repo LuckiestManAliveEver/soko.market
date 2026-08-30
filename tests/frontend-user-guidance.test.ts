@@ -152,18 +152,18 @@ describe("frontend user guidance", () => {
     expect(chatComposer).toContain("Extract all readable text");
   });
 
-  it("separates installed Android models from the commercially permitted download catalog", () => {
+  it("keeps model activation entirely backend-hosted with no device install step", () => {
+    // The private on-device model architecture (predownload, device install, offline starter,
+    // "activate on this device") was retired - see apps/web/src/ai-model-manager.ts's deletion.
+    // Every model this app can run is backend-hosted; activation is a real test-then-activate
+    // round trip against /api/agents/:agentId/models/:modelId/{test,activate}, never a download.
     const agentModelPanel = readFileSync("apps/web/src/AgentModelPanel.tsx", "utf8");
-    const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
-    expect(agentModelPanel).toContain("Predownload & install");
-    expect(agentModelPanel).toContain("Installed on this device. Choose ‘Activate on this device’");
-    expect(agentModelPanel).toContain("Activate on this device");
     expect(agentModelPanel).toContain("Test model");
-    expect(agentModelPanel).not.toContain("Ready without a connection");
-    expect(agentModelPanel).not.toContain("offline ready");
-    expect(agentModelPanel).toContain("Install offline starter");
-    expect(manager).toContain("defaultOfflineAiModels");
-    expect(manager).toContain("Qwen2.5 0.5B offline default");
+    expect(agentModelPanel).toContain("Use with agent");
+    expect(agentModelPanel).not.toContain("Predownload & install");
+    expect(agentModelPanel).not.toContain("Activate on this device");
+    expect(agentModelPanel).not.toContain("Install offline starter");
+    expect(existsSync("apps/web/src/ai-model-manager.ts")).toBe(false);
   });
 
   it("keeps primary seller destinations reachable through the Workspace hub and changes modes without animation delay", () => {
@@ -189,11 +189,14 @@ describe("frontend user guidance", () => {
     expect(styles).toContain("prefers-reduced-motion: reduce");
   });
 
-  it("does not ship the retired browser action parser", () => {
-    const inferenceTypes = readFileSync("apps/web/src/browser-inference-types.ts", "utf8");
-
+  it("does not ship the retired browser action parser or the on-device inference architecture", () => {
+    // browser-inference-types.ts itself (and the rest of the browser-inference-* cluster) is
+    // retired along with the private on-device model architecture - a stronger guarantee than the
+    // narrower "BrowserAgentAction isn't in that file" this test used to check.
     expect(existsSync("apps/web/src/browser-agent-actions.ts")).toBe(false);
-    expect(inferenceTypes).not.toContain("BrowserAgentAction");
+    expect(existsSync("apps/web/src/browser-inference-types.ts")).toBe(false);
+    expect(existsSync("apps/web/src/ai-model-manager.ts")).toBe(false);
+    expect(existsSync("apps/web/src/agent-model-runtime.ts")).toBe(false);
   });
 
   it("suppresses the redundant persistent agent error prompt", () => {
@@ -210,9 +213,12 @@ describe("frontend user guidance", () => {
     expect(chatSurfaceForRedundancy).toContain("!isRedundantAgentErrorMessage(message.body)");
   });
 
-  it("connects the Android model library to Hugging Face, GitHub, and device-fit ranking", () => {
+  it("connects the model library to Hugging Face and GitHub discovery, browse-only until hosted", () => {
+    // Model discovery (GitHub/Hugging Face search) survives the on-device architecture removal as
+    // a browsing feature - see apps/web/src/AgentModelPanel.tsx's "concern 4". What was removed is
+    // turning a discovered model into a device download; device-fit ranking (rankCatalogModelsForDevice)
+    // went with it since there is no device to fit against anymore.
     const application = readFileSync("apps/web/src/AgentModelPanel.tsx", "utf8");
-    const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
     const modelCatalog = readFileSync(
       "services/api/src/cp2/domains/agent-runtime/model-catalog.ts",
       "utf8"
@@ -227,9 +233,8 @@ describe("frontend user guidance", () => {
     expect(application).toContain("/v1/ai-models/github");
     expect(application).toContain("/v1/ai-models/huggingface");
     expect(application).toContain("Search all model sources");
-    expect(application).toContain("rankCatalogModelsForDevice");
-    expect(manager).toContain("verified GitHub release asset");
-    expect(manager).toContain("The downloaded file is not a valid GGUF model.");
+    expect(application).not.toContain("rankCatalogModelsForDevice");
+    expect(application).toContain("Not yet available for hosted activation on this deployment.");
     expect(modelCatalog).toContain("tinyllama-1.1b-chat-q3-k-m-android");
     expect(modelCatalog).toContain("tinyllama-1.1b-chat-q4-k-m-android");
     expect(modelCatalog).toContain('id: "llama-cpp-configured"');

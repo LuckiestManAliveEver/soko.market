@@ -1,8 +1,8 @@
+// Browser-local (WebGPU/WASM) and installed-app-native-bridge client inference flags were retired
+// with the private on-device model architecture (see apps/web/src/browser-inference-* removal).
+// The owner-node route survives: a shop-owned authenticated device (e.g. a merchant's own laptop)
+// is still a legitimate client-side execution target, distinct from private per-browser inference.
 export interface ClientInferenceFeatureFlags {
-  clientFirst: boolean;
-  browserWebGpu: boolean;
-  browserWasm: boolean;
-  nativeBridge: boolean;
   ownerNode: boolean;
   maximumFallbacks: number;
 }
@@ -10,13 +10,8 @@ export interface ClientInferenceFeatureFlags {
 export function readClientInferenceFeatureFlags(
   environment: Record<string, string | boolean | undefined> = import.meta.env
 ): ClientInferenceFeatureFlags {
-  const clientFirst = environment.VITE_INFERENCE_CLIENT_FIRST === "true";
   return {
-    clientFirst,
-    browserWebGpu: clientFirst && environment.VITE_INFERENCE_BROWSER_WEBGPU_ENABLED !== "false",
-    browserWasm: clientFirst && environment.VITE_INFERENCE_BROWSER_WASM_ENABLED !== "false",
-    nativeBridge: clientFirst && environment.VITE_INFERENCE_NATIVE_BRIDGE_ENABLED === "true",
-    ownerNode: clientFirst && environment.VITE_INFERENCE_OWNER_NODE_ENABLED === "true",
+    ownerNode: environment.VITE_INFERENCE_OWNER_NODE_ENABLED === "true",
     maximumFallbacks: positiveInteger(environment.VITE_INFERENCE_MAX_FALLBACKS, 3)
   };
 }
