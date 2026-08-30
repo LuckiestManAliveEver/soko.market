@@ -74,7 +74,7 @@ export function runtimeAdapterIdForAgent(agent: NativeRuntimeAgentSummary): stri
     : legacyAgentRuntimeAdapterId;
 }
 
-function normalizeAdapterId(value: string): string {
+export function normalizeAdapterId(value: string): string {
   const id = value.trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9._-]{0,79}$/u.test(id)) {
     throw new Error("Agent runtime adapter IDs must be lowercase portable identifiers.");

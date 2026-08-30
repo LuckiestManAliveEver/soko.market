@@ -53,6 +53,13 @@ export const repositoryDefaultRuntimePolicy: PlatformDefaultRuntimePolicy = {
   executionTarget: "backend"
 };
 
+/** Catalog metadata for a registered AgentRuntimeAdapter, for shop-facing selection UI. */
+export interface AgentRuntimeAdapterDescriptor {
+  id: string;
+  displayName: string;
+  description: string;
+}
+
 export type InferenceRuntime =
   "browser-webgpu" | "browser-wasm" | "native-llama-cpp" | "owner-node";
 

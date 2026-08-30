@@ -85,6 +85,10 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
   activateVerifiedRuntimeBinding: (
     input: NativeRuntimeActivationInput
   ) => NativeRuntimeBindingSummary;
+  // undefined means no native runtime agent record has been materialized for this id yet (the shop
+  // has never explicitly activated a model or received the platform default) - callers fall back to
+  // platformDefaultRuntime.agentRuntimeAdapterId rather than treating that as an error.
+  resolveAgentRuntimeAdapterId: (agentId: string) => string | undefined;
   ensureDefaultRuntimeBinding: (
     input: NativeDefaultRuntimeProvisioningInput
   ) => NativeDefaultRuntimeProvisioningResult;

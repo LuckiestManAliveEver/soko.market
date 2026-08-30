@@ -21,6 +21,7 @@ import type {
 import { repositoryDefaultRuntimePolicy, resolveRuntimeModel } from "@soko/shared-types";
 
 import { Cp2Error } from "../../cp2-error.js";
+import { runtimeAdapterIdForAgent } from "../../../agent-runtime/agent-runtime-adapter.js";
 
 export const nativeRuntimeContractVersion = "1";
 export const builtinRuntimeAgentId = "builtin:pi:v1";
@@ -151,19 +152,27 @@ export class NativeRuntimeBindingStore {
 
   activateVerifiedModel(input: NativeRuntimeActivationInput): NativeRuntimeBindingSummary {
     const timestamp = input.checkedAt;
+    // Precedence: an explicit request always wins; otherwise keep this shop's already-chosen
+    // harness in place (a model swap must not silently reset it); a shop with no prior activation
+    // starts from the platform default, not a hardcoded engine.
+    const existingAgent = this.agents.get(input.agentId);
+    const adapterId =
+      input.agentRuntimeAdapterId ??
+      (existingAgent === undefined
+        ? this.defaultRuntimePolicy.agentRuntimeAdapterId
+        : runtimeAdapterIdForAgent(existingAgent));
     const agent = this.upsertAgent({
       id: input.agentId,
       businessId: input.businessId,
       accountId: input.accountId,
       name: input.agentName,
-      provider: input.agentRuntimeAdapterId === "pi" ? "pi" : "soko-business-agent",
-      packageRef:
-        input.agentRuntimeAdapterId === "pi" ? "npm:@earendil-works/pi-agent-core@0.84.4" : null,
+      provider: adapterId === "pi" ? "pi" : "soko-business-agent",
+      packageRef: adapterId === "pi" ? "npm:@earendil-works/pi-agent-core@0.84.4" : null,
       version: "1",
       runtimeContractVersion: nativeRuntimeContractVersion,
       capabilities: ["tools", "mcp"],
       configuration: {
-        runtimeAdapterId: input.agentRuntimeAdapterId ?? "soko",
+        runtimeAdapterId: adapterId,
         requiredModelCapabilities: ["chat"]
       },
       status: "active",
@@ -392,6 +401,13 @@ export class NativeRuntimeBindingStore {
         )
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null
     );
+  }
+
+  /** The harness currently configured for a native runtime agent record, if one has ever been
+   *  materialized (by activateVerifiedModel or ensureGlobalDefault) for this id. */
+  resolveAgentRuntimeAdapterId(agentId: string): string | undefined {
+    const agent = this.agents.get(agentId);
+    return agent === undefined ? undefined : runtimeAdapterIdForAgent(agent);
   }
 
   deactivateBusinessAgentBinding(

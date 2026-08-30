@@ -21,6 +21,7 @@ import { DeleteAccountPanel } from "./DeleteAccountPanel";
 import { NotificationsSessionsPanel } from "./NotificationsSessionsPanel";
 import { ProtectedContextFilesPanel } from "./ProtectedContextFilesPanel";
 import { PublicStorefrontPanel } from "./PublicStorefrontPanel";
+import { QuickRuntimeSwitcher } from "./QuickRuntimeSwitcher";
 import { YourShopsPanel } from "./YourShopsPanel";
 
 import {
@@ -552,6 +553,13 @@ export function AgentProfileSurface({
           title="Model & inference"
           description="Which model runs this agent, and where"
         >
+          <QuickRuntimeSwitcher
+            business={business}
+            agent={agent}
+            updateAgent={updateAgent}
+            onAgentChange={onAgentChange}
+          />
+
           <Suspense fallback={<div className="inline-loading-card">Opening model settings…</div>}>
             <AgentModelPanel
               accountId={accountId}

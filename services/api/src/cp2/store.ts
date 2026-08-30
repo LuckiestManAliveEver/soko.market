@@ -61,6 +61,7 @@ import {
 import { AgentRuntimeDomain } from "./domains/agent-runtime/store.js";
 import { createDefaultAgentRuntimeAdapterRegistry } from "../agent-runtime/default-agent-runtime-adapters.js";
 import type { AgentRuntimeAdapter } from "../agent-runtime/agent-runtime-adapter.js";
+import { describeAgentRuntimeAdapter } from "../agent-runtime/agent-runtime-catalog.js";
 import {
   aiModelRegistry,
   computeModelAvailability,
@@ -109,6 +110,7 @@ import type {
   AccountSummary,
   AgentContextSource,
   AgentDefinition,
+  AgentRuntimeAdapterDescriptor,
   AiModelSummary,
   AgentEvaluationEvent,
   AgentOwnerCorrection,
@@ -1116,6 +1118,8 @@ export class Cp2Store {
         }
         return binding;
       },
+      resolveAgentRuntimeAdapterId: (agentId) =>
+        this.nativeRuntimeBindings.resolveAgentRuntimeAdapterId(agentId),
       ensureDefaultRuntimeBinding: (input) => {
         // Authorize before mutating: this call provisions binding/host/model/installation rows,
         // and a rejected conversation must never leave those behind. resolveNativeRuntimeBinding
@@ -3121,6 +3125,11 @@ export class Cp2Store {
     ...args: Parameters<AgentRuntimeDomain["getActiveAgentModelBinding"]>
   ): ReturnType<AgentRuntimeDomain["getActiveAgentModelBinding"]> {
     return this.agentRuntimeDomain.getActiveAgentModelBinding(...args);
+  }
+  getAgentRuntimeHarness(
+    ...args: Parameters<AgentRuntimeDomain["getAgentRuntimeHarness"]>
+  ): ReturnType<AgentRuntimeDomain["getAgentRuntimeHarness"]> {
+    return this.agentRuntimeDomain.getAgentRuntimeHarness(...args);
   }
   removeAgentModelBinding(
     ...args: Parameters<AgentRuntimeDomain["removeAgentModelBinding"]>
@@ -6073,6 +6082,23 @@ export class Cp2Store {
   listPlatformAgentCatalog(sessionId: string | null, now = new Date()): AgentDefinition[] {
     this.requirePinVerifiedSession(sessionId, now);
     return this.listAgentCatalog();
+  }
+
+  /** Every AgentRuntimeAdapter actually registered in this deployment (see
+   *  agent-runtime/default-agent-runtime-adapters.ts) - the harnesses a shop can choose between. */
+  listAgentRuntimeAdapters(): AgentRuntimeAdapterDescriptor[] {
+    return this.defaultAgentRuntimeAdapters
+      .list()
+      .map((adapter) => describeAgentRuntimeAdapter(adapter.id))
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+  }
+
+  listPlatformAgentRuntimeAdapters(
+    sessionId: string | null,
+    now = new Date()
+  ): AgentRuntimeAdapterDescriptor[] {
+    this.requirePinVerifiedSession(sessionId, now);
+    return this.listAgentRuntimeAdapters();
   }
 
   upsertAgentCatalogEntry(input: {

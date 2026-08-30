@@ -36,6 +36,7 @@ import {
   parseAgentModelBindingPermissions,
   parseAgentModelReadinessStatus,
   parseAgentProfileBody,
+  parseAgentRuntimeAdapterId,
   parseBrowserCheckpointContract,
   parseBrowserDeviceTier,
   parseBrowserRuntimeContract,
@@ -153,6 +154,7 @@ interface AgentModelTestBody {
 interface AgentModelActivationBody extends AgentModelTestBody {
   executionMode?: unknown;
   permissions?: unknown;
+  agentRuntimeAdapterId?: unknown;
 }
 
 interface AiModelActivationBody {
@@ -326,6 +328,19 @@ export function registerAgentRuntimeRoutes(
     try {
       return {
         agents: store.listPlatformAgentCatalog(readSessionCookie(request.headers.cookie))
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  // The harnesses (AgentRuntimeAdapter registrations) a shop can pick between - read-only, no
+  // platform-operator gate, since it's just "what's actually registered in this deployment", the
+  // same way GET /v1/ai-models is open to any authenticated device.
+  app.get("/v1/platform/agent-runtime-adapters", async (request, reply) => {
+    try {
+      return {
+        adapters: store.listPlatformAgentRuntimeAdapters(readSessionCookie(request.headers.cookie))
       };
     } catch (error) {
       return sendCp2Error(reply, error);
@@ -714,6 +729,27 @@ export function registerAgentRuntimeRoutes(
     }
   );
 
+  app.get(
+    "/api/agents/:agentId/harness",
+    async (
+      request: FastifyRequest<{
+        Params: AgentModelBindingParams;
+        Querystring: AgentModelBindingQuery;
+      }>,
+      reply
+    ) => {
+      try {
+        return store.getAgentRuntimeHarness({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.query.shopId, "shopId"),
+          agentId: parseString(request.params.agentId, "agentId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.delete(
     "/api/agents/:agentId/model-binding",
     async (
@@ -838,6 +874,7 @@ export function registerAgentRuntimeRoutes(
       const agentId = parseString(request.params.agentId, "agentId");
       const modelId = parseString(request.params.modelId, "modelId");
       const executionTarget = parseModelExecutionTarget(request.body.executionTarget);
+      const agentRuntimeAdapterId = parseAgentRuntimeAdapterId(request.body.agentRuntimeAdapterId);
       const requestAbort = observeRequestAbort(request, reply);
       request.log.info(
         {
@@ -846,7 +883,8 @@ export function registerAgentRuntimeRoutes(
           shopId,
           agentId,
           modelId,
-          executionTarget
+          executionTarget,
+          agentRuntimeAdapterId: agentRuntimeAdapterId ?? null
         },
         "Model activation started."
       );
@@ -859,6 +897,7 @@ export function registerAgentRuntimeRoutes(
           executionTarget,
           executionMode: parsePreferredExecutionMode(request.body.executionMode),
           permissions: parseAgentModelBindingPermissions(request.body.permissions),
+          ...(agentRuntimeAdapterId === undefined ? {} : { agentRuntimeAdapterId }),
           signal: requestAbort.signal,
           onStage: (stage, elapsedMs) => {
             request.log.info(

@@ -474,6 +474,25 @@ export class AgentRuntimeDomain {
     return binding === null ? null : cloneAgentModelBinding(binding);
   }
 
+  /** The harness (AgentRuntimeAdapter) currently selected for this shop's agent, or the platform
+   *  default if nothing has been explicitly activated yet - what a "current harness" selector
+   *  should show. */
+  getAgentRuntimeHarness(input: {
+    sessionId: string | null;
+    businessId: string;
+    agentId: string;
+    now?: Date;
+  }): { agentRuntimeAdapterId: string } {
+    const now = input.now ?? new Date();
+    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    this.requireBusinessAgent(input.businessId, input.agentId, now);
+    return {
+      agentRuntimeAdapterId:
+        this.deps.resolveAgentRuntimeAdapterId(input.agentId) ??
+        this.deps.platformDefaultRuntime.agentRuntimeAdapterId
+    };
+  }
+
   removeAgentModelBinding(input: {
     sessionId: string | null;
     businessId: string;
@@ -584,6 +603,8 @@ export class AgentRuntimeDomain {
     executionTarget: ModelExecutionTarget;
     executionMode: PreferredExecutionMode;
     permissions: AgentModelBindingPermissions;
+    // Absent keeps this shop's current harness (or the platform default, if none is set yet).
+    agentRuntimeAdapterId?: string;
     signal?: AbortSignal;
     onStage?: (stage: string, elapsedMs: number) => void;
     now?: Date;
@@ -599,12 +620,25 @@ export class AgentRuntimeDomain {
     input.onStage?.("auth_resolved", Date.now() - startedAt);
     this.requireBusinessAgent(input.businessId, input.agentId, now);
     input.onStage?.("agent_resolved", Date.now() - startedAt);
+    if (
+      input.agentRuntimeAdapterId !== undefined &&
+      this.deps.agentRuntimeAdapterResolver(input.agentRuntimeAdapterId) === undefined
+    ) {
+      throw new Cp2Error(
+        404,
+        "AGENT_RUNTIME_ADAPTER_NOT_FOUND",
+        "The requested agent runtime adapter is not registered."
+      );
+    }
     const model = this.requireCanonicalAiModel(input.modelId);
     validateAgentModelBindingConfiguration(input, model);
     input.onStage?.("model_resolved", Date.now() - startedAt);
     const existingActive = this.activeAgentModelBinding(input.agentId);
     if (
       existingActive !== null &&
+      // An explicit harness request always goes through the full (re)activation path below, even
+      // when it happens to match what's already active - it's a deliberate action, not a probe.
+      input.agentRuntimeAdapterId === undefined &&
       existingActive.modelId === input.modelId &&
       existingActive.executionTarget === input.executionTarget &&
       existingActive.executionMode === normalizeExecutionMode(input.executionMode) &&
@@ -754,6 +788,9 @@ export class AgentRuntimeDomain {
         accountId: session.account.id,
         agentId: profile.agentId,
         agentName: profile.name,
+        ...(input.agentRuntimeAdapterId === undefined
+          ? {}
+          : { agentRuntimeAdapterId: input.agentRuntimeAdapterId }),
         model,
         executionTarget: input.executionTarget,
         fallbackModel: null,

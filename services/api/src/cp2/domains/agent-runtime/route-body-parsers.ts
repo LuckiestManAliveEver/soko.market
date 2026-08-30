@@ -35,6 +35,7 @@ import {
 import { runtimeToolRegistry } from "@soko/tool-core";
 import { Cp2Error } from "../../cp2-error.js";
 import { isSupportedLanguage } from "../../store.js";
+import { normalizeAdapterId } from "../../../agent-runtime/agent-runtime-adapter.js";
 import type { BusinessAgentProfileInput } from "./shared.js";
 import {
   parseBoolean,
@@ -559,6 +560,28 @@ export function parseModelExecutionTarget(value: unknown): ModelExecutionTarget 
     return value;
   }
   throw new Cp2Error(400, "execution_target_invalid", "Execution target is invalid.");
+}
+
+/** Absent leaves the shop's current harness (or the platform default) unchanged; present selects
+ *  a specific registered AgentRuntimeAdapter. */
+export function parseAgentRuntimeAdapterId(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Cp2Error(
+      400,
+      "agent_runtime_adapter_id_invalid",
+      "agentRuntimeAdapterId must be a non-empty string."
+    );
+  }
+  try {
+    return normalizeAdapterId(value);
+  } catch {
+    throw new Cp2Error(
+      400,
+      "agent_runtime_adapter_id_invalid",
+      "agentRuntimeAdapterId is not a valid adapter id."
+    );
+  }
 }
 
 export function parseAgentModelBindingPermissions(value: unknown): AgentModelBindingPermissions {
