@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
+import { renderInferenceDeploymentScenarios } from "./ai-eval/render-inference-deployment-scenarios";
 
 describe("Render Blueprint", () => {
   it("wires external Neon URLs into every database consumer and migrates before deploy", async () => {
@@ -88,6 +89,15 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("type: pserv\n    name: soko-market-inference");
     expect(blueprint).toContain("dockerfilePath: ./services/ai-runtime/Dockerfile");
     expect(blueprint).toContain("mountPath: /var/lib/soko-models");
+    const inference = blueprint.slice(
+      blueprint.indexOf("name: soko-market-inference"),
+      blueprint.indexOf("name: soko-market-web")
+    );
+    for (const scenario of renderInferenceDeploymentScenarios) {
+      if (scenario.hasPersistentDisk) {
+        expect(inference, scenario.name).not.toContain("maxShutdownDelaySeconds:");
+      }
+    }
     expect(blueprint).toContain('BACKEND_INFERENCE_ENABLED\n        value: "true"');
     expect(blueprint).toContain("BACKEND_INFERENCE_BASE_URL");
     expect(blueprint).toContain("property: hostport");

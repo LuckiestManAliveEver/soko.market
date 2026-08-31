@@ -79,6 +79,11 @@ const inferenceService = blueprint.slice(
 if (inferenceService.includes("domains:") || inferenceService.includes("type: web")) {
   violations.push("The inference runtime must remain a private service without public domains");
 }
+if (inferenceService.includes("disk:") && inferenceService.includes("maxShutdownDelaySeconds:")) {
+  violations.push(
+    "Render does not support maxShutdownDelaySeconds on a private service with a disk"
+  );
+}
 
 if (violations.length > 0) {
   console.error("Render inference boundary violations:");

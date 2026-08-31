@@ -83,7 +83,9 @@ pnpm test:live-model-runtime
 ## Final self-hosted deployment sequence
 
 1. Apply Neon-compatible migrations.
-2. Deploy the self-hosted private inference service and durable model storage.
+2. Validate `render.yaml` against the target Render workspace, then deploy the self-hosted private
+   inference service and durable model storage. Render services with a persistent disk must not set
+   `maxShutdownDelaySeconds`; the production boundary check enforces that platform constraint.
 3. Confirm authenticated inference readiness.
 4. Confirm the real model probe.
 5. Configure the API private hostname and shared token.

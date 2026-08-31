@@ -205,7 +205,6 @@ services:
     region: oregon
     dockerfilePath: ./services/ai-runtime/Dockerfile
     dockerContext: .
-    maxShutdownDelaySeconds: 60
     buildFilter:
       paths:
         - package.json
