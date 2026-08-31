@@ -76,11 +76,11 @@ async, which cascades through the auth-critical methods that call them
 real, scoped follow-up, but it touches security-critical code in a 20k-line file and deserves its
 own reviewed change, not a same-session addition alongside everything else in this pass.
 
-## Two more issues found and fixed in a later pass
+## Four more issues found and fixed in later passes
 
 A review of database persistence and production readiness (separate from the single-instance
-question above) found two issues in `saveNormalizedSnapshot`/`enqueuePersistenceOperation` that
-were not previously documented anywhere. Both are fixed; neither required the multi-week rewrite
+question above) found three issues in `saveNormalizedSnapshot`/`enqueuePersistenceOperation` that
+were not previously documented anywhere. All are fixed; none required the multi-week rewrite
 described below.
 
 **Every mutation re-persisted every collection, not just the one that changed.** The Proxy at the
@@ -119,7 +119,7 @@ is what production runs. This had nothing to do with the two fixes above; it was
 testing the failure/retry behavior required forcing a real save to fail, which surfaced how badly a
 save failure used to behave. Fixed with a one-line addition to `recordEntityId`'s special cases.
 
-All three fixes are covered by new tests in `tests/cp2-postgres-store.test.ts`, run against a real
+The first three fixes are covered by tests in `tests/cp2-postgres-store.test.ts`, run against a real
 Postgres database (not mocked): "skips re-persisting a collection that has not changed since the
 last save," "does not discard in-memory mutations when a save fails, and recovers on its own," and
 "persists a shop presence update instead of failing (shopPresences has no id field)." The full
@@ -128,6 +128,17 @@ existing Postgres-backed test suite (`cp2-postgres-store.test.ts`,
 `cp21-postgres-migration.test.ts`, `cp23-postgres-migration.test.ts`, `api-persistence-ack.test.ts`
 
 - 21 tests total) passes unmodified against the same database.
+
+**Mutation bursts queued redundant full snapshots faster than Postgres could drain them.** A
+snapshot captures fresh in-memory state when its queued operation starts, but `enqueueSave` still
+added a separate operation for every mutation. Under production traffic, each 18-23 second save
+allowed more mutations to arrive, creating hundreds of snapshots that mostly persisted the same
+latest state. The readiness queue therefore degraded even though Postgres itself was reachable and
+reported no persistence error. Fixed by coalescing all mutations that arrive before a queued
+snapshot starts into that snapshot, and all mutations that arrive while it runs into at most one
+trailing snapshot. `flush()` follows dynamically-appended trailing work before returning. A real
+Postgres advisory-lock regression test holds one save in flight, generates a mutation burst, proves
+the queue remains bounded, then releases the lock and verifies the final state is durable.
 
 None of this changes the single-instance/memory-bound conclusion above - it makes the existing
 single-instance store cheaper to run and safer under transient Postgres errors, not

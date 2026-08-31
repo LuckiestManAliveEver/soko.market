@@ -539,6 +539,9 @@ export async function createPostgresCp2Store(
   );
   let persistenceRetryDelayMs = persistenceRetryInitialDelayMs;
   let persistenceRetryTimer: NodeJS.Timeout | null = null;
+  let snapshotSaveQueued = false;
+  let snapshotSaveRunning = false;
+  let snapshotSaveRequestedWhileRunning = false;
   let closing = false;
 
   /**
@@ -681,21 +684,44 @@ export async function createPostgresCp2Store(
   }
 
   function enqueueSave(): void {
+    // A queued snapshot is taken when its operation starts, so it already includes every mutation
+    // that arrives while it waits behind another persistence operation. Adding another snapshot
+    // for each of those mutations only creates identical full-store writes. If the snapshot is
+    // already running, its in-memory copy has been captured; remember that one trailing save is
+    // needed instead. This bounds a mutation burst to the active save plus one follow-up without
+    // dropping anything that changed after the active snapshot was captured.
+    if (snapshotSaveQueued) return;
+    if (snapshotSaveRunning) {
+      snapshotSaveRequestedWhileRunning = true;
+      return;
+    }
+
+    snapshotSaveQueued = true;
     enqueuePersistenceOperation("snapshot", async () => {
-      const snapshot = store.snapshot();
-      const result = await saveNormalizedSnapshot(pool, snapshot, lastPersistedSnapshot);
-      lastPersistedSnapshot = structuredClone(snapshot);
-      lastSyncPersistenceError = result.syncJournalError;
-      if (result.syncJournalError !== null) {
-        logAccountSyncDegradation(result.syncJournalError);
-        return;
-      }
       try {
-        await publishRealtimeNotifications(pool, snapshot, instanceId, publishedCursorByAccount);
-        lastRealtimePublishError = null;
-      } catch (error) {
-        lastRealtimePublishError = error;
-        console.error("Failed to publish PostgreSQL realtime hints.", error);
+        snapshotSaveQueued = false;
+        snapshotSaveRunning = true;
+        const snapshot = store.snapshot();
+        const result = await saveNormalizedSnapshot(pool, snapshot, lastPersistedSnapshot);
+        lastPersistedSnapshot = structuredClone(snapshot);
+        lastSyncPersistenceError = result.syncJournalError;
+        if (result.syncJournalError !== null) {
+          logAccountSyncDegradation(result.syncJournalError);
+          return;
+        }
+        try {
+          await publishRealtimeNotifications(pool, snapshot, instanceId, publishedCursorByAccount);
+          lastRealtimePublishError = null;
+        } catch (error) {
+          lastRealtimePublishError = error;
+          console.error("Failed to publish PostgreSQL realtime hints.", error);
+        }
+      } finally {
+        snapshotSaveRunning = false;
+        if (snapshotSaveRequestedWhileRunning) {
+          snapshotSaveRequestedWhileRunning = false;
+          enqueueSave();
+        }
       }
     });
   }
@@ -710,7 +736,14 @@ export async function createPostgresCp2Store(
   }
 
   async function flush(): Promise<void> {
-    await saveQueue;
+    // A mutation that lands after an active snapshot captured its state requests a trailing save.
+    // That save is appended from the active operation's finally block, so keep following the queue
+    // until no operation was appended while we waited.
+    while (true) {
+      const observedQueue = saveQueue;
+      await observedQueue;
+      if (observedQueue === saveQueue && !snapshotSaveRequestedWhileRunning) break;
+    }
     if (lastPersistenceError !== null) {
       throw lastPersistenceError;
     }

@@ -44,6 +44,7 @@ import {
 } from "../services/api/src/cp2/postgres-store";
 import { readSessionCookie, sessionCookieName } from "../services/api/src/cp2/store";
 import { createBackendModelAdapter } from "../services/api/src/inference/model-runtime";
+import { postgresPersistenceQueueScenarios } from "./ai-eval/postgres-persistence-queue-scenarios";
 
 interface SqlExecutor {
   query<T extends Record<string, unknown> = Record<string, unknown>>(
@@ -259,6 +260,89 @@ describePostgres("CP2 Postgres store", () => {
       await store.close();
     }
   }, 15_000);
+
+  for (const scenario of postgresPersistenceQueueScenarios) {
+    it(`coalesces snapshot persistence: ${scenario.name}`, async () => {
+      expect(databaseUrl).toBeDefined();
+      const connectionString = databaseUrl ?? "";
+      const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const app = buildApi({ cp2: { store } });
+      const pool = new Pool({ connectionString });
+      const lockClient = await pool.connect();
+      let lockHeld = false;
+
+      try {
+        const owner = await createOwnerBusiness(app, `254709${Date.now().toString().slice(-6)}`);
+        await store.flush();
+        const sessionId = readSessionCookie(owner.sessionCookie);
+        expect(sessionId).not.toBeNull();
+
+        await lockClient.query("select pg_advisory_lock(hashtext('soko.cp2.normalized_store'))");
+        lockHeld = true;
+
+        store.updateSokoSessionContext({
+          sessionId,
+          mode: "seller",
+          activeShopId: owner.business.id,
+          activeSurface: "owner-controls"
+        });
+        await waitUntil(async () => (await store.health()).persistenceQueue.active);
+
+        for (let index = 0; index < scenario.mutationsWhileSnapshotRuns; index += 1) {
+          store.updateSokoSessionContext({
+            sessionId,
+            mode: "seller",
+            activeShopId: owner.business.id,
+            activeSurface: index % 2 === 0 ? "catalogue" : "owner-controls"
+          });
+        }
+
+        const blockedHealth = await store.health();
+        expect(blockedHealth.persistenceQueue.pendingCount).toBeLessThanOrEqual(
+          scenario.maximumPendingSnapshots
+        );
+        expect(blockedHealth.persistenceQueue).toMatchObject({
+          active: true,
+          activeOperation: "snapshot",
+          queuedCount: 0
+        });
+
+        await lockClient.query("select pg_advisory_unlock(hashtext('soko.cp2.normalized_store'))");
+        lockHeld = false;
+        await store.flush();
+
+        const finalSnapshot = store.snapshot();
+        const ownerAccountId = finalSnapshot.sessions.find(
+          (session) => session.id === sessionId
+        )?.accountId;
+        const finalContext = finalSnapshot.sessionContexts.find(
+          (context) => context.accountId === ownerAccountId
+        );
+        expect(finalContext).toBeDefined();
+        const persisted = await pool.query<{ record: { sessionVersion: number } }>(
+          "select record from cp2_session_contexts where entity_id = $1",
+          [`${finalContext!.accountId}:${finalContext!.conversationId}`]
+        );
+        expect(persisted.rows[0]?.record.sessionVersion).toBe(finalContext!.sessionVersion);
+        expect((await store.health()).persistenceQueue).toMatchObject({
+          status: "ok",
+          pendingCount: 0,
+          queuedCount: 0,
+          active: false
+        });
+      } finally {
+        if (lockHeld) {
+          await lockClient
+            .query("select pg_advisory_unlock(hashtext('soko.cp2.normalized_store'))")
+            .catch(() => undefined);
+        }
+        lockClient.release();
+        await pool.end();
+        await app.close();
+        await store.close();
+      }
+    }, 20_000);
+  }
 
   it("persists a registered passkey credential across store restarts", async () => {
     expect(databaseUrl).toBeDefined();
