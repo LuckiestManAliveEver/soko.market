@@ -45,7 +45,7 @@ describe("zero-setup native runtime", () => {
               status: "available",
               modelId: primaryModelId,
               executionTarget: "backend",
-              agentId: "builtin:pi:v1",
+              agentId: actor.businessId,
               agentAdapterId: "pi"
             }
           }
@@ -55,13 +55,88 @@ describe("zero-setup native runtime", () => {
       expect(generate).toHaveBeenCalledOnce();
       expect(tenantDefaultBindings(store, actor.businessId)).toHaveLength(1);
       expect(
-        store.snapshot().nativeRuntimeAgents.find((agent) => agent.id === "builtin:pi:v1")
+        store.snapshot().nativeRuntimeAgents.find((agent) => agent.id === actor.businessId)
       ).toMatchObject({
         provider: "pi",
         configuration: { runtimeAdapterId: "pi", requiredModelCapabilities: ["chat"] }
       });
       // There is no legacy cp2_agent_model_bindings representation left to duplicate this into -
       // the native runtime graph checked above is the sole source of truth for a first chat.
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("uses a materialized global default for conversation-free first chat without requiring a tenant binding", async () => {
+    const generate = vi.fn(async () => generation(primaryModelId, "Global default ready."));
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
+        modelId === primaryModelId && executionTarget === "backend"
+          ? adapter(modelId, generate)
+          : undefined
+    });
+    store.activateGlobalDefaultModel({
+      model: {
+        id: primaryModelId,
+        label: "SmolLM2 360M Instruct Q4_0",
+        provider: "local",
+        description: "Default hosted runtime model.",
+        capabilities: ["chat", "english", "instruction-following"],
+        available: true,
+        source: "hosted",
+        format: "remote",
+        license: "Apache-2.0",
+        licenseUrl: null,
+        modelCardUrl: null,
+        downloadUrl: null,
+        fileName: null,
+        fileSizeBytes: null,
+        minimumMemoryGb: null,
+        recommended: true,
+        contextWindow: 8192
+      },
+      executionTarget: "backend",
+      checkedAt: "2026-08-30T00:00:00.000Z",
+      updatedBy: "system"
+    });
+    const app = buildApi({ cp2: { store } });
+    try {
+      const actor = await createActorAndShop(app, "+254700008112", "Global Default Shop");
+      const effectiveRuntime = await app.inject({
+        method: "GET",
+        url: `/businesses/${actor.businessId}/runtime/effective`,
+        headers: { cookie: actor.cookie }
+      });
+      expect(effectiveRuntime.statusCode).toBe(200);
+      expect(effectiveRuntime.json()).toMatchObject({
+        harness: { id: "pi" },
+        model: { id: primaryModelId },
+        execution: { type: "backend", ready: true },
+        source: "default",
+        ready: true
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/businesses/${actor.businessId}/runtime/turns`,
+        headers: jsonHeaders(actor.cookie),
+        payload: JSON.stringify({ message: "Hello" })
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        turn: {
+          response: "Global default ready.",
+          model: {
+            status: "available",
+            modelId: primaryModelId,
+            executionTarget: "backend",
+            agentAdapterId: "pi"
+          }
+        }
+      });
+      expect(generate).toHaveBeenCalledOnce();
+      expect(tenantDefaultBindings(store, actor.businessId)).toHaveLength(0);
     } finally {
       await app.close();
     }
@@ -117,7 +192,7 @@ describe("zero-setup native runtime", () => {
               status: "available",
               modelId: primaryModelId,
               executionTarget: "backend",
-              agentId: "builtin:agent-b:v1",
+              agentId: actor.businessId,
               agentAdapterId: "beta"
             }
           }
@@ -127,7 +202,7 @@ describe("zero-setup native runtime", () => {
       expect(betaExecute).toHaveBeenCalledOnce();
       expect(generate).toHaveBeenCalledOnce();
       expect(
-        store.snapshot().nativeRuntimeAgents.find((agent) => agent.id === "builtin:agent-b:v1")
+        store.snapshot().nativeRuntimeAgents.find((agent) => agent.id === actor.businessId)
       ).toMatchObject({
         provider: "soko-business-agent",
         packageRef: null,

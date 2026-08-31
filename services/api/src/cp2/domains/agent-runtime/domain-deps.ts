@@ -14,6 +14,7 @@ import type {
   NativeRuntimeActivationInput,
   NativeDefaultRuntimeProvisioningInput,
   NativeDefaultRuntimeProvisioningResult,
+  NativeRuntimeResolutionInput,
   ResolvedNativeRuntimeBinding,
   RuntimeContextSummary,
   RuntimeModelProvider,
@@ -80,8 +81,7 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
   // client body) - the implementation must reject a conversationId that belongs to another shop
   // rather than silently resolving that shop's binding/model/host for this request.
   resolveNativeRuntimeBinding: (
-    conversationId: string,
-    businessId: string
+    input: NativeRuntimeResolutionInput
   ) => ResolvedNativeRuntimeBinding | null;
   // The sole "which model is this agent using" read path - replaces the retired legacy
   // agentModelBindings map/table entirely (see native-runtime/store.ts getActiveBindingForAgent,
@@ -89,7 +89,8 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
   // means no model has ever been activated for this shop's agent.
   getActiveNativeRuntimeBinding: (
     businessId: string,
-    agentId: string
+    agentId: string,
+    accountId?: string
   ) => ActiveNativeAgentBinding | null;
   activateVerifiedRuntimeBinding: (
     input: NativeRuntimeActivationInput

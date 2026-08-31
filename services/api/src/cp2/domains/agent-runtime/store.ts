@@ -81,6 +81,7 @@ import type {
   AgentModelBindingSummary,
   AgentOwnerCorrection,
   AgentRuntimeReadiness,
+  EffectiveRuntimeSummary,
   AgentRuntimeVersion,
   AiModelSummary,
   InstalledAgentModelSummary,
@@ -115,6 +116,7 @@ import {
 import { queryCatalogueProducts, roleCan, type BusinessPermission } from "@soko/business-core";
 import { Cp2Error } from "../../cp2-error.js";
 import { asModelRuntimeError, type ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
+import { runtimeAdapterIdForAgent } from "../../../agent-harness/agent-runtime-adapter.js";
 import { normalizeRequiredBoundedText } from "../../text-normalization.js";
 import {
   agentAudienceForBusinessRole,
@@ -135,10 +137,7 @@ import {
   resolveNativeRuntimeModelProvider,
   type ExecutionTargetResolutionSource
 } from "./native-runtime-routing.js";
-import {
-  projectActiveNativeBinding,
-  projectNativeBinding
-} from "./native-binding-projection.js";
+import { projectActiveNativeBinding, projectNativeBinding } from "./native-binding-projection.js";
 import { executeRuntimeCapability } from "./capabilities.js";
 import {
   createRuntimeDocumentImportProposal,
@@ -429,7 +428,11 @@ export class AgentRuntimeDomain {
       now
     );
     this.requireBusinessAgent(input.businessId, input.agentId, now);
-    const active = this.deps.getActiveNativeRuntimeBinding(input.businessId, input.agentId);
+    const active = this.deps.getActiveNativeRuntimeBinding(
+      input.businessId,
+      input.agentId,
+      session.account.id
+    );
     return projectActiveNativeBinding(active, input.businessId, session.account.id);
   }
 
@@ -476,7 +479,11 @@ export class AgentRuntimeDomain {
       );
     }
 
-    const active = this.deps.getActiveNativeRuntimeBinding(input.businessId, input.agentId);
+    const active = this.deps.getActiveNativeRuntimeBinding(
+      input.businessId,
+      input.agentId,
+      session.account.id
+    );
     if (active === null) {
       return {
         agentId: input.agentId,
@@ -591,7 +598,11 @@ export class AgentRuntimeDomain {
     const model = this.requireCanonicalAiModel(input.modelId);
     validateAgentModelBindingConfiguration(input, model);
     input.onStage?.("model_resolved", Date.now() - startedAt);
-    const existingActive = this.deps.getActiveNativeRuntimeBinding(input.businessId, input.agentId);
+    const existingActive = this.deps.getActiveNativeRuntimeBinding(
+      input.businessId,
+      input.agentId,
+      session.account.id
+    );
     if (
       existingActive !== null &&
       // An explicit harness request always goes through the full (re)activation path below, even
@@ -748,7 +759,11 @@ export class AgentRuntimeDomain {
       updatedBy: input.actorId,
       checkedAt: input.checkedAt
     });
-    const refreshed = this.deps.getActiveNativeRuntimeBinding(input.businessId, input.agentId);
+    const refreshed = this.deps.getActiveNativeRuntimeBinding(
+      input.businessId,
+      input.agentId,
+      input.accountId
+    );
     if (refreshed === null) {
       throw new Cp2Error(
         500,
@@ -1085,6 +1100,110 @@ export class AgentRuntimeDomain {
     const now = input.now ?? new Date();
     this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
     return this.computeAgentRuntimeReadiness(input.businessId, now);
+  }
+
+  /** Resolves and verifies the same native runtime graph used by chat. Settings must consume this
+   * method rather than reconstructing readiness from catalog rows in React. */
+  async getEffectiveRuntime(input: {
+    sessionId: string | null;
+    businessId: string;
+    conversationId?: string;
+    now?: Date;
+  }): Promise<EffectiveRuntimeSummary> {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const profile = this.currentAgentProfile(input.businessId, now);
+    await this.ensureDefaultRuntimeForTurn({
+      ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
+      businessId: input.businessId,
+      accountId: auth.account.id,
+      userId: auth.user.id,
+      profile,
+      now
+    });
+    const resolution = this.deps.resolveNativeRuntimeBinding({
+      businessId: input.businessId,
+      accountId: auth.account.id,
+      agentId: profile.agentId,
+      ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId })
+    });
+    if (resolution === null) {
+      const defaultModel = this.deps.resolveCatalogModel(this.deps.platformDefaultRuntime.modelId);
+      return {
+        harness: {
+          id: this.deps.platformDefaultRuntime.agentRuntimeAdapterId,
+          name: this.deps.platformDefaultRuntime.agentName
+        },
+        model: {
+          id: this.deps.platformDefaultRuntime.modelId,
+          name: defaultModel?.label ?? this.deps.platformDefaultRuntime.modelId
+        },
+        execution: {
+          type: this.deps.platformDefaultRuntime.executionTarget,
+          hostId: null,
+          ready: false
+        },
+        binding: null,
+        source: "default",
+        status: "UNAVAILABLE",
+        ready: false
+      };
+    }
+
+    const harnessId = runtimeAdapterIdForAgent(resolution.agent);
+    const executionTarget = resolution.selected.host?.type;
+    const adapter =
+      executionTarget === "backend" || executionTarget === "remote-shop-device"
+        ? this.deps.modelRuntimeAdapterResolver?.({
+            modelId: resolution.selected.model.id,
+            executionTarget,
+            agentId: resolution.agent.id,
+            shopId: input.businessId
+          })
+        : undefined;
+    const harness = this.deps.agentRuntimeAdapterResolver(harnessId);
+    let ready = resolution.selected.available && adapter !== undefined && harness !== undefined;
+    if (ready && adapter !== undefined && harness !== undefined) {
+      try {
+        const [modelAvailability, harnessAvailability] = await Promise.all([
+          adapter.canRun({
+            modelId: resolution.selected.model.id,
+            agentId: resolution.agent.id,
+            shopId: input.businessId
+          }),
+          harness.canRun({
+            agent: resolution.agent,
+            modelId: resolution.selected.model.id,
+            conversationId: input.conversationId ?? "runtime-unbound",
+            shopId: input.businessId
+          })
+        ]);
+        ready = modelAvailability.available && harnessAvailability.available;
+      } catch {
+        ready = false;
+      }
+    }
+    return {
+      harness: { id: harnessId, name: resolution.agent.name },
+      model: { id: resolution.selected.model.id, name: resolution.selected.model.name },
+      execution: {
+        type:
+          executionTarget === "backend" || executionTarget === "remote-shop-device"
+            ? executionTarget
+            : this.deps.platformDefaultRuntime.executionTarget,
+        hostId: resolution.selected.host?.id ?? null,
+        ready
+      },
+      binding: { id: resolution.binding.id },
+      source: resolution.source,
+      status: ready ? "READY" : "UNAVAILABLE",
+      ready
+    };
   }
 
   /**
@@ -1765,13 +1884,9 @@ export class AgentRuntimeDomain {
     }
     const hashtagInvocation = parseRuntimeHashtagInvocation(input.message);
     const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
-    if (
-      input.conversationId !== undefined &&
-      input.confirmationToken === undefined &&
-      hashtagInvocation === null
-    ) {
+    if (input.confirmationToken === undefined && hashtagInvocation === null) {
       await this.ensureDefaultRuntimeForTurn({
-        conversationId: input.conversationId,
+        ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
         businessId: input.businessId,
         accountId: auth.account.id,
         userId: auth.user.id,
@@ -1782,11 +1897,13 @@ export class AgentRuntimeDomain {
     const { activeBinding, activeModelId, nativeResolution } = this.resolveActiveRuntimeModelId(
       input.businessId,
       storedAgentProfile,
-      input.conversationId
+      input.conversationId,
+      auth.account.id
     );
     if (
       input.conversationId === undefined &&
       this.deps.modelRuntimeAdapterResolver !== undefined &&
+      nativeResolution === null &&
       activeBinding === null &&
       input.confirmationToken === undefined &&
       hashtagInvocation === null
@@ -1805,7 +1922,8 @@ export class AgentRuntimeDomain {
       storedAgentProfile,
       now,
       callerAudience,
-      runtimeModelId
+      runtimeModelId,
+      activeBinding
     );
     const runtimeSession =
       input.runtimeSessionId === undefined
@@ -1849,10 +1967,8 @@ export class AgentRuntimeDomain {
       hasConfirmationToken: input.confirmationToken !== undefined,
       runtimeBindingId: nativeResolution?.binding.id ?? activeBinding?.binding.id ?? null,
       runtimeAgentId: nativeResolution?.agent.id ?? storedAgentProfile.agentId,
-      selectedPrimaryModelId:
-        nativeResolution?.primary.model.id ?? activeBinding?.model.id ?? null,
-      selectedActualModelId:
-        nativeResolution?.selected.model.id ?? activeBinding?.model.id ?? null,
+      selectedPrimaryModelId: nativeResolution?.primary.model.id ?? activeBinding?.model.id ?? null,
+      selectedActualModelId: nativeResolution?.selected.model.id ?? activeBinding?.model.id ?? null,
       executionHostId: nativeResolution?.selected.host?.id ?? null,
       modelInstallationId: nativeResolution?.selected.installation?.id ?? null,
       fallbackUsed: nativeResolution?.fallbackUsed ?? false,
@@ -1990,6 +2106,7 @@ export class AgentRuntimeDomain {
       effectiveContextScriptMatch === null
         ? await this.createRuntimeModelRoute({
             message: input.message,
+            accountId: auth.account.id,
             ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
             ...(input.conversationHistory === undefined
               ? {}
@@ -2385,7 +2502,8 @@ export class AgentRuntimeDomain {
   resolveActiveRuntimeModelId(
     businessId: string,
     storedAgentProfile: BusinessAgentProfileSummary,
-    conversationId?: string
+    conversationId?: string,
+    accountId?: string
   ): {
     activeBinding: ActiveNativeAgentBinding | null;
     activeModelId: string;
@@ -2393,12 +2511,15 @@ export class AgentRuntimeDomain {
   } {
     const activeBinding = this.deps.getActiveNativeRuntimeBinding(
       businessId,
-      storedAgentProfile.agentId
+      storedAgentProfile.agentId,
+      accountId
     );
-    const nativeResolution =
-      conversationId === undefined
-        ? null
-        : this.deps.resolveNativeRuntimeBinding(conversationId, businessId);
+    const nativeResolution = this.deps.resolveNativeRuntimeBinding({
+      businessId,
+      ...(accountId === undefined ? {} : { accountId }),
+      agentId: storedAgentProfile.agentId,
+      ...(conversationId === undefined ? {} : { conversationId })
+    });
     const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
       this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId,
       this.deps.resolveCatalogModel(
@@ -2418,22 +2539,32 @@ export class AgentRuntimeDomain {
 
   /**
    * Lazy, idempotent first-chat provisioning. Only server-reachable adapters participate here;
-   * browser and installed-app runtimes are request-device capabilities and are resolved by the
-   * client protocol instead of being guessed by the API. A configured adapter must affirm
-   * availability before its host is persisted as usable.
+   * normal chat never depends on a browser model, web-cached weights, or a per-device install.
+   * A configured backend adapter must affirm availability before its host is persisted as usable.
    */
   private async ensureDefaultRuntimeForTurn(input: {
-    conversationId: string;
+    conversationId?: string;
     businessId: string;
     accountId: string;
     userId: string;
     profile: BusinessAgentProfileSummary;
     now: Date;
   }): Promise<void> {
-    const nativeResolution = this.deps.resolveNativeRuntimeBinding(
-      input.conversationId,
-      input.businessId
-    );
+    const usesPlatformDefaultAgent = input.profile.agentDefinitionId === defaultAgentDefinitionId;
+    const agentId = input.profile.agentId;
+    const agentName = usesPlatformDefaultAgent
+      ? this.deps.platformDefaultRuntime.agentName
+      : input.profile.name;
+    const agentRuntimeAdapterId = usesPlatformDefaultAgent
+      ? this.deps.platformDefaultRuntime.agentRuntimeAdapterId
+      : "soko";
+
+    const nativeResolution = this.deps.resolveNativeRuntimeBinding({
+      businessId: input.businessId,
+      accountId: input.accountId,
+      agentId,
+      ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId })
+    });
     const hasBackendRuntime =
       nativeResolution !== null &&
       [nativeResolution.primary, ...nativeResolution.fallbacks].some(
@@ -2444,16 +2575,6 @@ export class AgentRuntimeDomain {
     if (hasBackendRuntime) return;
     if (this.deps.modelRuntimeAdapterResolver === undefined) return;
 
-    const usesPlatformDefaultAgent = input.profile.agentDefinitionId === defaultAgentDefinitionId;
-    const agentId = usesPlatformDefaultAgent
-      ? this.deps.platformDefaultRuntime.agentId
-      : input.profile.agentId;
-    const agentName = usesPlatformDefaultAgent
-      ? this.deps.platformDefaultRuntime.agentName
-      : input.profile.name;
-    const agentRuntimeAdapterId = usesPlatformDefaultAgent
-      ? this.deps.platformDefaultRuntime.agentRuntimeAdapterId
-      : "soko";
     const agentAdapter = this.deps.agentRuntimeAdapterResolver(agentRuntimeAdapterId);
     if (
       agentAdapter === undefined ||
@@ -2485,7 +2606,7 @@ export class AgentRuntimeDomain {
         await agentAdapter.canRun({
           agent,
           modelId: this.deps.platformDefaultRuntime.modelId,
-          conversationId: input.conversationId,
+          conversationId: input.conversationId ?? "runtime-unbound",
           shopId: input.businessId
         })
       ).available;
@@ -2543,7 +2664,7 @@ export class AgentRuntimeDomain {
     }
     if (candidates.length === 0) return;
     this.deps.ensureDefaultRuntimeBinding({
-      conversationId: input.conversationId,
+      ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
       businessId: input.businessId,
       accountId: input.accountId,
       agentId,
@@ -2595,13 +2716,17 @@ export class AgentRuntimeDomain {
     profile: BusinessAgentProfileSummary,
     now: Date,
     audience: AgentAudience,
-    modelId = profile.modelId
+    modelId = profile.modelId,
+    activeBinding?: ActiveNativeAgentBinding | null
   ): ShopAgentRuntime {
     const contextSources = this.contextSourcesForRuntime(profile);
     return buildShopAgentRuntimeModule(
       {
         deps: this.deps,
-        activeBinding: this.deps.getActiveNativeRuntimeBinding(profile.businessId, profile.agentId),
+        activeBinding:
+          activeBinding === undefined
+            ? this.deps.getActiveNativeRuntimeBinding(profile.businessId, profile.agentId)
+            : activeBinding,
         contextSources
       },
       profile,
@@ -2736,7 +2861,8 @@ export class AgentRuntimeDomain {
     shopRuntime: ShopAgentRuntime,
     modelId: string,
     conversationId?: string,
-    attemptedRuntimeKeys?: ReadonlySet<string>
+    attemptedRuntimeKeys?: ReadonlySet<string>,
+    accountId?: string
   ): {
     provider: RuntimeModelProvider | undefined;
     executionTarget: ModelExecutionTarget | undefined;
@@ -2747,10 +2873,12 @@ export class AgentRuntimeDomain {
     executionHostId: string | null;
     fallbackIndex: number;
   } {
-    const nativeResolution =
-      conversationId === undefined
-        ? null
-        : this.deps.resolveNativeRuntimeBinding(conversationId, shopRuntime.shopId);
+    const nativeResolution = this.deps.resolveNativeRuntimeBinding({
+      businessId: shopRuntime.shopId,
+      ...(accountId === undefined ? {} : { accountId }),
+      agentId: shopRuntime.agentId,
+      ...(conversationId === undefined ? {} : { conversationId })
+    });
     return resolveNativeRuntimeModelProvider({
       shopRuntime,
       requestedModelId: modelId,
@@ -2771,6 +2899,7 @@ export class AgentRuntimeDomain {
   }
 
   private async createRuntimeModelRoute(input: {
+    accountId: string;
     conversationHistory?: RuntimeModelConversationMessage[];
     conversationId?: string;
     message: string;
@@ -2792,11 +2921,12 @@ export class AgentRuntimeDomain {
     proposal: ReturnType<typeof createRuntimeToolProposal> | null;
     trace: RuntimeModelTrace | null;
   }> {
-    const resolvedAgent =
-      input.conversationId === undefined
-        ? null
-        : this.deps.resolveNativeRuntimeBinding(input.conversationId, input.shopRuntime.shopId)
-            ?.agent;
+    const resolvedAgent = this.deps.resolveNativeRuntimeBinding({
+      businessId: input.shopRuntime.shopId,
+      accountId: input.accountId,
+      agentId: input.shopRuntime.agentId,
+      ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId })
+    })?.agent;
     const agent: NativeRuntimeAgentSummary = resolvedAgent ?? {
       id: input.shopRuntime.agentId,
       businessId: input.shopRuntime.shopId,
@@ -2819,7 +2949,8 @@ export class AgentRuntimeDomain {
             runtime,
             modelId,
             input.conversationId,
-            attemptedRuntimeKeys
+            attemptedRuntimeKeys,
+            input.accountId
           ),
         resolveAgentRuntimeAdapter: (adapterId) => this.deps.agentRuntimeAdapterResolver(adapterId)
       },
@@ -2964,7 +3095,12 @@ interface AgentModelBindingAuditFields {
  *  just enough shape for the audit trail from the request that failed, keyed deterministically by
  *  agent+model so repeated failures for the same pair are easy to correlate in the audit log. */
 function failedActivationAuditFields(
-  input: { agentId: string; businessId: string; modelId: string; executionTarget: ModelExecutionTarget },
+  input: {
+    agentId: string;
+    businessId: string;
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+  },
   occurredAt: string,
   errorCode: string | null
 ): AgentModelBindingAuditFields {

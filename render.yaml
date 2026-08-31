@@ -135,7 +135,7 @@ services:
           type: pserv
           envVarKey: INFERENCE_SERVICE_TOKEN
       - key: BACKEND_INFERENCE_REQUIRED
-        value: "false"
+        value: "true"
       - key: INFERENCE_OWNER_NODE_ENABLED
         value: "true"
       # OpenAI is one optional cloud model provider, not a requirement to boot (docs/architecture/
@@ -144,8 +144,7 @@ services:
       # blank, services/api/src/index.ts simply never registers the OpenAI adapter (see
       # createOpenAiProvider in services/api/src/inference/openai-provider.ts), an
       # optional-registration pattern applied uniformly to every provider adapter here. The API
-      # starts, /health/ready reports ready, and chat turns with no model configured return
-      # RUNTIME_MODEL_NOT_CONFIGURED rather than crashing the process.
+      # never becomes the default or a prerequisite for readiness.
       - key: INFERENCE_CLOUD_PROVIDER
         value: openai
       - key: INFERENCE_CLOUD_MODEL_ALLOWLIST

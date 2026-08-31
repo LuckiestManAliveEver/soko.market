@@ -1,9 +1,8 @@
 # Self-hosted backend model-runtime verification
 
-These checks apply only to a deliberately self-hosted `services/ai-runtime` deployment with a real
-installed model. The production Render Blueprint does not deploy this service or set
-`BACKEND_INFERENCE_*`; use the browser-inference checks in `render-inference.md` for Render.
-Mocked tests do not satisfy live self-hosted verification.
+These checks cover the `services/ai-runtime` deployment with a real installed model, including the
+production Render Blueprint's private inference service. Mocked tests do not satisfy live runtime
+verification.
 
 ## Prerequisites
 
@@ -14,9 +13,8 @@ export SOKO_API_URL=https://api.soko.market
 export SOKO_INFERENCE_URL=http://<private-host>:<port>
 export INFERENCE_SERVICE_TOKEN=<internal-token>
 export SOKO_TEST_TOKEN=<authenticated-session-token-or-cookie>
-export SOKO_TEST_AGENT_ID=<agent-id>
 export SOKO_TEST_SHOP_ID=<shop-id>
-export SOKO_MODEL_ID=qwen2.5-0.5b-android
+export SOKO_MODEL_ID=smollm2-360m
 ```
 
 Keep the inference hostname private to the API network. Do not make it public just to run `curl`.
@@ -44,25 +42,14 @@ Public API readiness:
 curl --fail --silent --show-error "$SOKO_API_URL/health/ready"
 ```
 
-Test then activate through the authenticated API. If `SOKO_TEST_TOKEN` is only a token value, use
-the application's actual cookie name as shown by the login flow:
+Resolve the inherited default through the authenticated canonical API, then send a turn. The test
+shop must have no explicit runtime override. If `SOKO_TEST_TOKEN` is only a token value, use the
+application's actual cookie name as shown by the login flow:
 
 ```bash
-curl --fail --silent --show-error -X POST \
-  -H "Content-Type: application/json" \
-  -H "Cookie: $SOKO_TEST_TOKEN" \
-  --data "{\"shopId\":\"$SOKO_TEST_SHOP_ID\",\"executionTarget\":\"backend\"}" \
-  "$SOKO_API_URL/api/agents/$SOKO_TEST_AGENT_ID/models/$SOKO_MODEL_ID/test"
-
-curl --fail --silent --show-error -X POST \
-  -H "Content-Type: application/json" \
-  -H "Cookie: $SOKO_TEST_TOKEN" \
-  --data "{\"shopId\":\"$SOKO_TEST_SHOP_ID\",\"executionTarget\":\"backend\",\"executionMode\":\"LOCAL_FIRST\",\"fallbackPolicy\":\"WHEN_LOCAL_UNAVAILABLE\",\"permissions\":{\"allowInstalledApp\":false,\"allowRemoteShopDevice\":false,\"allowOpenAIFallback\":false},\"fallbackModelId\":null}" \
-  "$SOKO_API_URL/api/agents/$SOKO_TEST_AGENT_ID/models/$SOKO_MODEL_ID/activate"
-
 curl --fail --silent --show-error \
   -H "Cookie: $SOKO_TEST_TOKEN" \
-  "$SOKO_API_URL/api/agents/$SOKO_TEST_AGENT_ID/model-binding?shopId=$SOKO_TEST_SHOP_ID"
+  "$SOKO_API_URL/businesses/$SOKO_TEST_SHOP_ID/runtime/effective"
 
 curl --fail --silent --show-error -X POST \
   -H "Content-Type: application/json" \
@@ -71,8 +58,9 @@ curl --fail --silent --show-error -X POST \
   "$SOKO_API_URL/businesses/$SOKO_TEST_SHOP_ID/runtime/turns"
 ```
 
-The binding must be `active` and `passed`; the chat result must identify
-`qwen2.5-0.5b-android`, `qwen2.5:0.5b`, `backend`, and a non-empty inference request ID.
+The effective runtime must report Pi, the configured model, a non-empty backend host id,
+`source: "default"`, and `ready: true`. The chat result must identify that same model, `backend`,
+and a non-empty inference request ID.
 
 ## One-command gate
 
@@ -82,8 +70,9 @@ After the variables above are set:
 pnpm verify:production-runtime
 ```
 
-The script checks API/Neon readiness, inference readiness, a real probe, the persisted binding, and
-one real chat request. It exits non-zero at the first failed stage.
+The script checks API/Neon readiness, inference readiness, a real probe, the canonical effective
+default runtime, and one real chat request. It exits non-zero at the first failed stage and emits
+`DEFAULT_RUNTIME_UNAVAILABLE` when the default graph or adapter is not executable.
 
 The equivalent opt-in Vitest flow also performs activation and reload verification:
 
@@ -99,10 +88,9 @@ pnpm test:live-model-runtime
 4. Confirm the real model probe.
 5. Configure the API private hostname and shared token.
 6. Deploy the API and confirm database readiness.
-7. Open the PWA and test the model.
-8. Activate it for the intended agent.
-9. Reload the PWA and confirm the binding remains active.
-10. Send one real chat message and verify response metadata.
+7. Resolve the default runtime and require Pi + SmolLM + backend + `ready: true`.
+8. Open the PWA and confirm settings show the same effective runtime.
+9. Send one real chat message and verify response metadata.
 
 Record each live result separately. A structural build cannot be reported as a live Neon,
 activation, probe, or chat pass.

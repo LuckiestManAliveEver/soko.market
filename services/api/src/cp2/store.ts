@@ -1072,18 +1072,21 @@ export class Cp2Store {
       // "fall back to the legacy agent-model-binding path" (see resolveNativeRuntimeModelProvider
       // and resolveActiveRuntimeModelId), so a resolution failure here degrades to that same null
       // rather than throwing. See docs/architecture/provider-neutral-runtime.md §5.
-      resolveNativeRuntimeBinding: (conversationId, businessId) => {
+      resolveNativeRuntimeBinding: (input) => {
         // A conversationId is request-body input, not something the caller's authorization was
         // ever checked against - only the businessId on the URL/session was. Without this check a
         // shop member who learns another shop's conversationId (support ticket, shared screenshot,
         // browser history) could get inference routed through - and its binding/model/host echoed
         // back from - a runtime this request was never authorized for. Mirrors the same guard
         // ensureDefaultRuntimeBinding already applies to conversation binding assignment below.
-        const conversation = this.messagingDomain.conversationsMap.get(conversationId);
+        const conversation =
+          input.conversationId === undefined
+            ? undefined
+            : this.messagingDomain.conversationsMap.get(input.conversationId);
         if (
           conversation !== undefined &&
           conversation.activeShopId !== null &&
-          conversation.activeShopId !== businessId
+          conversation.activeShopId !== input.businessId
         ) {
           throw new Cp2Error(
             403,
@@ -1093,7 +1096,7 @@ export class Cp2Store {
         }
         try {
           return this.nativeRuntimeBindings.resolveRuntimeBinding(
-            conversationId,
+            input,
             this.messagingDomain.conversationsMap
           );
         } catch (error) {
@@ -1119,14 +1122,22 @@ export class Cp2Store {
       },
       resolveAgentRuntimeAdapterId: (agentId) =>
         this.nativeRuntimeBindings.resolveAgentRuntimeAdapterId(agentId),
-      getActiveNativeRuntimeBinding: (businessId, agentId) =>
-        this.nativeRuntimeBindings.getActiveBindingForAgent(businessId, agentId),
+      getActiveNativeRuntimeBinding: (businessId, agentId, accountId) =>
+        this.nativeRuntimeBindings.getActiveBindingForAgent(businessId, agentId, accountId),
       ensureDefaultRuntimeBinding: (input) => {
         // Authorize before mutating: this call provisions binding/host/model/installation rows,
         // and a rejected conversation must never leave those behind. resolveNativeRuntimeBinding
         // above already rejects a cross-shop conversationId before ensureDefaultRuntimeForTurn ever
         // reaches this call, but that check alone doesn't cover a same-shop conversationId that
         // belongs to a different account - check both here, first, so nothing is written.
+        //
+        // A caller with no conversationId (the merchant's own runtime-session chat with their
+        // shop's agent) has no Conversation to authorize against or attach a runtimeBindingId to -
+        // input.businessId/accountId are already the caller's authorized session, same as every
+        // other native-runtime write in this domain, so provisioning proceeds directly.
+        if (input.conversationId === undefined) {
+          return this.nativeRuntimeBindings.ensureDefaultRuntimeBinding(input);
+        }
         const conversation = this.messagingDomain.conversationsMap.get(input.conversationId);
         if (
           conversation === undefined ||
@@ -1152,6 +1163,7 @@ export class Cp2Store {
       deactivateRuntimeBinding: (input) => {
         const bindingId = this.nativeRuntimeBindings.deactivateBusinessAgentBinding(
           input.businessId,
+          input.accountId,
           input.agentId,
           input.updatedBy,
           input.now
@@ -3134,8 +3146,13 @@ export class Cp2Store {
 
   /** In-process, state-only resolver. It never performs a network probe. */
   resolveRuntimeBinding(conversationId: string): ResolvedNativeRuntimeBinding {
+    const conversation = this.messagingDomain.conversationsMap.get(conversationId);
+    if (conversation === undefined) {
+      throw new Cp2Error(404, "RUNTIME_CONVERSATION_NOT_FOUND", "Conversation was not found.");
+    }
+    const businessId = conversation.activeShopId ?? "global";
     return this.nativeRuntimeBindings.resolveRuntimeBinding(
-      conversationId,
+      { conversationId, businessId, agentId: businessId },
       this.messagingDomain.conversationsMap
     );
   }
@@ -3349,6 +3366,11 @@ export class Cp2Store {
     ...args: Parameters<AgentRuntimeDomain["getAgentRuntimeReadiness"]>
   ): ReturnType<AgentRuntimeDomain["getAgentRuntimeReadiness"]> {
     return this.agentRuntimeDomain.getAgentRuntimeReadiness(...args);
+  }
+  getEffectiveRuntime(
+    ...args: Parameters<AgentRuntimeDomain["getEffectiveRuntime"]>
+  ): ReturnType<AgentRuntimeDomain["getEffectiveRuntime"]> {
+    return this.agentRuntimeDomain.getEffectiveRuntime(...args);
   }
   listAgentContextSources(
     ...args: Parameters<AgentRuntimeDomain["listAgentContextSources"]>

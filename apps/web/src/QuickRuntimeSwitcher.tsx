@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 
 import type {
   AgentModelActivationResult,
-  AgentModelBindingSummary,
-  AgentRuntimeAdapterDescriptor
+  AgentRuntimeAdapterDescriptor,
+  EffectiveRuntimeSummary
 } from "@soko/shared-types";
 
 import { getJson, postJson } from "./api-helpers";
@@ -46,28 +46,22 @@ export function QuickRuntimeSwitcher({
     let cancelled = false;
     async function load() {
       try {
-        const [adaptersResponse, harnessResponse, modelsResponse, bindingResponse] =
-          await Promise.all([
-            getJson<{ adapters: AgentRuntimeAdapterDescriptor[] }>(
-              "/v1/platform/agent-runtime-adapters"
-            ),
-            getJson<{ agentRuntimeAdapterId: string }>(
-              `/api/agents/${canonicalAgentId}/harness?shopId=${business.id}`
-            ),
-            getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
-            getJson<{ binding: AgentModelBindingSummary | null }>(
-              `/api/agents/${canonicalAgentId}/model-binding?shopId=${business.id}`
-            )
-          ]);
+        const [adaptersResponse, modelsResponse, effectiveRuntime] = await Promise.all([
+          getJson<{ adapters: AgentRuntimeAdapterDescriptor[] }>(
+            "/v1/platform/agent-runtime-adapters"
+          ),
+          getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
+          getJson<EffectiveRuntimeSummary>(`/businesses/${business.id}/runtime/effective`)
+        ]);
         if (cancelled) return;
         const backendModels = modelsResponse.models.filter(
           (model) => model.runtimeAvailability?.backend === "configured"
         );
         setHarnessOptions(adaptersResponse.adapters);
-        setSelectedHarnessId(harnessResponse.agentRuntimeAdapterId);
+        setSelectedHarnessId(effectiveRuntime.harness.id);
         setModelOptions(backendModels);
         setSelectedModelId(
-          bindingResponse.binding?.modelId ??
+          effectiveRuntime.model.id ??
             backendModels.find((model) => model.recommended)?.id ??
             backendModels[0]?.id ??
             ""
@@ -166,7 +160,7 @@ export function QuickRuntimeSwitcher({
             onChange={(event) => void activate({ modelId: event.target.value })}
           >
             {modelOptions.length === 0 ? (
-              <option value="">No hosted model configured</option>
+              <option value="">No executable backend model</option>
             ) : null}
             {modelOptions.map((option) => (
               <option key={option.id} value={option.id}>

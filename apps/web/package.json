@@ -13,14 +13,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.8.1",
-    "@mlc-ai/web-llm": "0.2.84",
     "@simplewebauthn/browser": "^13.0.0",
     "@soko/shared-types": "workspace:*",
     "@soko/sync-core": "workspace:*",
     "@soko/tool-core": "workspace:*",
     "@soko/ui": "workspace:*",
-    "@wllama/wllama": "3.5.1",
     "libphonenumber-js": "^1.13.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

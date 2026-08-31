@@ -19,7 +19,7 @@ const timestamp = "2026-08-27T12:00:00.000Z";
 describe("native runtime binding resolver", () => {
   it("resolves an explicit binding, installation, host, ordered fallbacks, and auxiliaries", () => {
     const graph = graphStore();
-    const resolved = graph.store.resolveRuntimeBinding("conversation-1", graph.conversations);
+    const resolved = resolveGraph(graph.store, "conversation-1", graph.conversations);
 
     expect(resolved.usedGlobalDefault).toBe(false);
     expect(resolved.binding.id).toBe("binding-1");
@@ -52,7 +52,7 @@ describe("native runtime binding resolver", () => {
     const store = new NativeRuntimeBindingStore();
     const conversation = conversationRecord(null);
     expect(() =>
-      store.resolveRuntimeBinding(conversation.id, new Map([[conversation.id, conversation]]))
+      resolveGraph(store, conversation.id, new Map([[conversation.id, conversation]]))
     ).toThrowError(expect.objectContaining({ code: "RUNTIME_MODEL_NOT_CONFIGURED" }));
 
     store.activateGlobalDefaultModel({
@@ -61,7 +61,8 @@ describe("native runtime binding resolver", () => {
       checkedAt: timestamp,
       updatedBy: "user-1"
     });
-    const resolved = store.resolveRuntimeBinding(
+    const resolved = resolveGraph(
+      store,
       conversation.id,
       new Map([[conversation.id, conversation]])
     );
@@ -98,7 +99,8 @@ describe("native runtime binding resolver", () => {
     expect(primaryRoles[0]?.modelId).toBe("local-model-y");
 
     const conversation = conversationRecord(null);
-    const resolved = store.resolveRuntimeBinding(
+    const resolved = resolveGraph(
+      store,
       conversation.id,
       new Map([[conversation.id, conversation]])
     );
@@ -179,6 +181,27 @@ describe("native runtime binding resolver", () => {
       );
     expect(primaryRoleFor(bindingA.id)?.modelId).toBe("model-account-a");
     expect(primaryRoleFor(bindingB.id)?.modelId).toBe("model-account-b");
+
+    const resolvedA = store.resolveRuntimeBinding(
+      { businessId: "business-1", accountId: "account-a", agentId: "agent-1" },
+      new Map()
+    );
+    const resolvedB = store.resolveRuntimeBinding(
+      { businessId: "business-1", accountId: "account-b", agentId: "agent-1" },
+      new Map()
+    );
+    expect(resolvedA.selected.model.id).toBe("model-account-a");
+    expect(resolvedB.selected.model.id).toBe("model-account-b");
+
+    store.deactivateBusinessAgentBinding(
+      "business-1",
+      "account-b",
+      "agent-1",
+      "account-b",
+      new Date(timestamp)
+    );
+    expect(store.bindingsMap.get(bindingA.id)?.status).toBe("active");
+    expect(store.bindingsMap.get(bindingB.id)?.status).toBe("inactive");
   });
 
   it("rejects assigning the global default a model missing a required capability", () => {
@@ -198,7 +221,7 @@ describe("native runtime binding resolver", () => {
     store.clear();
     const conversation = conversationRecord(null);
     expect(() =>
-      store.resolveRuntimeBinding(conversation.id, new Map([[conversation.id, conversation]]))
+      resolveGraph(store, conversation.id, new Map([[conversation.id, conversation]]))
     ).toThrowError(expect.objectContaining({ code: "RUNTIME_DEFAULT_MISSING" }));
   });
 
@@ -209,13 +232,13 @@ describe("native runtime binding resolver", () => {
       status: "inactive"
     });
     expect(() =>
-      inactive.store.resolveRuntimeBinding("conversation-1", inactive.conversations)
+      resolveGraph(inactive.store, "conversation-1", inactive.conversations)
     ).toThrowError(expect.objectContaining({ code: "RUNTIME_BINDING_INACTIVE" }));
 
     const missingAgent = graphStore();
     missingAgent.store.agentsMap.delete("agent-1");
     expect(() =>
-      missingAgent.store.resolveRuntimeBinding("conversation-1", missingAgent.conversations)
+      resolveGraph(missingAgent.store, "conversation-1", missingAgent.conversations)
     ).toThrowError(expect.objectContaining({ code: "RUNTIME_AGENT_UNAVAILABLE" }));
   });
 
@@ -227,28 +250,28 @@ describe("native runtime binding resolver", () => {
       ) as NativeRuntimeBindingModelSummary;
       if (mode === "missing") graph.store.bindingModelsMap.delete(primary.id);
       else graph.store.bindingModelsMap.set(primary.id, { ...primary, enabled: false });
-      expect(() =>
-        graph.store.resolveRuntimeBinding("conversation-1", graph.conversations)
-      ).toThrowError(expect.objectContaining({ code: "RUNTIME_PRIMARY_INVALID" }));
+      expect(() => resolveGraph(graph.store, "conversation-1", graph.conversations)).toThrowError(
+        expect.objectContaining({ code: "RUNTIME_PRIMARY_INVALID" })
+      );
     }
   });
 
   it("selects fallbacks deterministically as persisted availability changes", () => {
     const graph = graphStore();
     setHostStatus(graph.store, "host-primary", "unavailable");
-    let resolved = graph.store.resolveRuntimeBinding("conversation-1", graph.conversations);
+    let resolved = resolveGraph(graph.store, "conversation-1", graph.conversations);
     expect(resolved.selected.model.id).toBe("model-fallback-0");
     expect(resolved.fallbackUsed).toBe(true);
     expect(resolved.fallbackReason).toBe("EXECUTION_HOST_UNAVAILABLE");
 
     setInstallationStatus(graph.store, "installation-fallback-0", "unavailable");
-    resolved = graph.store.resolveRuntimeBinding("conversation-1", graph.conversations);
+    resolved = resolveGraph(graph.store, "conversation-1", graph.conversations);
     expect(resolved.selected.model.id).toBe("model-fallback-1");
 
     setHostStatus(graph.store, "host-fallback-1", "unavailable");
-    expect(() =>
-      graph.store.resolveRuntimeBinding("conversation-1", graph.conversations)
-    ).toThrowError(expect.objectContaining({ code: "RUNTIME_MODELS_UNAVAILABLE" }));
+    expect(() => resolveGraph(graph.store, "conversation-1", graph.conversations)).toThrowError(
+      expect.objectContaining({ code: "RUNTIME_MODELS_UNAVAILABLE" })
+    );
   });
 
   it("reports missing installations and hosts as unavailable without probing the network", () => {
@@ -259,9 +282,9 @@ describe("native runtime binding resolver", () => {
     graph.store.installationsMap.delete("installation-primary");
     setInstallationStatus(graph.store, "installation-fallback-0", "unavailable");
     graph.store.hostsMap.delete("host-fallback-1");
-    expect(() =>
-      graph.store.resolveRuntimeBinding("conversation-1", graph.conversations)
-    ).toThrowError(expect.objectContaining({ code: "RUNTIME_MODELS_UNAVAILABLE" }));
+    expect(() => resolveGraph(graph.store, "conversation-1", graph.conversations)).toThrowError(
+      expect.objectContaining({ code: "RUNTIME_MODELS_UNAVAILABLE" })
+    );
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
@@ -270,9 +293,9 @@ describe("native runtime binding resolver", () => {
     const graph = graphStore();
     const model = graph.store.modelsMap.get("model-primary") as NativeRuntimeModelSummary;
     graph.store.modelsMap.set(model.id, { ...model, capabilities: ["chat"] });
-    expect(() =>
-      graph.store.resolveRuntimeBinding("conversation-1", graph.conversations)
-    ).toThrowError(expect.objectContaining({ code: "RUNTIME_MODEL_CAPABILITY_MISMATCH" }));
+    expect(() => resolveGraph(graph.store, "conversation-1", graph.conversations)).toThrowError(
+      expect.objectContaining({ code: "RUNTIME_MODEL_CAPABILITY_MISMATCH" })
+    );
 
     const versionMismatch = graphStore();
     const versionedModel = versionMismatch.store.modelsMap.get(
@@ -283,8 +306,42 @@ describe("native runtime binding resolver", () => {
       runtimeContractVersion: "2"
     });
     expect(() =>
-      versionMismatch.store.resolveRuntimeBinding("conversation-1", versionMismatch.conversations)
+      resolveGraph(versionMismatch.store, "conversation-1", versionMismatch.conversations)
     ).toThrowError(expect.objectContaining({ code: "RUNTIME_CONTRACT_INCOMPATIBLE" }));
+  });
+
+  describe("one resolver for conversation and conversation-free callers", () => {
+    it("resolves the same binding graph through the same function for both call shapes", () => {
+      const graph = graphStore();
+      const viaConversation = resolveGraph(graph.store, "conversation-1", graph.conversations);
+      const viaAgent = resolveGraph(graph.store);
+
+      expect(viaAgent).not.toBeNull();
+      expect(viaAgent?.binding.id).toBe(viaConversation.binding.id);
+      expect(viaAgent?.agent.id).toBe(viaConversation.agent.id);
+      expect(viaAgent?.primary.model.id).toBe(viaConversation.primary.model.id);
+      expect(viaAgent?.fallbacks.map((candidate) => candidate.model.id)).toEqual(
+        viaConversation.fallbacks.map((candidate) => candidate.model.id)
+      );
+      expect(viaAgent?.selected.model.id).toBe(viaConversation.selected.model.id);
+      // Sentinel conversation id, not a real Conversation - there is none for this caller.
+      expect(viaAgent?.conversationId).toBe("runtime-unbound");
+    });
+
+    it("reports the same unresolved default state for a caller without a conversation", () => {
+      const store = new NativeRuntimeBindingStore();
+      expect(() => resolveGraph(store)).toThrowError(
+        expect.objectContaining({ code: "RUNTIME_MODEL_NOT_CONFIGURED" })
+      );
+    });
+
+    it("reflects fallback selection as installation/host availability changes, same as the conversation path", () => {
+      const graph = graphStore();
+      setHostStatus(graph.store, "host-primary", "unavailable");
+      const resolved = resolveGraph(graph.store);
+      expect(resolved?.selected.model.id).toBe("model-fallback-0");
+      expect(resolved?.fallbackUsed).toBe(true);
+    });
   });
 
   it("preserves an authorized explicit assignment and rejects cross-account bindings", () => {
@@ -305,6 +362,21 @@ describe("native runtime binding resolver", () => {
     ).toThrowError(expect.objectContaining({ code: "RUNTIME_BINDING_FORBIDDEN" }));
   });
 });
+
+function resolveGraph(
+  store: NativeRuntimeBindingStore,
+  conversationId?: string,
+  conversations: ReadonlyMap<string, ConversationSummary> = new Map()
+) {
+  return store.resolveRuntimeBinding(
+    {
+      businessId: "business-1",
+      agentId: "agent-1",
+      ...(conversationId === undefined ? {} : { conversationId })
+    },
+    conversations
+  );
+}
 
 function graphStore() {
   const store = new NativeRuntimeBindingStore();

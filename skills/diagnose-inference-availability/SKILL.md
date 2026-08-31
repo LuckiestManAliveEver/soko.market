@@ -23,5 +23,14 @@ catalogue model being downloadable does not mean a backend adapter is configured
 10. Add a regression scenario to `tests/ai-eval/backend-runtime-status-scenarios.ts` whenever a new
     runtime error code reaches the UI.
 
-Do not add an inference service to Render. That deployment is intentionally client-first and the
-repository boundary checks enforce the absence of a Render-local Ollama service.
+Production already runs a private Render inference service (`soko-market-inference`, an
+Ollama-backed Docker `pserv` declared in `render.yaml`, see `docs/deployment/render-inference.md`
+and `docs/deployment/backend-inference-render.md`). `scripts/check-render-inference-boundaries.mjs`
+enforces its _presence_ (required `render.yaml` fields, the private-service disk mount, the token)
+and only blocks the API process itself from talking to Ollama/local model engines directly - it does
+not forbid the service. Do not remove or bypass `soko-market-inference`, and do not reintroduce a
+client-first/browser-only inference story; that architecture (WebLLM, Transformers.js, the native
+GGUF bridge) was deliberately removed from `apps/web` in favor of the hosted-first Pi + SmolLM 360M
+default. The docs under `docs/inference/webllm-runtime-contract.md`, `native-bridge.md`,
+`model-manifest.md`, and `soko-web-inference-engine.md` describe that removed system and are
+historical only.

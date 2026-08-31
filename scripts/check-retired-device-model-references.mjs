@@ -29,6 +29,12 @@ export const retiredDeviceModelReferences = [
   "getOrCreateDeviceModelScopeId"
 ];
 
+export const retiredBrowserInferencePackages = [
+  "@huggingface/transformers",
+  "@mlc-ai/web-llm",
+  "@wllama/wllama"
+];
+
 export const productionScanRoots = [
   "apps/web/src",
   "apps/web/dist",
@@ -58,7 +64,8 @@ const allowlistedFilePattern = /^apps\/web\/(?:src|dist)\/account-ai-assets\.(?:
 export function checkRetiredDeviceModelReferences({
   rootDirectory = process.cwd(),
   scanRoots = productionScanRoots,
-  forbiddenReferences = retiredDeviceModelReferences
+  forbiddenReferences = retiredDeviceModelReferences,
+  forbiddenPackages = retiredBrowserInferencePackages
 } = {}) {
   const violations = [];
 
@@ -75,6 +82,16 @@ export function checkRetiredDeviceModelReferences({
         if (source.includes(reference)) {
           violations.push({ file: relativePath, reference });
         }
+      }
+    }
+  }
+
+  const webManifestPath = resolve(rootDirectory, "apps/web/package.json");
+  if (existsSync(webManifestPath)) {
+    const webManifest = readFileSync(webManifestPath, "utf8");
+    for (const packageName of forbiddenPackages) {
+      if (webManifest.includes(`"${packageName}"`)) {
+        violations.push({ file: "apps/web/package.json", reference: packageName });
       }
     }
   }

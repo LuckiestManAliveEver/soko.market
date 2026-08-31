@@ -4,6 +4,7 @@ import type {
   AgentModelActivationResult,
   AgentModelBindingRemovalResult,
   AgentModelBindingSummary,
+  EffectiveRuntimeSummary,
   ModelRuntimeHealthSummary
 } from "@soko/shared-types";
 
@@ -18,7 +19,6 @@ import { navigateToBrowserUrl } from "./browser-navigation";
 import { ApiRequestError } from "./lib/api";
 
 import {
-  type ActiveAiModelSummary,
   type ActiveBusiness,
   type AgentSettings,
   type AiModelSummary,
@@ -92,6 +92,7 @@ export function AgentModelPanel({
   const [visibleAiModels, setVisibleAiModels] = useState<AiModelSummary[]>([]);
   const [activeAgentModelBinding, setActiveAgentModelBinding] =
     useState<AgentModelBindingSummary | null>(null);
+  const [effectiveRuntime, setEffectiveRuntime] = useState<EffectiveRuntimeSummary | null>(null);
   const [serverBackendRuntime, setServerBackendRuntime] = useState<
     Record<
       string,
@@ -188,16 +189,15 @@ export function AgentModelPanel({
       const normalizedSearch = search?.trim() ?? "";
       const [
         registry,
-        active,
         searchResults,
         githubRegistry,
         githubSearchResults,
         huggingFaceRegistry,
         huggingFaceSearchResults,
-        canonicalBinding
+        canonicalBinding,
+        resolvedRuntime
       ] = await Promise.all([
         getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
-        getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`),
         normalizedSearch.length > 0
           ? getJson<{ models: AiModelSummary[] }>(
               `/v1/ai-models?search=${encodeURIComponent(normalizedSearch)}`
@@ -213,7 +213,8 @@ export function AgentModelPanel({
           `/api/agents/${encodeURIComponent(
             canonicalRuntimeAgentId
           )}/model-binding?shopId=${encodeURIComponent(business.id)}`
-        ).catch(() => ({ binding: null }))
+        ).catch(() => ({ binding: null })),
+        getJson<EffectiveRuntimeSummary>(`/businesses/${business.id}/runtime/effective`)
       ]);
       const externalRegistry = mergeAiModelCatalogs(
         githubRegistry.models,
@@ -233,11 +234,12 @@ export function AgentModelPanel({
         ),
         registry.models
       );
-      const effectiveModelId = canonicalBinding.binding?.modelId ?? active.modelId;
+      const effectiveModelId = resolvedRuntime.model.id;
       setAiModels(allModels);
       setVisibleAiModels(visibleModels);
       setActiveAiModelId(effectiveModelId);
       setActiveAgentModelBinding(canonicalBinding.binding);
+      setEffectiveRuntime(resolvedRuntime);
       setGitHubModelDiscovery(githubSearchResults ?? githubRegistry);
       setHuggingFaceModelDiscovery(huggingFaceSearchResults ?? huggingFaceRegistry);
       if (!isEditing && isAgentModel(effectiveModelId)) {
@@ -304,19 +306,21 @@ export function AgentModelPanel({
     await loadAiModels(s);
   }
 
-  async function loadCanonicalAgentModelBinding(): Promise<AgentModelBindingSummary | null> {
-    if (!navigator.onLine) return activeAgentModelBinding;
+  async function loadCanonicalAgentModelBinding(): Promise<EffectiveRuntimeSummary | null> {
+    if (!navigator.onLine) return effectiveRuntime;
     try {
-      const response = await getJson<{ binding: AgentModelBindingSummary | null }>(
-        `/api/agents/${encodeURIComponent(
-          canonicalRuntimeAgentId
-        )}/model-binding?shopId=${encodeURIComponent(business.id)}`
-      );
+      const [response, resolvedRuntime] = await Promise.all([
+        getJson<{ binding: AgentModelBindingSummary | null }>(
+          `/api/agents/${encodeURIComponent(
+            canonicalRuntimeAgentId
+          )}/model-binding?shopId=${encodeURIComponent(business.id)}`
+        ),
+        getJson<EffectiveRuntimeSummary>(`/businesses/${business.id}/runtime/effective`)
+      ]);
       setActiveAgentModelBinding(response.binding);
-      if (response.binding !== null) {
-        setActiveAiModelId(response.binding.modelId);
-      }
-      return response.binding;
+      setEffectiveRuntime(resolvedRuntime);
+      setActiveAiModelId(resolvedRuntime.model.id);
+      return resolvedRuntime;
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
       return null;
@@ -413,6 +417,7 @@ export function AgentModelPanel({
       onAgentChange({ ...agent, model: result.binding.modelId });
       setModelActivationState("active");
       setFailedActivationModelId(null);
+      await loadCanonicalAgentModelBinding();
       setProfileMessage(
         `${model.label} is active for ${agent.name}. Verified in ${formatLatency(
           result.healthCheck.latencyMs
@@ -434,8 +439,8 @@ export function AgentModelPanel({
     if (
       modelRuntimeBusyRef.current ||
       !navigator.onLine ||
-      activeAgentModelBinding?.status !== "active" ||
-      activeAgentModelBinding.modelId !== model.id
+      explicitAgentModelBinding?.status !== "active" ||
+      explicitAgentModelBinding.modelId !== model.id
     ) {
       if (!navigator.onLine) {
         setProfileMessage("Connect to the internet to remove this model from the agent.");
@@ -455,11 +460,14 @@ export function AgentModelPanel({
       if (result.binding !== null || result.agentId !== canonicalRuntimeAgentId) {
         throw new Error("The backend did not remove the active model binding.");
       }
-      const fallbackModelId = "sokoclaw-local";
+      const resolvedRuntime = await loadCanonicalAgentModelBinding();
+      if (resolvedRuntime === null) {
+        throw new Error("The backend did not resolve the platform default runtime.");
+      }
       setActiveAgentModelBinding(null);
-      setActiveAiModelId(fallbackModelId);
-      updateAgent({ model: fallbackModelId });
-      onAgentChange({ ...agent, model: fallbackModelId });
+      setActiveAiModelId(resolvedRuntime.model.id);
+      updateAgent({ model: resolvedRuntime.model.id });
+      onAgentChange({ ...agent, model: resolvedRuntime.model.id });
       setModelActivationState("idle");
       setFailedActivationModelId(null);
       setProfileMessage(
@@ -476,14 +484,20 @@ export function AgentModelPanel({
   }
 
   const activeAiModel = aiModels.find((model) => model.id === activeAiModelId);
+  const explicitAgentModelBinding =
+    effectiveRuntime?.source === "default" ? null : activeAgentModelBinding;
   const activeBackendBinding =
-    activeAgentModelBinding?.status === "active" &&
-    activeAgentModelBinding.executionTarget === "backend";
+    explicitAgentModelBinding?.status === "active" &&
+    explicitAgentModelBinding.executionTarget === "backend";
   const activeBackendConfigured =
     activeBackendBinding && activeAiModel?.runtimeAvailability?.backend === "configured";
   const serverBackendModels = visibleAiModels.filter(
     (model) => model.runtimeAvailability?.backend === "configured"
   );
+  // Deliberately keyed off aiModels (the full deployment catalog), not visibleAiModels (which is
+  // search-filtered) - typing into the model search box must never make this banner flicker to
+  // "Unavailable" just because the current search happens to exclude every backend-configured model.
+  const sokoAiReady = effectiveRuntime?.ready === true;
   // A discovered GitHub/Hugging Face result that isn't yet server-registered has no hosted
   // activation path - list it as browse-only rather than offering a device download.
   // TODO(runtime-registry): route through unified registry search once it consolidates this
@@ -499,7 +513,7 @@ export function AgentModelPanel({
     <>
       <div className="record-form agent-model-panel">
         <div className="section-heading">
-          <p className="eyebrow">Soko AI · Ready</p>
+          <p className="eyebrow">Soko AI · {sokoAiReady ? "Ready" : "Unavailable"}</p>
           <h3>Advanced model preferences</h3>
           <p>
             Execution is automatic and always backend-hosted. There is no private per-device model
@@ -514,27 +528,31 @@ export function AgentModelPanel({
         <article className="agent-model-current">
           <div>
             <span className="model-badge">Current model</span>
-            <span className={`model-badge status-${activeAgentModelBinding?.status ?? "failed"}`}>
-              {activeAgentModelBinding?.status === "active"
+            <span className={`model-badge status-${explicitAgentModelBinding?.status ?? "failed"}`}>
+              {explicitAgentModelBinding?.status === "active"
                 ? `Active for ${agent.name}`
                 : "Automatic"}
             </span>
           </div>
           <h4>
-            {activeAgentModelBinding === null
-              ? "Soko AI is ready"
-              : (activeAiModel?.label ?? activeAgentModelBinding.modelId)}
+            {explicitAgentModelBinding === null
+              ? sokoAiReady
+                ? (effectiveRuntime?.model.name ?? "Soko AI is ready")
+                : "Soko AI is unavailable"
+              : (activeAiModel?.label ?? explicitAgentModelBinding.modelId)}
           </h4>
           <p>
-            {activeAgentModelBinding === null
-              ? "A compatible execution host and model are selected automatically when you chat."
-              : `Running on: ${formatExecutionTarget(activeAgentModelBinding.executionTarget)}`}
+            {explicitAgentModelBinding === null
+              ? sokoAiReady
+                ? "A compatible execution host and model are selected automatically when you chat."
+                : "No backend-hosted model is currently configured for this deployment."
+              : `Running on: ${formatExecutionTarget(explicitAgentModelBinding.executionTarget)}`}
           </p>
           <small>
-            {activeAgentModelBinding?.lastVerifiedAt === null ||
-            activeAgentModelBinding?.lastVerifiedAt === undefined
+            {explicitAgentModelBinding?.lastVerifiedAt === null ||
+            explicitAgentModelBinding?.lastVerifiedAt === undefined
               ? "No download or activation required"
-              : `Verified ${formatDate(activeAgentModelBinding.lastVerifiedAt)}`}
+              : `Verified ${formatDate(explicitAgentModelBinding.lastVerifiedAt)}`}
           </small>
           {activeBackendBinding && !activeBackendConfigured ? (
             <small role="status">
@@ -547,10 +565,10 @@ export function AgentModelPanel({
               <button
                 className="secondary"
                 type="button"
-                disabled={activeAgentModelBinding === null || modelRuntimeBusy}
+                disabled={explicitAgentModelBinding === null || modelRuntimeBusy}
                 onClick={() => {
                   const model = aiModels.find(
-                    (candidate) => candidate.id === activeAgentModelBinding?.modelId
+                    (candidate) => candidate.id === explicitAgentModelBinding?.modelId
                   );
                   if (model !== undefined) void testServerBackendModel(model);
                 }}
@@ -647,9 +665,9 @@ export function AgentModelPanel({
                 <div className="ai-model-catalog">
                   {serverBackendModels.map((model) => {
                     const activeForAgent =
-                      activeAgentModelBinding?.status === "active" &&
-                      activeAgentModelBinding.modelId === model.id &&
-                      activeAgentModelBinding.executionTarget === "backend";
+                      explicitAgentModelBinding?.status === "active" &&
+                      explicitAgentModelBinding.modelId === model.id &&
+                      explicitAgentModelBinding.executionTarget === "backend";
                     const runtime = serverBackendRuntime[model.id];
                     const runtimeLabel =
                       runtime?.status === "available"

@@ -131,4 +131,31 @@ describe("native runtime binding migration", () => {
     expect(migration).not.toContain("where business_id is not null");
     expect(rollback).toContain("parent_id = 'builtin:soko-agent:v1'");
   });
+
+  it("binds the platform default to a real backend host and SmolLM installation in place", async () => {
+    const migration = await readFile(
+      new URL(
+        "../infra/db/migrations/077_materialize_platform_default_runtime.sql",
+        import.meta.url
+      ),
+      "utf8"
+    );
+    const rollback = await readFile(
+      new URL(
+        "../infra/db/rollbacks/077_materialize_platform_default_runtime.down.sql",
+        import.meta.url
+      ),
+      "utf8"
+    );
+    expect(migration).toContain("insert into cp2_native_execution_hosts");
+    expect(migration).toContain('"type":"backend"');
+    expect(migration).toContain('"status":"available"');
+    expect(migration).toContain("insert into cp2_native_model_installations");
+    expect(migration).toContain('"modelId":"smollm2-360m"');
+    expect(migration).toContain("delete from cp2_native_runtime_binding_models");
+    expect(migration).toContain("'status', 'active'");
+    expect(migration).toContain("set parent_id = 'builtin:pi:v1'");
+    expect(migration).toContain("where entity_id = 'builtin:soko-default-runtime:v1'");
+    expect(rollback).toContain("'status', 'draft'");
+  });
 });

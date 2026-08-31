@@ -136,12 +136,10 @@ const cp2StoreOptions = {
   ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors })
 };
 
-// No model vendor is required for Soko to boot (docs/architecture/provider-neutral-runtime.md).
-// Startup never health-checks a model provider or requires one to be configured: agents, models,
-// and execution hosts are independent, swappable slots, and the global default runtime binding is
-// a valid, resolvable state even with zero models assigned (RUNTIME_MODEL_NOT_CONFIGURED at
-// turn-time, not a startup failure). Whichever adapters ARE configured above (backend, OpenAI,
-// ...) are simply registered into modelRuntimeAdapters for on-demand use.
+// Runtime resources remain provider-neutral and independently swappable. Deployments that promise
+// zero-setup AI set BACKEND_INFERENCE_REQUIRED=true, making /health/ready fail unless the configured
+// default backend adapter can reach its model host. Optional provider adapters are still registered
+// uniformly and never become implicit fallbacks.
 const cp2Store = await createCp2StoreOrExplainSchemaFailure();
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,

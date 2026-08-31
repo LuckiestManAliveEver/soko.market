@@ -2,7 +2,6 @@ const apiUrl = required("SOKO_API_URL").replace(/\/+$/u, "");
 const inferenceUrl = required("SOKO_INFERENCE_URL").replace(/\/+$/u, "");
 const inferenceToken = required("INFERENCE_SERVICE_TOKEN");
 const sessionToken = required("SOKO_TEST_TOKEN");
-const agentId = required("SOKO_TEST_AGENT_ID");
 const shopId = required("SOKO_TEST_SHOP_ID");
 const modelId = process.env.SOKO_MODEL_ID?.trim() || "smollm2-360m";
 const cookie = sessionToken.includes("=") ? sessionToken : `soko_session=${sessionToken}`;
@@ -35,17 +34,21 @@ assert(
   probe.body
 );
 
-const binding = await getJson(
-  `${apiUrl}/api/agents/${encodeURIComponent(agentId)}/model-binding?shopId=${encodeURIComponent(shopId)}`,
+const effectiveRuntime = await getJson(
+  `${apiUrl}/businesses/${encodeURIComponent(shopId)}/runtime/effective`,
   { cookie }
 );
 assert(
-  binding.response.ok &&
-    binding.body?.binding?.status === "active" &&
-    binding.body?.binding?.lastVerificationStatus === "passed" &&
-    binding.body?.binding?.modelId === modelId,
-  "Verified active agent binding was not found.",
-  binding.body
+  effectiveRuntime.response.ok &&
+    effectiveRuntime.body?.harness?.id === "pi" &&
+    effectiveRuntime.body?.model?.id === modelId &&
+    effectiveRuntime.body?.execution?.type === "backend" &&
+    typeof effectiveRuntime.body?.execution?.hostId === "string" &&
+    effectiveRuntime.body?.execution?.ready === true &&
+    effectiveRuntime.body?.source === "default" &&
+    effectiveRuntime.body?.ready === true,
+  "DEFAULT_RUNTIME_UNAVAILABLE",
+  effectiveRuntime.body
 );
 
 const chat = await getJson(
@@ -70,7 +73,7 @@ console.log(
       api: apiReadiness.body,
       inference: inferenceReadiness.body,
       probe: probe.body,
-      binding: binding.body.binding,
+      effectiveRuntime: effectiveRuntime.body,
       chatModel: chat.body.turn.model
     },
     null,

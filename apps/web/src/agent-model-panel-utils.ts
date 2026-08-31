@@ -4,6 +4,7 @@ export function isDownloadableCatalogModel(model: AiModelSummary): boolean {
   return model.source === "huggingface" || model.source === "github";
 }
 
+/** Preserve deployment-owned runtime availability when merging registry discovery results. */
 export function applyDeploymentRuntimeAvailability(
   models: AiModelSummary[],
   deploymentCatalog: AiModelSummary[]

@@ -100,7 +100,7 @@ describe("Render Blueprint", () => {
     // The API has only a private gateway URL/token; Ollama remains inside the inference container.
     expect(api).not.toContain("OLLAMA_BASE_URL");
     expect(api).toContain("envVarKey: INFERENCE_SERVICE_TOKEN");
-    expect(api).toContain('BACKEND_INFERENCE_REQUIRED\n        value: "false"');
+    expect(api).toContain('BACKEND_INFERENCE_REQUIRED\n        value: "true"');
 
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(blueprint).not.toContain("INFERENCE_CLOUD_FALLBACK_ENABLED");

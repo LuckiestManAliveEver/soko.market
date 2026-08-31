@@ -34,7 +34,7 @@ API service:
 
 ```text
 BACKEND_INFERENCE_ENABLED=true
-BACKEND_INFERENCE_REQUIRED=false
+BACKEND_INFERENCE_REQUIRED=true
 BACKEND_INFERENCE_MODEL_ID=smollm2-360m
 BACKEND_INFERENCE_BASE_URL=<private inference host:port reference>
 INFERENCE_SERVICE_TOKEN=<copied generated secret>
@@ -86,9 +86,10 @@ restart and must verify the actual `POST /v1/messages` flow, not only mocked ada
 
 ## Failure and rollback
 
-`BACKEND_INFERENCE_REQUIRED=false` keeps the API, authentication, catalogue, orders and messaging
-online when inference is loading or unavailable. Turns bound only to the unavailable backend fail
-with normalized retryable runtime errors; Soko does not silently substitute a provider/model.
+Production sets `BACKEND_INFERENCE_REQUIRED=true`, so API readiness fails while the promised
+zero-setup default host/model is unavailable. An emergency commerce-only rollback may explicitly
+set it to `false`; turns bound to the unavailable backend then fail with normalized retryable
+runtime errors, and Soko does not silently substitute a provider/model.
 
 Rollback options are independent:
 

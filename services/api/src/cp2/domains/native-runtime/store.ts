@@ -16,6 +16,8 @@ import type {
   NativeRuntimeBindingModelSummary,
   NativeRuntimeBindingSummary,
   NativeRuntimeModelSummary,
+  NativeRuntimeResolutionInput,
+  NativeRuntimeResolutionSource,
   ResolvedNativeRuntimeBinding,
   ResolvedNativeRuntimeModel
 } from "@soko/shared-types";
@@ -56,15 +58,10 @@ export class NativeRuntimeBindingStore {
     this.ensureGlobalDefault();
   }
 
-  // Provider-neutral by construction: this creates only the two concepts genuinely built into
-  // Soko itself (the built-in agent, and a global default runtime *slot*). It deliberately does
-  // not create a model, execution host, or installation for that slot - no model vendor is
-  // required for Soko to boot. The slot starts "draft" (see NativeRuntimeBindingStatus) with zero
-  // model assignments; resolveRuntimeBinding reports that state as RUNTIME_MODEL_NOT_CONFIGURED
-  // rather than resolving a fake or hardcoded model. See docs/architecture/
-  // provider-neutral-runtime.md and infra/db/migrations/067_provider_agnostic_runtime_default.sql,
-  // which converts the equivalent pre-existing production seed (migration 065's forced
-  // openai-fast default) into this same unconfigured state.
+  // Safe in-memory/bootstrap shape: the built-in agent and global slot exist before persistence is
+  // restored, without fabricating an executable host. Production migration 077 materializes this
+  // same slot in place as Pi + SmolLM + the backend host; a configured adapter can also lazily
+  // materialize the same ordinary graph for a tenant in memory.
   ensureGlobalDefault(now: Date = new Date()): NativeRuntimeBindingSummary {
     const timestamp = now.toISOString();
     const agentId = this.defaultRuntimePolicy.agentId;
@@ -112,8 +109,8 @@ export class NativeRuntimeBindingStore {
   // catalog model on any execution target can occupy it, and calling this again with a different
   // model swaps the primary assignment in place - the binding's id (and therefore every
   // conversation.runtimeBindingId pointing at it) never changes. This is the provider-neutral
-  // replacement for the old hardcoded openai-fast seed: OpenAI, a local browser model, an owner
-  // node model, or any future provider all go through this same call.
+  // replacement for the old hardcoded openai-fast seed: a backend model, an owner-node model, or
+  // any future registered provider all go through this same call.
   activateGlobalDefaultModel(input: {
     model: AiModelSummary;
     executionTarget: ModelExecutionTarget;
@@ -395,13 +392,18 @@ export class NativeRuntimeBindingStore {
     };
   }
 
-  bindingForBusinessAgent(businessId: string, agentId: string): NativeRuntimeBindingSummary | null {
+  bindingForBusinessAgent(
+    businessId: string,
+    agentId: string,
+    accountId?: string
+  ): NativeRuntimeBindingSummary | null {
     return (
       [...this.bindings.values()]
         .filter(
           (binding) =>
             binding.businessId === businessId &&
             binding.agentId === agentId &&
+            (accountId === undefined || binding.accountId === accountId) &&
             binding.status === "active"
         )
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null
@@ -413,8 +415,12 @@ export class NativeRuntimeBindingStore {
    *  Returns null rather than throwing when nothing is active yet, or when a matched binding has no
    *  enabled primary role - both are normal "not configured" states for a GET/routing read, not
    *  errors. */
-  getActiveBindingForAgent(businessId: string, agentId: string): ActiveNativeAgentBinding | null {
-    const binding = this.bindingForBusinessAgent(businessId, agentId);
+  getActiveBindingForAgent(
+    businessId: string,
+    agentId: string,
+    accountId?: string
+  ): ActiveNativeAgentBinding | null {
+    const binding = this.bindingForBusinessAgent(businessId, agentId, accountId);
     if (binding === null) return null;
     const role = [...this.bindingModels.values()].find(
       (candidate) =>
@@ -445,11 +451,12 @@ export class NativeRuntimeBindingStore {
 
   deactivateBusinessAgentBinding(
     businessId: string,
+    accountId: string,
     agentId: string,
     updatedBy: string,
     now: Date = new Date()
   ): string | null {
-    const binding = this.bindingForBusinessAgent(businessId, agentId);
+    const binding = this.bindingForBusinessAgent(businessId, agentId, accountId);
     if (binding === null) return null;
     this.bindings.set(binding.id, {
       ...binding,
@@ -484,27 +491,104 @@ export class NativeRuntimeBindingStore {
     return this.requireGlobalDefault().id;
   }
 
+  /**
+   * The sole effective-runtime resolver. Both conversation chat and direct runtime-session chat
+   * enter here and use the same deterministic precedence:
+   *
+   *   explicit conversation binding -> active shop/account binding -> platform default.
+   *
+   * A conversation pointing at the global default is an inherited default, not an explicit
+   * override, so a later account selection still wins without rewriting every conversation.
+   */
   resolveRuntimeBinding(
-    conversationId: string,
+    input: NativeRuntimeResolutionInput,
     conversations: ReadonlyMap<string, ConversationSummary>
   ): ResolvedNativeRuntimeBinding {
-    const conversation = conversations.get(conversationId);
-    if (conversation === undefined) {
+    const conversation =
+      input.conversationId === undefined ? undefined : conversations.get(input.conversationId);
+    if (input.conversationId !== undefined && conversation === undefined) {
       throw new Cp2Error(404, "RUNTIME_CONVERSATION_NOT_FOUND", "Conversation was not found.");
     }
-    const explicitId = conversation.runtimeBindingId;
-    const binding =
-      explicitId === null ? this.requireGlobalDefault() : this.bindings.get(explicitId);
-    if (binding === undefined) {
+    if (
+      conversation !== undefined &&
+      conversation.activeShopId !== null &&
+      conversation.activeShopId !== input.businessId
+    ) {
       throw new Cp2Error(
-        409,
-        "RUNTIME_BINDING_NOT_FOUND",
-        "The conversation runtime binding no longer exists.",
-        false,
-        { conversationId, runtimeBindingId: explicitId }
+        403,
+        "RUNTIME_BINDING_FORBIDDEN",
+        "The conversation cannot use this shop runtime."
       );
     }
-    return this.resolveBinding(binding, conversationId, explicitId === null);
+    if (
+      conversation !== undefined &&
+      input.accountId !== undefined &&
+      conversation.accountId !== input.accountId
+    ) {
+      throw new Cp2Error(
+        403,
+        "RUNTIME_BINDING_FORBIDDEN",
+        "The conversation cannot use this account runtime."
+      );
+    }
+
+    const candidates: Array<{
+      binding: NativeRuntimeBindingSummary;
+      source: NativeRuntimeResolutionSource;
+    }> = [];
+    const conversationBindingId = conversation?.runtimeBindingId ?? null;
+    if (conversationBindingId !== null && conversationBindingId !== globalDefaultRuntimeBindingId) {
+      const explicit = this.bindings.get(conversationBindingId);
+      const effectiveAccountId = input.accountId ?? conversation?.accountId;
+      if (
+        explicit !== undefined &&
+        (explicit.businessId === null || explicit.businessId === input.businessId) &&
+        (explicit.accountId === null || explicit.accountId === effectiveAccountId)
+      ) {
+        candidates.push({ binding: explicit, source: "explicit-conversation" });
+      }
+    }
+    const accountId = input.accountId ?? conversation?.accountId;
+    const accountBinding = this.bindingForBusinessAgent(input.businessId, input.agentId, accountId);
+    if (
+      accountBinding !== null &&
+      !candidates.some((candidate) => candidate.binding.id === accountBinding.id)
+    ) {
+      candidates.push({
+        binding: accountBinding,
+        source: accountBinding.isDefault ? "default" : "explicit-account"
+      });
+    }
+    let lastResolutionError: Cp2Error | null = null;
+    for (const candidate of candidates) {
+      try {
+        return this.resolveBinding(
+          candidate.binding,
+          input.conversationId ?? "runtime-unbound",
+          candidate.source
+        );
+      } catch (error) {
+        if (!(error instanceof Cp2Error)) throw error;
+        lastResolutionError = error;
+      }
+    }
+    try {
+      const globalDefault = this.requireGlobalDefault();
+      if (!candidates.some((candidate) => candidate.binding.id === globalDefault.id)) {
+        return this.resolveBinding(
+          globalDefault,
+          input.conversationId ?? "runtime-unbound",
+          "default"
+        );
+      }
+    } catch (error) {
+      if (!(error instanceof Cp2Error)) throw error;
+      if (lastResolutionError === null) lastResolutionError = error;
+    }
+    throw (
+      lastResolutionError ??
+      new Cp2Error(503, "RUNTIME_DEFAULT_MISSING", "No effective runtime is configured.")
+    );
   }
 
   resolveBindingForConversation(
@@ -515,7 +599,7 @@ export class NativeRuntimeBindingStore {
     if (binding === undefined) {
       throw new Cp2Error(409, "RUNTIME_BINDING_NOT_FOUND", "Runtime binding was not found.");
     }
-    return this.resolveBinding(binding, conversationId, false);
+    return this.resolveBinding(binding, conversationId, "explicit-conversation");
   }
 
   // The binding/agent-only half of structural validity: does the binding exist and belong to an
@@ -583,7 +667,7 @@ export class NativeRuntimeBindingStore {
   private resolveBinding(
     binding: NativeRuntimeBindingSummary,
     conversationId: string,
-    usedGlobalDefault: boolean
+    source: NativeRuntimeResolutionSource
   ): ResolvedNativeRuntimeBinding {
     const { agent, primaryRole, enabledRoles } = this.validateBindingStructure(binding);
     const primary = this.resolveRole(binding, agent, primaryRole);
@@ -619,7 +703,8 @@ export class NativeRuntimeBindingStore {
     }
     return {
       conversationId,
-      usedGlobalDefault,
+      usedGlobalDefault: source === "default",
+      source,
       binding: { ...binding },
       agent: { ...agent },
       primary,

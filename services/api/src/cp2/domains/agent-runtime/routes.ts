@@ -70,6 +70,10 @@ interface AiModelSearchQuery {
   search?: string;
 }
 
+interface EffectiveRuntimeQuery {
+  conversationId?: string;
+}
+
 interface InstalledModelQuery {
   deviceId?: string;
 }
@@ -794,6 +798,28 @@ export function registerAgentRuntimeRoutes(
         return store.getAgentRuntime({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/runtime/effective",
+    async (
+      request: FastifyRequest<{
+        Params: BusinessParams;
+        Querystring: EffectiveRuntimeQuery;
+      }>,
+      reply
+    ) => {
+      try {
+        const conversationId = parseOptionalString(request.query.conversationId);
+        return await store.getEffectiveRuntime({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ...(conversationId === undefined ? {} : { conversationId })
         });
       } catch (error) {
         return sendCp2Error(reply, error);

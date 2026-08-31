@@ -228,14 +228,43 @@ describe("agent model activation runtime", () => {
     restoredStore.hydrateSnapshot(store.snapshot());
     const restoredApp = buildApi({ cp2: { store: restoredStore } });
     expect(await getBinding(restoredApp, owner)).toBeNull();
+    // Removing the explicit binding does not leave chat unusable: zero-setup provisioning
+    // (ensureDefaultRuntimeForTurn) runs on this very turn and picks up any adapter-verified
+    // catalog model - here primaryModelId, since restoredStore resolves it - exactly the same
+    // "absence of an override means use the platform default" behavior a never-configured shop
+    // gets. See docs/architecture/runtime-resolution.md.
     const chat = await restoredApp.inject({
       method: "POST",
       url: `/businesses/${owner.businessId}/runtime/turns`,
       headers: jsonHeaders(owner.cookie),
       payload: JSON.stringify({ message: "hello" })
     });
-    expect(chat.statusCode).toBe(409);
-    expect(chat.json()).toMatchObject({ code: "AGENT_MODEL_NOT_CONFIGURED" });
+    expect(chat.statusCode).toBe(200);
+    expect(chat.json()).toMatchObject({
+      turn: {
+        model: { status: "available", modelId: primaryModelId, agentId: owner.businessId }
+      }
+    });
+    // Default provisioning and explicit activation use the same shop-agent identity and binding
+    // API; settings and chat cannot drift into separate identity spaces.
+    expect(await getBinding(restoredApp, owner)).toMatchObject({
+      agentId: owner.businessId,
+      modelId: primaryModelId,
+      status: "active"
+    });
+    const provisioned = restoredStore
+      .snapshot()
+      .nativeRuntimeBindings.filter(
+        (binding) =>
+          binding.businessId === owner.businessId &&
+          binding.configuration.source === "zero-setup-provisioning"
+      );
+    expect(provisioned).toHaveLength(1);
+    expect(provisioned[0]).toMatchObject({
+      status: "active",
+      isDefault: true,
+      agentId: owner.businessId
+    });
 
     const hashtagRead = await restoredApp.inject({
       method: "POST",
@@ -643,14 +672,20 @@ describe("agent model activation runtime", () => {
     const first = await createOwnerBusiness(app, "+254700002004", "First Shop");
     const second = await createOwnerBusiness(app, "+254700002005", "Second Shop");
 
+    // "Unbound" no longer means "chat fails": zero-setup provisioning resolves the platform
+    // default (here, the one adapter-verified catalog model, primaryModelId) on this very turn,
+    // exactly like a never-configured shop's first chat. See
+    // docs/architecture/runtime-resolution.md.
     const unbound = await app.inject({
       method: "POST",
       url: `/businesses/${first.businessId}/runtime/turns`,
       headers: jsonHeaders(first.cookie),
       payload: JSON.stringify({ message: "hello" })
     });
-    expect(unbound.statusCode).toBe(409);
-    expect(unbound.json()).toMatchObject({ code: "AGENT_MODEL_NOT_CONFIGURED" });
+    expect(unbound.statusCode).toBe(200);
+    expect(unbound.json()).toMatchObject({
+      turn: { model: { status: "available", modelId: primaryModelId } }
+    });
 
     const crossShop = await app.inject({
       method: "POST",

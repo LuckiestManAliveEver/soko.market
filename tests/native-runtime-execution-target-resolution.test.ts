@@ -71,9 +71,9 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
     // The retired legacy-binding fallback tier is gone - the native runtime graph is the only
     // source of truth now, so no resolution means a genuine routing failure, not a silent
     // fallback to some other representation.
-    expect(() =>
-      resolveExecutionTarget({ nativeResolution: null, modelId, agentId })
-    ).toThrow(Cp2Error);
+    expect(() => resolveExecutionTarget({ nativeResolution: null, modelId, agentId })).toThrow(
+      Cp2Error
+    );
   });
 
   it("exposes exactly the two provider-neutral targets and rejects provider names", () => {
@@ -363,6 +363,167 @@ describe("zero-setup hosted-first runtime provisioning", () => {
     expect(provisioned).toHaveLength(1);
     expect(provisioned[0]).toMatchObject({ status: "active", isDefault: true });
   });
+
+  // Regression for the production incident: a brand-new merchant's own "chat with Soko AI" turn
+  // never sends a conversationId (it uses runtimeSessionId, not a Conversation record). Resolution
+  // used to hard-return null for every conversationId-less call, so this exact request threw
+  // 409 NO_COMPATIBLE_EXECUTION_TARGET ("No execution target is configured for this model...") even
+  // though the platform default (Pi + SmolLM 360M) was fully provisionable. See
+  // NativeRuntimeBindingStore.resolveRuntimeBinding and docs/architecture/runtime-resolution.md.
+  it("provisions and resolves the platform default for a conversation-free runtime turn (first chat with Soko AI)", async () => {
+    const backendGenerate = vi.fn(async () => ({
+      text: JSON.stringify({ type: "response", message: "Hi there!" }),
+      modelId: "smollm2-360m",
+      provider: "test-hosted-adapter",
+      executionTarget: "backend" as const,
+      latencyMs: 2
+    }));
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ executionTarget }) =>
+        executionTarget === "backend"
+          ? {
+              provider: "test",
+              executionTarget: "backend",
+              canRun: async () => ({ available: true, errorCode: null, message: null }),
+              healthCheck: async () => {
+                throw new Error("not used in this test");
+              },
+              generate: backendGenerate
+            }
+          : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ method: "phone", contact: "+254700009002", pin: "1234" })
+    });
+    expect(signup.statusCode).toBe(200);
+    const setCookieHeader = signup.headers["set-cookie"];
+    const rawCookie = (
+      Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader
+    ) as string;
+    const cookie = rawCookie.split(";")[0] as string;
+
+    const businessResponse = await app.inject({
+      method: "POST",
+      url: "/businesses",
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({ name: "Untouched Shop", language: "en" })
+    });
+    expect(businessResponse.statusCode).toBe(200);
+    const businessId = businessResponse.json<{ business: { id: string } }>().business.id;
+
+    // No /v1/conversations call, and no conversationId in the payload - exactly what the
+    // merchant's own runtime-session chat with their shop's agent sends.
+    const turn = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({ message: "Hello" })
+    });
+
+    expect(turn.statusCode).toBe(200);
+    expect(backendGenerate).toHaveBeenCalledOnce();
+    expect(turn.json()).toMatchObject({
+      turn: {
+        response: "Hi there!",
+        model: {
+          status: "available",
+          modelId: "smollm2-360m",
+          executionTarget: "backend"
+        }
+      }
+    });
+    const provisioned = store
+      .snapshot()
+      .nativeRuntimeBindings.filter(
+        (binding) =>
+          binding.businessId === businessId &&
+          binding.configuration.source === "zero-setup-provisioning"
+      );
+    expect(provisioned).toHaveLength(1);
+    expect(provisioned[0]).toMatchObject({ status: "active", isDefault: true });
+  });
+
+  it("falls back to the platform default for an existing shop with no prior model binding (no conversationId)", async () => {
+    // Same shape as an account that never received an activated model before this fix shipped -
+    // the resolver must not require a pre-existing binding row to reach the zero-setup path.
+    const backendGenerate = vi.fn(async () => ({
+      text: JSON.stringify({ type: "response", message: "Still ready." }),
+      modelId: "smollm2-360m",
+      provider: "test-hosted-adapter",
+      executionTarget: "backend" as const,
+      latencyMs: 2
+    }));
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ executionTarget }) =>
+        executionTarget === "backend"
+          ? {
+              provider: "test",
+              executionTarget: "backend",
+              canRun: async () => ({ available: true, errorCode: null, message: null }),
+              healthCheck: async () => {
+                throw new Error("not used in this test");
+              },
+              generate: backendGenerate
+            }
+          : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ method: "phone", contact: "+254700009003", pin: "1234" })
+    });
+    const cookie = (
+      Array.isArray(signup.headers["set-cookie"])
+        ? signup.headers["set-cookie"][0]
+        : signup.headers["set-cookie"]
+    )!.split(";")[0] as string;
+
+    const businessResponse = await app.inject({
+      method: "POST",
+      url: "/businesses",
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({ name: "Broken Legacy Shop", language: "en" })
+    });
+    const businessId = businessResponse.json<{ business: { id: string } }>().business.id;
+
+    // First turn resolves nothing, provisions the default, and answers - all in one request; there
+    // is no separate "activation" step required, and no explicit model preference was ever set.
+    const first = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({ message: "anyone there?" })
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({ message: "still there?" })
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({
+      turn: { model: { status: "available", modelId: "smollm2-360m" } }
+    });
+    // Idempotent: the second turn must not create a second provisioned binding.
+    const provisioned = store
+      .snapshot()
+      .nativeRuntimeBindings.filter(
+        (binding) =>
+          binding.businessId === businessId &&
+          binding.configuration.source === "zero-setup-provisioning"
+      );
+    expect(provisioned).toHaveLength(1);
+  });
 });
 
 function expectCp2ErrorCode(fn: () => unknown, code: string): void {
@@ -500,6 +661,7 @@ function nativeResolution(input: {
   return {
     conversationId: "conversation-1",
     usedGlobalDefault: false,
+    source: "explicit-conversation",
     binding,
     agent,
     primary: selected,

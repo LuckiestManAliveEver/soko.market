@@ -65,7 +65,16 @@ describe("quick runtime switcher", () => {
             { id: "soko", displayName: "Soko (built-in)", description: "The legacy harness." }
           ]
         }),
-      "/api/agents/harness-shop/harness": () => jsonResponse({ agentRuntimeAdapterId: "pi" }),
+      "/businesses/harness-shop/runtime/effective": () =>
+        jsonResponse({
+          harness: { id: "pi", name: "Pi" },
+          model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
+          execution: { type: "backend", hostId: "host-1", ready: true },
+          binding: { id: "binding-1" },
+          source: "default",
+          status: "READY",
+          ready: true
+        }),
       "/v1/ai-models": () =>
         jsonResponse({
           models: [
@@ -108,9 +117,7 @@ describe("quick runtime switcher", () => {
               // No runtimeAvailability.backend - a device-download model, must not appear here.
             }
           ]
-        }),
-      "/api/agents/harness-shop/model-binding": () =>
-        jsonResponse({ binding: { modelId: "smollm2-360m" } })
+        })
     });
 
     await act(async () => {
@@ -147,7 +154,16 @@ describe("quick runtime switcher", () => {
             { id: "soko", displayName: "Soko (built-in)", description: "" }
           ]
         }),
-      "/api/agents/harness-shop-2/harness": () => jsonResponse({ agentRuntimeAdapterId: "pi" }),
+      "/businesses/harness-shop-2/runtime/effective": () =>
+        jsonResponse({
+          harness: { id: "pi", name: "Pi" },
+          model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
+          execution: { type: "backend", hostId: "host-1", ready: true },
+          binding: { id: "binding-1" },
+          source: "default",
+          status: "READY",
+          ready: true
+        }),
       "/v1/ai-models": () =>
         jsonResponse({
           models: [
@@ -171,9 +187,7 @@ describe("quick runtime switcher", () => {
               runtimeAvailability: { backend: "configured" }
             }
           ]
-        }),
-      "/api/agents/harness-shop-2/model-binding": () =>
-        jsonResponse({ binding: { modelId: "smollm2-360m" } })
+        })
     });
 
     const updateAgent = vi.fn();

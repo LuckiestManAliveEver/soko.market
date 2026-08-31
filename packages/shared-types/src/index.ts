@@ -3846,6 +3846,22 @@ export interface AgentRuntimeReadiness {
   checkedAt: string;
 }
 
+/** Backend-derived effective runtime used by chat and settings. It exposes resource identity and
+ * readiness only; host endpoints and credentials never cross the API boundary. */
+export interface EffectiveRuntimeSummary {
+  harness: { id: string; name: string };
+  model: { id: string; name: string };
+  execution: {
+    type: ModelExecutionTarget;
+    hostId: string | null;
+    ready: boolean;
+  };
+  binding: { id: string } | null;
+  source: NativeRuntimeResolutionSource;
+  status: "READY" | "UNAVAILABLE" | "ERROR";
+  ready: boolean;
+}
+
 /** Native, database-backed runtime graph. Agents, models, and hosts are independent slots. */
 export type NativeRuntimeEntityStatus = "active" | "inactive";
 export type NativeRuntimeAvailabilityStatus =
@@ -3954,8 +3970,26 @@ export interface NativeRuntimeProvisioningCandidate {
   checkedAt: string;
 }
 
+/** The single input to native runtime resolution. Conversation-scoped callers supply a
+ * conversation id; direct merchant/runtime-session callers do not. Both resolve through the same
+ * precedence implementation. */
+export interface NativeRuntimeResolutionInput {
+  businessId: string;
+  /** Authenticated account for direct runtime calls. Conversation calls derive this from the
+   * conversation when omitted, so account overrides keep the same scope on reads and writes. */
+  accountId?: string;
+  agentId: string;
+  conversationId?: string;
+}
+
+export type NativeRuntimeResolutionSource =
+  "explicit-conversation" | "explicit-account" | "default";
+
 export interface NativeDefaultRuntimeProvisioningInput {
-  conversationId: string;
+  /** Absent when the caller is a non-conversation surface (e.g. the merchant's own runtime-session
+   *  chat with their shop's agent) - provisioning is keyed on businessId/accountId/agentId either
+   *  way, and a conversation's runtimeBindingId is only updated when one is supplied. */
+  conversationId?: string;
   businessId: string;
   accountId: string;
   agentId: string;
@@ -3999,6 +4033,7 @@ export interface ResolvedNativeRuntimeModel {
 export interface ResolvedNativeRuntimeBinding {
   conversationId: string;
   usedGlobalDefault: boolean;
+  source: NativeRuntimeResolutionSource;
   binding: NativeRuntimeBindingSummary;
   agent: NativeRuntimeAgentSummary;
   primary: ResolvedNativeRuntimeModel;
