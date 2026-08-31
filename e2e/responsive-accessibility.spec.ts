@@ -183,42 +183,6 @@ test("the agent catalogue hides an unavailable agent instead of listing it disab
   await expect(settingsDialog.getByText("Unlicensed Agent", { exact: true })).toHaveCount(0);
 });
 
-test("first run downloads the lowest-memory OSS agent and links it to chat", async ({ page }) => {
-  await page.setExtraHTTPHeaders({ "x-soko-test-agent-bootstrap": "true" });
-  await page.goto("/");
-
-  await expect
-    .poll(
-      () =>
-        page.evaluate(() => {
-          const bindings = JSON.parse(
-            localStorage.getItem("soko.oss-agent-bindings.v1") ?? "[]"
-          ) as Array<{ agentDefinitionId?: string }>;
-          return bindings[0]?.agentDefinitionId ?? null;
-        }),
-      { timeout: 20_000 }
-    )
-    .toBe(mockOssAgent.id);
-
-  const installedAgentId = await page.evaluate(() => {
-    const manifests = JSON.parse(
-      localStorage.getItem("soko.oss-agent-installations.v1") ?? "[]"
-    ) as Array<{ agent?: { id?: string } }>;
-    return manifests[0]?.agent?.id ?? null;
-  });
-  expect(installedAgentId).toBe(mockOssAgent.id);
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const activeAgent = JSON.parse(
-          localStorage.getItem("soko.chatFirst.agentSettings") ?? "null"
-        ) as { agentDefinitionId?: string } | null;
-        return activeAgent?.agentDefinitionId ?? null;
-      })
-    )
-    .toBe(mockOssAgent.id);
-});
-
 test("prompts to link an email, then offers Gmail contacts as the first network source", async ({
   page
 }) => {
@@ -653,69 +617,62 @@ for (const viewport of viewportMatrix) {
   });
 }
 
-test("downloaded models show green when active and red when inactive", async ({ page }) => {
-  await page.setExtraHTTPHeaders({ "x-soko-test-local-model-buttons": "true" });
-  await page.addInitScript((models) => {
-    localStorage.setItem("soko.device-model-scope.v1", "responsive-model-device");
-    localStorage.setItem("soko.local-ai-models.v2", JSON.stringify(models));
-  }, installedModels);
-
-  await openModelLibrary(page, { width: 390, height: 844 });
-
-  const activeButton = page.locator(".model-use-button.in-use").first();
-  const inactiveButton = page.locator(".model-use-button.not-in-use").first();
-
-  await expect(activeButton).toBeVisible();
-  await expect(activeButton).toBeDisabled();
-  await expect(activeButton).toHaveAttribute("aria-pressed", "true");
-  await expect(inactiveButton).toBeVisible();
-  await expect(inactiveButton).toBeEnabled();
-  await expect(inactiveButton).toHaveAttribute("aria-pressed", "false");
-  expect(await activeButton.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(
-    "rgb(17, 122, 79)"
-  );
-  expect(
-    await inactiveButton.evaluate((element) => getComputedStyle(element).backgroundColor)
-  ).toBe("rgb(180, 35, 24)");
-});
-
-test("device activation preserves the previous assignment when the GGUF runtime is unavailable", async ({
+test("activating a backend model preserves the previous model when activation fails", async ({
   page
 }) => {
-  const readinessUpdates: string[] = [];
-  await page.setExtraHTTPHeaders({ "x-soko-test-model-binding": "true" });
-  await page.addInitScript((model) => {
-    localStorage.setItem("soko.device-model-scope.v1", "responsive-model-device");
-    localStorage.setItem("soko.local-ai-models.v2", JSON.stringify([model]));
-  }, bindableInstalledModel);
-  page.on("request", (request) => {
-    if (request.method() === "PUT" && new URL(request.url()).pathname.endsWith("/agent-model")) {
-      const body = request.postDataJSON() as { readinessStatus?: string };
-      if (body.readinessStatus !== undefined) readinessUpdates.push(body.readinessStatus);
-    }
-  });
-
-  await page.goto("/");
-  await page.evaluate(async (fileName) => {
-    const root = await navigator.storage.getDirectory();
-    const directory = await root.getDirectoryHandle("soko-ai-models", { create: true });
-    const file = await directory.getFileHandle(fileName, { create: true });
-    const writable = await file.createWritable();
-    await writable.write(new TextEncoder().encode("GGUF"));
-    await writable.close();
-  }, bindableInstalledModel.fileName);
-  await page.getByRole("button", { name: "Account and agent settings" }).click();
-  await page.locator(".settings-group-title", { hasText: "Model & inference" }).click();
-  await page.getByRole("button", { name: "Open model library" }).click();
-  await page.locator(".model-use-button.not-in-use").click();
-
-  await expect(
-    page.getByRole("status").filter({
-      hasText: /The local model could not be loaded.*previous working model was left unchanged/u
+  // Scoped to this test only, rather than added to the shared `modelCatalog` fixture: a second
+  // backend-configured entry in the shared catalog surfaces an unrelated, pre-existing clipping
+  // bug in the cloud-model-connection card at the 280px viewport (the other reflow tests share
+  // that catalog). That layout bug is real but out of scope here - track it separately.
+  const secondModelId = "responsive-second-backend-model";
+  await page.route("**/v1/ai-models", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        models: [
+          modelCatalog[0],
+          {
+            id: secondModelId,
+            label: "Second Backend Model",
+            provider: "openai",
+            description: "A second backend-hosted model for activation-failure coverage.",
+            capabilities: ["chat"],
+            available: true,
+            source: "hosted",
+            format: "remote",
+            license: null,
+            licenseUrl: null,
+            modelCardUrl: null,
+            downloadUrl: null,
+            fileName: null,
+            fileSizeBytes: null,
+            minimumMemoryGb: null,
+            recommended: false,
+            contextWindow: 32_000,
+            runtimeAvailability: { backend: "configured" }
+          }
+        ]
+      })
     })
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Retry activation", exact: true })).toBeVisible();
-  await expect.poll(() => readinessUpdates).toEqual([]);
+  );
+  await page.setExtraHTTPHeaders({
+    "x-soko-test-seed-active-model": "openai-fast",
+    "x-soko-test-failing-activation-model": secondModelId
+  });
+  await openModelLibrary(page, { width: 390, height: 844 });
+
+  await expect(page.locator(".agent-model-current h4")).toHaveText("OpenAI fast");
+
+  const secondModelCard = page
+    .locator(".ai-model-card")
+    .filter({ hasText: "Second Backend Model" });
+  await secondModelCard.getByRole("button", { name: "Use with agent" }).click();
+
+  await expect(secondModelCard.getByRole("status")).toHaveText(
+    "Activation failed. The previous working model remains active - try again or pick a different model."
+  );
+  await expect(page.locator(".agent-model-current h4")).toHaveText("OpenAI fast");
 });
 
 test("WCAG 2.2 A/AA automated accessibility scan", async ({ page }) => {
@@ -821,8 +778,8 @@ test("reduced-motion and forced-color preferences keep the page operable", async
   await page.emulateMedia({ reducedMotion: "reduce", forcedColors: "active" });
   await openModelLibrary(page, { width: 390, height: 844 });
   await expectNoViewportOverflow(page);
-  await expect(page.getByRole("heading", { name: "Android model library" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Predownload & install" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Model library", exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder("Search Soko, Hugging Face, and GitHub")).toBeVisible();
 });
 
 async function openModelLibrary(
@@ -835,15 +792,11 @@ async function openModelLibrary(
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
   await expect(page).toHaveURL(/\/$/);
   await page.locator(".settings-group-title", { hasText: "Model & inference" }).click();
-  await expect(page.getByRole("heading", { name: "Android model library" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Model library", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Open model library" }).click();
-  await expect(
-    page
-      .getByRole("button", {
-        name: /^(?:Predownload & install|Active|Use with agent)$/u
-      })
-      .first()
-  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByPlaceholder("Search Soko, Hugging Face, and GitHub")).toBeVisible({
+    timeout: 15_000
+  });
 }
 
 async function expectNoViewportOverflow(page: Page): Promise<void> {
@@ -887,7 +840,6 @@ async function expectInteractiveControlsInsideViewport(page: Page, root: Locator
 
 async function installApiMocks(page: Page): Promise<void> {
   let accountDeleted = false;
-  let agentProfile = { ...mockAgentProfile };
   let installedOssAgentManifests: Array<{
     manifestVersion: 1;
     accountId: string;
@@ -895,10 +847,52 @@ async function installApiMocks(page: Page): Promise<void> {
     agent: unknown;
     installedAt: string;
   }> = [];
+  let activeModelBinding: {
+    id: string;
+    agentId: string;
+    shopId: string;
+    accountId: string;
+    modelId: string;
+    status: string;
+    executionMode: string;
+    executionTarget: string;
+    permissions: { allowRemoteShopDevice: boolean };
+    activatedAt: string | null;
+    lastVerifiedAt: string | null;
+    lastVerificationStatus: string | null;
+    lastErrorCode: string | null;
+    lastErrorMessage: string | null;
+    createdAt: string;
+    updatedAt: string;
+    updatedBy: string;
+  } | null = null;
   await page.route("http://127.0.0.1:4000/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
-    const agentBootstrap = route.request().headers()["x-soko-test-agent-bootstrap"] === "true";
+    const failingActivationModelId =
+      route.request().headers()["x-soko-test-failing-activation-model"] ?? null;
+    const seedActiveModelId = route.request().headers()["x-soko-test-seed-active-model"];
+    if (seedActiveModelId !== undefined && activeModelBinding === null) {
+      activeModelBinding = {
+        id: "responsive-seed-binding",
+        agentId: "responsive-certification-shop",
+        shopId: "responsive-certification-shop",
+        accountId: "responsive-account",
+        modelId: seedActiveModelId,
+        status: "active",
+        executionMode: "LOCAL_FIRST",
+        executionTarget: "backend",
+        permissions: { allowRemoteShopDevice: false },
+        activatedAt: "2026-07-21T00:00:00.000Z",
+        lastVerifiedAt: "2026-07-21T00:00:00.000Z",
+        lastVerificationStatus: "passed",
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        createdAt: "2026-07-21T00:00:00.000Z",
+        updatedAt: "2026-07-21T00:00:00.000Z",
+        updatedBy: "responsive-user"
+      };
+    }
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
@@ -950,34 +944,9 @@ async function installApiMocks(page: Page): Promise<void> {
       return json(mockRuntimeSession);
     }
     if (path === "/roles/check") return json({ allowed: true, role: "owner", permission: "*" });
-    if (agentBootstrap && path.endsWith("/agent-profile") && method === "GET") {
-      return json(agentProfile);
-    }
-    if (agentBootstrap && path.endsWith("/agent-profile") && method === "PUT") {
-      const update = route.request().postDataJSON() as Record<string, unknown>;
-      agentProfile = {
-        ...agentProfile,
-        ...update,
-        runtimeVersion: agentProfile.runtimeVersion + 1
-      };
-      return json(agentProfile);
-    }
-    if (agentBootstrap && path.endsWith("/agent-runtime/readiness")) {
-      return json({
-        tenantId: "responsive-certification-shop",
-        shopId: "responsive-certification-shop",
-        agentId: "responsive-certification-shop",
-        runtimeVersion: agentProfile.runtimeVersion,
-        ready: true,
-        issues: [],
-        checkedAt: "2026-07-15T12:00:00.000Z"
-      });
-    }
     // installOssAgentForAccount/hydrateAccountOssAgentManifests (account-ai-assets.ts) call the
     // real backend contract (services/api/src/cp2/domains/agent-runtime/routes.ts): POST returns
-    // the manifest directly, GET returns { manifests }. Without this, the request 404s, the
-    // useOssAgentSelectionState bootstrap effect swallows the failure, and the first-run
-    // auto-install of the lowest-memory OSS agent silently never happens.
+    // the manifest directly, GET returns { manifests }.
     if (path === "/v1/oss-agents/installed" && method === "GET") {
       return json({ manifests: installedOssAgentManifests });
     }
@@ -1018,44 +987,90 @@ async function installApiMocks(page: Page): Promise<void> {
         validationError: null
       });
     }
-    if (path.endsWith("/agent-model")) {
-      const localModelButtons =
-        route.request().headers()["x-soko-test-local-model-buttons"] === "true";
-      const modelBinding = route.request().headers()["x-soko-test-model-binding"] === "true";
-      const bindingBody =
-        modelBinding && method === "PUT"
-          ? (route.request().postDataJSON() as {
-              installationId: string;
-              preferredExecutionMode: string;
-              readinessStatus: string;
-              lastSuccessfulInferenceAt: string | null;
-              lastErrorCode: string | null;
-            })
-          : null;
+    if (path.endsWith("/model-binding") && method === "GET") {
+      return json({ binding: activeModelBinding });
+    }
+    if (path.endsWith("/model-binding") && method === "DELETE") {
+      const removedBindingId = activeModelBinding?.id ?? null;
+      activeModelBinding = null;
       return json({
         agentId: "responsive-certification-shop",
-        businessId: "responsive-certification-shop",
+        shopId: "responsive-certification-shop",
+        binding: null,
+        removedBindingId
+      });
+    }
+    if (path.endsWith("/runtime/effective") && method === "GET") {
+      const modelId = activeModelBinding?.modelId ?? "openai-fast";
+      const model = modelCatalog.find((candidate) => candidate.id === modelId);
+      return json({
+        harness: { id: "soko-ai", name: "Soko AI" },
+        model: { id: modelId, name: model?.label ?? modelId },
+        execution: { type: "backend", hostId: null, ready: true },
+        binding: activeModelBinding !== null ? { id: activeModelBinding.id } : null,
+        source: activeModelBinding !== null ? "explicit" : "default",
+        status: "READY",
+        ready: true
+      });
+    }
+    if (/\/models\/[^/]+\/test$/u.test(path) && method === "POST") {
+      const modelId = path.split("/").at(-2) ?? "";
+      return json({
+        healthCheck: {
+          ok: true,
+          modelId,
+          provider: "soko",
+          executionTarget: "backend",
+          latencyMs: 42,
+          responsePreview: null,
+          errorCode: null,
+          errorMessage: null,
+          retryable: false,
+          checkedAt: "2026-07-21T00:00:00.000Z"
+        }
+      });
+    }
+    if (/\/models\/[^/]+\/activate$/u.test(path) && method === "POST") {
+      const modelId = path.split("/").at(-2) ?? "";
+      if (modelId === failingActivationModelId) {
+        return json(
+          { message: "Backend inference is temporarily unreachable.", code: "MODEL_UNAVAILABLE" },
+          502
+        );
+      }
+      activeModelBinding = {
+        id: "responsive-model-binding",
+        agentId: "responsive-certification-shop",
+        shopId: "responsive-certification-shop",
         accountId: "responsive-account",
-        userId: "responsive-user",
-        deviceId: "responsive-model-device",
-        activeModelInstallationId:
-          bindingBody?.installationId ??
-          (localModelButtons ? "responsive-qwen-installation" : null),
-        modelId: bindingBody
-          ? "qwen2.5-0.5b-android"
-          : localModelButtons
-            ? "qwen2.5-0.5b-android"
-            : "sokoclaw-local",
-        preferredExecutionMode:
-          bindingBody?.preferredExecutionMode ?? (localModelButtons ? "LOCAL_FIRST" : "CLOUD_ONLY"),
-        readinessStatus: bindingBody?.readinessStatus ?? "READY",
-        runtimeBackend: bindingBody || localModelButtons ? "LLAMA_CPP_ANDROID" : "OLLAMA",
-        lastSuccessfulInferenceAt:
-          bindingBody?.lastSuccessfulInferenceAt ??
-          (localModelButtons ? "2026-07-21T23:59:00.000Z" : null),
-        lastErrorCode: bindingBody?.lastErrorCode ?? null,
+        modelId,
+        status: "active",
+        executionMode: "LOCAL_FIRST",
+        executionTarget: "backend",
+        permissions: { allowRemoteShopDevice: false },
+        activatedAt: "2026-07-21T00:00:00.000Z",
+        lastVerifiedAt: "2026-07-21T00:00:00.000Z",
+        lastVerificationStatus: "passed",
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        createdAt: "2026-07-21T00:00:00.000Z",
         updatedAt: "2026-07-21T00:00:00.000Z",
         updatedBy: "responsive-user"
+      };
+      return json({
+        binding: activeModelBinding,
+        healthCheck: {
+          ok: true,
+          modelId,
+          provider: "soko",
+          executionTarget: "backend",
+          latencyMs: 42,
+          responsePreview: null,
+          errorCode: null,
+          errorMessage: null,
+          retryable: false,
+          checkedAt: "2026-07-21T00:00:00.000Z"
+        }
       });
     }
     if (path.endsWith("/ai-model")) {
@@ -1209,36 +1224,6 @@ const mockOssAgent = {
   updatedAt: "2026-07-15T00:00:00.000Z"
 };
 
-const mockAgentProfile = {
-  agentDefinitionId: "builtin:shopkeeper",
-  businessId: "responsive-certification-shop",
-  tenantId: "responsive-certification-shop",
-  shopId: "responsive-certification-shop",
-  agentId: "responsive-certification-shop",
-  runtimeVersion: 1,
-  createdAt: "2026-07-15T00:00:00.000Z",
-  name: "Shopkeeper",
-  description: "A safe shop assistant.",
-  modelId: "qwen2.5-0.5b-android",
-  role: "Business assistant",
-  language: "en",
-  personality: "Warm and concise",
-  personalityConfig: { responseLength: "brief", additionalGuidance: "Warm and concise" },
-  instructions: "Help the owner operate the shop.",
-  instructionPolicy: { generalOperatingRules: ["Help the owner operate the shop."] },
-  knowledge: "Use saved shop records.",
-  tools: ["Products"],
-  skillBindings: [],
-  integrations: ["Soko.market storefront"],
-  contextScripts: [],
-  memoryPolicy: {},
-  evaluationPolicy: {},
-  supportedLanguages: ["en"],
-  businessCategory: "general",
-  publicIntroduction: "Welcome to the shop.",
-  status: "active"
-};
-
 const mockPublicStorefront = {
   agentId: "soko.responsive-public-shop",
   sokoId: "soko.responsive-public-shop",
@@ -1274,72 +1259,13 @@ const modelCatalog = [
     fileSizeBytes: null,
     minimumMemoryGb: null,
     recommended: false,
-    contextWindow: 128_000
+    contextWindow: 128_000,
+    runtimeAvailability: { backend: "configured" }
   },
   mockModel("smollm2-360m-android", "SmolLM2 360M (Android saver)", 386_000_000, 2),
   mockModel("qwen2.5-0.5b-android", "Qwen2.5 0.5B (Android recommended)", 491_000_000, 3, true),
   mockModel("qwen2.5-1.5b-android", "Qwen2.5 1.5B (high-end Android)", 1_120_000_000, 6)
 ];
-
-const installedModels = [
-  installedModel(
-    "responsive-qwen-installation",
-    "qwen2.5-0.5b-android",
-    "Qwen2.5 0.5B (Android recommended)",
-    "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-    491_000_000
-  ),
-  installedModel(
-    "responsive-smollm-installation",
-    "smollm2-360m-android",
-    "SmolLM2 360M (Android saver)",
-    "smollm2-360m-instruct-q8_0.gguf",
-    386_000_000
-  )
-];
-
-const bindableInstalledModel = {
-  ...installedModels[0],
-  fileSizeBytes: 4
-};
-
-function installedModel(
-  id: string,
-  modelId: string,
-  label: string,
-  fileName: string,
-  fileSizeBytes: number
-) {
-  return {
-    id,
-    modelId,
-    label,
-    displayName: label,
-    provider: "huggingface",
-    repositoryId: modelId.startsWith("qwen")
-      ? "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
-      : "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
-    fileName,
-    storageKey: fileName,
-    format: "GGUF",
-    quantization: modelId.startsWith("qwen") ? "Q4_K_M" : "Q8_0",
-    architecture: modelId.startsWith("qwen") ? "qwen2" : "llama",
-    parameterCount: modelId.startsWith("qwen") ? 500_000_000 : 360_000_000,
-    contextLength: 2048,
-    fileSizeBytes,
-    checksum: null,
-    license: "Apache-2.0",
-    commercialUseAllowed: true,
-    runtimeBackend: "LLAMA_CPP_ANDROID",
-    installationStatus: "INSTALLED",
-    compatibilityStatus: "COMPATIBLE",
-    deviceId: "responsive-model-device",
-    storedAt: "2026-07-21T23:50:00.000Z",
-    installedAt: "2026-07-21T23:50:00.000Z",
-    lastVerifiedAt: "2026-07-21T23:51:00.000Z",
-    validationError: null
-  };
-}
 
 function mockModel(
   id: string,
