@@ -998,7 +998,7 @@ export class SupplierDomain {
     return [...this.salesAgents.values()].filter((agent) => agent.businessId === businessId);
   }
 
-  private requireSupplier(businessId: string, supplierId: string): SupplierSummary {
+  requireSupplier(businessId: string, supplierId: string): SupplierSummary {
     const supplier = this.suppliers.get(supplierId);
 
     if (supplier === undefined || supplier.businessId !== businessId) {

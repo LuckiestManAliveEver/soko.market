@@ -624,6 +624,16 @@ export const statusBroadcasts = platformCommerceRecordTable("status_broadcasts")
 export const buyOrders = platformCommerceRecordTable("buy_orders");
 export const statusOrders = platformCommerceRecordTable("status_orders");
 export const unifiedCheckouts = platformCommerceRecordTable("unified_checkouts");
+export const canonicalContacts = platformCommerceRecordTable("cp2_contacts");
+export const supplierContactRelationships = platformCommerceRecordTable(
+  "cp2_supplier_contact_relationships"
+);
+export const purchasePriceHistory = platformCommerceRecordTable("cp2_purchase_price_history");
+export const purchaseRecords = platformCommerceRecordTable("cp2_purchase_records");
+export const saleRecords = platformCommerceRecordTable("cp2_sale_records");
+export const locations = platformCommerceRecordTable("cp2_locations");
+export const deliveryRoutes = platformCommerceRecordTable("cp2_delivery_routes");
+export const deliveryRouteStops = platformCommerceRecordTable("cp2_delivery_route_stops");
 
 export const customers = pgTable(
   "customers",

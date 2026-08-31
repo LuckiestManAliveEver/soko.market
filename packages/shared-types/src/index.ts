@@ -2109,6 +2109,154 @@ export interface LogisticsSummary {
   cancelledAt: string | null;
 }
 
+export type ContactSource = "PHONEBOOK" | "EMAIL" | "SOCIAL" | "MANUAL" | "SOKO_ACCOUNT";
+
+export interface CanonicalContactSummary {
+  id: string;
+  businessId: string;
+  displayName: string;
+  givenName: string | null;
+  familyName: string | null;
+  phones: string[];
+  emails: string[];
+  externalIdentities: Array<{ provider: string; externalId: string }>;
+  source: ContactSource;
+  sourceExternalId: string | null;
+  avatarRef: string | null;
+  normalizedPhone: string | null;
+  normalizedEmail: string | null;
+  linkedAccountId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastSyncedAt: string | null;
+}
+
+export type SupplierContactRole =
+  "OWNER" | "SALES_AGENT" | "DELIVERY_AGENT" | "DRIVER" | "ACCOUNT_MANAGER" | "OTHER";
+
+export interface SupplierContactRelationshipSummary {
+  id: string;
+  businessId: string;
+  supplierId: string;
+  // Null only for a SALES_AGENT relationship backed by a supplier sales agent that predates
+  // (or was created outside) contact-sync import and therefore has no canonical contact yet.
+  contactId: string | null;
+  role: SupplierContactRole;
+  isPrimary: boolean;
+  validFrom: string;
+  validTo: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocationSummary {
+  id: string;
+  businessId: string;
+  label: string;
+  address: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  region: string | null;
+  country: string | null;
+  providerPlaceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DeliveryRouteStatus = "PLANNED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
+
+export interface DeliveryRouteStopSummary {
+  id: string;
+  routeId: string;
+  sequence: number;
+  locationId: string;
+  contactId: string | null;
+  arrivalAt: string | null;
+  departureAt: string | null;
+  deliveredAt: string | null;
+}
+
+export interface DeliveryRouteSummary {
+  id: string;
+  businessId: string;
+  originLocationId: string;
+  destinationLocationId: string;
+  status: DeliveryRouteStatus;
+  provider: string;
+  externalRouteId: string | null;
+  distanceMeters: number | null;
+  durationSeconds: number | null;
+  geometry: string | null;
+  externalSourceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  stops: DeliveryRouteStopSummary[];
+}
+
+export interface ProductPurchasePriceSummary {
+  id: string;
+  businessId: string;
+  productId: string;
+  productNameSnapshot: string;
+  supplierId: string | null;
+  supplierNameSnapshot: string | null;
+  supplierContactId: string | null;
+  contactNameSnapshot: string | null;
+  price: number;
+  currency: string;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  deliveredAt: string | null;
+  purchaseRecordId: string | null;
+  createdBy: string;
+  source: "MANUAL" | "PURCHASE" | "LEGACY_BACKFILL";
+  createdAt: string;
+  supersedesId: string | null;
+}
+
+export interface PurchaseRecordSummary {
+  id: string;
+  businessId: string;
+  supplierId: string;
+  supplierNameSnapshot: string;
+  supplierContactId: string | null;
+  contactNameSnapshot: string | null;
+  productId: string;
+  productNameSnapshot: string;
+  quantity: number;
+  unit: string;
+  buyingPrice: number;
+  currency: string;
+  totalCost: number;
+  deliveredAt: string | null;
+  effectiveAt: string;
+  recordedBy: string;
+  source: string;
+  notes: string | null;
+  routeId: string | null;
+  locationId: string | null;
+  externalSourceId: string | null;
+  createdAt: string;
+}
+
+export interface SaleRecordSummary {
+  id: string;
+  businessId: string;
+  invoiceId: string;
+  customerId: string | null;
+  customerNameSnapshot: string | null;
+  customerContactId: string | null;
+  contactNameSnapshot: string | null;
+  items: InvoiceItemSummary[];
+  total: number;
+  currency: string;
+  soldAt: string;
+  routeId: string | null;
+  recordedBy: string;
+  externalSourceId: string | null;
+  createdAt: string;
+}
+
 export interface LogisticsReportSummary {
   fulfillmentCount: number;
   pendingCount: number;
@@ -3095,6 +3243,15 @@ export type RuntimeToolName =
   | "customer.update"
   | "supplier.create"
   | "supplier.update"
+  | "contacts.search"
+  | "supplier.contact.attach"
+  | "purchase.record"
+  | "purchase.price.change"
+  | "purchase.history"
+  | "sale.record"
+  | "sales.history"
+  | "route.record"
+  | "route.history"
   | "invoice.draft"
   | "payments.debtors"
   | "payment.record"

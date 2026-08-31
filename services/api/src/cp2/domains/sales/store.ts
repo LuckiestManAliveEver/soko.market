@@ -101,6 +101,15 @@ export interface SalesDomainDeps {
   ) => void;
   businesses: Map<string, BusinessSummary>;
   quarantinedBusinessIds: Set<string>;
+  recordPurchasePriceMutation?: (input: {
+    businessId: string;
+    product: ProductSummary;
+    previousPrice: number | null;
+    price: number;
+    actorId: string;
+    source: "MANUAL";
+    now: Date;
+  }) => void;
 }
 
 export class SalesDomain {
@@ -354,6 +363,17 @@ export class SalesDomain {
     };
 
     this.products.set(product.id, product);
+    if (product.buyingPrice !== null) {
+      this.deps.recordPurchasePriceMutation?.({
+        businessId: input.businessId,
+        product,
+        previousPrice: null,
+        price: product.buyingPrice,
+        actorId: session.user.id,
+        source: "MANUAL",
+        now
+      });
+    }
     this.deps.appendBusinessEvent(
       productCreatedEvent({
         id: randomUUID(),
@@ -413,6 +433,17 @@ export class SalesDomain {
     };
 
     this.products.set(updated.id, updated);
+    if (updated.buyingPrice !== null && updated.buyingPrice !== existing.buyingPrice) {
+      this.deps.recordPurchasePriceMutation?.({
+        businessId: input.businessId,
+        product: updated,
+        previousPrice: existing.buyingPrice,
+        price: updated.buyingPrice,
+        actorId: session.user.id,
+        source: "MANUAL",
+        now
+      });
+    }
     this.deps.appendBusinessEvent(
       productUpdatedEvent({
         id: randomUUID(),

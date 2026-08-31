@@ -53,6 +53,7 @@ import {
 import { registerNotificationsRoutes } from "./domains/notifications/routes.js";
 import { registerPasskeysRoutes } from "./domains/passkeys/routes.js";
 import { registerNetworkRoutes } from "./domains/network/routes.js";
+import { registerCommercialRecordsRoutes } from "./domains/commercial-records/routes.js";
 import { registerSuppliersRoutes } from "./domains/suppliers/routes.js";
 import { registerDocumentImportsRoutes } from "./domains/document-imports/routes.js";
 import { registerCommerceRoutes } from "./domains/commerce/routes.js";
@@ -1839,6 +1840,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   registerSuppliersRoutes(app, store, binaryUploadPipeline, receiptOCRProcessor);
 
   registerLogisticsRoutes(app, store);
+  registerCommercialRecordsRoutes(app, store);
 
   app.get(
     "/businesses/:businessId/reports/summary",

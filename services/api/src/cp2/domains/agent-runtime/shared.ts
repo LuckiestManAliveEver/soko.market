@@ -347,6 +347,39 @@ export function createRuntimeResponse(input: {
         : `Here is ${input.toolResult.attachment.name}.`;
   }
 
+  if (input.toolResult !== null && typeof input.toolResult === "object") {
+    const result = input.toolResult as Record<string, unknown>;
+    if (input.plan.toolName === "purchase.record") {
+      return [
+        "PURCHASE RECORDED",
+        String(result.productNameSnapshot ?? "Purchase"),
+        `${String(result.quantity ?? "")} ${String(result.unit ?? "")}`.trim(),
+        `${String(result.currency ?? "KES")} ${String(result.buyingPrice ?? "")} / ${String(result.unit ?? "unit")}`,
+        `Supplier: ${String(result.supplierNameSnapshot ?? "—")}`,
+        `Agent: ${String(result.contactNameSnapshot ?? "—")}`,
+        `Delivered: ${String(result.deliveredAt ?? "—")}`
+      ].join("\n");
+    }
+    if (input.plan.toolName === "purchase.price.change") {
+      const current = result.current as Record<string, unknown> | undefined;
+      const previous = result.previous as Record<string, unknown> | null | undefined;
+      return [
+        "BUYING PRICE UPDATED",
+        `${String(current?.currency ?? "KES")} ${String(previous?.price ?? "—")} → ${String(current?.price ?? "—")}`,
+        "Previous price preserved.",
+        `Effective: ${String(current?.effectiveFrom ?? "—")}`
+      ].join("\n");
+    }
+    if (input.plan.toolName === "sale.record") {
+      return [
+        "CUSTOMER SALE",
+        `Customer: ${String(result.customerNameSnapshot ?? result.contactNameSnapshot ?? "Walk-in")}`,
+        `Total: ${String(result.currency ?? "KES")} ${String(result.total ?? "")}`,
+        `Time: ${String(result.soldAt ?? "—")}`
+      ].join("\n");
+    }
+  }
+
   if (input.toolResult !== null) {
     return `${input.proposalReason} Done.`;
   }

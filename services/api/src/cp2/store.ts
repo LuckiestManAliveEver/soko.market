@@ -43,6 +43,7 @@ import {
   launchChecklistMapKey
 } from "./domains/compliance/shared.js";
 import { LogisticsDomain } from "./domains/logistics/store.js";
+import { CommercialRecordsDomain } from "./domains/commercial-records/store.js";
 import { summarizeLogistics } from "./domains/logistics/shared.js";
 import { SupplierDomain } from "./domains/suppliers/store.js";
 import { DocumentImportDomain } from "./domains/document-imports/store.js";
@@ -132,6 +133,7 @@ import type {
   BusinessRole,
   BusinessSummary,
   CatalogueQueryResult,
+  CanonicalContactSummary,
   ComplianceRetentionSummary,
   AgentRouteSummary,
   CountryTaxConfigSummary,
@@ -144,6 +146,8 @@ import type {
   PlatformIdentitySummary,
   ProviderUpdateReceiptSummary,
   CustomerSummary,
+  DeliveryRouteStopSummary,
+  DeliveryRouteSummary,
   DataExportBundle,
   DataExportBundleSummary,
   DeviceSessionSummary,
@@ -162,6 +166,7 @@ import type {
   LaunchReadinessReportSummary,
   LaunchSettingsSummary,
   LogisticsSummary,
+  LocationSummary,
   MarketplaceIntroStateSummary,
   McpPrincipal,
   MembershipSummary,
@@ -178,6 +183,8 @@ import type {
   PaymentSummary,
   ProductFieldSchemaSummary,
   ProductSummary,
+  ProductPurchasePriceSummary,
+  PurchaseRecordSummary,
   BuyOrderSummary,
   ProductCaptureJobSummary,
   StatusBroadcastSummary,
@@ -198,6 +205,7 @@ import type {
   ReceiptOCRJobSummary,
   SessionSummary,
   SalesAgentSummary,
+  SaleRecordSummary,
   ExternalIdentitySummary,
   SokoIdentityLinkSummary,
   SyncMutationPayload,
@@ -206,6 +214,7 @@ import type {
   SyncQueueSummary,
   SyncReplayResult,
   SupplierContactLinkSummary,
+  SupplierContactRelationshipSummary,
   SupplierSummary,
   SupportedLanguage,
   VerificationTierSummary,
@@ -584,6 +593,14 @@ export interface Cp2Snapshot {
   invoices: InvoiceSummary[];
   payments: PaymentSummary[];
   logistics: LogisticsSummary[];
+  contacts?: CanonicalContactSummary[];
+  supplierContactRelationships?: SupplierContactRelationshipSummary[];
+  purchasePriceHistory?: ProductPurchasePriceSummary[];
+  purchaseRecords?: PurchaseRecordSummary[];
+  saleRecords?: SaleRecordSummary[];
+  locations?: LocationSummary[];
+  deliveryRoutes?: DeliveryRouteSummary[];
+  deliveryRouteStops?: DeliveryRouteStopSummary[];
   dataExports: DataExportBundleSummary[];
   accountDeletionRequests: AccountDeletionRequestSummary[];
   accountDeletionProofs?: AccountDeletionProof[];
@@ -870,7 +887,9 @@ export class Cp2Store {
         }
       },
       businesses: this.businesses,
-      quarantinedBusinessIds: this.quarantinedBusinessIds
+      quarantinedBusinessIds: this.quarantinedBusinessIds,
+      recordPurchasePriceMutation: (input) =>
+        this.commercialRecordsDomain.recordProductPriceMutation(input)
     });
     this.mcpTokensDomain = new McpTokensDomain({
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
@@ -948,6 +967,32 @@ export class Cp2Store {
         this.networkDomain.requirePhonebookNode(ownerUserId, networkNodeId),
       networkNodes: this.networkDomain.networkNodesMap,
       networkSources: this.networkDomain.networkSourcesMap
+    });
+    this.commercialRecordsDomain = new CommercialRecordsDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      requireAccount: (accountId) => this.requireAccount(accountId),
+      requireProduct: (businessId, productId) =>
+        this.salesDomain.requireProduct(businessId, productId),
+      setProductBuyingPrice: (businessId, productId, price, now) => {
+        const product = this.salesDomain.requireProduct(businessId, productId);
+        this.salesDomain.productsMap.set(product.id, {
+          ...product,
+          buyingPrice: price,
+          updatedAt: now.toISOString()
+        });
+      },
+      requireSupplier: (businessId, supplierId) =>
+        this.supplierDomain.requireSupplier(businessId, supplierId),
+      requireCustomer: (businessId, customerId) =>
+        this.salesDomain.requireCustomer(businessId, customerId),
+      createInvoice: (input) => this.salesDomain.createInvoice(input),
+      confirmInvoice: (input) => this.salesDomain.confirmInvoice(input),
+      listSalesAgentsForSupplier: (input) => this.supplierDomain.listSalesAgents(input),
+      createSalesAgent: (input) => this.supplierDomain.createSalesAgent(input),
+      linkSalesAgentContact: (input) => this.supplierDomain.linkSalesAgentContact(input),
+      deleteSalesAgent: (input) => this.supplierDomain.deleteSalesAgent(input)
     });
     this.documentImportDomain = new DocumentImportDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -1052,6 +1097,15 @@ export class Cp2Store {
       createInvoice: (input) => this.salesDomain.createInvoice(input),
       recordPayment: (input) => this.salesDomain.recordPayment(input),
       listPurchaseReceipts: (input) => this.listPurchaseReceipts(input),
+      listContacts: (input) => this.commercialRecordsDomain.listContacts(input),
+      attachSupplierContact: (input) => this.commercialRecordsDomain.attachSupplierContact(input),
+      createPurchase: (input) => this.commercialRecordsDomain.createPurchase(input),
+      changePurchasePrice: (input) => this.commercialRecordsDomain.changePurchasePrice(input),
+      listPurchaseHistory: (input) => this.commercialRecordsDomain.listPurchaseHistory(input),
+      createSale: (input) => this.commercialRecordsDomain.createSale(input),
+      listSalesHistory: (input) => this.commercialRecordsDomain.listSalesHistory(input),
+      createDeliveryRoute: (input) => this.commercialRecordsDomain.createRoute(input),
+      listDeliveryRouteHistory: (input) => this.commercialRecordsDomain.listRouteHistory(input),
       listReceiptOCRJobs: (input) => this.supplierDomain.listReceiptOCRJobs(input),
       createReceiptOCRJob: (input) => this.supplierDomain.createReceiptOCRJob(input),
       confirmReceiptOCRJob: (input) => this.supplierDomain.confirmReceiptOCRJob(input),
@@ -1284,6 +1338,7 @@ export class Cp2Store {
   private readonly commerce: CommerceDomain;
   private readonly supplierDomain: SupplierDomain;
   private readonly logisticsDomain: LogisticsDomain;
+  private readonly commercialRecordsDomain: CommercialRecordsDomain;
   private readonly dataExports = new Map<string, DataExportBundle>();
   private readonly accountDeletionRequests = new Map<string, AccountDeletionRequestSummary>();
   private readonly accountDeletionProofs = new Map<string, AccountDeletionProof>();
@@ -4250,6 +4305,57 @@ export class Cp2Store {
     return this.logisticsDomain.updateLogisticsStatus(...args);
   }
 
+  listContacts(...args: Parameters<CommercialRecordsDomain["listContacts"]>) {
+    return this.commercialRecordsDomain.listContacts(...args);
+  }
+  getContact(...args: Parameters<CommercialRecordsDomain["getContact"]>) {
+    return this.commercialRecordsDomain.getContact(...args);
+  }
+  importContacts(...args: Parameters<CommercialRecordsDomain["importContacts"]>) {
+    return this.commercialRecordsDomain.importContacts(...args);
+  }
+  linkContactAccount(...args: Parameters<CommercialRecordsDomain["linkContactAccount"]>) {
+    return this.commercialRecordsDomain.linkContactAccount(...args);
+  }
+  listSupplierContacts(...args: Parameters<CommercialRecordsDomain["listSupplierContacts"]>) {
+    return this.commercialRecordsDomain.listSupplierContacts(...args);
+  }
+  attachSupplierContact(...args: Parameters<CommercialRecordsDomain["attachSupplierContact"]>) {
+    return this.commercialRecordsDomain.attachSupplierContact(...args);
+  }
+  detachSupplierContact(...args: Parameters<CommercialRecordsDomain["detachSupplierContact"]>) {
+    return this.commercialRecordsDomain.detachSupplierContact(...args);
+  }
+  changePurchasePrice(...args: Parameters<CommercialRecordsDomain["changePurchasePrice"]>) {
+    return this.commercialRecordsDomain.changePurchasePrice(...args);
+  }
+  listPurchasePriceHistory(
+    ...args: Parameters<CommercialRecordsDomain["listPurchasePriceHistory"]>
+  ) {
+    return this.commercialRecordsDomain.listPurchasePriceHistory(...args);
+  }
+  createPurchase(...args: Parameters<CommercialRecordsDomain["createPurchase"]>) {
+    return this.commercialRecordsDomain.createPurchase(...args);
+  }
+  listPurchaseHistory(...args: Parameters<CommercialRecordsDomain["listPurchaseHistory"]>) {
+    return this.commercialRecordsDomain.listPurchaseHistory(...args);
+  }
+  createSale(...args: Parameters<CommercialRecordsDomain["createSale"]>) {
+    return this.commercialRecordsDomain.createSale(...args);
+  }
+  listSalesHistory(...args: Parameters<CommercialRecordsDomain["listSalesHistory"]>) {
+    return this.commercialRecordsDomain.listSalesHistory(...args);
+  }
+  createDeliveryRoute(...args: Parameters<CommercialRecordsDomain["createRoute"]>) {
+    return this.commercialRecordsDomain.createRoute(...args);
+  }
+  updateDeliveryRoute(...args: Parameters<CommercialRecordsDomain["updateRoute"]>) {
+    return this.commercialRecordsDomain.updateRoute(...args);
+  }
+  listDeliveryRouteHistory(...args: Parameters<CommercialRecordsDomain["listRouteHistory"]>) {
+    return this.commercialRecordsDomain.listRouteHistory(...args);
+  }
+
   getOfflineCache(input: {
     sessionId: string | null;
     businessId: string;
@@ -5516,6 +5622,14 @@ export class Cp2Store {
       invoices: [...this.salesDomain.invoicesMap.values()],
       payments: [...this.salesDomain.paymentsMap.values()],
       logistics: [...this.logisticsDomain.logisticsMap.values()],
+      contacts: [...this.commercialRecordsDomain.contactsMap.values()],
+      supplierContactRelationships: [...this.commercialRecordsDomain.supplierContactsMap.values()],
+      purchasePriceHistory: [...this.commercialRecordsDomain.purchasePricesMap.values()],
+      purchaseRecords: [...this.commercialRecordsDomain.purchasesMap.values()],
+      saleRecords: [...this.commercialRecordsDomain.salesMap.values()],
+      locations: [...this.commercialRecordsDomain.locationsMap.values()],
+      deliveryRoutes: [...this.commercialRecordsDomain.routesMap.values()],
+      deliveryRouteStops: [...this.commercialRecordsDomain.routeStopsMap.values()],
       dataExports: [...this.dataExports.values()].map(dataExportSummary),
       accountDeletionRequests: [...this.accountDeletionRequests.values()],
       accountDeletionProofs: [...this.accountDeletionProofs.values()],
@@ -5596,6 +5710,7 @@ export class Cp2Store {
     this.commerce.clear();
     this.supplierDomain.clear();
     this.logisticsDomain.clear();
+    this.commercialRecordsDomain.clear();
     this.dataExports.clear();
     this.accountDeletionRequests.clear();
     this.accountDeletionProofs.clear();
@@ -5751,6 +5866,23 @@ export class Cp2Store {
       this.logisticsDomain.logisticsMap.set(logisticsItem.id, logisticsItem);
       this.logisticsDomain.logisticsByInvoiceMap.set(logisticsItem.invoiceId, logisticsItem.id);
     }
+
+    for (const item of snapshot.contacts ?? [])
+      this.commercialRecordsDomain.contactsMap.set(item.id, item);
+    for (const item of snapshot.supplierContactRelationships ?? [])
+      this.commercialRecordsDomain.supplierContactsMap.set(item.id, item);
+    for (const item of snapshot.purchasePriceHistory ?? [])
+      this.commercialRecordsDomain.purchasePricesMap.set(item.id, item);
+    for (const item of snapshot.purchaseRecords ?? [])
+      this.commercialRecordsDomain.purchasesMap.set(item.id, item);
+    for (const item of snapshot.saleRecords ?? [])
+      this.commercialRecordsDomain.salesMap.set(item.id, item);
+    for (const item of snapshot.locations ?? [])
+      this.commercialRecordsDomain.locationsMap.set(item.id, item);
+    for (const item of snapshot.deliveryRoutes ?? [])
+      this.commercialRecordsDomain.routesMap.set(item.id, { ...item, stops: [] });
+    for (const item of snapshot.deliveryRouteStops ?? [])
+      this.commercialRecordsDomain.routeStopsMap.set(item.id, item);
 
     for (const dataExport of snapshot.dataExports) {
       this.dataExports.set(dataExport.id, dataExport as DataExportBundle);
@@ -8660,6 +8792,25 @@ export class Cp2Store {
       }
     }
 
+    for (const records of [
+      this.commercialRecordsDomain.contactsMap,
+      this.commercialRecordsDomain.supplierContactsMap,
+      this.commercialRecordsDomain.purchasePricesMap,
+      this.commercialRecordsDomain.purchasesMap,
+      this.commercialRecordsDomain.salesMap,
+      this.commercialRecordsDomain.locationsMap,
+      this.commercialRecordsDomain.routesMap
+    ]) {
+      for (const [id, record] of records) {
+        if (record.businessId === businessId) records.delete(id);
+      }
+    }
+    for (const [id, stop] of this.commercialRecordsDomain.routeStopsMap) {
+      if (!this.commercialRecordsDomain.routesMap.has(stop.routeId)) {
+        this.commercialRecordsDomain.routeStopsMap.delete(id);
+      }
+    }
+
     for (const [id, movement] of this.salesDomain.inventoryMovementsMap.entries()) {
       if (movement.businessId === businessId) {
         this.salesDomain.inventoryMovementsMap.delete(id);
@@ -8919,6 +9070,29 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.invoicesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.paymentsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.logisticsDomain.logisticsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.commercialRecordsDomain.contactsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.commercialRecordsDomain.supplierContactsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.commercialRecordsDomain.purchasePricesMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.commercialRecordsDomain.purchasesMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(this.commercialRecordsDomain.salesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.commercialRecordsDomain.locationsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(this.commercialRecordsDomain.routesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.commercialRecordsDomain.routeStopsMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.dataExports, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountDeletionRequests, scope);
       deletedRecordCount += deleteScopedMapRecords(this.shopPresences, scope);

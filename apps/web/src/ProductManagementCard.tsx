@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ProductSummary } from "@soko/shared-types";
+import type { ProductPurchasePriceSummary, ProductSummary } from "@soko/shared-types";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { deleteJson, getJson, patchJson, postJson } from "./api-helpers";
@@ -48,6 +48,10 @@ export default function ProductManagementCard(props: { businessId: string; produ
   const [editingId, setEditingId] = useState<string | null>(props.productId ?? null);
   const [drafts, setDrafts] = useState<Record<string, ProductDraft>>({});
   const [stockDrafts, setStockDrafts] = useState<Record<string, string>>({});
+  const [priceHistory, setPriceHistory] = useState<Record<string, ProductPurchasePriceSummary[]>>(
+    {}
+  );
+  const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [addDraft, setAddDraft] = useState<ProductDraft>(emptyDraft);
 
@@ -79,6 +83,19 @@ export default function ProductManagementCard(props: { businessId: string; produ
       setMessage("Enter a product name.");
       return;
     }
+    const nextBuyingPrice =
+      draft.buyingPrice.trim().length === 0 ? null : Number(draft.buyingPrice);
+    if (product.buyingPrice !== null && nextBuyingPrice === null) {
+      setMessage("Enter the new buying price. Historical prices cannot be cleared.");
+      return;
+    }
+    if (nextBuyingPrice !== null && nextBuyingPrice !== product.buyingPrice) {
+      await postJson(`/businesses/${props.businessId}/products/${product.id}/purchase-prices`, {
+        price: nextBuyingPrice,
+        currency: "KES",
+        effectiveAt: new Date().toISOString()
+      });
+    }
     const updated = await patchJson<ProductSummary>(
       `/businesses/${props.businessId}/products/${product.id}`,
       {
@@ -86,7 +103,7 @@ export default function ProductManagementCard(props: { businessId: string; produ
         sku: draft.sku.trim() || null,
         unit: draft.unit.trim() || "unit",
         quantity: Number(draft.quantity),
-        buyingPrice: draft.buyingPrice.trim().length === 0 ? null : Number(draft.buyingPrice),
+        buyingPrice: nextBuyingPrice,
         sellingPrice: draft.sellingPrice.trim().length === 0 ? null : Number(draft.sellingPrice)
       }
     );
@@ -95,6 +112,18 @@ export default function ProductManagementCard(props: { businessId: string; produ
     );
     setEditingId(null);
     setMessage(`${updated.name} updated`);
+  }
+
+  async function togglePriceHistory(product: ProductSummary) {
+    if (openHistoryId === product.id) {
+      setOpenHistoryId(null);
+      return;
+    }
+    const history = await getJson<ProductPurchasePriceSummary[]>(
+      `/businesses/${props.businessId}/products/${product.id}/purchase-prices`
+    );
+    setPriceHistory((current) => ({ ...current, [product.id]: history }));
+    setOpenHistoryId(product.id);
   }
 
   async function removeProduct(product: ProductSummary) {
@@ -245,6 +274,19 @@ export default function ProductManagementCard(props: { businessId: string; produ
                   />
                 </label>
                 <label>
+                  Buying price
+                  <input
+                    inputMode="decimal"
+                    value={draft.buyingPrice}
+                    onChange={(event) =>
+                      setDrafts((current) => ({
+                        ...current,
+                        [product.id]: { ...draft, buyingPrice: event.target.value }
+                      }))
+                    }
+                  />
+                </label>
+                <label>
                   Selling price
                   <input
                     inputMode="decimal"
@@ -318,6 +360,22 @@ export default function ProductManagementCard(props: { businessId: string; produ
                   <button
                     className="secondary"
                     type="button"
+                    disabled={isPending(`product-management-history-${product.id}`)}
+                    onClick={() =>
+                      void runAction(`product-management-history-${product.id}`, async () => {
+                        try {
+                          await togglePriceHistory(product);
+                        } catch (error) {
+                          setMessage(getUserFacingErrorMessage(error));
+                        }
+                      })
+                    }
+                  >
+                    {openHistoryId === product.id ? "Hide previous prices" : "View previous prices"}
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
                     onClick={() => setEditingId(product.id)}
                   >
                     Edit
@@ -339,6 +397,26 @@ export default function ProductManagementCard(props: { businessId: string; produ
                     Delete
                   </button>
                 </div>
+                {openHistoryId === product.id ? (
+                  <details open className="optional-card-fields">
+                    <summary>Buying-price history</summary>
+                    {(priceHistory[product.id] ?? []).length === 0 ? (
+                      <p className="shell-note">No previous price records.</p>
+                    ) : (
+                      <ul>
+                        {(priceHistory[product.id] ?? []).map((record) => (
+                          <li key={record.id}>
+                            {record.currency} {record.price} / {product.unit} —{" "}
+                            {new Date(record.effectiveFrom).toLocaleDateString()}
+                            {record.supplierNameSnapshot === null
+                              ? ""
+                              : ` — ${record.supplierNameSnapshot}`}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </details>
+                ) : null}
               </>
             )}
           </div>

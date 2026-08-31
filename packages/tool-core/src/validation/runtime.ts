@@ -20,6 +20,10 @@ export function validateRuntimeToolInput(
     case "receipt.review":
     case "receipt.lookup":
     case "receipt.list":
+    case "contacts.search":
+    case "purchase.history":
+    case "sales.history":
+    case "route.history":
     case "unknown.clarify":
       return valid();
 
@@ -257,6 +261,53 @@ export function validateRuntimeToolInput(
       return supplierName.length === 0 ? invalid("Which supplier should I edit?") : valid();
     }
 
+    case "supplier.contact.attach":
+      return requiredStrings(
+        input,
+        ["supplierId", "contactId", "role"],
+        "Choose a supplier, contact, and role."
+      );
+
+    case "purchase.price.change": {
+      const ids = requiredStrings(
+        input,
+        ["productId"],
+        "Choose a product before changing its buying price."
+      );
+      if (!ids.ok) return ids;
+      return typeof input.price === "number" && Number.isFinite(input.price) && input.price >= 0
+        ? valid()
+        : invalid("Buying price must be a non-negative number.");
+    }
+
+    case "purchase.record": {
+      const ids = requiredStrings(
+        input,
+        ["supplierId", "productId"],
+        "Choose a supplier and product."
+      );
+      if (!ids.ok) return ids;
+      return typeof input.quantity === "number" &&
+        input.quantity > 0 &&
+        typeof input.buyingPrice === "number" &&
+        input.buyingPrice >= 0
+        ? valid()
+        : invalid("Purchase quantity must be positive and buying price non-negative.");
+    }
+
+    case "sale.record":
+      return Array.isArray(input.items) && input.items.length > 0
+        ? valid()
+        : invalid("Add at least one product to the sale.");
+
+    case "route.record":
+      return input.origin !== null &&
+        typeof input.origin === "object" &&
+        input.destination !== null &&
+        typeof input.destination === "object"
+        ? valid()
+        : invalid("Route origin and destination are required.");
+
     case "invoice.draft": {
       const customerId = typeof input.customerId === "string" ? input.customerId.trim() : "";
       const customerName = typeof input.customerName === "string" ? input.customerName.trim() : "";
@@ -320,4 +371,16 @@ export function validateRuntimeToolInput(
         ? valid()
         : invalid("Logistics runtime draft needs which delivery and the new status.");
   }
+}
+
+function requiredStrings(
+  input: Record<string, unknown>,
+  fields: string[],
+  message: string
+): ValidationResult {
+  return fields.every(
+    (field) => typeof input[field] === "string" && String(input[field]).trim().length > 0
+  )
+    ? valid()
+    : invalid(message);
 }

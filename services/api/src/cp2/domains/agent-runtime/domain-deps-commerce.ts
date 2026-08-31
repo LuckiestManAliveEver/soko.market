@@ -246,4 +246,99 @@ export interface AgentRuntimeCommerceDeps {
   products: Map<string, ProductSummary>;
   customers: Map<string, CustomerSummary>;
   invoices: Map<string, InvoiceSummary>;
+  listContacts: (input: {
+    sessionId: string | null;
+    businessId: string;
+    query?: string | undefined;
+    now?: Date;
+  }) => unknown;
+  attachSupplierContact: (input: {
+    sessionId: string | null;
+    businessId: string;
+    supplierId: string;
+    contactId: string;
+    role: "OWNER" | "SALES_AGENT" | "DELIVERY_AGENT" | "DRIVER" | "ACCOUNT_MANAGER" | "OTHER";
+    isPrimary?: boolean;
+    now?: Date;
+  }) => unknown;
+  createPurchase: (input: {
+    sessionId: string | null;
+    businessId: string;
+    supplierId: string;
+    supplierContactId?: string | null;
+    productId: string;
+    quantity: number;
+    buyingPrice: number;
+    currency?: string | undefined;
+    deliveredAt?: string | null;
+    routeId?: string | null;
+    externalSourceId?: string | null;
+    now?: Date;
+  }) => unknown;
+  changePurchasePrice: (input: {
+    sessionId: string | null;
+    businessId: string;
+    productId: string;
+    price: number;
+    currency?: string | undefined;
+    supplierId?: string | null;
+    supplierContactId?: string | null;
+    effectiveAt?: string | undefined;
+    now?: Date;
+  }) => unknown;
+  listPurchaseHistory: (input: {
+    sessionId: string | null;
+    businessId: string;
+    productId?: string | undefined;
+    supplierId?: string | undefined;
+    now?: Date;
+  }) => unknown;
+  createSale: (input: {
+    sessionId: string | null;
+    businessId: string;
+    customerId?: string | null;
+    customerName?: string | null;
+    customerContactId?: string | null;
+    items: Array<{ productId: string; quantity: number; unitPrice: number }>;
+    currency?: string | undefined;
+    routeId?: string | null;
+    externalSourceId?: string | null;
+    now?: Date;
+  }) => unknown;
+  listSalesHistory: (input: {
+    sessionId: string | null;
+    businessId: string;
+    customerId?: string | undefined;
+    customerContactId?: string | undefined;
+    now?: Date;
+  }) => unknown;
+  createDeliveryRoute: (input: {
+    sessionId: string | null;
+    businessId: string;
+    origin: {
+      label?: string;
+      address?: string | null;
+      latitude?: number | null;
+      longitude?: number | null;
+      region?: string | null;
+      country?: string | null;
+    };
+    destination: {
+      label?: string;
+      address?: string | null;
+      latitude?: number | null;
+      longitude?: number | null;
+      region?: string | null;
+      country?: string | null;
+    };
+    provider?: string | undefined;
+    externalSourceId?: string | null;
+    now?: Date;
+  }) => unknown;
+  listDeliveryRouteHistory: (input: {
+    sessionId: string | null;
+    businessId: string;
+    destinationLocationId?: string | undefined;
+    now?: Date;
+  }) => unknown;
 }
