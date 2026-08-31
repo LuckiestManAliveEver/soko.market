@@ -15,6 +15,7 @@ import {
 import { buildApi } from "../services/api/src/app";
 import { resolveOllamaModelName } from "../services/api/src/config";
 import { createCp2Store } from "../services/api/src/cp2/store";
+import { createBackendModelAdapter } from "../services/api/src/inference/model-runtime";
 import { activateGenericGlobalDefaultModel } from "./fixtures/native-runtime-test-helpers";
 
 interface VerifyOtpResponse {
@@ -292,6 +293,77 @@ describe("CP11 local model adapter", () => {
     expect(normalizeOllamaModelText(JSON.stringify({ unexpected: 42 }))).toBe(
       JSON.stringify({ unexpected: 42 })
     );
+  });
+
+  it("accepts a smaller model's tool proposal even when it omits the required type discriminator", async () => {
+    // Reproduces a live-verified failure: activating qwen2.5-0.5b-android as a swap-in for
+    // smollm2-360m against the real ai-runtime gateway, Qwen consistently answered with
+    // {"toolName":"products.list","input":{}} - valid JSON, but missing the "type":"tool" field
+    // parseRuntimeModelOutput requires, so every turn failed MODEL_RESPONSE_PARSE_FAILED even
+    // though the proposal was unambiguous. Without this normalization, the backend execution
+    // target is only swappable in theory - the moment a real deployment activates a weaker model,
+    // chat breaks despite activation's own health probe having passed.
+    const adapter = createBackendModelAdapter({
+      baseUrl: "http://127.0.0.1:4002",
+      modelId: "qwen2.5-0.5b-android",
+      serviceToken: "a".repeat(32),
+      connectTimeoutMs: 1_000,
+      timeoutMs: 1_000,
+      fetch: (async (input: RequestInfo | URL) => {
+        const url = input instanceof URL ? input : new URL(String(input));
+        if (url.pathname === "/health/ready") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              engine: "ollama",
+              models: [
+                {
+                  id: "qwen2.5-0.5b-android",
+                  providerModelId: "qwen2.5:0.5b",
+                  available: true,
+                  digest: null
+                }
+              ]
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        if (url.pathname === "/v1/chat/completions") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              id: "req-1",
+              modelId: "qwen2.5-0.5b-android",
+              providerModelId: "qwen2.5:0.5b",
+              engine: "ollama",
+              text: JSON.stringify({ toolName: "products.list", input: {} }),
+              latencyMs: 5,
+              usage: { promptTokens: 10, completionTokens: 5 },
+              finishReason: "stop"
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        throw new Error(`unexpected request in test fake: ${url.pathname}`);
+      }) as typeof fetch
+    });
+
+    const result = await adapter.generate({
+      context: { agentId: "agent", shopId: "shop", modelId: "qwen2.5-0.5b-android" },
+      prompt: {
+        message: "hello",
+        allowedTools: [],
+        schemaVersion: "cp11-runtime-model-v1"
+      }
+    });
+
+    expect(parseRuntimeModelOutput(result.text)).toMatchObject({
+      ok: true,
+      output: {
+        kind: "tool",
+        proposal: { toolName: "products.list" }
+      }
+    });
   });
 
   it("processes hosted agent turns through the OpenAI Responses API", async () => {

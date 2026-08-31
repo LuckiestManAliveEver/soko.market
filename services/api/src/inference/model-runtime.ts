@@ -6,7 +6,7 @@ import type {
   RuntimeModelPrompt,
   RuntimeModelProvider
 } from "@soko/shared-types";
-import { resolveRuntimeModel } from "@soko/shared-types";
+import { resolveRuntimeModel, runtimeModels } from "@soko/shared-types";
 import { renderRuntimeModelOutputInstructions } from "@soko/tool-core";
 
 export interface ModelRuntimeContext {
@@ -233,6 +233,57 @@ export function createBackendModelAdapter(
   };
 }
 
+export interface BackendModelAdapterRegistryOptions {
+  baseUrl: string;
+  serviceToken: string;
+  connectTimeoutMs: number;
+  timeoutMs: number;
+  /** The canonical model advertised by platform-default policy and `/health/ready` diagnostics. */
+  primaryModelId: string;
+  fetch?: typeof fetch;
+  requestId?: () => string;
+}
+
+export interface BackendModelAdapterRegistry {
+  /** Keyed by `${executionTarget}:${modelId}`, matching `modelRuntimeAdapterResolver`'s lookup. */
+  adapters: Map<string, ModelRuntimeAdapter>;
+  primaryAdapter: ModelRuntimeAdapter;
+}
+
+/**
+ * Registers one backend adapter per enabled Ollama-backed canonical model, all sharing the same
+ * ai-runtime gateway connection. This is what makes the backend execution target swappable per the
+ * `Agent != Model != Execution Target != Execution Host != Provider` invariant
+ * (docs/architecture/swappable-agent-model-runtime.md): activating a different enabled model for an
+ * agent only needs that model actually installed on the gateway, never a code or adapter change.
+ */
+export function createBackendModelAdapterRegistry(
+  options: BackendModelAdapterRegistryOptions
+): BackendModelAdapterRegistry {
+  const clientOptions = {
+    baseUrl: options.baseUrl,
+    serviceToken: options.serviceToken,
+    connectTimeoutMs: options.connectTimeoutMs,
+    timeoutMs: options.timeoutMs,
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    ...(options.requestId === undefined ? {} : { requestId: options.requestId })
+  };
+  const swappableModelIds = new Set<string>([options.primaryModelId]);
+  for (const model of Object.values(runtimeModels)) {
+    if (model.enabled && model.provider === "ollama") swappableModelIds.add(model.id);
+  }
+  const adapters = new Map<string, ModelRuntimeAdapter>();
+  for (const modelId of swappableModelIds) {
+    const adapter = createBackendModelAdapter({ ...clientOptions, modelId });
+    adapters.set(`${adapter.executionTarget}:${modelId}`, adapter);
+  }
+  const primaryAdapter = adapters.get(`backend:${options.primaryModelId}`);
+  if (primaryAdapter === undefined) {
+    throw new Error(`No backend adapter was registered for primary model ${options.primaryModelId}.`);
+  }
+  return { adapters, primaryAdapter };
+}
+
 export interface BackendInferenceReadiness {
   ok: true;
   engine: string;
@@ -295,6 +346,7 @@ export function createBackendInferenceClient(options: {
     body?: unknown;
     signal?: AbortSignal;
     retryReadiness?: boolean;
+    applyConnectTimeout?: boolean;
   }): Promise<unknown> => {
     const attempts = input.retryReadiness === true ? 2 : 1;
     let lastError: unknown = null;
@@ -316,14 +368,16 @@ export function createBackendInferenceClient(options: {
       const body = await invoke({
         path: "/health/ready",
         ...(signal === undefined ? {} : { signal }),
-        retryReadiness: true
+        retryReadiness: true,
+        applyConnectTimeout: true
       });
       return parseModelListResponse(body);
     },
     async listModels(signal) {
       const body = await invoke({
         path: "/v1/models",
-        ...(signal === undefined ? {} : { signal })
+        ...(signal === undefined ? {} : { signal }),
+        applyConnectTimeout: true
       });
       return parseModelListResponse(body).models;
     },
@@ -610,6 +664,7 @@ async function inferenceRequest(
     method?: "GET" | "POST";
     body?: unknown;
     signal?: AbortSignal;
+    applyConnectTimeout?: boolean;
   }
 ): Promise<unknown> {
   const controller = new AbortController();
@@ -618,10 +673,18 @@ async function inferenceRequest(
     timeoutKind = "request";
     controller.abort();
   }, options.timeoutMs);
-  const connectTimeout = setTimeout(() => {
-    timeoutKind = "connect";
-    controller.abort();
-  }, options.connectTimeoutMs);
+  // `fetch` only resolves once the full response is available, so a timer here cannot actually
+  // isolate TCP/TLS connection time from server-side processing time - it would fire against a
+  // slow-but-healthy generation just as readily as an unreachable host. Only arm it for readiness
+  // and listing calls, which do no model inference and are expected to answer near-instantly;
+  // `probeModel` and `generate` (both trigger real inference) are bounded by `timeoutMs` alone.
+  const connectTimeout =
+    input.applyConnectTimeout === true
+      ? setTimeout(() => {
+          timeoutKind = "connect";
+          controller.abort();
+        }, options.connectTimeoutMs)
+      : undefined;
   let externallyAborted = input.signal?.aborted === true;
   const abort = () => {
     externallyAborted = true;
@@ -635,7 +698,10 @@ async function inferenceRequest(
       headers: {
         accept: "application/json",
         authorization: `Bearer ${options.serviceToken}`,
-        "content-type": "application/json",
+        // Only declared when a body is actually sent: the gateway's default Fastify JSON parser
+        // rejects a bodyless request (e.g. the probe endpoint) that still claims a JSON
+        // content-type with FST_ERR_CTP_EMPTY_JSON_BODY.
+        ...(input.body === undefined ? {} : { "content-type": "application/json" }),
         "x-request-id": options.requestId?.() ?? randomUUID()
       },
       ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
@@ -771,6 +837,14 @@ function normalizeBackendModelText(content: string): string {
     }
     if (record.type === "response" || record.type === "clarification") {
       return typeof record.message === "string" && record.message.trim().length > 0 ? content : "";
+    }
+    // Smaller/weaker instruction-followers (observed with Qwen2.5 0.5B, unlike SmolLM2 360M on the
+    // same prompt) sometimes drop the "type" discriminator entirely while still emitting a
+    // recognizable tool call. Infer it instead of rejecting an otherwise well-formed proposal -
+    // this is what keeps the backend execution target genuinely swappable across models with
+    // uneven structured-output discipline, not just mechanically able to route to them.
+    if (typeof record.toolName === "string") {
+      return JSON.stringify({ ...record, type: "tool" });
     }
     const message = ["message", "response", "content", "text", "answer"]
       .map((key) => record[key])

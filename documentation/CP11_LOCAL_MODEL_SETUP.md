@@ -37,29 +37,31 @@ llama-server \
   --threads 2
 ```
 
-For the recommended Ollama setup, install the approved model and start Ollama:
+For local development, the recommended path is the self-contained `ai-runtime` gateway (Ollama plus
+the authenticated `@soko/ai-runtime` service in one container), not a bare `ollama serve`. Start it
+alongside the rest of local dev infra:
 
 ```bash
-ollama pull qwen2.5:0.5b
-ollama serve
+docker compose up -d ai-runtime
 ```
 
-Then enable the adapter for the API:
+This builds `services/ai-runtime/Dockerfile` (the same image production runs as the private
+`soko-market-inference` Render service), pulls the configured model into a persistent Docker
+volume on first boot, and serves it on `http://127.0.0.1:4002`. `.env.example` already points
+`BACKEND_INFERENCE_*` at that gateway with the default `smollm2-360m` model - `pnpm dev`/`pnpm
+dev:api` load `.env` automatically (via `--env-file-if-exists`), so no other setup is needed.
+To swap the active model, either activate a different enabled canonical model for an agent
+through the existing model-activation API/UI (`services/api/src/cp2/domains/agent-runtime`), or
+change `BACKEND_INFERENCE_MODEL_ID`/`SOKO_PRIMARY_MODEL_ID` and `SOKO_PRIMARY_PROVIDER_MODEL_ID`
+to another entry in `runtimeModels` (`packages/shared-types/src/index.ts`) and pull it into the
+running container: `docker compose exec ai-runtime ollama pull <providerModelId>`.
 
-```text
-LOCAL_MODEL_ENABLED=true
-LOCAL_MODEL_PROVIDER=ollama
-LOCAL_MODEL_ENDPOINT=http://127.0.0.1:11434
-LOCAL_MODEL_ID=qwen2.5-0.5b-android
-LOCAL_MODEL_MODEL=qwen2.5:0.5b
-LOCAL_MODEL_TIMEOUT_MS=90000
-LOCAL_MODEL_MAX_TOKENS=128
-LOCAL_MODEL_TEMPERATURE=0
-```
-
-The stable Soko model ID is `qwen2.5-0.5b-android`; the provider model identifier sent to Ollama is
-`qwen2.5:0.5b`. `GET /health/ready` checks reachability and model installation without inference.
-`GET /health/ai` additionally runs a simple inference diagnostic.
+`GET /health/ready` on the API (`services/api`) checks reachability and model installation without
+running inference; the gateway's own `GET /health/ready` additionally reports installed/available
+status per canonical model. See [render-inference.md](../docs/deployment/render-inference.md) and
+[runtime-resolution.md](../docs/architecture/runtime-resolution.md) for the full architecture; the
+`LOCAL_MODEL_*` env vars and the standalone `ollama serve` flow shown in older revisions of this
+document no longer exist in the current codebase.
 
 ## Alternative llama.cpp Server
 

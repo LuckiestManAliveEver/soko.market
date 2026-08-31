@@ -24,6 +24,10 @@ ENV OLLAMA_MODELS=/var/lib/soko-models/ollama
 WORKDIR /app
 COPY --from=ollama /bin/ollama /usr/bin/ollama
 COPY --from=ollama /usr/lib/ollama /usr/lib/ollama
+# node:*-slim ships no CA bundle at all, so the Go-built ollama binary (which reads the OS trust
+# store, unlike Node's own bundled certs) cannot verify TLS for `ollama pull` against the model
+# registry. Reuse the CA bundle from the same Ollama image the binary was built for.
+COPY --from=ollama /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /workspace/package.json /workspace/pnpm-workspace.yaml ./
 COPY --from=build /workspace/node_modules node_modules
 COPY --from=build /workspace/packages/shared-types packages/shared-types

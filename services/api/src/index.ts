@@ -3,7 +3,7 @@ import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
 import { createOpenAiProvider } from "./inference/openai-provider.js";
 import {
-  createBackendModelAdapter,
+  createBackendModelAdapterRegistry,
   createProviderModelAdapter,
   type ModelRuntimeAdapter
 } from "./inference/model-runtime.js";
@@ -65,15 +65,15 @@ const runtimeModelProviderResolver = (modelId: string) => {
 const modelRuntimeAdapters = new Map<string, ModelRuntimeAdapter>();
 let backendModelAdapter: ModelRuntimeAdapter | undefined;
 if (config.backendInferenceEnabled) {
-  const adapter = createBackendModelAdapter({
+  const backendRegistry = createBackendModelAdapterRegistry({
     baseUrl: config.backendInferenceBaseUrl,
-    modelId: config.backendInferenceModelId,
     serviceToken: config.inferenceServiceToken,
     connectTimeoutMs: config.backendInferenceConnectTimeoutMs,
-    timeoutMs: config.backendInferenceTimeoutMs
+    timeoutMs: config.backendInferenceTimeoutMs,
+    primaryModelId: config.backendInferenceModelId
   });
-  backendModelAdapter = adapter;
-  modelRuntimeAdapters.set(`${adapter.executionTarget}:${config.backendInferenceModelId}`, adapter);
+  for (const [key, adapter] of backendRegistry.adapters) modelRuntimeAdapters.set(key, adapter);
+  backendModelAdapter = backendRegistry.primaryAdapter;
 }
 for (const [modelId, provider] of cloudProviders) {
   const adapter = createProviderModelAdapter({
