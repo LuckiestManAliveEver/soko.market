@@ -279,7 +279,9 @@ export function createBackendModelAdapterRegistry(
   }
   const primaryAdapter = adapters.get(`backend:${options.primaryModelId}`);
   if (primaryAdapter === undefined) {
-    throw new Error(`No backend adapter was registered for primary model ${options.primaryModelId}.`);
+    throw new Error(
+      `No backend adapter was registered for primary model ${options.primaryModelId}.`
+    );
   }
   return { adapters, primaryAdapter };
 }

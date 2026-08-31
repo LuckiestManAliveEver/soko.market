@@ -102,7 +102,9 @@ describe("account deletion sweeps native runtime state", () => {
       after.nativeExecutionHosts.filter((host) => host.businessId === businessId)
     ).toHaveLength(0);
     for (const role of scopedRoles) {
-      expect(after.nativeRuntimeBindingModels.find((candidate) => candidate.id === role.id)).toBeUndefined();
+      expect(
+        after.nativeRuntimeBindingModels.find((candidate) => candidate.id === role.id)
+      ).toBeUndefined();
     }
     for (const installation of scopedInstallations) {
       expect(

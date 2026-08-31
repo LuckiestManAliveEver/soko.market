@@ -402,7 +402,8 @@ export class CommercialRecordsDomain {
             now
           });
         } catch (error) {
-          if (!(error instanceof Cp2Error) || error.code !== "phonebook_contact_not_found") throw error;
+          if (!(error instanceof Cp2Error) || error.code !== "phonebook_contact_not_found")
+            throw error;
         }
       }
       return this.salesAgentRelationshipView(input.businessId, linked, contact.id);
@@ -482,7 +483,11 @@ export class CommercialRecordsDomain {
         now
       );
       const salesAgent = this.deps
-        .listSalesAgentsForSupplier({ sessionId: input.sessionId, businessId: input.businessId, now })
+        .listSalesAgentsForSupplier({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          now
+        })
         .map((agent) => this.salesAgentRelationshipView(input.businessId, agent))
         .find((agent) => agent.id === input.relationshipId);
       if (salesAgent !== undefined) {
@@ -790,7 +795,13 @@ export class CommercialRecordsDomain {
         : this.requireContact(input.businessId, input.supplierContactId);
     if (
       contact !== null &&
-      !this.isContactLinkedToSupplier(input.sessionId, input.businessId, supplier.id, contact.id, now)
+      !this.isContactLinkedToSupplier(
+        input.sessionId,
+        input.businessId,
+        supplier.id,
+        contact.id,
+        now
+      )
     )
       throw new Cp2Error(
         409,

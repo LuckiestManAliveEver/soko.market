@@ -20,6 +20,10 @@ export function runtimeInvoiceItems(value: unknown): Array<{
   });
 }
 
+export function optionalRuntimeString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 export function isProductFieldInputType(value: unknown): value is ProductFieldInputType {
   return ["text", "number", "select", "textarea", "yes_no"].includes(String(value));
 }

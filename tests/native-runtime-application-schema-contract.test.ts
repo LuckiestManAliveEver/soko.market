@@ -73,10 +73,7 @@ describe("native runtime application/schema contract", () => {
     expect(assignmentsMigration).toContain("drop table cp2_browser_inference_assignments");
 
     const bindingsMigration = await readFile(
-      new URL(
-        "../infra/db/migrations/076_drop_legacy_agent_model_bindings.sql",
-        import.meta.url
-      ),
+      new URL("../infra/db/migrations/076_drop_legacy_agent_model_bindings.sql", import.meta.url),
       "utf8"
     );
     expect(bindingsMigration).toContain("drop table cp2_agent_model_bindings");

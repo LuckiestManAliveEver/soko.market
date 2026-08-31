@@ -11,9 +11,8 @@ vi.mock("../apps/web/src/api-helpers", () => ({
   postJson: vi.fn()
 }));
 
-const { IdentityNetworkOnboardingCard } = await import(
-  "../apps/web/src/IdentityNetworkOnboardingCard"
-);
+const { IdentityNetworkOnboardingCard } =
+  await import("../apps/web/src/IdentityNetworkOnboardingCard");
 
 function session(): SessionResponse {
   return {
@@ -46,7 +45,12 @@ describe("normalizeNetworkGraph", () => {
   });
 
   it("defaults arrays when the source object is null or undefined", () => {
-    expect(normalizeNetworkGraph(null)).toMatchObject({ nodes: [], edges: [], sources: [], routes: [] });
+    expect(normalizeNetworkGraph(null)).toMatchObject({
+      nodes: [],
+      edges: [],
+      sources: [],
+      routes: []
+    });
     expect(normalizeNetworkGraph(undefined)).toMatchObject({
       nodes: [],
       edges: [],

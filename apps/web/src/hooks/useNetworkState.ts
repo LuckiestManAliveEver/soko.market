@@ -65,7 +65,9 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
 
   async function loadNetworkGraph() {
     try {
-      setNetworkGraph(normalizeNetworkGraph(await getJson<Partial<NetworkGraphSummary>>("/network")));
+      setNetworkGraph(
+        normalizeNetworkGraph(await getJson<Partial<NetworkGraphSummary>>("/network"))
+      );
     } catch (error) {
       deps.setStatusMessage(getErrorMessage(error));
     }

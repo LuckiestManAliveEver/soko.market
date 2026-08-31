@@ -75,7 +75,11 @@ describe("createBackendModelAdapterRegistry", () => {
       shopId: "shop",
       modelId: SMOLLM_ID
     });
-    const qwenRun = await qwenAdapter?.canRun({ agentId: "agent", shopId: "shop", modelId: QWEN_ID });
+    const qwenRun = await qwenAdapter?.canRun({
+      agentId: "agent",
+      shopId: "shop",
+      modelId: QWEN_ID
+    });
     expect(smollmRun?.available).toBe(true);
     expect(qwenRun?.available).toBe(true);
   });
@@ -91,7 +95,11 @@ describe("createBackendModelAdapterRegistry", () => {
     });
 
     const qwenAdapter = registry.adapters.get(`backend:${QWEN_ID}`);
-    const qwenRun = await qwenAdapter?.canRun({ agentId: "agent", shopId: "shop", modelId: QWEN_ID });
+    const qwenRun = await qwenAdapter?.canRun({
+      agentId: "agent",
+      shopId: "shop",
+      modelId: QWEN_ID
+    });
     expect(qwenRun).toMatchObject({ available: false, errorCode: "MODEL_NOT_INSTALLED" });
   });
 });

@@ -36,7 +36,7 @@ describe("078 commercial history migration", () => {
     () => {
       expect(migrationSql).not.toContain("now()::text");
       expect(migrationSql).toContain(
-        'to_char(now() at time zone \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"\')'
+        "to_char(now() at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')"
       );
     }
   );
@@ -47,7 +47,7 @@ describe("078 commercial history migration", () => {
   describePostgres("against a live Postgres instance", () => {
     it(
       "applies cleanly and builds every effective-date index (regression for the Render deploy " +
-        'crash: error: functions in index expression must be marked IMMUTABLE, code 42P17)',
+        "crash: error: functions in index expression must be marked IMMUTABLE, code 42P17)",
       async () => {
         const connectionString = databaseUrl ?? "";
         const pool = new Pool({ connectionString });

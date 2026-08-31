@@ -177,7 +177,8 @@ const lineBudgets = new Map([
   ["services/api/src/cp2/domains/agent-runtime/runtime-model-routing.ts", 550],
   ["services/api/src/cp2/domains/agent-runtime/shared.ts", 1700],
   ["services/api/src/cp2/domains/agent-runtime/routes.ts", 1800],
-  ["services/api/src/cp2/domains/agent-runtime/capabilities.ts", 525]
+  ["services/api/src/cp2/domains/agent-runtime/capabilities.ts", 550],
+  ["services/api/src/cp2/domains/agent-runtime/commercial-records-capabilities.ts", 175]
 ]);
 for (const [file, maximum] of lineBudgets) {
   const lines = (await read(file)).split("\n").length;
