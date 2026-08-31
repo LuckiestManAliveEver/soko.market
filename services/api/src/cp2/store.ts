@@ -1204,7 +1204,7 @@ export class Cp2Store {
         if (
           conversation === undefined ||
           conversation.accountId !== input.accountId ||
-          conversation.activeShopId !== input.businessId
+          (conversation.activeShopId !== null && conversation.activeShopId !== input.businessId)
         ) {
           throw new Cp2Error(
             403,

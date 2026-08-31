@@ -43,7 +43,11 @@ import {
   upsertAccountSyncChangesBulk
 } from "../services/api/src/cp2/postgres-store";
 import { readSessionCookie, sessionCookieName } from "../services/api/src/cp2/store";
-import { createBackendModelAdapter } from "../services/api/src/inference/model-runtime";
+import type { ModelArtifactStore } from "../services/api/src/inference/model-artifact-store";
+import {
+  createVercelInferenceClient,
+  createVercelModelAdapter
+} from "../services/api/src/inference/model-runtime";
 import { postgresPersistenceQueueScenarios } from "./ai-eval/postgres-persistence-queue-scenarios";
 
 interface SqlExecutor {
@@ -605,58 +609,81 @@ describePostgres("CP2 Postgres store", () => {
     await restoredApp.close();
   }, 15_000);
 
-  it("reloads an active binding from Postgres and routes chat through the backend adapter", async () => {
+  it("reloads an active binding from Postgres and routes chat through the Vercel adapter", async () => {
     expect(databaseUrl).toBeDefined();
     const connectionString = databaseUrl ?? "";
     const modelId = "qwen2.5-0.5b-android";
     const inferenceCalls: string[] = [];
+    const artifactStore: ModelArtifactStore = {
+      async resolveArtifact(requestedModelId) {
+        return {
+          id: `postgres-integration:${requestedModelId}`,
+          modelId: requestedModelId,
+          storageProvider: "neon-object-storage",
+          bucket: "soko-model-artifacts",
+          objectKey: `models/${requestedModelId}/model.gguf`,
+          format: "gguf",
+          quantization: "Q4_0",
+          sizeBytes: 12,
+          sha256: null,
+          contentType: "application/octet-stream",
+          status: "available",
+          createdAt: "2026-08-31T00:00:00.000Z",
+          updatedAt: "2026-08-31T00:00:00.000Z"
+        };
+      },
+      async createDownloadUrl(artifact) {
+        return {
+          ...artifact,
+          downloadUrl: "https://storage.example.neon.tech/soko-model-artifacts/model.gguf",
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        };
+      },
+      async verifyArtifact() {
+        return { ok: true, sizeMatches: true, hashMatches: null, errorCode: null };
+      }
+    };
     const createAdapter = () =>
-      createBackendModelAdapter({
-        baseUrl: "http://soko-market-inference:4002",
+      createVercelModelAdapter({
         modelId,
-        serviceToken: "postgres-integration-token",
-        connectTimeoutMs: 500,
-        timeoutMs: 1_000,
-        fetch: async (input) => {
-          const url = String(input);
-          inferenceCalls.push(url);
-          const body = url.endsWith("/health/ready")
-            ? {
-                ok: true,
-                engine: "ollama",
-                models: [
-                  {
-                    id: modelId,
-                    providerModelId: "qwen2.5:0.5b",
-                    available: true,
-                    digest: "sha256:postgres-integration"
-                  }
-                ]
+        artifactStore,
+        client: createVercelInferenceClient({
+          baseUrl: "https://vercel-inference.example",
+          serviceToken: "postgres-integration-token-at-least-32-chars",
+          timeoutMs: 1_000,
+          request: async (input) => {
+            const url = String(input);
+            inferenceCalls.push(url);
+            if (url.endsWith("/health")) {
+              return new Response(JSON.stringify({ ok: true }), { status: 200 });
+            }
+            const events = [
+              { type: "status", state: "INITIALIZING" },
+              { type: "status", state: "READY", cacheHit: false },
+              {
+                type: "result",
+                requestId: "postgres-inference-request",
+                text: JSON.stringify({ type: "response", message: "postgres market" }),
+                finishReason: "stop",
+                usage: { inputTokens: 7, outputTokens: 3 },
+                metrics: {}
               }
-            : url.endsWith("/probe")
-              ? {
-                  ok: true,
-                  modelId,
-                  providerModelId: "qwen2.5:0.5b",
-                  engine: "ollama",
-                  latencyMs: 4
+            ];
+            const encoder = new TextEncoder();
+            const body = new ReadableStream<Uint8Array>({
+              start(controller) {
+                for (const event of events) {
+                  controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
                 }
-              : {
-                  ok: true,
-                  id: "postgres-inference-request",
-                  modelId,
-                  providerModelId: "qwen2.5:0.5b",
-                  engine: "ollama",
-                  text: JSON.stringify({ type: "response", message: "postgres market" }),
-                  latencyMs: 8,
-                  usage: { promptTokens: 7, completionTokens: 3 },
-                  finishReason: "stop"
-                };
-          return new Response(JSON.stringify(body), {
-            status: 200,
-            headers: { "content-type": "application/json" }
-          });
-        }
+                controller.close();
+              }
+            });
+            return new Response(body, {
+              status: 200,
+              headers: { "content-type": "application/x-ndjson" }
+            });
+          }
+        })
       });
     const adapterResolver = ({ modelId: requestedModelId }: { modelId: string }) =>
       requestedModelId === modelId ? createAdapter() : undefined;
@@ -673,7 +700,7 @@ describePostgres("CP2 Postgres store", () => {
       `/api/agents/${business.id}/models/${modelId}/activate`,
       {
         shopId: business.id,
-        executionTarget: "backend",
+        executionTarget: "vercel",
         executionMode: "LOCAL_FIRST",
         permissions: {
           allowRemoteShopDevice: false
@@ -718,7 +745,7 @@ describePostgres("CP2 Postgres store", () => {
         inferenceRequestId: "postgres-inference-request"
       }
     });
-    expect(inferenceCalls.some((url) => url.endsWith("/v1/chat/completions"))).toBe(true);
+    expect(inferenceCalls.some((url) => url.endsWith("/v1/inference"))).toBe(true);
 
     await restoredApp.close();
   }, 30_000);

@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { renderInferenceDeploymentScenarios } from "./ai-eval/render-inference-deployment-scenarios";
 
 describe("Render Blueprint", () => {
   it("wires external Neon URLs into every database consumer and migrates before deploy", async () => {
@@ -50,7 +49,7 @@ describe("Render Blueprint", () => {
     expect(api).toContain('SOKO_EMAIL_FROM\n        value: "Soko <messages@soko.market>"');
   });
 
-  it("keeps hosted inference private and separately deployable", async () => {
+  it("routes inference to Vercel instead of hosting it on Render", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
     const rootManifest = JSON.parse(
       await readFile(new URL("../package.json", import.meta.url), "utf8")
@@ -86,31 +85,36 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("corepack pnpm build:production");
     expect(rootManifest.scripts["build:production"]).toContain("check:render-inference-boundaries");
 
-    expect(blueprint).toContain("type: pserv\n    name: soko-market-inference");
-    expect(blueprint).toContain("dockerfilePath: ./services/ai-runtime/Dockerfile");
-    expect(blueprint).toContain("mountPath: /var/lib/soko-models");
-    const inference = blueprint.slice(
-      blueprint.indexOf("name: soko-market-inference"),
-      blueprint.indexOf("name: soko-market-web")
-    );
-    for (const scenario of renderInferenceDeploymentScenarios) {
-      if (scenario.hasPersistentDisk) {
-        expect(inference, scenario.name).not.toContain("maxShutdownDelaySeconds:");
-      }
-    }
-    expect(blueprint).toContain('BACKEND_INFERENCE_ENABLED\n        value: "true"');
-    expect(blueprint).toContain("BACKEND_INFERENCE_BASE_URL");
-    expect(blueprint).toContain("property: hostport");
-    expect(blueprint).toContain("SOKO_PRIMARY_MODEL_ID\n        value: smollm2-360m");
-    expect(blueprint).toContain(
-      "SOKO_PRIMARY_PROVIDER_MODEL_ID\n        value: smollm2:360m-instruct-q4_0"
-    );
+    // Render no longer hosts a private inference service - Vercel executes inference
+    // (docs/architecture/inference-runtime.md), so none of the old private-pserv/Docker/disk
+    // machinery may appear in the Blueprint at all.
+    expect(blueprint).not.toContain("soko-market-inference");
+    expect(blueprint).not.toContain("dockerfilePath: ./services/ai-runtime/Dockerfile");
+    expect(blueprint).not.toContain("mountPath: /var/lib/soko-models");
+    expect(blueprint).not.toContain("type: pserv");
+    expect(blueprint).not.toContain("BACKEND_INFERENCE_ENABLED");
+    expect(blueprint).not.toContain("BACKEND_INFERENCE_BASE_URL");
+    expect(blueprint).not.toContain("BACKEND_INFERENCE_MODEL_ID");
+    expect(blueprint).not.toContain("SOKO_PRIMARY_PROVIDER_MODEL_ID");
+    expect(blueprint).not.toContain("OLLAMA_KEEP_ALIVE");
+    expect(blueprint).not.toContain("key: INFERENCE_SERVICE_TOKEN");
     expect(blueprint).not.toContain("VITE_INFERENCE_SERVICE_TOKEN");
+    expect(blueprint).not.toContain("VITE_NEON_MODEL_STORAGE");
+    expect(blueprint).not.toContain("VITE_VERCEL_INFERENCE");
 
-    // The API has only a private gateway URL/token; Ollama remains inside the inference container.
+    // The API service proxies to Vercel over a shared bearer token and mints signed Neon
+    // artifact URLs; it never runs llama.cpp/Ollama itself.
     expect(api).not.toContain("OLLAMA_BASE_URL");
-    expect(api).toContain("envVarKey: INFERENCE_SERVICE_TOKEN");
-    expect(api).toContain('BACKEND_INFERENCE_REQUIRED\n        value: "true"');
+    expect(api).not.toContain("llama.cpp");
+    expect(api).not.toContain(".gguf");
+    expect(api).toContain("key: VERCEL_INFERENCE_URL");
+    expect(api).toContain("key: SOKO_INFERENCE_SERVICE_TOKEN");
+    expect(api).toContain("SOKO_INFERENCE_SERVICE_TOKEN\n        generateValue: true");
+    expect(api).toContain("key: NEON_MODEL_STORAGE_ENDPOINT");
+    expect(api).toContain("key: NEON_MODEL_STORAGE_ACCESS_KEY_ID");
+    expect(api).toContain("key: NEON_MODEL_STORAGE_SECRET_ACCESS_KEY");
+    expect(api).toContain('INFERENCE_REQUIRED\n        value: "true"');
+    expect(api).toContain("PLATFORM_DEFAULT_EXECUTION_TARGET\n        value: vercel");
 
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(blueprint).not.toContain("INFERENCE_CLOUD_FALLBACK_ENABLED");

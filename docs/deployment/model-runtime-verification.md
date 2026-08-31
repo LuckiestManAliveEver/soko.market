@@ -1,8 +1,7 @@
-# Self-hosted backend model-runtime verification
+# Model-runtime verification
 
-These checks cover the `services/ai-runtime` deployment with a real installed model, including the
-production Render Blueprint's private inference service. Mocked tests do not satisfy live runtime
-verification.
+These checks cover the real deployed runtime: Render's API, Neon's Postgres and object storage, and
+the Vercel inference deployment. Mocked tests do not satisfy live runtime verification.
 
 ## Prerequisites
 
@@ -10,31 +9,29 @@ Keep secrets in the shell or secret manager:
 
 ```bash
 export SOKO_API_URL=https://api.soko.market
-export SOKO_INFERENCE_URL=http://<private-host>:<port>
-export INFERENCE_SERVICE_TOKEN=<internal-token>
+export VERCEL_INFERENCE_URL=https://<your-vercel-deployment>.vercel.app
 export SOKO_TEST_TOKEN=<authenticated-session-token-or-cookie>
 export SOKO_TEST_SHOP_ID=<shop-id>
 export SOKO_MODEL_ID=smollm2-360m
 ```
 
-Keep the inference hostname private to the API network. Do not make it public just to run `curl`.
+`VERCEL_INFERENCE_URL` is a public HTTPS deployment (Vercel serves it directly), unlike the old
+Render-private inference host - `/health` needs no bearer token, since it carries no model or
+artifact context of its own. Any real model check must go through Render, which is the only party
+that can mint a signed Neon artifact URL.
 
 ## Individual checks
 
-From a shell with private-network access:
-
 ```bash
-curl --fail --silent --show-error \
-  -H "Authorization: Bearer $INFERENCE_SERVICE_TOKEN" \
-  "$SOKO_INFERENCE_URL/health/ready"
+curl --fail --silent --show-error "$VERCEL_INFERENCE_URL/health"
 
-curl --fail --silent --show-error -X POST \
-  -H "Authorization: Bearer $INFERENCE_SERVICE_TOKEN" \
-  "$SOKO_INFERENCE_URL/v1/models/$SOKO_MODEL_ID/probe"
+curl --fail --silent --show-error "$SOKO_API_URL/health/ai"
 ```
 
-The second command performs a real generation and must return `ok: true` with the canonical and
-provider model IDs. Readiness alone is not a model probe.
+The second command performs a real generation (Render resolves the runtime binding, signs a Neon
+artifact URL, calls Vercel, and waits for a real inference response) and must return
+`status: "ready"` with `model.status: "ready"` and `model.model` equal to `$SOKO_MODEL_ID`.
+Vercel's own `/health` liveness alone is not a model probe.
 
 Public API readiness:
 
@@ -58,9 +55,9 @@ curl --fail --silent --show-error -X POST \
   "$SOKO_API_URL/businesses/$SOKO_TEST_SHOP_ID/runtime/turns"
 ```
 
-The effective runtime must report Pi, the configured model, a non-empty backend host id,
-`source: "default"`, and `ready: true`. The chat result must identify that same model, `backend`,
-and a non-empty inference request ID.
+The effective runtime must report Pi, the configured model, execution type `vercel`, a non-empty
+host id, `source: "default"`, and `ready: true`. The chat result must identify that same model,
+`vercel`, and a non-empty inference request ID.
 
 ## One-command gate
 
@@ -70,29 +67,37 @@ After the variables above are set:
 pnpm verify:production-runtime
 ```
 
-The script checks API/Neon readiness, inference readiness, a real probe, the canonical effective
-default runtime, and one real chat request. It exits non-zero at the first failed stage and emits
-`DEFAULT_RUNTIME_UNAVAILABLE` when the default graph or adapter is not executable.
+The script checks API/Neon readiness, Vercel liveness, a real end-to-end probe through
+`/health/ai`, the canonical effective default runtime, and one real chat request. It exits non-zero
+at the first failed stage and emits `DEFAULT_RUNTIME_UNAVAILABLE` when the default graph or adapter
+is not executable.
 
 The equivalent opt-in Vitest flow also performs activation and reload verification:
 
 ```bash
-pnpm test:live-model-runtime
+RUN_LIVE_MODEL_RUNTIME_TEST=true pnpm test:live-model-runtime
 ```
 
-## Final self-hosted deployment sequence
+Individual liveness/probe checks are also available standalone:
 
-1. Apply Neon-compatible migrations.
-2. Validate `render.yaml` against the target Render workspace, then deploy the self-hosted private
-   inference service and durable model storage. Render services with a persistent disk must not set
-   `maxShutdownDelaySeconds`; the production boundary check enforces that platform constraint.
-3. Confirm authenticated inference readiness.
-4. Confirm the real model probe.
-5. Configure the API private hostname and shared token.
-6. Deploy the API and confirm database readiness.
-7. Resolve the default runtime and require Pi + SmolLM + backend + `ready: true`.
+```bash
+pnpm inference:health   # VERCEL_INFERENCE_URL - Vercel deployment liveness only
+pnpm inference:probe    # SOKO_API_URL - real end-to-end inference through Render
+```
+
+## Final deployment sequence
+
+1. Apply Neon-compatible migrations (`pnpm db:migrate`, includes `079_vercel_inference_artifacts`).
+2. Upload the GGUF artifact to Neon object storage at the object key
+   `cp2_model_artifacts` expects for the model being deployed.
+3. Deploy `services/ai-runtime` to Vercel. Confirm liveness with `pnpm inference:health`.
+4. Configure the Render API's `VERCEL_INFERENCE_URL`, `SOKO_INFERENCE_SERVICE_TOKEN` (identical to
+   Vercel's), and `NEON_MODEL_STORAGE_*` credentials, then deploy the API.
+5. Confirm database readiness (`/health/ready`).
+6. Confirm the real end-to-end model probe (`pnpm inference:probe`, or `/health/ai` directly).
+7. Resolve the default runtime and require Pi + SmolLM + `vercel` + `ready: true`.
 8. Open the PWA and confirm settings show the same effective runtime.
-9. Send one real chat message and verify response metadata.
+9. Send one real chat message and verify response metadata (`executionTarget: "vercel"`).
 
 Record each live result separately. A structural build cannot be reported as a live Neon,
 activation, probe, or chat pass.

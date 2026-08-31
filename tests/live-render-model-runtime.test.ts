@@ -3,33 +3,28 @@ import { describe, expect, it } from "vitest";
 
 const enabled = process.env.RUN_LIVE_MODEL_RUNTIME_TEST === "true";
 
-describe.skipIf(!enabled)("live Render and Neon model runtime", () => {
-  it("probes, activates, reloads, and chats through the deployed Qwen binding", async () => {
+describe.skipIf(!enabled)("live Render, Neon, and Vercel model runtime", () => {
+  it("probes, activates, reloads, and chats through the deployed SmolLM binding", async () => {
     const apiUrl = required("SOKO_API_URL").replace(/\/+$/u, "");
-    const inferenceUrl = required("SOKO_INFERENCE_URL").replace(/\/+$/u, "");
-    const inferenceToken = required("INFERENCE_SERVICE_TOKEN");
+    const inferenceUrl = required("VERCEL_INFERENCE_URL").replace(/\/+$/u, "");
     const sessionToken = required("SOKO_TEST_TOKEN");
     const agentId = required("SOKO_TEST_AGENT_ID");
     const shopId = required("SOKO_TEST_SHOP_ID");
-    const modelId = process.env.SOKO_MODEL_ID?.trim() || "qwen2.5-0.5b-android";
+    const modelId = process.env.SOKO_MODEL_ID?.trim() || "smollm2-360m";
     const cookie = sessionToken.includes("=") ? sessionToken : `soko_session=${sessionToken}`;
 
-    const readiness = await request(`${inferenceUrl}/health/ready`, {
-      authorization: `Bearer ${inferenceToken}`
-    });
-    expect(readiness.response.ok).toBe(true);
-    expect(readiness.body).toMatchObject({ ok: true, engine: "ollama" });
+    const liveness = await request(`${inferenceUrl}/health`);
+    expect(liveness.response.ok).toBe(true);
+    expect(liveness.body).toMatchObject({ ok: true, service: "soko-vercel-inference" });
 
-    const probe = await request(
-      `${inferenceUrl}/v1/models/${encodeURIComponent(modelId)}/probe`,
-      { authorization: `Bearer ${inferenceToken}` },
-      "POST"
-    );
+    // Vercel executes whatever fully-resolved request Render sends it - there is no per-model
+    // probe endpoint on the Vercel side. Render's own diagnostic route proves the whole path
+    // (runtime binding -> signed Neon artifact URL -> Vercel download/load/generate) end to end.
+    const probe = await request(`${apiUrl}/health/ai`);
     expect(probe.response.ok).toBe(true);
     expect(probe.body).toMatchObject({
-      ok: true,
-      modelId,
-      providerModelId: "qwen2.5:0.5b"
+      status: "ready",
+      model: { status: "ready", model: modelId }
     });
 
     const activation = await request(
@@ -40,7 +35,7 @@ describe.skipIf(!enabled)("live Render and Neon model runtime", () => {
       "POST",
       {
         shopId,
-        executionTarget: "backend",
+        executionTarget: "vercel",
         executionMode: "LOCAL_FIRST",
         permissions: {
           allowRemoteShopDevice: false
@@ -79,8 +74,7 @@ describe.skipIf(!enabled)("live Render and Neon model runtime", () => {
       turn: {
         model: {
           modelId,
-          providerModelId: "qwen2.5:0.5b",
-          executionTarget: "backend"
+          executionTarget: "vercel"
         }
       }
     });
@@ -90,7 +84,7 @@ describe.skipIf(!enabled)("live Render and Neon model runtime", () => {
 
 async function request(
   url: string,
-  headers: Record<string, string>,
+  headers: Record<string, string> = {},
   method = "GET",
   body?: unknown
 ): Promise<{ response: Response; body: LiveResponse | null }> {
@@ -107,9 +101,12 @@ async function request(
 
 interface LiveResponse {
   ok?: boolean;
-  engine?: string;
-  modelId?: string;
-  providerModelId?: string;
+  service?: string;
+  status?: string;
+  model?: {
+    status?: string;
+    model?: string;
+  };
   binding?: {
     agentId?: string;
     shopId?: string;
@@ -120,7 +117,6 @@ interface LiveResponse {
   turn?: {
     model?: {
       modelId?: string;
-      providerModelId?: string;
       executionTarget?: string;
       inferenceRequestId?: string;
     };

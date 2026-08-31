@@ -5,17 +5,13 @@ import type {
   RuntimeModelProvider
 } from "../packages/shared-types/src";
 import { parseRuntimeModelOutput } from "../packages/tool-core/src";
-import {
-  buildLlamaPrompt,
-  createLlamaCppRuntimeModelProvider,
-  createOllamaRuntimeModelProvider,
-  createOpenAiRuntimeModelProvider,
-  normalizeOllamaModelText
-} from "../services/ai-runtime/src/app";
 import { buildApi } from "../services/api/src/app";
-import { resolveOllamaModelName } from "../services/api/src/config";
 import { createCp2Store } from "../services/api/src/cp2/store";
-import { createBackendModelAdapter } from "../services/api/src/inference/model-runtime";
+import type { ModelArtifactStore } from "../services/api/src/inference/model-artifact-store";
+import {
+  createVercelInferenceClient,
+  createVercelModelAdapter
+} from "../services/api/src/inference/model-runtime";
 import { activateGenericGlobalDefaultModel } from "./fixtures/native-runtime-test-helpers";
 
 interface VerifyOtpResponse {
@@ -125,227 +121,85 @@ describe("CP11 local model adapter", () => {
     });
   });
 
-  it("reports the configured small local model profile in adapter metadata", async () => {
-    const previousFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response(
-        JSON.stringify({
-          content: JSON.stringify({
-            type: "response",
-            message: "Ready."
-          })
-        }),
-        {
-          headers: {
-            "content-type": "application/json"
-          },
-          status: 200
-        }
-      );
-
-    try {
-      const provider = createLlamaCppRuntimeModelProvider({
-        endpoint: "http://127.0.0.1:8080",
-        maxTokens: 128,
-        modelProfile: "qwen2.5-0.5b-instruct-q4_0-android-2gb",
-        temperature: 0,
-        timeoutMs: 8000
-      });
-      const completion = await provider.complete(emptyRuntimePrompt("show products"));
-
-      expect(completion).toMatchObject({
-        provider: "llama.cpp",
-        status: "available",
-        metadata: {
-          endpointHost: "127.0.0.1:8080",
-          modelProfile: "qwen2.5-0.5b-instruct-q4_0-android-2gb"
-        }
-      });
-    } finally {
-      globalThis.fetch = previousFetch;
-    }
-  });
-
-  it("maps the stable Soko model id and normalizes Ollama chat responses", async () => {
-    const previousFetch = globalThis.fetch;
-    let request: { url: string; body: Record<string, unknown> } | null = null;
-    globalThis.fetch = async (input, init) => {
-      request = {
-        url: String(input),
-        body: JSON.parse(String(init?.body)) as Record<string, unknown>
-      };
-      return new Response(
-        JSON.stringify({
-          model: "qwen2.5:0.5b",
-          message: {
-            role: "assistant",
-            content: "Hello from the installed local model."
-          },
-          done: true
-        }),
-        { status: 200 }
-      );
-    };
-
-    try {
-      const providerModel = resolveOllamaModelName(
-        "qwen2.5-0.5b-android",
-        "qwen2.5-0.5b-android",
-        "qwen2.5:0.5b"
-      );
-      const provider = createOllamaRuntimeModelProvider({
-        endpoint: "http://127.0.0.1:11434",
-        model: providerModel,
-        maxTokens: 128,
-        temperature: 0,
-        timeoutMs: 30_000
-      });
-      const completion = await provider.complete(emptyRuntimePrompt("Hello"));
-
-      expect(request).toMatchObject({
-        url: "http://127.0.0.1:11434/api/chat",
-        body: {
-          model: "qwen2.5:0.5b",
-          format: "json",
-          stream: false,
-          options: {
-            num_predict: 128,
-            temperature: 0
-          }
-        }
-      });
-      expect(completion).toMatchObject({
-        provider: "ollama",
-        status: "available",
-        errorCode: null,
-        metadata: {
-          endpointHost: "127.0.0.1:11434",
-          model: "qwen2.5:0.5b"
-        }
-      });
-      expect(parseRuntimeModelOutput(completion.outputText ?? "")).toMatchObject({
-        ok: true,
-        output: {
-          kind: "response",
-          proposal: {
-            reason: "Hello from the installed local model."
-          }
-        }
-      });
-    } finally {
-      globalThis.fetch = previousFetch;
-    }
-  });
-
-  it("reports a missing configured Ollama model with a stable error code", async () => {
-    const previousFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response(
-        JSON.stringify({
-          models: [{ name: "smollm2:135m", model: "smollm2:135m" }]
-        }),
-        { status: 200 }
-      );
-
-    try {
-      const provider = createOllamaRuntimeModelProvider({
-        endpoint: "http://ollama:11434",
-        model: "qwen2.5:0.5b"
-      });
-      await expect(provider.diagnose?.()).resolves.toMatchObject({
-        provider: "ollama",
-        status: "unavailable",
-        model: "qwen2.5:0.5b",
-        modelAvailable: false,
-        errorCode: "MODEL_NOT_INSTALLED"
-      });
-    } finally {
-      globalThis.fetch = previousFetch;
-    }
-  });
-
-  it("normalizes common small-model JSON envelopes without hiding malformed output", () => {
-    expect(
-      parseRuntimeModelOutput(
-        normalizeOllamaModelText(JSON.stringify({ response: "Hello from Qwen." }))
-      )
-    ).toMatchObject({
-      ok: true,
-      output: {
-        kind: "response",
-        proposal: {
-          reason: "Hello from Qwen."
-        }
-      }
-    });
-    expect(
-      parseRuntimeModelOutput(
-        normalizeOllamaModelText(
-          JSON.stringify({ type: "response", content: "Alternate response field." })
-        )
-      )
-    ).toMatchObject({
-      ok: true,
-      output: {
-        kind: "response"
-      }
-    });
-    expect(normalizeOllamaModelText(JSON.stringify({ unexpected: 42 }))).toBe(
-      JSON.stringify({ unexpected: 42 })
-    );
-  });
-
   it("accepts a smaller model's tool proposal even when it omits the required type discriminator", async () => {
-    // Reproduces a live-verified failure: activating qwen2.5-0.5b-android as a swap-in for
-    // smollm2-360m against the real ai-runtime gateway, Qwen consistently answered with
+    // Reproduces a live-verified failure: activating a weaker swap-in model against the real
+    // Vercel inference service, the model consistently answered with
     // {"toolName":"products.list","input":{}} - valid JSON, but missing the "type":"tool" field
     // parseRuntimeModelOutput requires, so every turn failed MODEL_RESPONSE_PARSE_FAILED even
-    // though the proposal was unambiguous. Without this normalization, the backend execution
-    // target is only swappable in theory - the moment a real deployment activates a weaker model,
-    // chat breaks despite activation's own health probe having passed.
-    const adapter = createBackendModelAdapter({
-      baseUrl: "http://127.0.0.1:4002",
+    // though the proposal was unambiguous. normalizeModelText (model-runtime.ts) is what tolerates
+    // this. Without it, the execution target is only swappable in theory - the moment a real
+    // deployment activates a weaker model, chat breaks despite activation's own health probe
+    // having passed.
+    const artifactStore: ModelArtifactStore = {
+      async resolveArtifact(modelId) {
+        return {
+          id: `test:${modelId}`,
+          modelId,
+          storageProvider: "neon-object-storage",
+          bucket: "soko-model-artifacts",
+          objectKey: `models/${modelId}/model.gguf`,
+          format: "gguf",
+          quantization: "Q4_0",
+          sizeBytes: 12,
+          sha256: null,
+          contentType: "application/octet-stream",
+          status: "available",
+          createdAt: "2026-08-31T00:00:00.000Z",
+          updatedAt: "2026-08-31T00:00:00.000Z"
+        };
+      },
+      async createDownloadUrl(artifact) {
+        return {
+          ...artifact,
+          downloadUrl: "https://storage.example.neon.tech/soko-model-artifacts/model.gguf",
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        };
+      },
+      async verifyArtifact() {
+        return { ok: true, sizeMatches: true, hashMatches: null, errorCode: null };
+      }
+    };
+    const adapter = createVercelModelAdapter({
       modelId: "qwen2.5-0.5b-android",
-      serviceToken: "a".repeat(32),
-      connectTimeoutMs: 1_000,
-      timeoutMs: 1_000,
-      fetch: (async (input: RequestInfo | URL) => {
-        const url = input instanceof URL ? input : new URL(String(input));
-        if (url.pathname === "/health/ready") {
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              engine: "ollama",
-              models: [
-                {
-                  id: "qwen2.5-0.5b-android",
-                  providerModelId: "qwen2.5:0.5b",
-                  available: true,
-                  digest: null
-                }
-              ]
-            }),
-            { status: 200, headers: { "content-type": "application/json" } }
-          );
-        }
-        if (url.pathname === "/v1/chat/completions") {
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              id: "req-1",
-              modelId: "qwen2.5-0.5b-android",
-              providerModelId: "qwen2.5:0.5b",
-              engine: "ollama",
+      artifactStore,
+      client: createVercelInferenceClient({
+        baseUrl: "https://vercel-inference.example",
+        serviceToken: "a".repeat(32),
+        timeoutMs: 1_000,
+        request: async (input, init) => {
+          const url = input instanceof URL ? input : new URL(String(input));
+          if (url.pathname === "/health") {
+            return new Response(JSON.stringify({ ok: true }), { status: 200 });
+          }
+          const requestId =
+            typeof init?.body === "string"
+              ? ((JSON.parse(init.body) as { requestId?: string }).requestId ?? "req-1")
+              : "req-1";
+          const events = [
+            {
+              type: "result",
+              requestId,
               text: JSON.stringify({ toolName: "products.list", input: {} }),
-              latencyMs: 5,
-              usage: { promptTokens: 10, completionTokens: 5 },
-              finishReason: "stop"
-            }),
-            { status: 200, headers: { "content-type": "application/json" } }
-          );
+              finishReason: "stop",
+              usage: { inputTokens: 10, outputTokens: 5 },
+              metrics: {}
+            }
+          ];
+          const encoder = new TextEncoder();
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              for (const event of events) {
+                controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+              }
+              controller.close();
+            }
+          });
+          return new Response(body, {
+            status: 200,
+            headers: { "content-type": "application/x-ndjson" }
+          });
         }
-        throw new Error(`unexpected request in test fake: ${url.pathname}`);
-      }) as typeof fetch
+      })
     });
 
     const result = await adapter.generate({
@@ -364,88 +218,6 @@ describe("CP11 local model adapter", () => {
         proposal: { toolName: "products.list" }
       }
     });
-  });
-
-  it("processes hosted agent turns through the OpenAI Responses API", async () => {
-    const previousFetch = globalThis.fetch;
-    let request: {
-      url: string;
-      authorization: string | null;
-      body: Record<string, unknown>;
-    } | null = null;
-    globalThis.fetch = async (input, init) => {
-      request = {
-        url: String(input),
-        authorization: new Headers(init?.headers).get("authorization"),
-        body: JSON.parse(String(init?.body)) as Record<string, unknown>
-      };
-      return new Response(
-        JSON.stringify({
-          output: [
-            {
-              type: "message",
-              content: [
-                {
-                  type: "output_text",
-                  text: JSON.stringify({
-                    type: "tool",
-                    toolName: "products.list",
-                    input: {},
-                    reason: "List products through the hosted model."
-                  })
-                }
-              ]
-            }
-          ]
-        }),
-        {
-          headers: { "content-type": "application/json" },
-          status: 200
-        }
-      );
-    };
-
-    try {
-      const provider = createOpenAiRuntimeModelProvider({
-        apiKey: "test-openai-key",
-        model: "gpt-test",
-        maxOutputTokens: 128,
-        reasoningEffort: "minimal",
-        timeoutMs: 8_000
-      });
-      const completion = await provider.complete(emptyRuntimePrompt("show products"));
-
-      expect(request).toMatchObject({
-        url: "https://api.openai.com/v1/responses",
-        authorization: "Bearer test-openai-key",
-        body: {
-          model: "gpt-test",
-          max_output_tokens: 128,
-          reasoning: { effort: "minimal" },
-          store: false
-        }
-      });
-      expect((request as { body: { input: string } } | null)?.body.input).toContain(
-        'User message: "show products"'
-      );
-      expect(completion).toMatchObject({
-        provider: "openai",
-        status: "available",
-        metadata: {
-          endpointHost: "api.openai.com",
-          model: "gpt-test"
-        }
-      });
-      expect(parseRuntimeModelOutput(completion.outputText ?? "")).toMatchObject({
-        ok: true,
-        output: {
-          kind: "tool",
-          proposal: { toolName: "products.list" }
-        }
-      });
-    } finally {
-      globalThis.fetch = previousFetch;
-    }
   });
 
   it("reports an explicit fallback when the active model has no inference provider", async () => {
@@ -701,9 +473,6 @@ describe("CP11 local model adapter", () => {
       { role: "user", content: "Remember pineapples." },
       { role: "assistant", content: "I remember pineapples." }
     ]);
-    expect(buildLlamaPrompt(prompts[1] as RuntimeModelPrompt)).toContain(
-      "Recent conversation (oldest first):\nUser: Remember pineapples.\nAssistant: I remember pineapples."
-    );
 
     await app.close();
   });
@@ -762,19 +531,24 @@ describe("CP11 local model adapter", () => {
       }
     });
     expect(JSON.stringify(capturedPrompt?.context)).not.toContain("Private Sugar");
-    const llamaPrompt = buildLlamaPrompt(capturedPrompt as RuntimeModelPrompt);
-    expect(llamaPrompt).not.toContain("Private Sugar");
-    expect(llamaPrompt).toContain(
+    // assembleAgentInferenceMessage (services/api/src/cp2/domains/agent-runtime/*.ts) renders the
+    // stored, persisted agent profile's compiled instructions into prompt.message before it ever
+    // reaches a model adapter (Vercel's createVercelModelAdapter, tested separately, sends this
+    // text through verbatim) - the per-turn agentProfile field in the request body above is not
+    // the source of truth and must never leak into what the model actually sees.
+    const assembledMessage = capturedPrompt?.message ?? "";
+    expect(assembledMessage).not.toContain("Private Sugar");
+    expect(assembledMessage).toContain(
       "Use this agent profile as the guiding operating principles for how this store is run."
     );
-    expect(llamaPrompt).toContain(
+    expect(assembledMessage).toContain(
       "Agent behavior: Warm, concise, accurate and commercially practical."
     );
-    expect(llamaPrompt).toContain("# Available verified tools");
-    expect(llamaPrompt).toContain("script: product_catalogue_commands");
-    expect(llamaPrompt).not.toContain("Practical, polite, and inventory-first");
-    expect(llamaPrompt).not.toContain("Only promise items the store can actually supply");
-    expect(llamaPrompt).not.toContain("sw: onyesha bidhaa => products.list");
+    expect(assembledMessage).toContain("# Available verified tools");
+    expect(assembledMessage).toContain("script: product_catalogue_commands");
+    expect(assembledMessage).not.toContain("Practical, polite, and inventory-first");
+    expect(assembledMessage).not.toContain("Only promise items the store can actually supply");
+    expect(assembledMessage).not.toContain("sw: onyesha bidhaa => products.list");
     expect(turn.turn).toMatchObject({
       status: "completed",
       model: {
@@ -1049,40 +823,6 @@ function availableCompletion(output: unknown): RuntimeModelCompletionResult {
     durationMs: 1,
     errorCode: null,
     metadata: {}
-  };
-}
-
-function emptyRuntimePrompt(message: string): RuntimeModelPrompt {
-  return {
-    allowedTools: ["products.list"],
-    context: {
-      activeLogisticsCount: 0,
-      betaAccessStatus: "not_invited",
-      betaReadinessStatus: "not_ready",
-      complianceExportCount: 0,
-      crashFreeSessionRate: 1,
-      customerCount: 0,
-      deviceTrustLevel: "unknown",
-      importJobCount: 0,
-      invoiceCount: 0,
-      knowledgeFactCount: 0,
-      language: "en",
-      launchReadinessStatus: "not_ready",
-      logisticsCount: 0,
-      lowStockCount: 0,
-      openInvoiceCount: 0,
-      openLaunchIncidentCount: 0,
-      openSupportTicketCount: 0,
-      outstandingDebtTotal: 0,
-      productCount: 0,
-      publicLaunchStatus: "closed",
-      role: "owner",
-      scheduledDeletionCount: 0,
-      unreadNotificationCount: 0,
-      verificationTier: "unverified"
-    },
-    message,
-    schemaVersion: "cp11-runtime-model-v1"
   };
 }
 

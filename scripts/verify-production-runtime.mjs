@@ -1,6 +1,5 @@
 const apiUrl = required("SOKO_API_URL").replace(/\/+$/u, "");
-const inferenceUrl = required("SOKO_INFERENCE_URL").replace(/\/+$/u, "");
-const inferenceToken = required("INFERENCE_SERVICE_TOKEN");
+const inferenceUrl = required("VERCEL_INFERENCE_URL").replace(/\/+$/u, "");
 const sessionToken = required("SOKO_TEST_TOKEN");
 const shopId = required("SOKO_TEST_SHOP_ID");
 const modelId = process.env.SOKO_MODEL_ID?.trim() || "smollm2-360m";
@@ -14,23 +13,23 @@ assert(
   apiReadiness.body
 );
 
-const inferenceReadiness = await getJson(`${inferenceUrl}/health/ready`, {
-  authorization: `Bearer ${inferenceToken}`
-});
+// Vercel's own /health only proves the deployment is live - it has no artifact/model context of
+// its own, so it never requires the service token. Real model readiness is proven end-to-end
+// below via Render's /health/ai and a real chat turn.
+const inferenceLiveness = await getJson(`${inferenceUrl}/health`);
 assert(
-  inferenceReadiness.response.ok && inferenceReadiness.body?.ok === true,
-  "Inference readiness failed.",
-  inferenceReadiness.body
+  inferenceLiveness.response.ok && inferenceLiveness.body?.ok === true,
+  "Vercel inference liveness failed.",
+  inferenceLiveness.body
 );
 
-const probe = await getJson(
-  `${inferenceUrl}/v1/models/${encodeURIComponent(modelId)}/probe`,
-  { authorization: `Bearer ${inferenceToken}` },
-  "POST"
-);
+const probe = await getJson(`${apiUrl}/health/ai`);
 assert(
-  probe.response.ok && probe.body?.ok === true && probe.body?.modelId === modelId,
-  "Real model probe failed.",
+  probe.response.ok &&
+    probe.body?.status === "ready" &&
+    probe.body?.model?.status === "ready" &&
+    probe.body?.model?.model === modelId,
+  "Real end-to-end model probe (Render -> Vercel) failed.",
   probe.body
 );
 
@@ -42,7 +41,7 @@ assert(
   effectiveRuntime.response.ok &&
     effectiveRuntime.body?.harness?.id === "pi" &&
     effectiveRuntime.body?.model?.id === modelId &&
-    effectiveRuntime.body?.execution?.type === "backend" &&
+    effectiveRuntime.body?.execution?.type === "vercel" &&
     typeof effectiveRuntime.body?.execution?.hostId === "string" &&
     effectiveRuntime.body?.execution?.ready === true &&
     effectiveRuntime.body?.source === "default" &&
@@ -60,9 +59,9 @@ const chat = await getJson(
 assert(chat.response.ok, "Real chat request failed.", chat.body);
 assert(
   chat.body?.turn?.model?.modelId === modelId &&
-    chat.body?.turn?.model?.executionTarget === "backend" &&
+    chat.body?.turn?.model?.executionTarget === "vercel" &&
     typeof chat.body?.turn?.model?.inferenceRequestId === "string",
-  "Chat metadata did not identify the selected backend model.",
+  "Chat metadata did not identify the selected Vercel-executed model.",
   chat.body
 );
 
@@ -71,7 +70,7 @@ console.log(
     {
       ok: true,
       api: apiReadiness.body,
-      inference: inferenceReadiness.body,
+      inferenceLiveness: inferenceLiveness.body,
       probe: probe.body,
       effectiveRuntime: effectiveRuntime.body,
       chatModel: chat.body.turn.model

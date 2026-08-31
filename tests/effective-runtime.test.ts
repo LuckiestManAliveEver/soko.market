@@ -21,7 +21,7 @@ describe("effective runtime API", () => {
       expect(response.json()).toMatchObject({
         harness: { id: "pi", name: "Pi" },
         model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
-        execution: { type: "backend", ready: true },
+        execution: { type: "vercel", ready: true },
         source: "default",
         status: "READY",
         ready: true
@@ -46,7 +46,7 @@ describe("effective runtime API", () => {
       expect(response.json()).toMatchObject({
         harness: { id: "pi" },
         model: { id: "smollm2-360m" },
-        execution: { type: "backend", hostId: null, ready: false },
+        execution: { type: "vercel", hostId: null, ready: false },
         binding: null,
         source: "default",
         status: "UNAVAILABLE",
@@ -71,7 +71,7 @@ describe("effective runtime API", () => {
         headers: jsonHeaders(actor.cookie),
         payload: JSON.stringify({
           shopId: actor.businessId,
-          executionTarget: "backend",
+          executionTarget: "vercel",
           executionMode: "CLOUD_ONLY",
           permissions: { allowRemoteShopDevice: false }
         })
@@ -106,18 +106,18 @@ describe("effective runtime API", () => {
 });
 
 const resolver = ({ modelId, executionTarget }: { modelId: string; executionTarget: string }) =>
-  executionTarget === "backend" ? adapter(modelId) : undefined;
+  executionTarget === "vercel" ? adapter(modelId) : undefined;
 
 function adapter(modelId: string): ModelRuntimeAdapter {
   return {
-    provider: "test-backend",
-    executionTarget: "backend",
+    provider: "test-vercel",
+    executionTarget: "vercel",
     canRun: async () => ({ available: true, errorCode: null, message: null }),
     healthCheck: async () => ({
       available: true,
       modelId,
-      provider: "test-backend",
-      executionTarget: "backend",
+      provider: "test-vercel",
+      executionTarget: "vercel",
       latencyMs: 1,
       responsePreview: "SOKO_MODEL_OK",
       errorCode: null,
@@ -127,8 +127,8 @@ function adapter(modelId: string): ModelRuntimeAdapter {
     generate: async () => ({
       text: JSON.stringify({ type: "response", message: "Ready." }),
       modelId,
-      provider: "test-backend",
-      executionTarget: "backend",
+      provider: "test-vercel",
+      executionTarget: "vercel",
       latencyMs: 1
     })
   };

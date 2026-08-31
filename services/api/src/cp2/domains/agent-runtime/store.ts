@@ -101,7 +101,11 @@ import type {
   RuntimeTurnSummary,
   ShopAgentRuntime
 } from "@soko/shared-types";
-import { defaultAgentDefinitionId } from "@soko/shared-types";
+import {
+  defaultAgentDefinitionId,
+  isModelExecutionTarget,
+  modelExecutionTargets
+} from "@soko/shared-types";
 import {
   createRuntimeToolProposal,
   createRuntimeToolProposalFromProductContextScript,
@@ -325,11 +329,15 @@ export class AgentRuntimeDomain {
       .map((model) => ({
         ...model,
         capabilities: [...model.capabilities],
+        // The "backend" key is the frontend's stable field name for "is a server-hosted adapter
+        // configured for this model" (apps/web/src/AgentModelPanel.tsx, QuickRuntimeSwitcher.tsx)
+        // - it does not mean the "backend" ModelExecutionTarget literal specifically. Query
+        // whichever target is actually the live hosted default (Vercel today).
         runtimeAvailability: {
           backend:
             this.deps.modelRuntimeAdapterResolver?.({
               modelId: model.id,
-              executionTarget: "backend",
+              executionTarget: this.deps.platformDefaultRuntime.executionTarget,
               agentId: "model-catalog",
               shopId: "model-catalog"
             }) === undefined
@@ -1156,16 +1164,19 @@ export class AgentRuntimeDomain {
     }
 
     const harnessId = runtimeAdapterIdForAgent(resolution.agent);
-    const executionTarget = resolution.selected.host?.type;
+    const executionTargetCandidate = resolution.selected.host?.type;
+    const executionTarget = isModelExecutionTarget(executionTargetCandidate)
+      ? executionTargetCandidate
+      : undefined;
     const adapter =
-      executionTarget === "backend" || executionTarget === "remote-shop-device"
-        ? this.deps.modelRuntimeAdapterResolver?.({
+      executionTarget === undefined
+        ? undefined
+        : this.deps.modelRuntimeAdapterResolver?.({
             modelId: resolution.selected.model.id,
             executionTarget,
             agentId: resolution.agent.id,
             shopId: input.businessId
-          })
-        : undefined;
+          });
     const harness = this.deps.agentRuntimeAdapterResolver(harnessId);
     let ready = resolution.selected.available && adapter !== undefined && harness !== undefined;
     if (ready && adapter !== undefined && harness !== undefined) {
@@ -1192,10 +1203,7 @@ export class AgentRuntimeDomain {
       harness: { id: harnessId, name: resolution.agent.name },
       model: { id: resolution.selected.model.id, name: resolution.selected.model.name },
       execution: {
-        type:
-          executionTarget === "backend" || executionTarget === "remote-shop-device"
-            ? executionTarget
-            : this.deps.platformDefaultRuntime.executionTarget,
+        type: executionTarget ?? this.deps.platformDefaultRuntime.executionTarget,
         hostId: resolution.selected.host?.id ?? null,
         ready
       },
@@ -2540,7 +2548,8 @@ export class AgentRuntimeDomain {
   /**
    * Lazy, idempotent first-chat provisioning. Only server-reachable adapters participate here;
    * normal chat never depends on a browser model, web-cached weights, or a per-device install.
-   * A configured backend adapter must affirm availability before its host is persisted as usable.
+   * A configured hosted adapter (Vercel) must affirm availability before its host is persisted as
+   * usable.
    */
   private async ensureDefaultRuntimeForTurn(input: {
     conversationId?: string;
@@ -2565,20 +2574,21 @@ export class AgentRuntimeDomain {
       agentId,
       ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId })
     });
-    const hasBackendRuntime =
+    const hasHostedRuntime =
       nativeResolution !== null &&
       [nativeResolution.primary, ...nativeResolution.fallbacks].some(
         (candidate) =>
           candidate.available &&
-          (candidate.host?.type ?? candidate.model.configuration.executionTarget) === "backend"
+          (candidate.host?.type ?? candidate.model.configuration.executionTarget) ===
+            this.deps.platformDefaultRuntime.executionTarget
       );
-    if (hasBackendRuntime) return;
+    if (hasHostedRuntime) return;
     if (this.deps.modelRuntimeAdapterResolver === undefined) return;
 
     const agentAdapter = this.deps.agentRuntimeAdapterResolver(agentRuntimeAdapterId);
     if (
       agentAdapter === undefined ||
-      this.deps.platformDefaultRuntime.executionTarget !== "backend"
+      this.deps.platformDefaultRuntime.executionTarget === "remote-shop-device"
     ) {
       return;
     }
@@ -2626,9 +2636,10 @@ export class AgentRuntimeDomain {
         .sort((left, right) => Number(right.recommended) - Number(left.recommended))
         .map((model) => model.id)
     ]);
+    const defaultExecutionTarget = this.deps.platformDefaultRuntime.executionTarget;
     const candidates: Array<{
       model: AiModelSummary;
-      executionTarget: "backend";
+      executionTarget: ModelExecutionTarget;
       checkedAt: string;
     }> = [];
     for (const modelId of preferredIds) {
@@ -2638,7 +2649,7 @@ export class AgentRuntimeDomain {
       }
       const adapter = this.deps.modelRuntimeAdapterResolver({
         modelId,
-        executionTarget: "backend",
+        executionTarget: defaultExecutionTarget,
         agentId,
         shopId: input.businessId
       });
@@ -2652,7 +2663,7 @@ export class AgentRuntimeDomain {
         if (availability.available) {
           candidates.push({
             model,
-            executionTarget: "backend",
+            executionTarget: defaultExecutionTarget,
             checkedAt: input.now.toISOString()
           });
         }
@@ -2893,8 +2904,11 @@ export class AgentRuntimeDomain {
         : { runtimeModelProviderResolver: this.deps.runtimeModelProviderResolver }),
       ...(attemptedRuntimeKeys === undefined ? {} : { attemptedRuntimeKeys }),
       // Remote-shop-device execution is negotiated by the authenticated owner-node client
-      // protocol. This in-process provider call can execute only server-reachable backend hosts.
-      eligibleExecutionTargets: new Set<ModelExecutionTarget>(["backend"])
+      // protocol. This in-process provider call can execute only server-reachable hosted targets
+      // (Vercel today) - any ModelExecutionTarget except remote-shop-device.
+      eligibleExecutionTargets: new Set<ModelExecutionTarget>(
+        modelExecutionTargets.filter((target) => target !== "remote-shop-device")
+      )
     });
   }
 

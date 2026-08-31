@@ -13,11 +13,11 @@ const fallbackModelId = "qwen2.5-0.5b-android";
 
 describe("zero-setup native runtime", () => {
   it("completes a brand-new user's first /v1/messages chat without a download or activation", async () => {
-    const generate = vi.fn(async () => generation(primaryModelId, "Welcome to Soko AI."));
+    const generate = vi.fn(async () => generation(primaryModelId, "Welcome to Soko AI.", "vercel"));
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
-        modelId === primaryModelId && executionTarget === "backend"
-          ? adapter(modelId, generate)
+        modelId === primaryModelId && executionTarget === "vercel"
+          ? adapter(modelId, generate, "vercel")
           : undefined
     });
     const app = buildApi({ cp2: { store } });
@@ -44,7 +44,7 @@ describe("zero-setup native runtime", () => {
             model: {
               status: "available",
               modelId: primaryModelId,
-              executionTarget: "backend",
+              executionTarget: "vercel",
               agentId: actor.businessId,
               agentAdapterId: "pi"
             }
@@ -217,12 +217,14 @@ describe("zero-setup native runtime", () => {
     const primaryGenerate = vi.fn(async () => {
       throw new ModelRuntimeError("INFERENCE_SERVICE_UNREACHABLE", "offline", true);
     });
-    const fallbackGenerate = vi.fn(async () => generation(fallbackModelId, "Fallback ready."));
+    const fallbackGenerate = vi.fn(async () =>
+      generation(fallbackModelId, "Fallback ready.", "vercel")
+    );
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId, executionTarget }) => {
-        if (executionTarget !== "backend") return undefined;
-        if (modelId === primaryModelId) return adapter(modelId, primaryGenerate);
-        if (modelId === fallbackModelId) return adapter(modelId, fallbackGenerate);
+        if (executionTarget !== "vercel") return undefined;
+        if (modelId === primaryModelId) return adapter(modelId, primaryGenerate, "vercel");
+        if (modelId === fallbackModelId) return adapter(modelId, fallbackGenerate, "vercel");
         return undefined;
       }
     });
@@ -240,7 +242,7 @@ describe("zero-setup native runtime", () => {
           response: "Fallback ready.",
           model: {
             modelId: fallbackModelId,
-            executionTarget: "backend",
+            executionTarget: "vercel",
             fallbackIndex: 1,
             status: "available"
           }
@@ -372,16 +374,20 @@ describe("zero-setup native runtime", () => {
   });
 });
 
-function adapter(modelId: string, generate: ModelRuntimeAdapter["generate"]): ModelRuntimeAdapter {
+function adapter(
+  modelId: string,
+  generate: ModelRuntimeAdapter["generate"],
+  executionTarget: ModelRuntimeAdapter["executionTarget"] = "backend"
+): ModelRuntimeAdapter {
   return {
     provider: "test-hosted-adapter",
-    executionTarget: "backend",
+    executionTarget,
     canRun: async () => ({ available: true, errorCode: null, message: null }),
     healthCheck: async () => ({
       available: true,
       modelId,
       provider: "test-hosted-adapter",
-      executionTarget: "backend",
+      executionTarget,
       latencyMs: 1,
       responsePreview: "SOKO_MODEL_OK",
       errorCode: null,
@@ -392,12 +398,16 @@ function adapter(modelId: string, generate: ModelRuntimeAdapter["generate"]): Mo
   };
 }
 
-function generation(modelId: string, message: string) {
+function generation(
+  modelId: string,
+  message: string,
+  executionTarget: "backend" | "vercel" = "backend"
+) {
   return {
     text: JSON.stringify({ type: "response", message }),
     modelId,
     provider: "test-hosted-adapter",
-    executionTarget: "backend" as const,
+    executionTarget,
     latencyMs: 1
   };
 }

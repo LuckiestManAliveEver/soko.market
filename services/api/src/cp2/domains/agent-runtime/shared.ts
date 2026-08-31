@@ -479,10 +479,6 @@ export {
   downloadableAiModelIdPattern,
   documentUploadContextScript,
   defaultBusinessAgentContextScripts,
-  configuredCloudModelIds,
-  configuredOpenAiModelsAvailable,
-  openaiFastContextWindow,
-  openaiReasoningContextWindow,
   aiModelRegistry,
   computeModelAvailability,
   defaultContextCharacterBudget,
@@ -1105,22 +1101,23 @@ export function validateAgentModelBindingConfiguration(
   },
   model: AiModelSummary
 ): void {
-  // A "hosted" model has no downloadable artifact (format: "remote") - it can only run through the
-  // generic server-reachable target, never a target that requires local weights/installation. This
-  // does not run the other way: `backend` is provider-neutral now, so a downloadable model can
-  // legitimately be served through a self-hosted backend adapter too.
-  if (model.source === "hosted" && input.executionTarget !== "backend") {
+  // A "hosted" model has no downloadable artifact (format: "remote") - it can only run through a
+  // generic server-reachable target (Vercel today; a self-hosted backend adapter remains a valid
+  // alternative), never a target that requires local weights/installation on the merchant's own
+  // device. This does not run the other way: a downloadable model can also legitimately be served
+  // through any server-reachable target.
+  if (model.source === "hosted" && input.executionTarget === "remote-shop-device") {
     throw new Cp2Error(
       409,
       "MODEL_RUNTIME_INCOMPATIBLE",
-      "The selected hosted model must use the backend execution target."
+      "The selected hosted model must use a server-reachable execution target."
     );
   }
-  if (input.executionMode === "CLOUD_ONLY" && input.executionTarget !== "backend") {
+  if (input.executionMode === "CLOUD_ONLY" && input.executionTarget === "remote-shop-device") {
     throw new Cp2Error(
       400,
       "MODEL_CONFIGURATION_INVALID",
-      "Cloud-only execution requires the backend execution target."
+      "Cloud-only execution requires a server-reachable execution target."
     );
   }
   if (input.executionTarget === "remote-shop-device" && !input.permissions.allowRemoteShopDevice) {

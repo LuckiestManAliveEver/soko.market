@@ -18,17 +18,16 @@ export interface EnvironmentConfig {
   apiPort: number;
   allowedCorsOrigins: string[];
   databaseUrl: string;
-  backendInferenceEnabled: boolean;
-  backendInferenceBaseUrl: string;
-  backendInferenceConnectTimeoutMs: number;
-  backendInferenceTimeoutMs: number;
-  backendInferenceModelId: string;
-  backendInferenceRequired: boolean;
+  vercelInferenceUrl: string;
+  vercelInferenceTimeoutMs: number;
+  inferenceRequired: boolean;
   inferenceServiceToken: string;
+  neonModelStorageEndpoint: string;
+  neonModelStorageRegion: string;
+  neonModelStorageAccessKeyId: string;
+  neonModelStorageSecretAccessKey: string;
+  modelArtifactUrlTtlSeconds: number;
   inferenceOwnerNodeEnabled: boolean;
-  inferenceCloudProvider: "" | "openai";
-  inferenceCloudModelAllowlist: string[];
-  inferenceCloudMonthlyTokenBudget: number;
   inferenceMaxFallbacks: number;
   inferenceJobTimeoutMs: number;
   workspaceDeliveryMaxFileBytes: number;
@@ -51,7 +50,7 @@ export const repositoryDefaultRuntimePolicy: PlatformDefaultRuntimePolicy = {
   agentName: "Pi",
   agentRuntimeAdapterId: "pi",
   modelId: "smollm2-360m",
-  executionTarget: "backend"
+  executionTarget: "vercel"
 };
 
 /** Catalog metadata for a registered AgentRuntimeAdapter, for shop-facing selection UI. */
@@ -977,9 +976,10 @@ export type AgentModelBindingStatus =
  * which meant "run privately on whichever device/browser happens to be open right now."
  * A client device never needs a private model copy to use normal agent chat.
  */
-export type ModelExecutionTarget = "backend" | "remote-shop-device";
+export type ModelExecutionTarget = "vercel" | "backend" | "remote-shop-device";
 
 export const modelExecutionTargets = [
+  "vercel",
   "backend",
   "remote-shop-device"
 ] as const satisfies readonly ModelExecutionTarget[];
@@ -994,7 +994,7 @@ export type BrowserDeviceTier = "low" | "medium" | "high";
 export interface RuntimeModelDefinition {
   id: string;
   displayName: string;
-  provider: "ollama";
+  provider: string;
   providerModelId: string;
   contextWindow: number;
   enabled: boolean;
@@ -4060,6 +4060,63 @@ export interface NativeRuntimeModelSummary {
   createdAt: string;
   updatedAt: string;
 }
+
+/** Durable model weights are objects; Neon stores only this control-plane metadata. */
+export type ModelArtifactStatus = "pending" | "available" | "invalid" | "retired";
+
+export interface ModelArtifact {
+  id: string;
+  modelId: string;
+  storageProvider: string;
+  bucket: string;
+  objectKey: string;
+  format: string;
+  quantization: string | null;
+  sizeBytes: number | null;
+  sha256: string | null;
+  contentType: string;
+  status: ModelArtifactStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResolvedModelArtifact extends ModelArtifact {
+  /** Short-lived object access. Permanent storage credentials never cross this contract. */
+  downloadUrl: string;
+  expiresAt: string;
+}
+
+export interface ArtifactVerificationResult {
+  ok: boolean;
+  sizeMatches: boolean | null;
+  hashMatches: boolean | null;
+  errorCode: string | null;
+}
+
+export interface InferenceExecutionRequest {
+  requestId: string;
+  conversationId: string;
+  runtimeBindingId: string;
+  executionHostId: string;
+  agent: { id: string; adapterId: string };
+  model: { id: string; runtimeContractVersion: string };
+  artifact: ResolvedModelArtifact;
+  prompt: string;
+  generation: { maxTokens: number; temperature: number; jsonOutput: boolean };
+}
+
+export type InferenceExecutionEvent =
+  | { type: "status"; state: "INITIALIZING" | "MODEL_LOADING" | "READY"; cacheHit?: boolean }
+  | { type: "delta"; text: string }
+  | {
+      type: "result";
+      requestId: string;
+      text: string;
+      finishReason: string | null;
+      usage: { inputTokens: number | null; outputTokens: number | null };
+      metrics: Record<string, number | boolean | null>;
+    }
+  | { type: "error"; code: string; message: string; retryable: boolean };
 
 export interface NativeExecutionHostSummary {
   id: string;

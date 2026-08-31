@@ -16,12 +16,15 @@
  * required gate, so it must not fail a machine that simply has no model configured.
  */
 import { writeFile } from "node:fs/promises";
+import { Pool } from "pg";
 import { buildApi } from "../src/app.js";
 import { readEnvironment } from "../src/config.js";
 import {
-  createBackendModelAdapter,
+  createVercelInferenceClient,
+  createVercelModelAdapter,
   type ModelRuntimeAdapter
 } from "../src/inference/model-runtime.js";
+import { createNeonModelArtifactStore } from "../src/inference/model-artifact-store.js";
 import { createCp2Store } from "../src/cp2/store.js";
 import { modelFallbackEvalScenarios } from "../../../tests/ai-eval/model-fallback-scenarios.js";
 
@@ -39,32 +42,38 @@ interface ScenarioResult {
 async function main() {
   const config = readEnvironment();
 
-  const backendAdapter: ModelRuntimeAdapter | undefined = config.backendInferenceEnabled
-    ? createBackendModelAdapter({
-        baseUrl: config.backendInferenceBaseUrl,
-        modelId: config.backendInferenceModelId,
-        serviceToken: config.inferenceServiceToken,
-        connectTimeoutMs: config.backendInferenceConnectTimeoutMs,
-        timeoutMs: config.backendInferenceTimeoutMs
-      })
-    : undefined;
-
-  if (backendAdapter === undefined) {
+  if (config.vercelInferenceUrl === "") {
     console.log(
-      "No model backend is configured (BACKEND_INFERENCE_ENABLED is off) - skipping the AI " +
-        "eval. Set BACKEND_INFERENCE_ENABLED=true with a running services/ai-runtime instance " +
-        "to run this."
+      "No Vercel inference host is configured (VERCEL_INFERENCE_URL is unset) - skipping the " +
+        "AI eval. Set VERCEL_INFERENCE_URL, SOKO_INFERENCE_SERVICE_TOKEN and the NEON_MODEL_" +
+        "STORAGE_* credentials to a deployed services/ai-runtime instance to run this."
     );
     return;
   }
 
+  const modelId = config.platformDefaultRuntime.modelId;
+  const artifactPool = new Pool({ connectionString: config.databaseUrl, max: 2 });
+  const artifactStore = createNeonModelArtifactStore({
+    database: artifactPool,
+    endpoint: config.neonModelStorageEndpoint,
+    region: config.neonModelStorageRegion,
+    accessKeyId: config.neonModelStorageAccessKeyId,
+    secretAccessKey: config.neonModelStorageSecretAccessKey,
+    downloadUrlTtlSeconds: config.modelArtifactUrlTtlSeconds
+  });
+  const client = createVercelInferenceClient({
+    baseUrl: config.vercelInferenceUrl,
+    serviceToken: config.inferenceServiceToken,
+    timeoutMs: config.vercelInferenceTimeoutMs
+  });
+  const vercelAdapter: ModelRuntimeAdapter = createVercelModelAdapter({
+    modelId,
+    artifactStore,
+    client
+  });
+
   const modelRuntimeAdapters = new Map<string, ModelRuntimeAdapter>();
-  if (backendAdapter !== undefined) {
-    modelRuntimeAdapters.set(
-      `${backendAdapter.executionTarget}:${config.backendInferenceModelId}`,
-      backendAdapter
-    );
-  }
+  modelRuntimeAdapters.set(`vercel:${modelId}`, vercelAdapter);
   const store = createCp2Store({
     modelRuntimeAdapterResolver: (input) =>
       modelRuntimeAdapters.get(`${input.executionTarget}:${input.modelId}`)
@@ -124,7 +133,7 @@ async function main() {
       'Respond with strict JSON only: {"verdict":"PASS"|"FAIL","reason":"<one sentence>"}'
     ].join("\n");
 
-    const judgeText = await judge(judgePrompt, config, backendAdapter !== undefined);
+    const judgeText = await judge(judgePrompt, vercelAdapter, modelId);
     const parsedVerdict = parseJudgeVerdict(judgeText);
     results.push({
       id: scenario.id,
@@ -136,6 +145,7 @@ async function main() {
   }
 
   await app.close();
+  await artifactPool.end();
 
   const passCount = results.filter((result) => result.verdict === "PASS").length;
   const passRate = passCount / results.length;
@@ -160,44 +170,38 @@ async function main() {
 
 async function judge(
   prompt: string,
-  config: ReturnType<typeof readEnvironment>,
-  tryLocalFirst: boolean
+  adapter: ModelRuntimeAdapter,
+  modelId: string
 ): Promise<string> {
-  if (tryLocalFirst) {
-    try {
-      return await judgeViaLocalBackend(prompt, config);
-    } catch (error) {
-      console.warn(
-        `Local backend judge call failed, falling back to cloud: ${(error as Error).message}`
-      );
-    }
+  try {
+    return await judgeViaVercel(prompt, adapter, modelId);
+  } catch (error) {
+    console.warn(
+      `Vercel inference judge call failed, falling back to cloud: ${(error as Error).message}`
+    );
   }
   return judgeViaOpenAi(prompt);
 }
 
-async function judgeViaLocalBackend(
+async function judgeViaVercel(
   prompt: string,
-  config: ReturnType<typeof readEnvironment>
+  adapter: ModelRuntimeAdapter,
+  modelId: string
 ): Promise<string> {
-  const response = await fetch(`${config.backendInferenceBaseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${config.inferenceServiceToken}`
+  const result = await adapter.generate({
+    context: {
+      agentId: "builtin:pi:v1",
+      shopId: "ai-eval",
+      modelId,
+      conversationId: "ai-eval:judge"
     },
-    body: JSON.stringify({
-      modelId: config.backendInferenceModelId,
-      prompt,
-      maxTokens: 200,
-      temperature: 0,
-      jsonOutput: true
-    })
+    prompt: {
+      message: prompt,
+      allowedTools: [],
+      schemaVersion: "cp11-runtime-model-v1"
+    }
   });
-  if (!response.ok) {
-    throw new Error(`Local backend judge call returned ${response.status}`);
-  }
-  const body = (await response.json()) as { text: string };
-  return body.text;
+  return result.text;
 }
 
 async function judgeViaOpenAi(prompt: string): Promise<string> {

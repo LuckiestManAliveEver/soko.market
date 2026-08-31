@@ -56,19 +56,21 @@ vendor unions. Adding a provider registers metadata and an adapter; it does not 
 platform provider enum. The web application imports `ModelExecutionTarget`, `ModelProviderId`, and
 `RuntimeModelProviderName` from `@soko/shared-types` rather than maintaining parallel unions.
 
-The only native execution targets are (as of ADR-device-independent-runtime-and-registry-discovery.md,
+The native execution targets are (as of ADR-device-independent-runtime-and-registry-discovery.md,
 `browser-local` and `installed-app` were retired — a client device never needs a private model copy
-to chat):
+to chat; as of docs/runtime/vercel-inference-audit.md, `vercel` became the platform default hosted
+target):
 
 | Target               | Meaning                                                                                                                                                                               |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vercel`              | Inference runs on Soko's Vercel deployment (`services/ai-runtime`) - the platform default. Render mints a signed model-artifact URL; Vercel downloads, verifies, and executes it.     |
+| `backend`            | Reserved for a future self-hosted server-side execution path, dispatched through the same `ModelRuntimeAdapter` interface - not currently registered by any adapter in production.     |
 | `remote-shop-device` | Inference runs on a shop-owned machine registered as an execution host in the shop runtime graph (e.g. a merchant's laptop running Ollama) — never the currently-open browser/device. |
-| `backend`            | Inference is dispatched through an eligible server-side execution path, then through the selected model's provider adapter.                                                           |
 
-`backend` does not mean OpenAI, Ollama, or any other provider. Multiple model/provider bindings can
-use the same target, and a compatible model can use a different target without changing model
-identity. The invariant is: execution target = where, model = what, provider = how the model is
-accessed, and host/device = the concrete compute destination.
+`vercel`/`backend` do not mean any specific model vendor. Multiple model/provider bindings can use
+the same target, and a compatible model can use a different target without changing model identity.
+The invariant is: execution target = where, model = what, provider = how the model is accessed, and
+host/device = the concrete compute destination.
 
 ## Empty-slot semantics
 
@@ -168,23 +170,26 @@ touching that method's existing, live, heavily-tested tenant-activation behavior
 assigned. A conversation bound to the unconfigured global default is created and readable
 normally; only an actual inference turn against it surfaces `RUNTIME_MODEL_NOT_CONFIGURED`.
 
-## OpenAI's role now
+## OpenAI's role now (removed)
 
-OpenAI is exactly one optional cloud provider. `render.yaml`'s `OPENAI_API_KEY` /
-`OPENAI_FAST_MODEL` / `OPENAI_REASONING_MODEL` / `INFERENCE_CLOUD_PROVIDER` /
-`INFERENCE_CLOUD_MODEL_ALLOWLIST` were already not required by Render itself (`OPENAI_API_KEY` is
-`sync: false`, safe to leave blank); the only place that ever turned an absent key into a hard
-failure was the deleted startup health check. With the key blank, `createOpenAiProvider`
-(`services/api/src/inference/openai-provider.ts`) simply never registers an OpenAI adapter - the
-same optional-registration pattern `BACKEND_INFERENCE_ENABLED=false` already used for the backend
-adapter, now applied uniformly. When configured, each OpenAI-backed model is registered through
-the generic model/provider registry under the `backend` execution path. The runtime first resolves
-the model and target, then that model's provider adapter; it never branches on
-`executionTarget === "openai"`. The `openai-fast` / `openai-reasoning` catalog models and their
-provider metadata remain legitimate selectable options, not required infrastructure.
-This adapter (renamed from `createCloudFallbackProvider`/`cloud-fallback.ts` when the automatic
-local-to-cloud escalation feature was removed - see "No implicit `"backend"` default" above) now
-backs only explicit, deliberately-configured OpenAI model selection, never an automatic retry.
+`services/api/src/inference/openai-provider.ts`, `createOpenAiProvider`, and the `openai-fast` /
+`openai-reasoning` catalog entries were removed entirely as part of the Vercel inference migration
+(`docs/runtime/vercel-inference-audit.md`) - not because OpenAI-as-one-optional-provider was ever
+wrong in principle (the paragraph below is preserved as the historical rationale for *why* it was
+never required infrastructure), but because no code in this repository constructs an OpenAI adapter
+any more. Re-introducing an OpenAI-backed model means writing a new `ModelRuntimeAdapter`
+implementation and registering it under a chosen `ModelExecutionTarget` key, the same way
+`createVercelModelAdapter` is registered today - not restoring the deleted file.
+
+Historical rationale (accurate for the OpenAI-provider era, kept for context): OpenAI was exactly
+one optional cloud provider. `render.yaml`'s `OPENAI_API_KEY` / `OPENAI_FAST_MODEL` /
+`OPENAI_REASONING_MODEL` / `INFERENCE_CLOUD_PROVIDER` / `INFERENCE_CLOUD_MODEL_ALLOWLIST` were
+already not required by Render itself (`OPENAI_API_KEY` was `sync: false`, safe to leave blank);
+the only place that ever turned an absent key into a hard failure was the startup health check
+removed earlier in this document's history. With the key blank, the adapter simply never
+registered - the same optional-registration pattern `BACKEND_INFERENCE_ENABLED=false` used for the
+old backend adapter, applied uniformly. The runtime resolved the model and target first, then that
+model's provider adapter; it never branched on `executionTarget === "openai"`.
 
 ## Forward migration
 

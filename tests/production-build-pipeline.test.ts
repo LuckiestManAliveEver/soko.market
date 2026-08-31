@@ -43,7 +43,8 @@ describe("production workspace build pipeline", () => {
     expect(runtimeManifest.scripts["build:package"]).toContain("tsc -p tsconfig.build.json");
     // Loads a local .env when present (Render production has none - --env-file-if-exists is a
     // no-op there, same pattern as pnpm verify:production-runtime) so `pnpm dev`/`pnpm start`
-    // pick up BACKEND_INFERENCE_* locally without a separate env-loading step.
+    // pick up VERCEL_INFERENCE_URL and the Neon model-storage credentials locally without a
+    // separate env-loading step.
     expect(apiManifest.scripts.start).toBe("node --env-file-if-exists=../../.env dist/index.js");
   });
 
@@ -77,6 +78,11 @@ describe("production workspace build pipeline", () => {
     expect(buildConfig.compilerOptions.noEmit).toBe(false);
     expect(buildConfig.include).toContain("src/**/*.ts");
     expect(buildConfig.exclude).toContain("**/*.test.ts");
-    expect(entryPoint).toContain('from "./app.js"');
+    // The Vercel handler - not a standalone app/server - is the deployable surface (docs/
+    // architecture/inference-runtime.md); services/ai-runtime/api/*.ts wire it to Vercel's
+    // fetch-handler convention.
+    expect(entryPoint).toContain('from "./vercel-handler.js"');
+    expect(entryPoint).toContain("createVercelInferenceHandler");
+    expect(entryPoint).toContain("createVercelHealthHandler");
   });
 });

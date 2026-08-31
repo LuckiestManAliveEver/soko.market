@@ -76,8 +76,8 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
     );
   });
 
-  it("exposes exactly the two provider-neutral targets and rejects provider names", () => {
-    expect(modelExecutionTargets).toEqual(["backend", "remote-shop-device"]);
+  it("exposes exactly the three provider-neutral targets and rejects provider names", () => {
+    expect(modelExecutionTargets).toEqual(["vercel", "backend", "remote-shop-device"]);
     expect(isModelExecutionTarget("openai")).toBe(false);
     expect(isModelExecutionTarget("anthropic")).toBe(false);
 
@@ -283,15 +283,15 @@ describe("zero-setup hosted-first runtime provisioning", () => {
       text: JSON.stringify({ type: "response", message: "Soko AI is ready." }),
       modelId: "smollm2-360m",
       provider: "test-hosted-adapter",
-      executionTarget: "backend" as const,
+      executionTarget: "vercel" as const,
       latencyMs: 2
     }));
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ executionTarget }) =>
-        executionTarget === "backend"
+        executionTarget === "vercel"
           ? {
               provider: "test",
-              executionTarget: "backend",
+              executionTarget: "vercel",
               canRun: async () => ({ available: true, errorCode: null, message: null }),
               healthCheck: async () => {
                 throw new Error("not used in this test");
@@ -348,7 +348,7 @@ describe("zero-setup hosted-first runtime provisioning", () => {
         model: {
           status: "available",
           modelId: "smollm2-360m",
-          executionTarget: "backend",
+          executionTarget: "vercel",
           fallbackIndex: 0
         }
       }
@@ -375,15 +375,15 @@ describe("zero-setup hosted-first runtime provisioning", () => {
       text: JSON.stringify({ type: "response", message: "Hi there!" }),
       modelId: "smollm2-360m",
       provider: "test-hosted-adapter",
-      executionTarget: "backend" as const,
+      executionTarget: "vercel" as const,
       latencyMs: 2
     }));
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ executionTarget }) =>
-        executionTarget === "backend"
+        executionTarget === "vercel"
           ? {
               provider: "test",
-              executionTarget: "backend",
+              executionTarget: "vercel",
               canRun: async () => ({ available: true, errorCode: null, message: null }),
               healthCheck: async () => {
                 throw new Error("not used in this test");
@@ -433,7 +433,7 @@ describe("zero-setup hosted-first runtime provisioning", () => {
         model: {
           status: "available",
           modelId: "smollm2-360m",
-          executionTarget: "backend"
+          executionTarget: "vercel"
         }
       }
     });
@@ -455,15 +455,15 @@ describe("zero-setup hosted-first runtime provisioning", () => {
       text: JSON.stringify({ type: "response", message: "Still ready." }),
       modelId: "smollm2-360m",
       provider: "test-hosted-adapter",
-      executionTarget: "backend" as const,
+      executionTarget: "vercel" as const,
       latencyMs: 2
     }));
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ executionTarget }) =>
-        executionTarget === "backend"
+        executionTarget === "vercel"
           ? {
               provider: "test",
-              executionTarget: "backend",
+              executionTarget: "vercel",
               canRun: async () => ({ available: true, errorCode: null, message: null }),
               healthCheck: async () => {
                 throw new Error("not used in this test");

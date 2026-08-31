@@ -8,21 +8,20 @@ afterEach(() => {
 
 describe("model selection spoof resistance", () => {
   it("uses an explicitly selected hosted adapter without a local prerequisite and ignores per-turn model spoofing", async () => {
-    vi.stubEnv("INFERENCE_CLOUD_PROVIDER", "openai");
-    vi.stubEnv("INFERENCE_CLOUD_MODEL_ALLOWLIST", "openai-fast,openai-reasoning");
-    vi.stubEnv("OPENAI_API_KEY", "test-server-key");
-
     const { createCp2Store } = await import("../services/api/src/cp2/store");
     const resolvedModelIds: string[] = [];
-    const cloudProvider: RuntimeModelProvider = {
-      name: "openai",
+    // smollm2-360m is the platform's only source: "hosted" catalog model (format: "remote", no
+    // downloadable artifact) - it can only run through a server-reachable target (Vercel), never a
+    // per-device install, which is exactly the property this test exercises.
+    const hostedProvider: RuntimeModelProvider = {
+      name: "llama.cpp",
       async complete() {
         return {
-          provider: "openai",
+          provider: "llama.cpp",
           status: "available",
           outputText: JSON.stringify({
             type: "response",
-            message: "Cloud fallback handled the request."
+            message: "Vercel-hosted inference handled the request."
           }),
           durationMs: 1,
           errorCode: null,
@@ -33,7 +32,7 @@ describe("model selection spoof resistance", () => {
     const store = createCp2Store({
       runtimeModelProviderResolver(modelId) {
         resolvedModelIds.push(modelId);
-        return modelId === "openai-fast" ? cloudProvider : undefined;
+        return modelId === "smollm2-360m" ? hostedProvider : undefined;
       }
     });
     const auth = store.signupWithPhonePin({ destination: "+254700799991", pin: "2468" });
@@ -45,7 +44,7 @@ describe("model selection spoof resistance", () => {
     store.activateAiModel({
       sessionId: auth.session.id,
       businessId: created.business.id,
-      modelId: "openai-fast"
+      modelId: "smollm2-360m"
     });
     expect(
       store.updateAgentProfile({
@@ -54,7 +53,7 @@ describe("model selection spoof resistance", () => {
         profile: {
           name: "Cross Device Agent",
           description: "Local-first shop agent",
-          modelId: "openai-fast",
+          modelId: "smollm2-360m",
           role: "Business assistant",
           language: "en",
           personality: "Careful",
@@ -66,14 +65,14 @@ describe("model selection spoof resistance", () => {
           status: "active"
         }
       }).modelId
-    ).toBe("openai-fast");
+    ).toBe("smollm2-360m");
 
     expect(
       store.getActiveAiModel({
         sessionId: auth.session.id,
         businessId: created.business.id
       }).modelId
-    ).toBe("openai-fast");
+    ).toBe("smollm2-360m");
 
     const turn = await store.createRuntimeTurn({
       sessionId: auth.session.id,
@@ -84,16 +83,16 @@ describe("model selection spoof resistance", () => {
         contextScripts: [],
         integrations: [],
         knowledge: "Use saved shop records.",
-        model: "openai-fast",
+        model: "smollm2-360m",
         role: "Business assistant",
         instructions: "Help with shop operations.",
         tools: []
       }
     });
-    expect(resolvedModelIds).toContain("openai-fast");
+    expect(resolvedModelIds).toContain("smollm2-360m");
     expect(turn.turn).toMatchObject({
-      model: { provider: "openai", status: "available" },
-      response: "Cloud fallback handled the request."
+      model: { provider: "llama.cpp", status: "available" },
+      response: "Vercel-hosted inference handled the request."
     });
 
     resolvedModelIds.length = 0;
@@ -112,9 +111,9 @@ describe("model selection spoof resistance", () => {
         tools: []
       }
     });
-    expect(resolvedModelIds).toEqual(["openai-fast"]);
+    expect(resolvedModelIds).toEqual(["smollm2-360m"]);
     expect(spoofedLocalSelection.turn.model).toMatchObject({
-      provider: "openai",
+      provider: "llama.cpp",
       status: "available"
     });
   }, 15_000);

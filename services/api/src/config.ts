@@ -1,128 +1,33 @@
 import {
   repositoryDefaultRuntimePolicy,
-  resolveRuntimeModel,
   type EnvironmentConfig,
   type ModelExecutionTarget
 } from "@soko/shared-types";
 
-function numberFromEnv(name: string, fallback: number): number {
-  const value = process.env[name];
-
-  if (value === undefined || value.trim() === "") {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer.`);
-  }
-
-  return parsed;
-}
-
-function numberFromEnvList(names: string[], fallback: number): number {
-  for (const name of names) {
-    const value = process.env[name];
-
-    if (value !== undefined && value.trim() !== "") {
-      return numberFromEnv(name, fallback);
-    }
-  }
-
-  return fallback;
-}
-
-function booleanFromEnv(name: string, fallback: boolean): boolean {
-  const value = process.env[name];
-
-  if (value === undefined || value.trim() === "") {
-    return fallback;
-  }
-
-  const normalized = value.trim().toLowerCase();
-
-  if (["1", "true", "yes", "on"].includes(normalized)) {
-    return true;
-  }
-
-  if (["0", "false", "no", "off"].includes(normalized)) {
-    return false;
-  }
-
-  throw new Error(`${name} must be true or false.`);
-}
-
-function stringFromEnv(name: string, fallback: string): string {
-  const value = process.env[name];
-  return value === undefined || value.trim() === "" ? fallback : value;
-}
-
-function stringListFromEnv(name: string, fallback: string[]): string[] {
-  const value = process.env[name];
-
-  if (value === undefined || value.trim() === "") {
-    return fallback;
-  }
-
-  const values = value
-    .split(",")
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
-
-  return values.length > 0 ? values : fallback;
-}
-
 export function readEnvironment(): EnvironmentConfig {
-  const backendInferenceEnabled = booleanFromEnv("BACKEND_INFERENCE_ENABLED", false);
-  const configuredInferenceBaseUrl = stringFromEnv("BACKEND_INFERENCE_BASE_URL", "").trim();
-  const backendInferenceBaseUrl =
-    configuredInferenceBaseUrl !== "" &&
-    !/^[a-z][a-z0-9+.-]*:\/\//iu.test(configuredInferenceBaseUrl)
-      ? `http://${configuredInferenceBaseUrl}`
-      : configuredInferenceBaseUrl;
-  const inferenceServiceToken = stringFromEnv("INFERENCE_SERVICE_TOKEN", "").trim();
-  if (backendInferenceEnabled && backendInferenceBaseUrl.length === 0) {
-    throw new Error("BACKEND_INFERENCE_BASE_URL is required when BACKEND_INFERENCE_ENABLED=true.");
+  const vercelInferenceUrl = stringFromEnv("VERCEL_INFERENCE_URL", "").trim();
+  const inferenceRequired = booleanFromEnv("INFERENCE_REQUIRED", false);
+  const inferenceServiceToken = stringFromEnv("SOKO_INFERENCE_SERVICE_TOKEN", "").trim();
+  if (inferenceRequired && vercelInferenceUrl === "") {
+    throw new Error("VERCEL_INFERENCE_URL is required when INFERENCE_REQUIRED=true.");
   }
-  if (backendInferenceEnabled && inferenceServiceToken.length < 32) {
-    throw new Error(
-      "INFERENCE_SERVICE_TOKEN must contain at least 32 characters when backend inference is enabled."
-    );
+  if (vercelInferenceUrl !== "") validateHttpsUrl(vercelInferenceUrl, "VERCEL_INFERENCE_URL");
+  if (vercelInferenceUrl !== "" && inferenceServiceToken.length < 32) {
+    throw new Error("SOKO_INFERENCE_SERVICE_TOKEN must contain at least 32 characters.");
   }
-  if (backendInferenceBaseUrl.length > 0) {
-    const url = new URL(backendInferenceBaseUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw new Error("BACKEND_INFERENCE_BASE_URL must use http or https.");
+  const neonModelStorageEndpoint = stringFromEnv("NEON_MODEL_STORAGE_ENDPOINT", "").trim();
+  const neonModelStorageAccessKeyId = stringFromEnv("NEON_MODEL_STORAGE_ACCESS_KEY_ID", "").trim();
+  const neonModelStorageSecretAccessKey = stringFromEnv(
+    "NEON_MODEL_STORAGE_SECRET_ACCESS_KEY",
+    ""
+  ).trim();
+  if (vercelInferenceUrl !== "") {
+    if (neonModelStorageEndpoint === "")
+      throw new Error("NEON_MODEL_STORAGE_ENDPOINT is required for Vercel inference.");
+    validateHttpsUrl(neonModelStorageEndpoint, "NEON_MODEL_STORAGE_ENDPOINT");
+    if (neonModelStorageAccessKeyId === "" || neonModelStorageSecretAccessKey === "") {
+      throw new Error("Neon model-storage credentials are required for Vercel inference.");
     }
-    if (url.username !== "" || url.password !== "") {
-      throw new Error("BACKEND_INFERENCE_BASE_URL must not include credentials.");
-    }
-    if (
-      process.env.NODE_ENV === "production" &&
-      process.env.RENDER_SERVICE_ID !== undefined &&
-      ["127.0.0.1", "localhost", "::1"].includes(url.hostname)
-    ) {
-      throw new Error(
-        "BACKEND_INFERENCE_BASE_URL cannot use loopback from the Render API service."
-      );
-    }
-  }
-  const backendInferenceModelId = stringFromEnv(
-    "BACKEND_INFERENCE_MODEL_ID",
-    repositoryDefaultRuntimePolicy.modelId
-  );
-  const runtimeModel = resolveRuntimeModel(backendInferenceModelId);
-  if (backendInferenceEnabled && (runtimeModel === null || !runtimeModel.enabled)) {
-    throw new Error("BACKEND_INFERENCE_MODEL_ID must identify an enabled runtime model.");
-  }
-  const legacyProviderModel = stringFromEnv("BACKEND_INFERENCE_MODEL", "").trim();
-  if (
-    legacyProviderModel !== "" &&
-    runtimeModel !== null &&
-    legacyProviderModel !== runtimeModel.providerModelId
-  ) {
-    throw new Error("BACKEND_INFERENCE_MODEL must match the canonical runtime model mapping.");
   }
 
   return {
@@ -136,20 +41,16 @@ export function readEnvironment(): EnvironmentConfig {
       "DATABASE_URL",
       "postgres://soko:soko_dev_password@127.0.0.1:5432/soko_market"
     ),
-    backendInferenceEnabled,
-    backendInferenceBaseUrl,
-    backendInferenceConnectTimeoutMs: numberFromEnv("BACKEND_INFERENCE_CONNECT_TIMEOUT_MS", 5_000),
-    backendInferenceTimeoutMs: numberFromEnv("BACKEND_INFERENCE_TIMEOUT_MS", 90_000),
-    backendInferenceModelId,
-    backendInferenceRequired: booleanFromEnv("BACKEND_INFERENCE_REQUIRED", false),
+    vercelInferenceUrl,
+    vercelInferenceTimeoutMs: numberFromEnv("VERCEL_INFERENCE_TIMEOUT_MS", 300_000),
+    inferenceRequired,
     inferenceServiceToken,
+    neonModelStorageEndpoint,
+    neonModelStorageRegion: stringFromEnv("NEON_MODEL_STORAGE_REGION", "us-east-1").trim(),
+    neonModelStorageAccessKeyId,
+    neonModelStorageSecretAccessKey,
+    modelArtifactUrlTtlSeconds: numberFromEnv("MODEL_ARTIFACT_URL_TTL_SECONDS", 900),
     inferenceOwnerNodeEnabled: booleanFromEnv("INFERENCE_OWNER_NODE_ENABLED", false),
-    inferenceCloudProvider: readCloudProvider(),
-    inferenceCloudModelAllowlist: stringListFromEnv("INFERENCE_CLOUD_MODEL_ALLOWLIST", []),
-    inferenceCloudMonthlyTokenBudget: numberFromEnv(
-      "INFERENCE_CLOUD_MONTHLY_TOKEN_BUDGET",
-      100_000
-    ),
     inferenceMaxFallbacks: numberFromEnv("INFERENCE_MAX_FALLBACKS", 2),
     inferenceJobTimeoutMs: numberFromEnv("INFERENCE_JOB_TIMEOUT_MS", 120_000),
     workspaceDeliveryMaxFileBytes: numberFromEnv("WORKSPACE_DELIVERY_MAX_FILE_BYTES", 10_000_000),
@@ -180,11 +81,45 @@ export function readEnvironment(): EnvironmentConfig {
   };
 }
 
+function numberFromEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0)
+    throw new Error(`${name} must be a positive integer.`);
+  return parsed;
+}
+
+function numberFromEnvList(names: string[], fallback: number): number {
+  const configured = names.find((name) => (process.env[name]?.trim() ?? "") !== "");
+  return configured === undefined ? fallback : numberFromEnv(configured, fallback);
+}
+
+function booleanFromEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (value === undefined || value === "") return fallback;
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  throw new Error(`${name} must be true or false.`);
+}
+
+function stringFromEnv(name: string, fallback: string): string {
+  const value = process.env[name];
+  return value === undefined || value.trim() === "" ? fallback : value;
+}
+
+function stringListFromEnv(name: string, fallback: string[]): string[] {
+  const values = (process.env[name] ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return values.length === 0 ? fallback : values;
+}
+
 function portableIdFromEnv(name: string, fallback: string): string {
   const value = stringFromEnv(name, fallback).trim();
-  if (!/^[a-z0-9][a-z0-9:._-]{0,199}$/u.test(value)) {
+  if (!/^[a-z0-9][a-z0-9:._-]{0,199}$/u.test(value))
     throw new Error(`${name} must be a portable lowercase identifier.`);
-  }
   return value;
 }
 
@@ -193,48 +128,27 @@ function executionTargetFromEnv(
   fallback: ModelExecutionTarget
 ): ModelExecutionTarget {
   const value = stringFromEnv(name, fallback).trim();
-  if (["backend", "remote-shop-device"].includes(value)) {
+  if (["vercel", "backend", "remote-shop-device"].includes(value))
     return value as ModelExecutionTarget;
-  }
   throw new Error(`${name} is not a supported model execution target.`);
 }
 
-// Rate limiting requires a real, shared Redis so counters survive process restarts and are
-// consistent across instances. Silently falling back to loopback in production would make the
-// API connect to a Redis that doesn't exist there (each Render instance has no local Redis),
-// producing the opaque `rate_limit_redis_connection_error` / ECONNREFUSED 127.0.0.1:6379 failure
-// instead of a clear configuration error at boot. Non-production environments keep the loopback
-// default so local dev and CI don't require REDIS_URL to be set.
+function validateHttpsUrl(value: string, name: string): void {
+  const url = new URL(value);
+  if (
+    url.protocol !== "https:" &&
+    !(process.env.NODE_ENV !== "production" && url.protocol === "http:")
+  ) {
+    throw new Error(`${name} must use https.`);
+  }
+  if (url.username !== "" || url.password !== "")
+    throw new Error(`${name} must not include credentials.`);
+}
+
 function readRedisUrl(): string {
   const configured = stringFromEnv("REDIS_URL", "").trim();
   if (configured !== "") return configured;
-  if (process.env.NODE_ENV === "production") {
-    throw new Error(
-      "REDIS_URL is required in production. Configure the Render Key Value service " +
-        "(soko-market-rate-limit-cache) connection string; the API will not silently fall back " +
-        "to a local Redis that does not exist in production."
-    );
-  }
+  if (process.env.NODE_ENV === "production")
+    throw new Error("REDIS_URL is required in production.");
   return "redis://127.0.0.1:6379";
-}
-
-function readCloudProvider(): EnvironmentConfig["inferenceCloudProvider"] {
-  const value = stringFromEnv("INFERENCE_CLOUD_PROVIDER", "").trim().toLowerCase();
-  if (value === "" || value === "openai") {
-    return value;
-  }
-  throw new Error("INFERENCE_CLOUD_PROVIDER must be empty or openai.");
-}
-
-// Kept as a pure compatibility helper for installed-app and owner-node configuration tooling.
-// The Render API does not call it or construct an Ollama provider.
-export function resolveOllamaModelName(
-  modelId: string,
-  configuredModelId: string,
-  configuredProviderModel: string
-): string {
-  const runtimeModel = resolveRuntimeModel(modelId);
-  if (runtimeModel !== null) return runtimeModel.providerModelId;
-  if (modelId === configuredModelId) return configuredProviderModel;
-  return modelId;
 }

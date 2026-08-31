@@ -21,17 +21,18 @@ describe("DB-hosted platform model/agent catalog", () => {
         "qwen2.5-0.5b-android",
         "qwen2.5-1.5b-android",
         "sokoclaw-local",
-        "llama-cpp-configured",
-        "openai-fast",
-        "openai-reasoning"
+        "llama-cpp-configured"
       ].sort()
     );
     expect(store.listAgentCatalog().map((agent) => agent.id)).toEqual(["builtin:shopkeeper"]);
   });
 
-  it("lets an operator disable a hosted profile without bypassing deployment readiness gates", () => {
-    expect(computeModelAvailability("openai-fast", false)).toBe(false);
-    expect(computeModelAvailability("openai-reasoning", false)).toBe(false);
+  it("lets an operator disable the hosted profile without bypassing deployment readiness gates", () => {
+    // computeModelAvailability is a pure pass-through of the stored flag now that the OpenAI
+    // cloud-model special-casing has been removed (docs/architecture/inference-runtime.md) - no
+    // catalog entry gets availability computed any other way.
+    expect(computeModelAvailability("smollm2-360m", false)).toBe(false);
+    expect(computeModelAvailability("smollm2-360m", true)).toBe(true);
   });
 
   it("uses the effective catalog entry for runtime fallback selection and context budgeting", () => {

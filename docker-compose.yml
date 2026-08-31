@@ -28,46 +28,10 @@ services:
     volumes:
       - soko-redis-data:/data
 
-  ai-runtime:
-    build:
-      context: .
-      dockerfile: ./services/ai-runtime/Dockerfile
-    depends_on:
-      redis:
-        condition: service_healthy
-    environment:
-      NODE_ENV: development
-      PORT: "4002"
-      # Fixed local-loopback token, kept in sync with .env.example's INFERENCE_SERVICE_TOKEN so the
-      # API and this gateway agree without any manual setup step. Never reused outside local dev.
-      INFERENCE_SERVICE_TOKEN: ${INFERENCE_SERVICE_TOKEN:-a30b3c0bcd66528537039cf4b5aada5634c0db48bbf7dcd2}
-      INFERENCE_ENGINE: ollama
-      SOKO_PRIMARY_MODEL_ID: ${SOKO_PRIMARY_MODEL_ID:-smollm2-360m}
-      SOKO_PRIMARY_PROVIDER_MODEL_ID: ${SOKO_PRIMARY_PROVIDER_MODEL_ID:-smollm2:360m-instruct-q4_0}
-      MODEL_STORAGE_PATH: /var/lib/soko-models
-      MODEL_STORAGE_DURABLE: "true"
-      MODEL_AUTO_INSTALL: "true"
-      OLLAMA_KEEP_ALIVE: 10m
-      OLLAMA_MAX_LOADED_MODELS: "1"
-      REDIS_URL: redis://redis:6379
-    ports:
-      - "4002:4002"
-    volumes:
-      - soko-ai-runtime-models:/var/lib/soko-models
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:4002/health/live').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-        ]
-      interval: 10s
-      timeout: 5s
-      # The first boot pulls the model from Ollama's registry before the gateway process even
-      # starts listening; give it generous room instead of flapping unhealthy during that pull.
-      retries: 60
-      start_period: 30s
+  # Inference now runs as a Vercel serverless function (services/ai-runtime), not a container in
+  # this compose file. Run it locally with `pnpm --filter @soko/ai-runtime dev` (Vercel CLI dev
+  # server) and point the API at it with VERCEL_INFERENCE_URL=http://127.0.0.1:3000 - see
+  # docs/deployment/vercel-inference.md.
 
   receipt-ocr-worker:
     profiles: ["ocr"]
@@ -90,4 +54,3 @@ services:
 volumes:
   soko-postgres-data:
   soko-redis-data:
-  soko-ai-runtime-models:

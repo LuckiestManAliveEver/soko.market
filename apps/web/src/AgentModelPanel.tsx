@@ -343,7 +343,7 @@ export function AgentModelPanel({
         )}/models/${encodeURIComponent(model.id)}/test`,
         {
           shopId: business.id,
-          executionTarget: "backend"
+          executionTarget: "vercel"
         },
         { timeoutMs: backendModelProbeRequestTimeoutMs }
       );
@@ -394,7 +394,7 @@ export function AgentModelPanel({
         )}/models/${encodeURIComponent(model.id)}/activate`,
         {
           shopId: business.id,
-          executionTarget: "backend",
+          executionTarget: "vercel",
           executionMode: "LOCAL_FIRST",
           permissions: {
             allowInstalledApp: false,
@@ -488,7 +488,8 @@ export function AgentModelPanel({
     effectiveRuntime?.source === "default" ? null : activeAgentModelBinding;
   const activeBackendBinding =
     explicitAgentModelBinding?.status === "active" &&
-    explicitAgentModelBinding.executionTarget === "backend";
+    (explicitAgentModelBinding.executionTarget === "backend" ||
+      explicitAgentModelBinding.executionTarget === "vercel");
   const activeBackendConfigured =
     activeBackendBinding && activeAiModel?.runtimeAvailability?.backend === "configured";
   const serverBackendModels = visibleAiModels.filter(
@@ -667,7 +668,8 @@ export function AgentModelPanel({
                     const activeForAgent =
                       explicitAgentModelBinding?.status === "active" &&
                       explicitAgentModelBinding.modelId === model.id &&
-                      explicitAgentModelBinding.executionTarget === "backend";
+                      (explicitAgentModelBinding.executionTarget === "backend" ||
+                        explicitAgentModelBinding.executionTarget === "vercel");
                     const runtime = serverBackendRuntime[model.id];
                     const runtimeLabel =
                       runtime?.status === "available"

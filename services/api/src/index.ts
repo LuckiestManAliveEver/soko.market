@@ -1,12 +1,13 @@
-import type { RuntimeModelProvider, RuntimeModelProviderName } from "@soko/shared-types";
+import { runtimeModels, type RuntimeModelProviderName } from "@soko/shared-types";
+import { Pool } from "pg";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
-import { createOpenAiProvider } from "./inference/openai-provider.js";
 import {
-  createBackendModelAdapterRegistry,
-  createProviderModelAdapter,
+  createVercelInferenceClient,
+  createVercelModelAdapter,
   type ModelRuntimeAdapter
 } from "./inference/model-runtime.js";
+import { createNeonModelArtifactStore } from "./inference/model-artifact-store.js";
 import { OwnerNodeBroker } from "./inference/owner-node-broker.js";
 import {
   startAccountDeletionRunner,
@@ -41,47 +42,29 @@ import { createEmailMailboxProviderClient } from "./messaging/email-provider-cli
 
 const config = readEnvironment();
 const rateLimitRedisClient = createRateLimitRedisClient(config.redisUrl);
-const openAiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
-const cloudProviders = new Map<string, RuntimeModelProvider>();
-for (const [modelId, model, maxOutputTokens, timeoutMs] of [
-  ["openai-fast", process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini", 256, 15_000],
-  ["openai-reasoning", process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2", 512, 30_000]
-] as const) {
-  const provider = createOpenAiProvider({
-    enabled: config.inferenceCloudProvider === "openai",
-    apiKey: openAiApiKey,
-    model,
-    modelId,
-    modelAllowlist: config.inferenceCloudModelAllowlist,
-    maxOutputTokens,
-    monthlyTokenBudget: config.inferenceCloudMonthlyTokenBudget,
-    timeoutMs
-  });
-  if (provider !== undefined) cloudProviders.set(modelId, provider);
-}
-const runtimeModelProviderResolver = (modelId: string) => {
-  return cloudProviders.get(modelId);
-};
 const modelRuntimeAdapters = new Map<string, ModelRuntimeAdapter>();
-let backendModelAdapter: ModelRuntimeAdapter | undefined;
-if (config.backendInferenceEnabled) {
-  const backendRegistry = createBackendModelAdapterRegistry({
-    baseUrl: config.backendInferenceBaseUrl,
+let primaryInferenceAdapter: ModelRuntimeAdapter | undefined;
+let artifactPool: Pool | undefined;
+if (config.vercelInferenceUrl !== "") {
+  artifactPool = new Pool({ connectionString: config.databaseUrl, max: 2 });
+  const artifactStore = createNeonModelArtifactStore({
+    database: artifactPool,
+    endpoint: config.neonModelStorageEndpoint,
+    region: config.neonModelStorageRegion,
+    accessKeyId: config.neonModelStorageAccessKeyId,
+    secretAccessKey: config.neonModelStorageSecretAccessKey,
+    downloadUrlTtlSeconds: config.modelArtifactUrlTtlSeconds
+  });
+  const client = createVercelInferenceClient({
+    baseUrl: config.vercelInferenceUrl,
     serviceToken: config.inferenceServiceToken,
-    connectTimeoutMs: config.backendInferenceConnectTimeoutMs,
-    timeoutMs: config.backendInferenceTimeoutMs,
-    primaryModelId: config.backendInferenceModelId
+    timeoutMs: config.vercelInferenceTimeoutMs
   });
-  for (const [key, adapter] of backendRegistry.adapters) modelRuntimeAdapters.set(key, adapter);
-  backendModelAdapter = backendRegistry.primaryAdapter;
-}
-for (const [modelId, provider] of cloudProviders) {
-  const adapter = createProviderModelAdapter({
-    modelId,
-    provider,
-    executionTarget: "backend"
-  });
-  modelRuntimeAdapters.set(`${adapter.executionTarget}:${modelId}`, adapter);
+  for (const model of Object.values(runtimeModels).filter((candidate) => candidate.enabled)) {
+    const adapter = createVercelModelAdapter({ modelId: model.id, artifactStore, client });
+    modelRuntimeAdapters.set(`vercel:${model.id}`, adapter);
+    if (model.id === config.platformDefaultRuntime.modelId) primaryInferenceAdapter = adapter;
+  }
 }
 const modelRuntimeAdapterResolver = (input: {
   modelId: string;
@@ -124,7 +107,6 @@ const shouldUsePostgresStore =
 const cp2StoreOptions = {
   channelGateway,
   emailMailboxProviderClient,
-  runtimeModelProviderResolver,
   modelRuntimeAdapterResolver,
   platformDefaultRuntime: config.platformDefaultRuntime,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
@@ -138,9 +120,8 @@ const cp2StoreOptions = {
 };
 
 // Runtime resources remain provider-neutral and independently swappable. Deployments that promise
-// zero-setup AI set BACKEND_INFERENCE_REQUIRED=true, making /health/ready fail unless the configured
-// default backend adapter can reach its model host. Optional provider adapters are still registered
-// uniformly and never become implicit fallbacks.
+// zero-setup AI set INFERENCE_REQUIRED=true, making /health/ready fail unless the configured
+// Vercel execution host can reach the selected model artifact.
 const cp2Store = await createCp2StoreOrExplainSchemaFailure();
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
@@ -148,7 +129,7 @@ const apiOptions = {
     15_000_000,
     Math.ceil((config.workspaceDeliveryMaxFileBytes * 4) / 3) + 1_000_000
   ),
-  inferenceRequired: config.backendInferenceRequired,
+  inferenceRequired: config.inferenceRequired,
   rateLimitRedisClient,
   ...(renderDeployWebhookSecret === "" ? {} : { renderDeployWebhookSecret }),
   cp2: {
@@ -213,6 +194,7 @@ app.addHook("onClose", async () => {
   await notificationDeliveryRunner?.stop();
   await accountDeletionRunner?.stop();
   rateLimitRedisClient.disconnect();
+  await artifactPool?.end();
   if (isClosableStore(cp2Store)) {
     await cp2Store.close();
   }
@@ -344,44 +326,37 @@ function isFlushableStore(store: unknown): store is { flush: () => Promise<void>
   return typeof (store as { flush?: unknown }).flush === "function";
 }
 
-async function cloudDiagnostic() {
-  const provider = cloudProviders.values().next().value as RuntimeModelProvider | undefined;
-  return (
-    (await provider?.diagnose?.(false)) ?? {
-      provider: "openai" as const,
-      status: "unavailable" as const,
-      model: null,
-      modelAvailable: null,
-      inferenceAvailable: null,
-      errorCode: "CLOUD_FALLBACK_DISABLED",
-      checkedAt: new Date().toISOString()
-    }
-  );
-}
-
 function hasInferenceDiagnostic(): boolean {
-  return backendModelAdapter !== undefined || cloudProviders.size > 0;
+  return primaryInferenceAdapter !== undefined;
 }
 
 async function runtimeDiagnostic(runInference: boolean) {
-  if (backendModelAdapter !== undefined) {
+  if (primaryInferenceAdapter !== undefined) {
     const context = {
       agentId: "health-check",
       shopId: "health-check",
-      modelId: config.backendInferenceModelId
+      modelId: config.platformDefaultRuntime.modelId
     };
     const result = runInference
-      ? await backendModelAdapter.healthCheck(context)
-      : await backendModelAdapter.canRun(context);
+      ? await primaryInferenceAdapter.healthCheck(context)
+      : await primaryInferenceAdapter.canRun(context);
     return {
-      provider: backendModelAdapter.provider as RuntimeModelProviderName,
+      provider: primaryInferenceAdapter.provider as RuntimeModelProviderName,
       status: result.available ? ("ready" as const) : ("unavailable" as const),
-      model: config.backendInferenceModelId,
+      model: config.platformDefaultRuntime.modelId,
       modelAvailable: result.available,
       inferenceAvailable: runInference ? result.available : null,
       errorCode: result.errorCode,
       checkedAt: new Date().toISOString()
     };
   }
-  return cloudDiagnostic();
+  return {
+    provider: "llama.cpp" as const,
+    status: "unavailable" as const,
+    model: config.platformDefaultRuntime.modelId,
+    modelAvailable: false,
+    inferenceAvailable: false,
+    errorCode: "INFERENCE_SERVICE_UNCONFIGURED",
+    checkedAt: new Date().toISOString()
+  };
 }

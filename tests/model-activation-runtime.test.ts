@@ -7,8 +7,10 @@ import type {
 } from "../packages/shared-types/src";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
+import type { ModelArtifactStore } from "../services/api/src/inference/model-artifact-store";
 import {
-  createBackendModelAdapter,
+  createVercelInferenceClient,
+  createVercelModelAdapter,
   ModelRuntimeError,
   type ModelRuntimeAdapter
 } from "../services/api/src/inference/model-runtime";
@@ -17,12 +19,15 @@ const primaryModelId = "qwen2.5-0.5b-android";
 const replacementModelId = "qwen2.5-1.5b-android";
 
 describe("agent model activation runtime", () => {
-  it("advertises backend execution only when the model has a configured adapter", () => {
+  it("advertises backend execution only when the platform's default hosted target has a configured adapter", () => {
     const withoutBackend = createCp2Store();
     const withBackend = createCp2Store({
+      // "backend" here is the frontend's stable field name for "a hosted adapter is configured",
+      // not the "backend" ModelExecutionTarget literal - it tracks whichever target the platform
+      // default actually is (Vercel today; see repositoryDefaultRuntimePolicy).
       modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
-        modelId === primaryModelId && executionTarget === "backend"
-          ? healthyAdapter(primaryModelId)
+        modelId === primaryModelId && executionTarget === "vercel"
+          ? healthyAdapter(primaryModelId, { executionTarget: "vercel" })
           : undefined
     });
 
@@ -739,7 +744,7 @@ describe("agent model activation runtime", () => {
     await app.close();
   });
 
-  it("rejects a hosted model activated against a non-backend execution target", async () => {
+  it("rejects a hosted model activated against a remote-shop-device execution target", async () => {
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId }) =>
         modelId === primaryModelId ? healthyAdapter(primaryModelId) : undefined
@@ -747,9 +752,12 @@ describe("agent model activation runtime", () => {
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700002006", "Hosted Model Shop");
 
+    // smollm2-360m is the only catalog entry with source: "hosted" (format: "remote", no
+    // downloadable artifact) - it can only run through a server-reachable target (Vercel today),
+    // never the merchant's own device.
     const response = await app.inject({
       method: "POST",
-      url: `/api/agents/${owner.businessId}/models/openai-fast/activate`,
+      url: `/api/agents/${owner.businessId}/models/smollm2-360m/activate`,
       headers: jsonHeaders(owner.cookie),
       payload: JSON.stringify({
         ...activationPayload(owner.businessId),
@@ -787,16 +795,18 @@ describe("agent model activation runtime", () => {
   });
 });
 
-describe("backend model adapter", () => {
-  it("validates provider identity and captures usage and latency", async () => {
-    const fetchMock = gatewayFetch();
-    const adapter = createBackendModelAdapter({
-      baseUrl: "soko-market-inference:4002",
+describe("Vercel model adapter", () => {
+  it("validates artifact availability and captures usage and latency", async () => {
+    const requestMock = vercelInferenceFetch();
+    const adapter = createVercelModelAdapter({
       modelId: primaryModelId,
-      serviceToken: "test-inference-token",
-      connectTimeoutMs: 500,
-      timeoutMs: 1_000,
-      fetch: fetchMock
+      artifactStore: fakeArtifactStore(),
+      client: createVercelInferenceClient({
+        baseUrl: "https://vercel-inference.example",
+        serviceToken: "test-inference-token-that-is-at-least-32-characters",
+        timeoutMs: 1_000,
+        request: requestMock
+      })
     });
     const health = await adapter.healthCheck({
       agentId: "agent",
@@ -806,54 +816,68 @@ describe("backend model adapter", () => {
     expect(health).toMatchObject({
       available: true,
       modelId: primaryModelId,
-      provider: "ollama",
-      executionTarget: "backend"
+      provider: "llama.cpp",
+      executionTarget: "vercel"
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      new URL("http://soko-market-inference:4002/v1/models/qwen2.5-0.5b-android/probe"),
+    expect(requestMock).toHaveBeenCalledWith(
+      new URL("https://vercel-inference.example/health"),
       expect.objectContaining({
-        method: "POST",
+        method: "GET",
         credentials: "omit",
         headers: expect.objectContaining({
-          authorization: "Bearer test-inference-token"
+          authorization: "Bearer test-inference-token-that-is-at-least-32-characters"
         })
       })
     );
   });
 
-  it("rejects empty and mismatched backend responses", async () => {
-    for (const [gatewayOptions, expectedCode] of [
-      [{ providerModelId: "other:1b" }, "MODEL_IDENTITY_MISMATCH"],
-      [{ text: "" }, "INVALID_INFERENCE_RESPONSE"]
-    ]) {
-      const adapter = createBackendModelAdapter({
-        baseUrl: "http://soko-market-inference:4002",
-        modelId: primaryModelId,
-        serviceToken: "test-inference-token",
-        connectTimeoutMs: 500,
+  it("rejects an empty generation result and a mismatched result requestId", async () => {
+    const emptyText = createVercelModelAdapter({
+      modelId: primaryModelId,
+      artifactStore: fakeArtifactStore(),
+      client: createVercelInferenceClient({
+        baseUrl: "https://vercel-inference.example",
+        serviceToken: "test-inference-token-that-is-at-least-32-characters",
         timeoutMs: 1_000,
-        fetch: gatewayFetch(gatewayOptions)
-      });
-      await expect(
-        adapter.generate({
-          context: { agentId: "agent", shopId: "shop", modelId: primaryModelId },
-          prompt: runtimePrompt("hello")
-        })
-      ).rejects.toMatchObject({
-        code: expectedCode
-      });
-    }
+        request: vercelInferenceFetch({ text: "" })
+      })
+    });
+    await expect(
+      emptyText.generate({
+        context: { agentId: "agent", shopId: "shop", modelId: primaryModelId },
+        prompt: runtimePrompt("hello")
+      })
+    ).rejects.toMatchObject({ code: "INVALID_INFERENCE_RESPONSE" });
+
+    const mismatchedRequestId = createVercelModelAdapter({
+      modelId: primaryModelId,
+      artifactStore: fakeArtifactStore(),
+      client: createVercelInferenceClient({
+        baseUrl: "https://vercel-inference.example",
+        serviceToken: "test-inference-token-that-is-at-least-32-characters",
+        timeoutMs: 1_000,
+        request: vercelInferenceFetch({ resultRequestId: "a-different-request-id" })
+      })
+    });
+    await expect(
+      mismatchedRequestId.generate({
+        context: { agentId: "agent", shopId: "shop", modelId: primaryModelId },
+        prompt: runtimePrompt("hello")
+      })
+    ).rejects.toMatchObject({ code: "INVALID_INFERENCE_RESPONSE" });
   });
 
   it("requests the runtime JSON contract and normalizes a plain model response", async () => {
-    const fetchMock = gatewayFetch({ text: "market" });
-    const adapter = createBackendModelAdapter({
-      baseUrl: "http://soko-market-inference:4002",
+    const requestMock = vercelInferenceFetch({ text: "market" });
+    const adapter = createVercelModelAdapter({
       modelId: primaryModelId,
-      serviceToken: "test-inference-token",
-      connectTimeoutMs: 500,
-      timeoutMs: 1_000,
-      fetch: fetchMock
+      artifactStore: fakeArtifactStore(),
+      client: createVercelInferenceClient({
+        baseUrl: "https://vercel-inference.example",
+        serviceToken: "test-inference-token-that-is-at-least-32-characters",
+        timeoutMs: 1_000,
+        request: requestMock
+      })
     });
 
     const completion = await adapter.generate({
@@ -863,29 +887,33 @@ describe("backend model adapter", () => {
 
     expect(JSON.parse(completion.text)).toEqual({ type: "response", message: "market" });
     expect(completion).toMatchObject({
-      providerModelId: "qwen2.5:0.5b",
-      inferenceRequestId: "inference-request-1",
+      provider: "llama.cpp",
+      executionTarget: "vercel",
+      inferenceRequestId: expect.any(String),
       promptTokens: 7,
       completionTokens: 3
     });
-    const generationCall = fetchMock.mock.calls.find(([url]) =>
-      String(url).endsWith("/v1/chat/completions")
+    const generationCall = requestMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/v1/inference")
     );
-    expect(JSON.parse(String(generationCall?.[1]?.body))).toMatchObject({
-      modelId: primaryModelId,
-      jsonOutput: true
+    const sentBody = JSON.parse(String(generationCall?.[1]?.body));
+    expect(sentBody).toMatchObject({
+      model: { id: primaryModelId },
+      generation: { jsonOutput: true }
     });
   });
 
-  it("performs one successful readiness check and never retries generation", async () => {
-    const fetchMock = gatewayFetch({ generationStatus: 503 });
-    const adapter = createBackendModelAdapter({
-      baseUrl: "http://soko-market-inference:4002",
+  it("does not retry generation after a single Vercel-reported failure", async () => {
+    const requestMock = vercelInferenceFetch({ generationErrorCode: "MODEL_GENERATION_FAILED" });
+    const adapter = createVercelModelAdapter({
       modelId: primaryModelId,
-      serviceToken: "test-inference-token",
-      connectTimeoutMs: 500,
-      timeoutMs: 1_000,
-      fetch: fetchMock
+      artifactStore: fakeArtifactStore(),
+      client: createVercelInferenceClient({
+        baseUrl: "https://vercel-inference.example",
+        serviceToken: "test-inference-token-that-is-at-least-32-characters",
+        timeoutMs: 1_000,
+        request: requestMock
+      })
     });
 
     await expect(
@@ -896,49 +924,33 @@ describe("backend model adapter", () => {
     ).rejects.toMatchObject({ code: "MODEL_GENERATION_FAILED" });
 
     expect(
-      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/health/ready"))
-    ).toHaveLength(1);
-    expect(
-      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/v1/chat/completions"))
+      requestMock.mock.calls.filter(([url]) => String(url).endsWith("/v1/inference"))
     ).toHaveLength(1);
   });
 
-  it("propagates a caller abort into an in-flight model probe", async () => {
+  it("propagates a caller abort into an in-flight health check", async () => {
     const controller = new AbortController();
-    const fetchMock = vi.fn((input: URL | RequestInfo, init?: RequestInit) => {
-      if (String(input).endsWith("/health/ready")) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              ok: true,
-              engine: "ollama",
-              models: [
-                {
-                  id: primaryModelId,
-                  providerModelId: "qwen2.5:0.5b",
-                  available: true
-                }
-              ]
-            }),
-            { status: 200, headers: { "content-type": "application/json" } }
-          )
-        );
+    const requestMock = vi.fn((input: URL | RequestInfo, init?: RequestInit) => {
+      if (String(input).endsWith("/health")) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(init.signal?.reason ?? new DOMException("Aborted", "AbortError")),
+            { once: true }
+          );
+        });
       }
-      return new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener(
-          "abort",
-          () => reject(init.signal?.reason ?? new DOMException("Aborted", "AbortError")),
-          { once: true }
-        );
-      });
+      return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     });
-    const adapter = createBackendModelAdapter({
-      baseUrl: "http://soko-market-inference:4002",
+    const adapter = createVercelModelAdapter({
       modelId: primaryModelId,
-      serviceToken: "test-inference-token",
-      connectTimeoutMs: 500,
-      timeoutMs: 1_000,
-      fetch: fetchMock
+      artifactStore: fakeArtifactStore(),
+      client: createVercelInferenceClient({
+        baseUrl: "https://vercel-inference.example",
+        serviceToken: "test-inference-token-that-is-at-least-32-characters",
+        timeoutMs: 1_000,
+        request: requestMock as unknown as typeof fetch
+      })
     });
 
     const healthPromise = adapter.healthCheck({
@@ -947,7 +959,7 @@ describe("backend model adapter", () => {
       modelId: primaryModelId,
       signal: controller.signal
     });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(requestMock).toHaveBeenCalledTimes(1));
     controller.abort();
 
     await expect(healthPromise).resolves.toMatchObject({
@@ -957,64 +969,86 @@ describe("backend model adapter", () => {
   });
 });
 
-function gatewayFetch(
-  overrides: { providerModelId?: string; text?: string; generationStatus?: number } = {}
+function fakeArtifactStore(): ModelArtifactStore {
+  return {
+    async resolveArtifact(modelId) {
+      return {
+        id: `test:${modelId}`,
+        modelId,
+        storageProvider: "neon-object-storage",
+        bucket: "soko-model-artifacts",
+        objectKey: `models/${modelId}/model.gguf`,
+        format: "gguf",
+        quantization: "Q4_0",
+        sizeBytes: 12,
+        sha256: null,
+        contentType: "application/octet-stream",
+        status: "available",
+        createdAt: "2026-08-31T00:00:00.000Z",
+        updatedAt: "2026-08-31T00:00:00.000Z"
+      };
+    },
+    async createDownloadUrl(artifact) {
+      return {
+        ...artifact,
+        downloadUrl: "https://storage.example.neon.tech/soko-model-artifacts/model.gguf",
+        expiresAt: new Date(Date.now() + 60_000).toISOString()
+      };
+    },
+    async verifyArtifact() {
+      return { ok: true, sizeMatches: true, hashMatches: null, errorCode: null };
+    }
+  };
+}
+
+/** Mocks the NDJSON wire contract services/ai-runtime/src/vercel-handler.ts actually serves. */
+function vercelInferenceFetch(
+  overrides: {
+    text?: string;
+    resultRequestId?: string;
+    generationErrorCode?: string;
+  } = {}
 ): ReturnType<typeof vi.fn> {
-  const providerModelId = overrides.providerModelId ?? "qwen2.5:0.5b";
-  return vi.fn(async (input: URL | RequestInfo) => {
+  return vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
     const url = String(input);
-    const body = url.endsWith("/health/ready")
-      ? {
-          ok: true,
-          engine: "ollama",
-          models: [
-            {
-              id: primaryModelId,
-              providerModelId: "qwen2.5:0.5b",
-              available: true,
-              digest: "sha256:model"
-            }
-          ]
-        }
-      : url.endsWith("/probe")
-        ? {
-            ok: true,
-            modelId: primaryModelId,
-            providerModelId,
-            engine: "ollama",
-            latencyMs: 4
+    if (url.endsWith("/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    const requestId =
+      typeof init?.body === "string"
+        ? ((JSON.parse(init.body) as { requestId?: string }).requestId ?? "inference-request-1")
+        : "inference-request-1";
+    const events = overrides.generationErrorCode
+      ? [
+          { type: "status", state: "INITIALIZING" },
+          {
+            type: "error",
+            code: overrides.generationErrorCode,
+            message: "generation failed",
+            retryable: true
           }
-        : {
-            ok: true,
-            id: "inference-request-1",
-            modelId: primaryModelId,
-            providerModelId,
-            engine: "ollama",
+        ]
+      : [
+          { type: "status", state: "INITIALIZING" },
+          { type: "status", state: "READY", cacheHit: false },
+          {
+            type: "result",
+            requestId: overrides.resultRequestId ?? requestId,
             text: overrides.text ?? "SOKO_MODEL_OK",
-            latencyMs: 8,
-            usage: { promptTokens: 7, completionTokens: 3 },
-            finishReason: "stop"
-          };
-    const generationFailure =
-      url.endsWith("/v1/chat/completions") && overrides.generationStatus !== undefined;
-    return new Response(
-      JSON.stringify(
-        generationFailure
-          ? {
-              ok: false,
-              error: {
-                code: "MODEL_GENERATION_FAILED",
-                message: "generation failed",
-                retryable: true
-              }
-            }
-          : body
-      ),
-      {
-        status: generationFailure ? overrides.generationStatus : 200,
-        headers: { "content-type": "application/json" }
+            finishReason: "stop",
+            usage: { inputTokens: 7, outputTokens: 3 },
+            metrics: {}
+          }
+        ];
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const event of events)
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        controller.close();
       }
-    );
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "application/x-ndjson" } });
   });
 }
 
@@ -1023,7 +1057,7 @@ function healthyAdapter(
   options: {
     healthOk?: boolean;
     prompts?: RuntimeModelPrompt[];
-    executionTarget?: "backend";
+    executionTarget?: ModelExecutionTarget;
   } = {}
 ): ModelRuntimeAdapter {
   const executionTarget = options.executionTarget ?? "backend";

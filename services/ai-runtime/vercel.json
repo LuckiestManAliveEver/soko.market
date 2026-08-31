@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/v1/inference", "destination": "/api/inference" },
+    { "source": "/health", "destination": "/api/health" },
+    { "source": "/ready", "destination": "/api/health" }
+  ],
+  "functions": {
+    "api/inference.ts": {
+      "maxDuration": 300,
+      "memory": 2048,
+      "excludeFiles": "{node_modules/.pnpm/@node-llama-cpp+linux-x64-cuda*/**,node_modules/.pnpm/@node-llama-cpp+linux-x64-vulkan*/**,node_modules/.pnpm/@node-llama-cpp+linux-arm*/**}"
+    }
+  },
+  "regions": ["iad1"]
+}

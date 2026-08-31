@@ -1,18 +1,25 @@
 import { randomUUID } from "node:crypto";
 import type {
+  InferenceExecutionEvent,
+  InferenceExecutionRequest,
   ModelExecutionTarget,
   RuntimeModelCompletionResult,
-  RuntimeModelDiagnostic,
   RuntimeModelPrompt,
   RuntimeModelProvider
 } from "@soko/shared-types";
-import { resolveRuntimeModel, runtimeModels } from "@soko/shared-types";
 import { renderRuntimeModelOutputInstructions } from "@soko/tool-core";
+
+import type { ModelArtifactStore } from "./model-artifact-store.js";
 
 export interface ModelRuntimeContext {
   agentId: string;
+  agentAdapterId?: string;
   shopId: string;
   modelId: string;
+  conversationId?: string;
+  runtimeBindingId?: string;
+  executionHostId?: string;
+  runtimeContractVersion?: string;
   signal?: AbortSignal;
 }
 
@@ -40,7 +47,6 @@ export interface ModelRuntimeGenerationResult {
   completionTokens?: number;
   latencyMs: number;
   finishReason?: string;
-  providerModelId?: string;
   inferenceRequestId?: string;
 }
 
@@ -67,459 +73,213 @@ export class ModelRuntimeError extends Error {
   }
 }
 
-export interface BackendModelAdapterOptions {
-  baseUrl: string;
-  modelId: string;
-  serviceToken: string;
-  connectTimeoutMs: number;
-  timeoutMs: number;
-  fetch?: typeof fetch;
-  requestId?: () => string;
+export interface VercelInferenceClient {
+  health(signal?: AbortSignal): Promise<void>;
+  infer(
+    request: InferenceExecutionRequest,
+    options?: { signal?: AbortSignal; onDelta?: (text: string) => void }
+  ): Promise<Extract<InferenceExecutionEvent, { type: "result" }>>;
 }
 
-export function createBackendModelAdapter(
-  options: BackendModelAdapterOptions
-): ModelRuntimeAdapter {
-  const baseUrl = normalizeBackendBaseUrl(options.baseUrl);
-  const runtimeModel = resolveRuntimeModel(options.modelId);
-  if (runtimeModel === null) {
-    throw new Error(`No canonical runtime mapping exists for model ${options.modelId}.`);
-  }
-  const request = options.fetch ?? fetch;
-  const client = createBackendInferenceClient({
-    baseUrl,
-    serviceToken: options.serviceToken,
-    connectTimeoutMs: options.connectTimeoutMs,
-    timeoutMs: options.timeoutMs,
-    request,
-    ...(options.requestId === undefined ? {} : { requestId: options.requestId })
-  });
-
-  return {
-    provider: runtimeModel.provider,
-    executionTarget: "backend",
-    async canRun(context) {
-      if (context.modelId !== options.modelId) {
-        return {
-          available: false,
-          errorCode: "MODEL_IDENTITY_MISMATCH",
-          message: "This adapter does not serve the requested model."
-        };
-      }
-      try {
-        const readiness = await client.getReadiness(context.signal);
-        const model = readiness.models.find((candidate) => candidate.id === context.modelId);
-        if (model !== undefined && model.providerModelId !== runtimeModel.providerModelId) {
-          return {
-            available: false,
-            errorCode: "MODEL_IDENTITY_MISMATCH",
-            message: "The inference service reported an unexpected provider model."
-          };
-        }
-        return model?.available === true
-          ? { available: true, errorCode: null, message: null }
-          : {
-              available: false,
-              errorCode: "MODEL_NOT_INSTALLED",
-              message: "The model is not installed on the inference service."
-            };
-      } catch (error) {
-        const runtimeError = asModelRuntimeError(error);
-        return {
-          available: false,
-          errorCode: runtimeError.code,
-          message: runtimeError.message
-        };
-      }
-    },
-    async healthCheck(context) {
-      const startedAt = Date.now();
-      const availability = await this.canRun(context);
-      if (!availability.available) {
-        return {
-          ...availability,
-          modelId: context.modelId,
-          provider: this.provider,
-          executionTarget: this.executionTarget,
-          latencyMs: Date.now() - startedAt,
-          responsePreview: null,
-          retryable: false
-        };
-      }
-      try {
-        const result = await client.probeModel(context.modelId, context.signal);
-        if (result.providerModelId !== runtimeModel.providerModelId) {
-          throw new ModelRuntimeError(
-            "MODEL_IDENTITY_MISMATCH",
-            "The inference service probed an unexpected provider model.",
-            false
-          );
-        }
-        return {
-          available: true,
-          modelId: context.modelId,
-          provider: result.engine,
-          executionTarget: "backend",
-          latencyMs: result.latencyMs,
-          responsePreview: "SOKO_MODEL_OK",
-          errorCode: null,
-          message: null,
-          retryable: false
-        };
-      } catch (error) {
-        const runtimeError = asModelRuntimeError(error);
-        return {
-          available: false,
-          modelId: context.modelId,
-          provider: this.provider,
-          executionTarget: this.executionTarget,
-          latencyMs: Date.now() - startedAt,
-          responsePreview: null,
-          errorCode: runtimeError.code,
-          message: runtimeError.message,
-          retryable: runtimeError.retryable
-        };
-      }
-    },
-    async generate({ context, prompt }) {
-      const availability = await this.canRun(context);
-      if (!availability.available) {
-        throw new ModelRuntimeError(
-          availability.errorCode ?? "INFERENCE_SERVICE_UNREACHABLE",
-          availability.message ?? "The model runtime is unavailable.",
-          true
-        );
-      }
-      const result = await client.generate(
-        {
-          modelId: context.modelId,
-          prompt: buildBackendPrompt(prompt),
-          maxTokens: 256,
-          temperature: 0.2,
-          jsonOutput: true
+export function createVercelInferenceClient(options: {
+  baseUrl: string;
+  serviceToken: string;
+  timeoutMs: number;
+  request?: typeof fetch;
+}): VercelInferenceClient {
+  const baseUrl = normalizeBaseUrl(options.baseUrl, "VERCEL_INFERENCE_URL");
+  if (options.serviceToken.length < 32) throw new Error("Inference service token is too short.");
+  const invoke = async (path: string, init: RequestInit, signal?: AbortSignal) => {
+    const controller = new AbortController();
+    let externallyAborted = signal?.aborted === true;
+    const abort = () => {
+      externallyAborted = true;
+      controller.abort(signal?.reason);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
+    try {
+      return await (options.request ?? fetch)(new URL(path, baseUrl), {
+        ...init,
+        headers: {
+          accept: "application/x-ndjson, application/json",
+          authorization: `Bearer ${options.serviceToken}`,
+          ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+          ...init.headers
         },
-        context.signal
-      );
-      if (result.providerModelId !== runtimeModel.providerModelId) {
+        signal: controller.signal,
+        credentials: "omit"
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
         throw new ModelRuntimeError(
-          "MODEL_IDENTITY_MISMATCH",
-          "The inference service generated with an unexpected provider model.",
-          false
+          externallyAborted ? "INFERENCE_CANCELLED" : "INFERENCE_TIMEOUT",
+          externallyAborted ? "Inference was cancelled." : "Vercel inference timed out.",
+          true,
+          { cause: error }
         );
       }
-      const text = normalizeBackendModelText(result.text);
-      if (text.length === 0) {
+      throw new ModelRuntimeError(
+        "INFERENCE_SERVICE_UNREACHABLE",
+        "Vercel inference is unreachable.",
+        true,
+        { cause: error }
+      );
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    }
+  };
+  return {
+    async health(signal) {
+      const response = await invoke("/health", { method: "GET" }, signal);
+      if (!response.ok)
+        throw responseError(response.status, await response.json().catch(() => null));
+    },
+    async infer(request, callOptions = {}) {
+      const response = await invoke(
+        "/v1/inference",
+        { method: "POST", body: JSON.stringify(request) },
+        callOptions.signal
+      );
+      if (!response.ok)
+        throw responseError(response.status, await response.json().catch(() => null));
+      if (response.body === null) {
         throw new ModelRuntimeError(
           "INVALID_INFERENCE_RESPONSE",
-          "The inference service returned malformed model output.",
+          "Vercel returned no stream.",
           true
         );
       }
-      return {
-        text,
-        modelId: result.modelId,
-        provider: result.engine,
-        executionTarget: "backend",
-        ...(result.usage.promptTokens === null ? {} : { promptTokens: result.usage.promptTokens }),
-        ...(result.usage.completionTokens === null
-          ? {}
-          : { completionTokens: result.usage.completionTokens }),
-        latencyMs: result.latencyMs,
-        ...(result.finishReason === null ? {} : { finishReason: result.finishReason }),
-        providerModelId: result.providerModelId,
-        inferenceRequestId: result.id
-      };
-    }
-  };
-}
-
-export interface BackendModelAdapterRegistryOptions {
-  baseUrl: string;
-  serviceToken: string;
-  connectTimeoutMs: number;
-  timeoutMs: number;
-  /** The canonical model advertised by platform-default policy and `/health/ready` diagnostics. */
-  primaryModelId: string;
-  fetch?: typeof fetch;
-  requestId?: () => string;
-}
-
-export interface BackendModelAdapterRegistry {
-  /** Keyed by `${executionTarget}:${modelId}`, matching `modelRuntimeAdapterResolver`'s lookup. */
-  adapters: Map<string, ModelRuntimeAdapter>;
-  primaryAdapter: ModelRuntimeAdapter;
-}
-
-/**
- * Registers one backend adapter per enabled Ollama-backed canonical model, all sharing the same
- * ai-runtime gateway connection. This is what makes the backend execution target swappable per the
- * `Agent != Model != Execution Target != Execution Host != Provider` invariant
- * (docs/architecture/swappable-agent-model-runtime.md): activating a different enabled model for an
- * agent only needs that model actually installed on the gateway, never a code or adapter change.
- */
-export function createBackendModelAdapterRegistry(
-  options: BackendModelAdapterRegistryOptions
-): BackendModelAdapterRegistry {
-  const clientOptions = {
-    baseUrl: options.baseUrl,
-    serviceToken: options.serviceToken,
-    connectTimeoutMs: options.connectTimeoutMs,
-    timeoutMs: options.timeoutMs,
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-    ...(options.requestId === undefined ? {} : { requestId: options.requestId })
-  };
-  const swappableModelIds = new Set<string>([options.primaryModelId]);
-  for (const model of Object.values(runtimeModels)) {
-    if (model.enabled && model.provider === "ollama") swappableModelIds.add(model.id);
-  }
-  const adapters = new Map<string, ModelRuntimeAdapter>();
-  for (const modelId of swappableModelIds) {
-    const adapter = createBackendModelAdapter({ ...clientOptions, modelId });
-    adapters.set(`${adapter.executionTarget}:${modelId}`, adapter);
-  }
-  const primaryAdapter = adapters.get(`backend:${options.primaryModelId}`);
-  if (primaryAdapter === undefined) {
-    throw new Error(
-      `No backend adapter was registered for primary model ${options.primaryModelId}.`
-    );
-  }
-  return { adapters, primaryAdapter };
-}
-
-export interface BackendInferenceReadiness {
-  ok: true;
-  engine: string;
-  models: BackendInferenceModel[];
-}
-
-export interface BackendInferenceModel {
-  id: string;
-  providerModelId: string;
-  available: boolean;
-  digest: string | null;
-}
-
-export interface BackendInferenceClient {
-  getReadiness(signal?: AbortSignal): Promise<BackendInferenceReadiness>;
-  listModels(signal?: AbortSignal): Promise<BackendInferenceModel[]>;
-  probeModel(
-    modelId: string,
-    signal?: AbortSignal
-  ): Promise<{
-    ok: true;
-    modelId: string;
-    providerModelId: string;
-    engine: string;
-    latencyMs: number;
-  }>;
-  generate(
-    input: {
-      modelId: string;
-      prompt: string;
-      maxTokens: number;
-      temperature: number;
-      jsonOutput: boolean;
-    },
-    signal?: AbortSignal
-  ): Promise<{
-    ok: true;
-    id: string;
-    modelId: string;
-    providerModelId: string;
-    engine: string;
-    text: string;
-    latencyMs: number;
-    usage: { promptTokens: number | null; completionTokens: number | null };
-    finishReason: string | null;
-  }>;
-}
-
-export function createBackendInferenceClient(options: {
-  baseUrl: URL;
-  serviceToken: string;
-  connectTimeoutMs: number;
-  timeoutMs: number;
-  request: typeof fetch;
-  requestId?: () => string;
-}): BackendInferenceClient {
-  const invoke = async (input: {
-    path: string;
-    method?: "GET" | "POST";
-    body?: unknown;
-    signal?: AbortSignal;
-    retryReadiness?: boolean;
-    applyConnectTimeout?: boolean;
-  }): Promise<unknown> => {
-    const attempts = input.retryReadiness === true ? 2 : 1;
-    let lastError: unknown = null;
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      let buffer = "";
+      let result: Extract<InferenceExecutionEvent, { type: "result" }> | null = null;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
       try {
-        return await inferenceRequest(options, input);
-      } catch (error) {
-        lastError = error;
-        if (attempt + 1 >= attempts || !(error instanceof ModelRuntimeError) || !error.retryable) {
-          throw error;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (line.trim() === "") continue;
+            const event = parseEvent(line);
+            if (event.type === "delta") callOptions.onDelta?.(event.text);
+            if (event.type === "error") {
+              throw new ModelRuntimeError(event.code, event.message, event.retryable);
+            }
+            if (event.type === "result") result = event;
+          }
         }
+      } finally {
+        reader.releaseLock();
       }
-    }
-    throw lastError;
-  };
-
-  return {
-    async getReadiness(signal) {
-      const body = await invoke({
-        path: "/health/ready",
-        ...(signal === undefined ? {} : { signal }),
-        retryReadiness: true,
-        applyConnectTimeout: true
-      });
-      return parseModelListResponse(body);
-    },
-    async listModels(signal) {
-      const body = await invoke({
-        path: "/v1/models",
-        ...(signal === undefined ? {} : { signal }),
-        applyConnectTimeout: true
-      });
-      return parseModelListResponse(body).models;
-    },
-    async probeModel(modelId, signal) {
-      const body = await invoke({
-        path: `/v1/models/${encodeURIComponent(modelId)}/probe`,
-        method: "POST",
-        ...(signal === undefined ? {} : { signal })
-      });
-      if (
-        !isRecord(body) ||
-        body.ok !== true ||
-        body.modelId !== modelId ||
-        typeof body.providerModelId !== "string" ||
-        typeof body.engine !== "string" ||
-        typeof body.latencyMs !== "number"
-      ) {
-        throw invalidInferenceResponse();
+      if (buffer.trim() !== "") {
+        const event = parseEvent(buffer);
+        if (event.type === "result") result = event;
+        if (event.type === "error")
+          throw new ModelRuntimeError(event.code, event.message, event.retryable);
       }
-      return {
-        ok: true,
-        modelId,
-        providerModelId: body.providerModelId,
-        engine: body.engine,
-        latencyMs: body.latencyMs
-      };
-    },
-    async generate(input, signal) {
-      const body = await invoke({
-        path: "/v1/chat/completions",
-        method: "POST",
-        body: input,
-        ...(signal === undefined ? {} : { signal })
-      });
-      if (
-        !isRecord(body) ||
-        body.ok !== true ||
-        typeof body.id !== "string" ||
-        body.modelId !== input.modelId ||
-        typeof body.providerModelId !== "string" ||
-        typeof body.engine !== "string" ||
-        typeof body.text !== "string" ||
-        body.text.trim() === "" ||
-        typeof body.latencyMs !== "number" ||
-        !isRecord(body.usage)
-      ) {
-        throw invalidInferenceResponse();
+      if (result === null || result.requestId !== request.requestId || result.text.trim() === "") {
+        throw new ModelRuntimeError(
+          "INVALID_INFERENCE_RESPONSE",
+          "Vercel returned an invalid result.",
+          true
+        );
       }
-      const promptTokens = nullableNumber(body.usage.promptTokens);
-      const completionTokens = nullableNumber(body.usage.completionTokens);
-      if (promptTokens === undefined || completionTokens === undefined) {
-        throw invalidInferenceResponse();
-      }
-      return {
-        ok: true,
-        id: body.id,
-        modelId: input.modelId,
-        providerModelId: body.providerModelId,
-        engine: body.engine,
-        text: body.text,
-        latencyMs: body.latencyMs,
-        usage: { promptTokens, completionTokens },
-        finishReason: typeof body.finishReason === "string" ? body.finishReason : null
-      };
+      return result;
     }
   };
 }
 
-export function createProviderModelAdapter(input: {
+export function createVercelModelAdapter(input: {
   modelId: string;
-  provider: RuntimeModelProvider;
-  executionTarget: "backend";
+  artifactStore: ModelArtifactStore;
+  client: VercelInferenceClient;
 }): ModelRuntimeAdapter {
   return {
-    provider: input.provider.name,
-    executionTarget: input.executionTarget,
+    provider: "llama.cpp",
+    executionTarget: "vercel",
     async canRun(context) {
       if (context.modelId !== input.modelId) {
         return {
           available: false,
           errorCode: "MODEL_IDENTITY_MISMATCH",
-          message: "This adapter does not serve the requested model."
+          message: "The adapter does not serve this model."
         };
       }
-      const diagnostic: RuntimeModelDiagnostic | undefined = await input.provider.diagnose?.(false);
-      if (diagnostic !== undefined && diagnostic.status !== "ready") {
-        return {
-          available: false,
-          errorCode: diagnostic.errorCode ?? "RUNTIME_UNAVAILABLE",
-          message: "The configured provider is unavailable."
-        };
+      try {
+        const artifact = await input.artifactStore.resolveArtifact(context.modelId);
+        const verification = await input.artifactStore.verifyArtifact(artifact, context.signal);
+        if (!verification.ok) {
+          return {
+            available: false,
+            errorCode: verification.errorCode,
+            message: "The model artifact is unavailable."
+          };
+        }
+        await input.client.health(context.signal);
+        return { available: true, errorCode: null, message: null };
+      } catch (error) {
+        const normalized = asModelRuntimeError(error);
+        return { available: false, errorCode: normalized.code, message: normalized.message };
       }
-      return { available: true, errorCode: null, message: null };
     },
     async healthCheck(context) {
       const startedAt = Date.now();
-      try {
-        const completion = await input.provider.complete(healthPrompt());
-        const preview = completion.outputText?.slice(0, 120) ?? null;
-        const ok =
-          completion.status === "available" &&
-          completion.outputText !== null &&
-          completion.outputText.trim().length > 0;
-        return {
-          available: ok,
-          modelId: context.modelId,
-          provider: completion.provider,
-          executionTarget: input.executionTarget,
-          latencyMs: completion.durationMs || Date.now() - startedAt,
-          responsePreview: preview,
-          errorCode: ok ? null : (completion.errorCode ?? "MODEL_HEALTH_CHECK_FAILED"),
-          message: ok ? null : "The selected model did not pass its inference health check.",
-          retryable: true
-        };
-      } catch (error) {
-        const runtimeError = asModelRuntimeError(error);
-        return {
-          available: false,
-          modelId: context.modelId,
-          provider: input.provider.name,
-          executionTarget: input.executionTarget,
-          latencyMs: Date.now() - startedAt,
-          responsePreview: null,
-          errorCode: runtimeError.code,
-          message: runtimeError.message,
-          retryable: runtimeError.retryable
-        };
-      }
+      const availability = await this.canRun(context);
+      return {
+        ...availability,
+        modelId: context.modelId,
+        provider: this.provider,
+        executionTarget: this.executionTarget,
+        latencyMs: Date.now() - startedAt,
+        responsePreview: null,
+        retryable: availability.available || availability.errorCode === "ARTIFACT_NOT_FOUND"
+      };
     },
     async generate({ context, prompt }) {
-      const completion = await input.provider.complete(prompt);
-      if (completion.status !== "available" || completion.outputText === null) {
-        throw completionError(completion);
-      }
+      const startedAt = Date.now();
+      const artifact = await input.artifactStore.resolveArtifact(context.modelId);
+      const resolvedArtifact = await input.artifactStore.createDownloadUrl(artifact);
+      const requestId = randomUUID();
+      const result = await input.client.infer(
+        {
+          requestId,
+          conversationId: context.conversationId ?? `runtime:${context.shopId}`,
+          runtimeBindingId: context.runtimeBindingId ?? "runtime-unbound",
+          executionHostId: context.executionHostId ?? "builtin:vercel-inference:v1",
+          agent: { id: context.agentId, adapterId: context.agentAdapterId ?? "pi" },
+          model: {
+            id: context.modelId,
+            runtimeContractVersion: context.runtimeContractVersion ?? "1"
+          },
+          artifact: resolvedArtifact,
+          prompt: buildInferencePrompt(prompt),
+          generation: { maxTokens: 256, temperature: 0.2, jsonOutput: true }
+        },
+        { ...(context.signal === undefined ? {} : { signal: context.signal }) }
+      );
+      const text = normalizeModelText(result.text);
+      if (text === "")
+        throw new ModelRuntimeError(
+          "INVALID_INFERENCE_RESPONSE",
+          "The model returned malformed output.",
+          true
+        );
       return {
-        text: completion.outputText,
+        text,
         modelId: context.modelId,
-        provider: completion.provider,
-        executionTarget: input.executionTarget,
-        latencyMs: completion.durationMs
+        provider: "llama.cpp",
+        executionTarget: "vercel",
+        ...(result.usage.inputTokens === null ? {} : { promptTokens: result.usage.inputTokens }),
+        ...(result.usage.outputTokens === null
+          ? {}
+          : { completionTokens: result.usage.outputTokens }),
+        latencyMs: Date.now() - startedAt,
+        ...(result.finishReason === null ? {} : { finishReason: result.finishReason }),
+        inferenceRequestId: requestId
       };
     }
   };
@@ -552,22 +312,19 @@ export function runtimeProviderFromAdapter(input: {
               ? {}
               : { completionTokens: result.completionTokens }),
             ...(result.finishReason === undefined ? {} : { finishReason: result.finishReason }),
-            ...(result.providerModelId === undefined
-              ? {}
-              : { providerModelId: result.providerModelId }),
             ...(result.inferenceRequestId === undefined
               ? {}
               : { inferenceRequestId: result.inferenceRequestId })
           }
         };
       } catch (error) {
-        const runtimeError = asModelRuntimeError(error);
+        const normalized = asModelRuntimeError(error);
         return {
           provider: input.adapter.provider as RuntimeModelCompletionResult["provider"],
-          status: runtimeError.code === "INFERENCE_TIMEOUT" ? "timeout" : "unavailable",
+          status: normalized.code === "INFERENCE_TIMEOUT" ? "timeout" : "unavailable",
           outputText: null,
           durationMs: Date.now() - startedAt,
-          errorCode: runtimeError.code,
+          errorCode: normalized.code,
           metadata: {
             modelId: input.context.modelId,
             executionTarget: input.adapter.executionTarget
@@ -589,281 +346,89 @@ export function asModelRuntimeError(error: unknown): ModelRuntimeError {
       );
 }
 
-function healthPrompt(): RuntimeModelPrompt {
-  return {
-    message: "Reply with exactly: SOKO_MODEL_OK",
-    context: {
-      businessId: "health-check",
-      userId: "health-check",
-      role: "owner",
-      productCount: 0,
-      customerCount: 0,
-      supplierCount: 0,
-      invoiceCount: 0,
-      openInvoiceCount: 0,
-      paymentCount: 0,
-      importJobCount: 0,
-      logisticsCount: 0,
-      activeLogisticsCount: 0,
-      complianceExportCount: 0,
-      scheduledDeletionCount: 0,
-      verificationTier: "unverified",
-      deviceTrustLevel: "unknown",
-      betaAccessStatus: "not_invited",
-      betaReadinessStatus: "blocked",
-      openSupportTicketCount: 0,
-      crashFreeSessionRate: 1,
-      publicLaunchStatus: "closed",
-      launchReadinessStatus: "blocked",
-      openLaunchIncidentCount: 0,
-      lowStockCount: 0,
-      outstandingDebtTotal: 0,
-      unreadNotificationCount: 0,
-      knowledgeFactCount: 0
-    },
-    allowedTools: [],
-    schemaVersion: "cp11-runtime-model-v1"
-  };
-}
-
-function buildBackendPrompt(prompt: RuntimeModelPrompt): string {
+function buildInferencePrompt(prompt: RuntimeModelPrompt): string {
   const history = (prompt.conversationHistory ?? [])
     .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.content}`)
     .join("\n");
   return [
     "You are the model behind the Soko agent runtime.",
     renderRuntimeModelOutputInstructions(prompt.allowedTools),
-    ...(history.length === 0 ? [] : [`Recent conversation (oldest first):\n${history}`]),
+    ...(history === "" ? [] : [`Recent conversation (oldest first):\n${history}`]),
     prompt.message
   ].join("\n");
 }
 
-function normalizeBackendBaseUrl(value: string): URL {
-  const normalized = /^[a-z][a-z0-9+.-]*:\/\//iu.test(value.trim())
-    ? value.trim()
-    : `http://${value.trim()}`;
-  const url = new URL(normalized);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("BACKEND_INFERENCE_BASE_URL must use http or https.");
-  }
-  if (url.username !== "" || url.password !== "") {
-    throw new Error("BACKEND_INFERENCE_BASE_URL must not include credentials.");
-  }
-  return url;
-}
-
-async function inferenceRequest(
-  options: {
-    baseUrl: URL;
-    serviceToken: string;
-    connectTimeoutMs: number;
-    timeoutMs: number;
-    request: typeof fetch;
-    requestId?: () => string;
-  },
-  input: {
-    path: string;
-    method?: "GET" | "POST";
-    body?: unknown;
-    signal?: AbortSignal;
-    applyConnectTimeout?: boolean;
-  }
-): Promise<unknown> {
-  const controller = new AbortController();
-  let timeoutKind: "connect" | "request" | null = null;
-  const requestTimeout = setTimeout(() => {
-    timeoutKind = "request";
-    controller.abort();
-  }, options.timeoutMs);
-  // `fetch` only resolves once the full response is available, so a timer here cannot actually
-  // isolate TCP/TLS connection time from server-side processing time - it would fire against a
-  // slow-but-healthy generation just as readily as an unreachable host. Only arm it for readiness
-  // and listing calls, which do no model inference and are expected to answer near-instantly;
-  // `probeModel` and `generate` (both trigger real inference) are bounded by `timeoutMs` alone.
-  const connectTimeout =
-    input.applyConnectTimeout === true
-      ? setTimeout(() => {
-          timeoutKind = "connect";
-          controller.abort();
-        }, options.connectTimeoutMs)
-      : undefined;
-  let externallyAborted = input.signal?.aborted === true;
-  const abort = () => {
-    externallyAborted = true;
-    controller.abort(input.signal?.reason);
-  };
-  input.signal?.addEventListener("abort", abort, { once: true });
-  if (externallyAborted) controller.abort(input.signal?.reason);
+function parseEvent(line: string): InferenceExecutionEvent {
+  let parsed: unknown;
   try {
-    const response = await options.request(new URL(input.path, options.baseUrl), {
-      method: input.method ?? "GET",
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${options.serviceToken}`,
-        // Only declared when a body is actually sent: the gateway's default Fastify JSON parser
-        // rejects a bodyless request (e.g. the probe endpoint) that still claims a JSON
-        // content-type with FST_ERR_CTP_EMPTY_JSON_BODY.
-        ...(input.body === undefined ? {} : { "content-type": "application/json" }),
-        "x-request-id": options.requestId?.() ?? randomUUID()
-      },
-      ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
-      signal: controller.signal,
-      credentials: "omit"
-    });
-    clearTimeout(connectTimeout);
-    const body = await response.json().catch(() => null);
-    if (!response.ok) {
-      const error = isRecord(body) && isRecord(body.error) ? body.error : null;
-      const serviceCode = typeof error?.code === "string" ? error.code : null;
-      const code =
-        response.status === 401
-          ? "INFERENCE_AUTHENTICATION_FAILED"
-          : normalizeServiceErrorCode(serviceCode);
-      const message =
-        typeof error?.message === "string"
-          ? error.message.slice(0, 240)
-          : "The inference service rejected the request.";
-      throw new ModelRuntimeError(
-        code,
-        message,
-        typeof error?.retryable === "boolean"
-          ? error.retryable
-          : response.status === 408 || response.status === 429 || response.status >= 500
-      );
-    }
-    if (body === null) throw invalidInferenceResponse();
-    return body;
-  } catch (error) {
-    if (error instanceof ModelRuntimeError) throw error;
-    if (controller.signal.aborted) {
-      throw new ModelRuntimeError(
-        externallyAborted ? "INFERENCE_CANCELLED" : "INFERENCE_TIMEOUT",
-        externallyAborted
-          ? "The inference request was cancelled because the client disconnected."
-          : timeoutKind === "connect"
-            ? "The inference service connection timed out."
-            : "The inference request timed out.",
-        true,
-        { cause: error }
-      );
-    }
+    parsed = JSON.parse(line);
+  } catch {
     throw new ModelRuntimeError(
-      "INFERENCE_SERVICE_UNREACHABLE",
-      "The inference service is unreachable.",
-      true,
-      { cause: error }
-    );
-  } finally {
-    clearTimeout(connectTimeout);
-    clearTimeout(requestTimeout);
-    input.signal?.removeEventListener("abort", abort);
-  }
-}
-
-function normalizeServiceErrorCode(code: string | null): string {
-  return code !== null &&
-    new Set([
-      "INFERENCE_TIMEOUT",
-      "INFERENCE_ENGINE_UNREACHABLE",
-      "MODEL_NOT_INSTALLED",
-      "MODEL_LOADING",
-      "MODEL_PROBE_FAILED",
-      "MODEL_GENERATION_FAILED",
       "INVALID_INFERENCE_RESPONSE",
-      "MODEL_STORAGE_NOT_DURABLE",
-      "MODEL_NOT_CONFIGURED"
-    ]).has(code)
-    ? code
-    : "MODEL_GENERATION_FAILED";
+      "Vercel returned malformed stream data.",
+      true
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) {
+    throw new ModelRuntimeError(
+      "INVALID_INFERENCE_RESPONSE",
+      "Vercel returned malformed stream data.",
+      true
+    );
+  }
+  return parsed as InferenceExecutionEvent;
 }
 
-function invalidInferenceResponse(): ModelRuntimeError {
+function responseError(status: number, body: unknown): ModelRuntimeError {
+  const error = typeof body === "object" && body !== null && "error" in body ? body.error : null;
+  const record =
+    typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
   return new ModelRuntimeError(
-    "INVALID_INFERENCE_RESPONSE",
-    "The inference service returned an invalid response.",
-    true
+    typeof record.code === "string"
+      ? record.code
+      : status === 401
+        ? "INFERENCE_AUTHENTICATION_FAILED"
+        : "INFERENCE_SERVICE_UNAVAILABLE",
+    typeof record.message === "string" ? record.message : "Vercel inference rejected the request.",
+    typeof record.retryable === "boolean" ? record.retryable : status >= 500
   );
 }
 
-function parseModelListResponse(body: unknown): BackendInferenceReadiness {
+function normalizeBaseUrl(value: string, name: string): URL {
+  const url = new URL(value);
   if (
-    !isRecord(body) ||
-    body.ok !== true ||
-    typeof body.engine !== "string" ||
-    !Array.isArray(body.models)
+    url.protocol !== "https:" &&
+    !(process.env.NODE_ENV !== "production" && url.protocol === "http:")
   ) {
-    throw invalidInferenceResponse();
+    throw new Error(`${name} must use https.`);
   }
-  const models = body.models.flatMap((candidate) => {
-    if (
-      !isRecord(candidate) ||
-      typeof candidate.id !== "string" ||
-      typeof candidate.providerModelId !== "string" ||
-      typeof candidate.available !== "boolean"
-    ) {
-      return [];
-    }
-    return [
-      {
-        id: candidate.id,
-        providerModelId: candidate.providerModelId,
-        available: candidate.available,
-        digest: typeof candidate.digest === "string" ? candidate.digest : null
-      }
-    ];
-  });
-  if (models.length !== body.models.length) throw invalidInferenceResponse();
-  return { ok: true, engine: body.engine, models };
+  if (url.username !== "" || url.password !== "")
+    throw new Error(`${name} must not include credentials.`);
+  return url;
 }
 
-function nullableNumber(value: unknown): number | null | undefined {
-  return value === null
-    ? null
-    : typeof value === "number" && Number.isFinite(value) && value >= 0
-      ? value
-      : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function normalizeBackendModelText(content: string): string {
-  if (content.length === 0) return content;
+function normalizeModelText(content: string): string {
+  if (content.trim() === "") return "";
   try {
-    const parsed = JSON.parse(content) as unknown;
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return content;
-    const record = parsed as Record<string, unknown>;
-    if (record.type === "tool") {
-      return typeof record.toolName === "string" ? content : "";
-    }
-    if (record.type === "response" || record.type === "clarification") {
-      return typeof record.message === "string" && record.message.trim().length > 0 ? content : "";
-    }
-    // Smaller/weaker instruction-followers (observed with Qwen2.5 0.5B, unlike SmolLM2 360M on the
-    // same prompt) sometimes drop the "type" discriminator entirely while still emitting a
-    // recognizable tool call. Infer it instead of rejecting an otherwise well-formed proposal -
-    // this is what keeps the backend execution target genuinely swappable across models with
-    // uneven structured-output discipline, not just mechanically able to route to them.
-    if (typeof record.toolName === "string") {
-      return JSON.stringify({ ...record, type: "tool" });
-    }
-    const message = ["message", "response", "content", "text", "answer"]
-      .map((key) => record[key])
-      .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (parsed.type === "tool" && typeof parsed.toolName === "string") return content;
+    if (
+      (parsed.type === "response" || parsed.type === "clarification") &&
+      typeof parsed.message === "string"
+    )
+      return content;
+    if (typeof parsed.toolName === "string") return JSON.stringify({ ...parsed, type: "tool" });
+    const message = [
+      parsed.message,
+      parsed.response,
+      parsed.content,
+      parsed.text,
+      parsed.answer
+    ].find((value): value is string => typeof value === "string" && value.trim() !== "");
     return message === undefined
       ? content
       : JSON.stringify({ type: "response", message: message.trim() });
   } catch {
-    return JSON.stringify({ type: "response", message: content });
+    return JSON.stringify({ type: "response", message: content.trim() });
   }
-}
-
-function completionError(completion: RuntimeModelCompletionResult): ModelRuntimeError {
-  const code = completion.errorCode ?? "RUNTIME_UNAVAILABLE";
-  return new ModelRuntimeError(
-    code,
-    code === "INFERENCE_TIMEOUT" ? "Inference timed out." : "The model provider is unavailable.",
-    code !== "POLICY_DENIED"
-  );
 }

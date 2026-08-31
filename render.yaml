@@ -108,8 +108,10 @@ services:
         sync: false
       - key: HF_TOKEN
         sync: false
-      # The API talks to the model gateway only over Render's private network. The browser never
-      # receives the service token or the private hostname.
+      # Vercel executes inference; Render never runs a model locally (docs/architecture/
+      # inference-runtime.md). The browser never receives the inference service token, the Neon
+      # object-storage credentials, or a signed artifact URL directly - Render mints those and
+      # proxies the inference stream back to the client.
       - key: PLATFORM_DEFAULT_AGENT_ID
         value: builtin:pi:v1
       - key: PLATFORM_DEFAULT_AGENT_NAME
@@ -119,50 +121,37 @@ services:
       - key: PLATFORM_DEFAULT_MODEL_ID
         value: smollm2-360m
       - key: PLATFORM_DEFAULT_EXECUTION_TARGET
-        value: backend
-      - key: BACKEND_INFERENCE_ENABLED
+        value: vercel
+      - key: VERCEL_INFERENCE_URL
+        sync: false
+      - key: VERCEL_INFERENCE_TIMEOUT_MS
+        value: "300000"
+      - key: INFERENCE_REQUIRED
         value: "true"
-      - key: BACKEND_INFERENCE_BASE_URL
-        fromService:
-          name: soko-market-inference
-          type: pserv
-          property: hostport
-      - key: BACKEND_INFERENCE_MODEL_ID
-        value: smollm2-360m
-      - key: INFERENCE_SERVICE_TOKEN
-        fromService:
-          name: soko-market-inference
-          type: pserv
-          envVarKey: INFERENCE_SERVICE_TOKEN
-      - key: BACKEND_INFERENCE_REQUIRED
-        value: "true"
+      # Shared bearer secret between this service and services/ai-runtime's Vercel deployment.
+      # Render and Vercel are separate platforms, so this cannot use Render's fromService linking
+      # (docs/deployment/vercel-inference.md) - generate a value here, then copy it into the
+      # Vercel project's SOKO_INFERENCE_SERVICE_TOKEN environment variable by hand.
+      - key: SOKO_INFERENCE_SERVICE_TOKEN
+        generateValue: true
+      - key: NEON_MODEL_STORAGE_ENDPOINT
+        sync: false
+      - key: NEON_MODEL_STORAGE_REGION
+        value: us-east-1
+      - key: NEON_MODEL_STORAGE_ACCESS_KEY_ID
+        sync: false
+      - key: NEON_MODEL_STORAGE_SECRET_ACCESS_KEY
+        sync: false
+      - key: MODEL_ARTIFACT_URL_TTL_SECONDS
+        value: "900"
       - key: INFERENCE_OWNER_NODE_ENABLED
         value: "true"
-      # OpenAI is one optional cloud model provider, not a requirement to boot (docs/architecture/
-      # provider-neutral-runtime.md). None of these four keys are required for API readiness:
-      # OPENAI_API_KEY is sync: false and may be left blank in the Render dashboard - with it
-      # blank, services/api/src/index.ts simply never registers the OpenAI adapter (see
-      # createOpenAiProvider in services/api/src/inference/openai-provider.ts), an
-      # optional-registration pattern applied uniformly to every provider adapter here. The API
-      # never becomes the default or a prerequisite for readiness.
-      - key: INFERENCE_CLOUD_PROVIDER
-        value: openai
-      - key: INFERENCE_CLOUD_MODEL_ALLOWLIST
-        value: openai-fast,openai-reasoning
-      - key: INFERENCE_CLOUD_MONTHLY_TOKEN_BUDGET
-        value: "100000"
       - key: INFERENCE_MAX_FALLBACKS
         value: "3"
       - key: INFERENCE_JOB_TIMEOUT_MS
         value: "120000"
       - key: INFERENCE_JOB_SIGNING_SECRET
         generateValue: true
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_FAST_MODEL
-        value: gpt-5-mini
-      - key: OPENAI_REASONING_MODEL
-        value: gpt-5.2
       - key: OCR_WORKER_URL
         sync: false
       - key: OCR_CONCURRENCY
@@ -195,58 +184,6 @@ services:
     region: oregon
     ipAllowList: []
     maxmemoryPolicy: allkeys-lru
-
-  - type: pserv
-    name: soko-market-inference
-    runtime: docker
-    branch: main
-    autoDeployTrigger: commit
-    plan: starter
-    region: oregon
-    dockerfilePath: ./services/ai-runtime/Dockerfile
-    dockerContext: .
-    buildFilter:
-      paths:
-        - package.json
-        - pnpm-lock.yaml
-        - pnpm-workspace.yaml
-        - render.yaml
-        - packages/shared-types/**
-        - services/ai-runtime/**
-    disk:
-      name: soko-inference-models
-      mountPath: /var/lib/soko-models
-      sizeGB: 5
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NODE_VERSION
-        value: 22.19.0
-      - key: PORT
-        value: "4002"
-      - key: INFERENCE_SERVICE_TOKEN
-        generateValue: true
-      - key: INFERENCE_ENGINE
-        value: ollama
-      - key: SOKO_PRIMARY_MODEL_ID
-        value: smollm2-360m
-      - key: SOKO_PRIMARY_PROVIDER_MODEL_ID
-        value: smollm2:360m-instruct-q4_0
-      - key: MODEL_STORAGE_PATH
-        value: /var/lib/soko-models
-      - key: MODEL_STORAGE_DURABLE
-        value: "true"
-      - key: MODEL_AUTO_INSTALL
-        value: "true"
-      - key: OLLAMA_KEEP_ALIVE
-        value: 10m
-      - key: OLLAMA_MAX_LOADED_MODELS
-        value: "1"
-      - key: REDIS_URL
-        fromService:
-          name: soko-market-rate-limit-cache
-          type: keyvalue
-          property: connectionString
 
   - type: web
     name: soko-market-web

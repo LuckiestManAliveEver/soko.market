@@ -1,8 +1,6 @@
 import type { AiModelSummary } from "@soko/shared-types";
 import { resolveRuntimeModel } from "@soko/shared-types";
 
-import { readBoundedSecurityInteger } from "../../text-normalization.js";
-
 export const defaultAiModelId = "smollm2-360m";
 export const downloadableAiModelIdPattern =
   /^(?:custom:[a-z0-9][a-z0-9._-]{0,79}|github:[a-z0-9][a-z0-9._-]{0,149}|huggingface:[a-z0-9][a-z0-9._-]{0,167})$/;
@@ -72,63 +70,8 @@ export const defaultBusinessAgentContextScripts = [
   ].join("\n"),
   documentUploadContextScript
 ];
-export const configuredCloudModelIds = new Set(
-  (process.env.INFERENCE_CLOUD_MODEL_ALLOWLIST ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0)
-);
-// Mirrors the enabled-gate services/api/src/index.ts actually uses to register the OpenAI
-// provider: a deliberately configured cloud provider plus a present API key. Not "fallback" -
-// these are explicit, selectable catalog models (see docs/architecture/provider-neutral-runtime.md
-// "OpenAI's role now"), never an automatic retry when some other target fails.
-export const configuredOpenAiModelsAvailable =
-  process.env.INFERENCE_CLOUD_PROVIDER?.trim().toLowerCase() === "openai" &&
-  (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0;
-// The exact hosted model behind each cloud profile is operator-configured (OPENAI_FAST_MODEL /
-// OPENAI_REASONING_MODEL) and can change without a code deploy, so its context window is also
-// operator-configurable rather than hardcoded to today's default model's true limit. The fallback
-// values are deliberately conservative so an unconfigured deployment cannot overflow an unknown
-// model's real window.
-export const openaiFastContextWindow = readBoundedSecurityInteger(
-  "OPENAI_FAST_CONTEXT_WINDOW_TOKENS",
-  32_000,
-  1_000,
-  2_000_000
-);
-export const openaiReasoningContextWindow = readBoundedSecurityInteger(
-  "OPENAI_REASONING_CONTEXT_WINDOW_TOKENS",
-  32_000,
-  1_000,
-  2_000_000
-);
-
-/**
- * Whether a hosted-provider catalog entry is actually usable in this deployment right now. Deploy
- * configuration (env vars), not catalog data, decides this for the two OpenAI profiles - a
- * platform operator editing the DB-hosted catalog (see Cp2Store.modelCatalog) can change a model's
- * label/description/capabilities, but never make an unconfigured provider usable, and this
- * computation must be applied identically whether the entry came from the bootstrap array below or
- * a catalog row loaded from cp2_model_catalog. Every other catalog entry's availability is exactly
- * its stored `available` flag - operator-controlled, not env-controlled.
- */
 export function computeModelAvailability(modelId: string, storedAvailable: boolean): boolean {
-  if (modelId === "openai-fast") {
-    return (
-      storedAvailable &&
-      configuredOpenAiModelsAvailable &&
-      (configuredCloudModelIds.has("openai-fast") ||
-        configuredCloudModelIds.has(process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini"))
-    );
-  }
-  if (modelId === "openai-reasoning") {
-    return (
-      storedAvailable &&
-      configuredOpenAiModelsAvailable &&
-      (configuredCloudModelIds.has("openai-reasoning") ||
-        configuredCloudModelIds.has(process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2"))
-    );
-  }
+  void modelId;
   return storedAvailable;
 }
 
@@ -208,7 +151,7 @@ export const aiModelRegistry: AiModelSummary[] = [
     format: "remote",
     license: "Apache-2.0",
     licenseUrl: "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct/blob/main/LICENSE",
-    modelCardUrl: "https://ollama.com/library/smollm2:360m-instruct-q4_0",
+    modelCardUrl: "https://huggingface.co/bartowski/SmolLM2-360M-Instruct-GGUF",
     downloadUrl: null,
     fileName: null,
     fileSizeBytes: 229_000_000,
@@ -296,44 +239,6 @@ export const aiModelRegistry: AiModelSummary[] = [
     recommended: false,
     // The native bridge's active model is chosen by the installed app and unknown to the server.
     contextWindow: null
-  },
-  {
-    id: "openai-fast",
-    label: "OpenAI fast",
-    provider: "openai",
-    description: "Fast hosted reasoning for connected shops.",
-    capabilities: ["chat", "tool-routing"],
-    available: computeModelAvailability("openai-fast", true),
-    source: "hosted",
-    format: "remote",
-    license: null,
-    licenseUrl: null,
-    modelCardUrl: null,
-    downloadUrl: null,
-    fileName: null,
-    fileSizeBytes: null,
-    minimumMemoryGb: null,
-    recommended: false,
-    contextWindow: openaiFastContextWindow
-  },
-  {
-    id: "openai-reasoning",
-    label: "OpenAI reasoning",
-    provider: "openai",
-    description: "Higher-reasoning hosted profile for complex business tasks.",
-    capabilities: ["chat", "reasoning", "tool-routing"],
-    available: computeModelAvailability("openai-reasoning", true),
-    source: "hosted",
-    format: "remote",
-    license: null,
-    licenseUrl: null,
-    modelCardUrl: null,
-    downloadUrl: null,
-    fileName: null,
-    fileSizeBytes: null,
-    minimumMemoryGb: null,
-    recommended: false,
-    contextWindow: openaiReasoningContextWindow
   }
 ];
 

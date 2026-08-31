@@ -88,7 +88,7 @@ export function QuickRuntimeSwitcher({
         `/api/agents/${canonicalAgentId}/models/${encodeURIComponent(modelId)}/activate`,
         {
           shopId: business.id,
-          executionTarget: "backend",
+          executionTarget: "vercel",
           executionMode: "LOCAL_FIRST",
           ...(change.agentRuntimeAdapterId === undefined
             ? {}

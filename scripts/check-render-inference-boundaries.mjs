@@ -1,3 +1,8 @@
+// Render is the control plane; it authenticates, resolves runtime bindings, and proxies inference
+// requests to Vercel over HTTPS with a shared bearer token - it must never load or run a model
+// itself (docs/architecture/inference-runtime.md). This script fails the build if that boundary
+// is crossed in either direction: Render code depending on a local inference engine, or the
+// Render Blueprint reintroducing a Render-hosted inference service.
 import { readFileSync, readdirSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 
@@ -8,11 +13,12 @@ const blockedDependencies = [
   "llama-node",
   "@huggingface/transformers",
   "onnxruntime-node",
-  "onnxruntime-web"
+  "onnxruntime-web",
+  "ollama"
 ];
 const blockedImportPatterns = [
-  /^@soko\/ai-runtime\/(?:src|local-model|ollama-model)(?:\/|$)/u,
-  /(?:^|\/)(?:local-model|ollama-model|browser-model\.worker)(?:\.js)?$/u,
+  /^@soko\/ai-runtime\/(?:src|local-model|ollama-model|llama-runtime|artifact-loader)(?:\/|$)/u,
+  /(?:^|\/)(?:local-model|ollama-model|browser-model\.worker|llama-runtime|artifact-loader)(?:\.js)?$/u,
   /(?:llama|gguf).*(?:loader|worker|binding)/iu
 ];
 const importPatterns = [
@@ -43,46 +49,54 @@ for (const root of ["services/api/src", "services/api/dist"]) {
 }
 
 const blueprint = readFileSync("render.yaml", "utf8");
-for (const required of [
-  "BACKEND_INFERENCE_ENABLED",
-  "BACKEND_INFERENCE_BASE_URL",
+
+// The Render Blueprint must no longer declare a Render-hosted inference service of any kind.
+const forbiddenBlueprintMarkers = [
   "soko-market-inference",
   "services/ai-runtime/Dockerfile",
-  "type: pserv",
+  "BACKEND_INFERENCE_ENABLED",
+  "BACKEND_INFERENCE_BASE_URL",
+  "BACKEND_INFERENCE_MODEL_ID",
   "mountPath: /var/lib/soko-models",
-  "INFERENCE_SERVICE_TOKEN"
-]) {
-  if (!blueprint.includes(required)) {
-    violations.push(`Render Blueprint is missing private inference marker ${required}`);
+  "OLLAMA_KEEP_ALIVE",
+  "INFERENCE_ENGINE",
+  "key: INFERENCE_SERVICE_TOKEN"
+];
+for (const forbidden of forbiddenBlueprintMarkers) {
+  if (blueprint.includes(forbidden)) {
+    violations.push(
+      `Render Blueprint still declares the retired Render-hosted inference marker ${forbidden}`
+    );
   }
 }
+
 const apiStart = blueprint.indexOf("name: soko-market-api");
 const nextService = blueprint.indexOf("\n  - type:", apiStart);
 const apiService = blueprint.slice(apiStart, nextService === -1 ? undefined : nextService);
-for (const forbidden of ["LOCAL_MODEL_", "llama.cpp", ".gguf", "OLLAMA_BASE_URL"]) {
+
+// The API service must resolve inference through Vercel, never a local model engine.
+for (const forbidden of ["LOCAL_MODEL_", "llama.cpp", ".gguf", "OLLAMA_BASE_URL", "type: pserv"]) {
   if (apiService.toLowerCase().includes(forbidden.toLowerCase())) {
     violations.push(`Render API service contains forbidden local-inference marker ${forbidden}`);
   }
 }
-if (!apiService.includes("type: pserv") || !apiService.includes("property: hostport")) {
-  violations.push("Render API must resolve inference through the private service hostport");
+for (const required of ["key: VERCEL_INFERENCE_URL", "key: SOKO_INFERENCE_SERVICE_TOKEN"]) {
+  if (!apiService.includes(required)) {
+    violations.push(`Render API service is missing the Vercel execution-host marker ${required}`);
+  }
 }
-if (blueprint.includes("VITE_INFERENCE_SERVICE_TOKEN")) {
-  violations.push("The browser must never receive the inference service token");
-}
-const inferenceStart = blueprint.indexOf("\n    name: soko-market-inference\n    runtime: docker");
-const inferenceNext = blueprint.indexOf("\n  - type:", inferenceStart);
-const inferenceService = blueprint.slice(
-  inferenceStart,
-  inferenceNext === -1 ? undefined : inferenceNext
-);
-if (inferenceService.includes("domains:") || inferenceService.includes("type: web")) {
-  violations.push("The inference runtime must remain a private service without public domains");
-}
-if (inferenceService.includes("disk:") && inferenceService.includes("maxShutdownDelaySeconds:")) {
-  violations.push(
-    "Render does not support maxShutdownDelaySeconds on a private service with a disk"
-  );
+
+// The browser must never receive the inference service token or the Neon object-storage
+// credentials that let Render mint signed model-artifact download URLs.
+for (const forbidden of [
+  "VITE_INFERENCE_SERVICE_TOKEN",
+  "VITE_SOKO_INFERENCE_SERVICE_TOKEN",
+  "VITE_NEON_MODEL_STORAGE",
+  "VITE_VERCEL_INFERENCE"
+]) {
+  if (blueprint.includes(forbidden)) {
+    violations.push(`The browser must never receive ${forbidden}`);
+  }
 }
 
 if (violations.length > 0) {
@@ -91,7 +105,9 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log("Render keeps model execution in an authenticated private inference service.");
+console.log(
+  "Render stays a control plane: it proxies inference to Vercel and never runs a model locally."
+);
 
 function listCodeFiles(directory) {
   let entries;

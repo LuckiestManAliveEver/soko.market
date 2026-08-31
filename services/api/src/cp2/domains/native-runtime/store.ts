@@ -284,33 +284,33 @@ export class NativeRuntimeBindingStore {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     if (existing !== undefined) {
       // An explicit local preference remains the primary. When its policy permits fallback, the
-      // domain calls this method with an adapter-verified backend candidate so a later server
-      // request has somewhere legitimate to run instead of treating the local host as reachable
-      // from the API process.
+      // domain calls this method with an adapter-verified hosted candidate (Vercel today; any
+      // execution target the caller offers) so a later server request has somewhere legitimate to
+      // run instead of treating the local host as reachable from the API process.
       const roles = [...this.bindingModels.values()].filter(
         (role) => role.runtimeBindingId === existing.id && role.enabled
       );
-      const hasBackendRole = roles.some(
-        (role) =>
-          (role.executionHostId === null
+      const candidateTargets = new Set(candidates.map((candidate) => candidate.executionTarget));
+      const hasMatchingHostedRole = roles.some((role) => {
+        const target =
+          role.executionHostId === null
             ? this.models.get(role.modelId)?.configuration.executionTarget
-            : this.hosts.get(role.executionHostId)?.type) === "backend"
-      );
-      const backendCandidate = candidates.find(
-        (candidate) => candidate.executionTarget === "backend"
-      );
-      if (!hasBackendRole && backendCandidate !== undefined) {
+            : this.hosts.get(role.executionHostId)?.type;
+        return isModelExecutionTarget(target) && candidateTargets.has(target);
+      });
+      const hostedCandidate = hasMatchingHostedRole ? undefined : candidates[0];
+      if (hostedCandidate !== undefined) {
         const agent = this.requireActiveAgent(existing);
         const model = this.upsertCatalogModel(
-          backendCandidate.model,
-          backendCandidate.executionTarget,
+          hostedCandidate.model,
+          hostedCandidate.executionTarget,
           input.checkedAt
         );
         this.validateCapabilityMatch(agent, model);
         const host = this.upsertVerifiedHost({
           accountId: input.accountId,
           businessId: input.businessId,
-          executionTarget: backendCandidate.executionTarget,
+          executionTarget: hostedCandidate.executionTarget,
           checkedAt: input.checkedAt
         });
         this.upsertInstallation(model.id, host.id, input.checkedAt);
