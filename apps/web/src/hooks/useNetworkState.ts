@@ -40,13 +40,32 @@ interface UseNetworkStateDeps {
   ) => void;
 }
 
+// GET /network is served through getCachedJson (api-request-cache.ts), which can resolve to a
+// record read straight out of IndexedDB (local-data-repository.ts) written by an older build of
+// this app, before touching the network. That cached record's schemaVersion never tracks changes
+// to NetworkGraphSummary's shape, so a graph cached before a field was added would otherwise reach
+// setNetworkGraph missing arrays entirely, crashing every read site that does `graph.nodes.some(...)`.
+export function normalizeNetworkGraph(
+  graph: Partial<NetworkGraphSummary> | null | undefined
+): NetworkGraphSummary {
+  return {
+    ownerUserId: graph?.ownerUserId ?? "",
+    generatedAt: graph?.generatedAt ?? new Date(0).toISOString(),
+    nodes: Array.isArray(graph?.nodes) ? graph.nodes : [],
+    edges: Array.isArray(graph?.edges) ? graph.edges : [],
+    sources: Array.isArray(graph?.sources) ? graph.sources : [],
+    routes: Array.isArray(graph?.routes) ? graph.routes : [],
+    ...(Array.isArray(graph?.identityLinks) ? { identityLinks: graph.identityLinks } : {})
+  };
+}
+
 export function useNetworkState(deps: UseNetworkStateDeps) {
   const [networkGraph, setNetworkGraph] = useState<NetworkGraphSummary | null>(null);
   const [networkInvites, setNetworkInvites] = useState<NetworkInviteSummary[]>([]);
 
   async function loadNetworkGraph() {
     try {
-      setNetworkGraph(await getJson<NetworkGraphSummary>("/network"));
+      setNetworkGraph(normalizeNetworkGraph(await getJson<Partial<NetworkGraphSummary>>("/network")));
     } catch (error) {
       deps.setStatusMessage(getErrorMessage(error));
     }

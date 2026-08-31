@@ -53,7 +53,7 @@ export function IdentityNetworkOnboardingCard({
   const [working, setWorking] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const hasSeedNetwork =
-    graph?.nodes.some((node) => node.degree === 1 && node.sourceId !== null) ?? false;
+    graph?.nodes?.some((node) => node.degree === 1 && node.sourceId !== null) ?? false;
   const isGmail = verifiedEmail !== null && /@(gmail|googlemail)\.com$/i.test(verifiedEmail);
   const googleConfigured =
     oauthProvidersLoaded &&

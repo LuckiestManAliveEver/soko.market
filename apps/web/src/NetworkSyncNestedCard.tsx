@@ -66,7 +66,7 @@ export function NetworkSyncNestedCard({
       )
   );
   const alreadyOnSokoCount =
-    activeGraph?.nodes.filter(
+    activeGraph?.nodes?.filter(
       (node) =>
         node.sourceType === "phone_contact" &&
         node.degree === 1 &&
@@ -404,7 +404,7 @@ export function getActiveNetworkSource(
 
   const platform = providerId === "phone" ? "phone" : providerId;
   return (
-    graph.sources.find(
+    graph.sources?.find(
       (source) => source.sourcePlatform === platform && source.status === "active"
     ) ?? null
   );
