@@ -88,6 +88,68 @@ test("a stale agent-profile chunk reloads once and reopens settings instead of g
     .toBeNull();
 });
 
+for (const nestedProfileChunk of [
+  { label: "model panel", file: "AgentModelPanel.tsx", moduleKey: "agent-model-panel" },
+  {
+    label: "identity security panel",
+    file: "IdentitySecurityPanel.tsx",
+    moduleKey: "identity-security-panel"
+  }
+]) {
+  test(`a stale profile ${nestedProfileChunk.label} chunk reloads once and reopens settings`, async ({
+    page
+  }) => {
+    let rejectedNestedProfileChunk = false;
+    let nestedProfileChunkCanLoad = false;
+    let documentRequestCount = 0;
+    page.on("request", (request) => {
+      if (request.resourceType() !== "document") return;
+      documentRequestCount += 1;
+      if (rejectedNestedProfileChunk) nestedProfileChunkCanLoad = true;
+    });
+    await page.route(`**/src/${nestedProfileChunk.file}`, async (route) => {
+      if (!nestedProfileChunkCanLoad) {
+        rejectedNestedProfileChunk = true;
+        await route.fulfill({ status: 404, contentType: "text/plain", body: "Old chunk removed" });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Account and agent settings" }).click();
+
+    await expect.poll(() => rejectedNestedProfileChunk).toBe(true);
+    await expect.poll(() => documentRequestCount, { timeout: 30_000 }).toBe(2);
+    await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible({
+      timeout: 30_000
+    });
+    await expect(page.getByText("Business", { exact: true })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (moduleKey) => sessionStorage.getItem(`soko.lazy-module-recovery.v1.${moduleKey}`),
+          nestedProfileChunk.moduleKey
+        )
+      )
+      .toBeNull();
+  });
+}
+
+test("clicking a public shop opens its storefront instead of a blank screen", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Marketplace", exact: true }).click();
+
+  const shopCard = page.getByRole("link", { name: /Responsive Public Shop/u });
+  await expect(shopCard).toBeVisible();
+  await shopCard.click();
+
+  await expect(page).toHaveURL(/\/agent\/soko\.responsive-public-shop$/u);
+  await expect(page.getByRole("main")).toBeVisible();
+  await expect(page.getByText("Responsive Public Shop", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("region", { name: "Storefront chat" })).toBeVisible();
+});
+
 test("the agent catalogue hides an unavailable agent instead of listing it disabled", async ({
   page
 }) => {
@@ -852,6 +914,19 @@ async function installApiMocks(page: Page): Promise<void> {
     if (path === "/v1/marketplace-intro") {
       return json({ completedAt: "2026-07-15T00:00:00.000Z" });
     }
+    if (path === "/public/storefronts" && method === "GET") {
+      return json({ storefronts: [mockPublicStorefront] });
+    }
+    if (path === "/public/storefronts/soko.responsive-public-shop" && method === "GET") {
+      return json(mockPublicStorefront);
+    }
+    if (path === "/public/storefronts/soko.responsive-public-shop/sessions" && method === "POST") {
+      return json({
+        conversationId: "responsive-public-conversation",
+        capabilityToken: "responsive-public-capability",
+        expiresAt: "2099-01-01T00:00:00.000Z"
+      });
+    }
     if (path === "/v1/e2ee/devices" && method === "POST") {
       return json({ id: "responsive-device", accountId: "responsive-account" });
     }
@@ -1162,6 +1237,23 @@ const mockAgentProfile = {
   businessCategory: "general",
   publicIntroduction: "Welcome to the shop.",
   status: "active"
+};
+
+const mockPublicStorefront = {
+  agentId: "soko.responsive-public-shop",
+  sokoId: "soko.responsive-public-shop",
+  businessName: "Responsive Public Shop",
+  presence: { status: "online", updatedAt: "2026-07-15T00:00:00.000Z" },
+  products: [
+    {
+      id: "responsive-public-product",
+      name: "Fresh mangoes",
+      unit: "crate",
+      available: true,
+      sellingPrice: 125,
+      image: null
+    }
+  ]
 };
 
 const modelCatalog = [

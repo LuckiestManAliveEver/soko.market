@@ -27,6 +27,8 @@ import { readAuthenticationRouteHash, readAuthenticationRoutePath, readOwnerRout
 
 import { readApiBaseUrl } from "./lib/api";
 
+import { agentProfileModuleKeys, loadLazyModuleWithRecovery } from "./lazy-module-recovery";
+
 import { RuntimeManager } from "./runtime-manager";
 
 export type AuthChannel = "phone" | "email" | "device";
@@ -63,9 +65,19 @@ export const initialProductCaptureModule =
 export const initialAccountControlsModule =
   initialOwnerModuleView === "agent" ? import("./AccountBackendControls") : null;
 export const initialAgentModelPanelModule =
-  initialOwnerModuleView === "agent" ? import("./AgentModelPanel") : null;
+  initialOwnerModuleView === "agent"
+    ? loadLazyModuleWithRecovery(
+        agentProfileModuleKeys.modelPanel,
+        () => import("./AgentModelPanel")
+      )
+    : null;
 export const initialIdentitySecurityPanelModule =
-  initialOwnerModuleView === "agent" ? import("./IdentitySecurityPanel") : null;
+  initialOwnerModuleView === "agent"
+    ? loadLazyModuleWithRecovery(
+        agentProfileModuleKeys.identitySecurityPanel,
+        () => import("./IdentitySecurityPanel")
+      )
+    : null;
 export const PhoneFirstAuthentication = lazy(() =>
   (initialPhoneLoginModule ?? import("./PhoneFirstAuthentication")).then((module) => ({
     default: module.PhoneFirstAuthentication
@@ -79,14 +91,19 @@ export const AccountBackendControls = lazy(
   () => initialAccountControlsModule ?? import("./AccountBackendControls")
 );
 export const AgentModelPanel = lazy(() =>
-  (initialAgentModelPanelModule ?? import("./AgentModelPanel")).then((module) => ({
-    default: module.AgentModelPanel
-  }))
+  (
+    initialAgentModelPanelModule ??
+    loadLazyModuleWithRecovery(agentProfileModuleKeys.modelPanel, () => import("./AgentModelPanel"))
+  ).then((module) => ({ default: module.AgentModelPanel }))
 );
 export const IdentitySecurityPanel = lazy(() =>
-  (initialIdentitySecurityPanelModule ?? import("./IdentitySecurityPanel")).then((module) => ({
-    default: module.IdentitySecurityPanel
-  }))
+  (
+    initialIdentitySecurityPanelModule ??
+    loadLazyModuleWithRecovery(
+      agentProfileModuleKeys.identitySecurityPanel,
+      () => import("./IdentitySecurityPanel")
+    )
+  ).then((module) => ({ default: module.IdentitySecurityPanel }))
 );
 export const ProductCaptureItemsCard = lazy(() => import("./ProductCaptureItemsCard"));
 export const ProductManagementCard = lazy(() => import("./ProductManagementCard"));

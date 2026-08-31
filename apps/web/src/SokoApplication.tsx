@@ -129,14 +129,18 @@ import { renderOwnerWorkspace, type OwnerWorkspaceBindings } from "./OwnerWorksp
 
 import { BuildIdentity, NativeLaunchScreen } from "./BuildIdentity";
 import { OwnerCoreProvider, type OwnerCoreState } from "./hooks/OwnerCoreContext";
-import { hasPendingLazyModuleRecovery, loadLazyModuleWithRecovery } from "./lazy-module-recovery";
+import {
+  agentProfileModuleKeys,
+  hasPendingLazyModuleRecovery,
+  loadLazyModuleWithRecovery
+} from "./lazy-module-recovery";
 export { PublicStorefrontChat } from "./PublicStorefrontChat";
 
-const agentProfileModuleKey = "agent-profile";
 const AgentProfileSurface = lazy(() =>
-  loadLazyModuleWithRecovery(agentProfileModuleKey, () => import("./AgentProfileSurface")).then(
-    (module) => ({ default: module.AgentProfileSurface })
-  )
+  loadLazyModuleWithRecovery(
+    agentProfileModuleKeys.surface,
+    () => import("./AgentProfileSurface")
+  ).then((module) => ({ default: module.AgentProfileSurface }))
 );
 
 function shouldRefreshBusinessDomains(path: string, businessId: string): boolean {
@@ -199,7 +203,9 @@ export function OwnerApp() {
   const [view, setView] = useState<ShellView>(
     accountDeletionIntent
       ? "agent"
-      : hasPendingLazyModuleRecovery(agentProfileModuleKey)
+      : Object.values(agentProfileModuleKeys).some((moduleKey) =>
+            hasPendingLazyModuleRecovery(moduleKey)
+          )
         ? "agent"
         : (initialOwnerRoute?.view ?? "chat")
   );
@@ -1909,7 +1915,7 @@ export function OwnerApp() {
               >
                 {view === "agent" && business !== null ? (
                   <LazyModuleErrorBoundary
-                    moduleKey={agentProfileModuleKey}
+                    moduleKey={agentProfileModuleKeys.surface}
                     label="Account and agent settings"
                   >
                     <Suspense fallback={<NativeLaunchScreen message="Opening agent settings…" />}>

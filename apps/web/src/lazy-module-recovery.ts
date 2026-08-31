@@ -1,5 +1,11 @@
 const recoveryKeyPrefix = "soko.lazy-module-recovery.v1";
 
+export const agentProfileModuleKeys = {
+  surface: "agent-profile",
+  modelPanel: "agent-model-panel",
+  identitySecurityPanel: "identity-security-panel"
+} as const;
+
 export interface LazyModuleRecoveryEnvironment {
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem">;
   reload: () => void;
