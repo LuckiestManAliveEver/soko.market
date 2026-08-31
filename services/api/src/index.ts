@@ -100,6 +100,7 @@ const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
 const channelGateway = createChannelGatewayFromEnvironment();
 const emailMailboxProviderClient = createEmailMailboxProviderClient();
+const renderDeployWebhookSecret = process.env.RENDER_DEPLOY_WEBHOOK_SECRET?.trim() ?? "";
 const ownerNodeSigningSecret = process.env.INFERENCE_JOB_SIGNING_SECRET?.trim() ?? "";
 if (config.inferenceOwnerNodeEnabled && ownerNodeSigningSecret.length < 32) {
   throw new Error(
@@ -149,6 +150,7 @@ const apiOptions = {
   ),
   inferenceRequired: config.backendInferenceRequired,
   rateLimitRedisClient,
+  ...(renderDeployWebhookSecret === "" ? {} : { renderDeployWebhookSecret }),
   cp2: {
     store: cp2Store,
     emailProvider,

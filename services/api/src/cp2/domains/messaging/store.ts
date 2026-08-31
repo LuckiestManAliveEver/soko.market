@@ -186,6 +186,7 @@ import {
   validateConversationMessageContent,
   validateE2eePublicKey,
   type AgentConversationMessageResult,
+  type AppUpdateBroadcastSummary,
   type ChannelIdentityLinkGrantRecord,
   type ConnectedMailboxBackgroundSyncSummary,
   type ConnectedMailboxOAuthSessionRecord,
@@ -260,13 +261,21 @@ export interface MessagingDomainDeps {
   emailMailboxProviderClient: EmailMailboxProviderClient;
   pushNotificationSender?: (
     subscription: PushSubscriptionSummary,
-    payload: {
-      type: "message.new";
-      conversationId: string;
-      messageId: string;
-      title: string;
-      body: string;
-    }
+    payload:
+      | {
+          type: "message.new";
+          conversationId: string;
+          messageId: string;
+          title: string;
+          body: string;
+        }
+      | {
+          type: "app.update_available";
+          deployId: string;
+          service: string;
+          title: string;
+          body: string;
+        }
   ) => Promise<"sent" | "failed" | "expired">;
   messageEmailNotificationSender?: (input: {
     conversationId: string;
@@ -3086,6 +3095,37 @@ export class MessagingDomain {
       if (result.status === "sent") summary.sent += 1;
       else if (result.status === "dead_letter") summary.deadLettered += 1;
       else summary.failed += 1;
+    }
+    return summary;
+  }
+
+  async broadcastAppUpdateAvailable(input: {
+    deployId: string;
+    service: string;
+    title: string;
+    body: string;
+  }): Promise<AppUpdateBroadcastSummary> {
+    const summary: AppUpdateBroadcastSummary = { targeted: 0, sent: 0, expired: 0, failed: 0 };
+    if (this.deps.pushNotificationSender === undefined) return summary;
+
+    for (const subscription of [...this.pushSubscriptions.values()]) {
+      summary.targeted += 1;
+      const outcome = await this.deps.pushNotificationSender(subscription, {
+        type: "app.update_available",
+        deployId: input.deployId,
+        service: input.service,
+        title: input.title,
+        body: input.body
+      });
+      if (outcome === "sent") {
+        summary.sent += 1;
+      } else if (outcome === "expired") {
+        summary.expired += 1;
+        this.pushSubscriptions.delete(subscription.id);
+        this.pushSubscriptionIdByEndpoint.delete(subscription.endpoint);
+      } else {
+        summary.failed += 1;
+      }
     }
     return summary;
   }

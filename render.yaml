@@ -177,6 +177,12 @@ services:
         sync: false
       - key: VAPID_SUBJECT
         value: mailto:operations@soko.market
+      # Signing secret for the workspace-level Render deploy webhook (Dashboard -> Integrations ->
+      # Webhooks -> this webhook's Settings page). Set manually after creating that webhook; see
+      # docs/deployment/render-deploy-push-notifications.md for the full setup. Until this is set,
+      # POST /internal/render/deploy-webhook is never registered (services/api/src/app.ts).
+      - key: RENDER_DEPLOY_WEBHOOK_SECRET
+        sync: false
       - key: REDIS_URL
         fromService:
           name: soko-market-rate-limit-cache

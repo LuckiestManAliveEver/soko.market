@@ -203,6 +203,26 @@ self.addEventListener("push", (event) => {
   } catch {
     payload = {};
   }
+
+  if (payload.type === "app.update_available") {
+    event.waitUntil(
+      Promise.all([
+        // Fetch the newest sw.js/app-shell right away so the reload the user triggers by
+        // opening the notification (see notificationclick below) lands on the new version
+        // instead of racing the browser's own periodic update check.
+        self.registration.update().catch(() => undefined),
+        self.registration.showNotification(payload.title || "Soko update available", {
+          body: payload.body || "A new version of Soko is ready. Open the app to update.",
+          icon: "/icons/soko-icon-192.png",
+          badge: "/icons/soko-icon-192.png",
+          tag: "soko-app-update",
+          data: { type: "app.update_available", url: "/" }
+        })
+      ])
+    );
+    return;
+  }
+
   event.waitUntil(
     self.registration.showNotification(payload.title || "New Soko message", {
       body: "Open Soko to read your message.",
@@ -221,6 +241,18 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+
+  if (event.notification.data?.type === "app.update_available") {
+    event.waitUntil(
+      self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+        const existing = clients[0];
+        if (existing) return existing.focus();
+        return self.clients.openWindow("/");
+      })
+    );
+    return;
+  }
+
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       const existing = clients[0];

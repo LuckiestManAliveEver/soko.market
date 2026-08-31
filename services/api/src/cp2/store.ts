@@ -741,13 +741,21 @@ export interface AccountDeletionPurgeRunSummary {
   skipped: number;
 }
 
-export interface PushNotificationPayload {
-  type: "message.new";
-  conversationId: string;
-  messageId: string;
-  title: string;
-  body: string;
-}
+export type PushNotificationPayload =
+  | {
+      type: "message.new";
+      conversationId: string;
+      messageId: string;
+      title: string;
+      body: string;
+    }
+  | {
+      type: "app.update_available";
+      deployId: string;
+      service: string;
+      title: string;
+      body: string;
+    };
 
 export type PushNotificationSender = (
   subscription: PushSubscriptionSummary,
@@ -3531,6 +3539,11 @@ export class Cp2Store {
     ...args: Parameters<MessagingDomain["deliverPendingMessageNotifications"]>
   ): ReturnType<MessagingDomain["deliverPendingMessageNotifications"]> {
     return this.messagingDomain.deliverPendingMessageNotifications(...args);
+  }
+  broadcastAppUpdateAvailable(
+    ...args: Parameters<MessagingDomain["broadcastAppUpdateAvailable"]>
+  ): ReturnType<MessagingDomain["broadcastAppUpdateAvailable"]> {
+    return this.messagingDomain.broadcastAppUpdateAvailable(...args);
   }
   updateConversationSettings(
     ...args: Parameters<MessagingDomain["updateConversationSettings"]>

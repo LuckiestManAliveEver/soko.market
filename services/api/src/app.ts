@@ -4,6 +4,7 @@ import websocket from "@fastify/websocket";
 import type { HealthResponse, RuntimeModelDiagnostic } from "@soko/shared-types";
 import { registerCp2Routes, type Cp2RouteOptions } from "./cp2/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
+import { registerRenderDeployWebhook } from "./render-deploy-webhook.js";
 import type { Cp2Store } from "./cp2/store.js";
 
 const defaultAllowedCorsOrigins = ["http://127.0.0.1:5173", "http://localhost:5173"];
@@ -28,6 +29,13 @@ export interface BuildApiOptions {
    * When omitted, rate limiting still runs but falls back to an in-memory, per-process store.
    */
   rateLimitRedisClient?: unknown;
+  /**
+   * Signing secret for Render's workspace deploy webhook (Settings page of the webhook in the
+   * Render dashboard, whsec_-prefixed). When set, POST /internal/render/deploy-webhook is
+   * registered so a successful Render deploy broadcasts an "update available" push notification.
+   * Omitted (e.g. in tests or local dev), the route is not registered at all.
+   */
+  renderDeployWebhookSecret?: string;
 }
 
 export function buildApi(options: BuildApiOptions = {}) {
@@ -386,6 +394,12 @@ export function buildApi(options: BuildApiOptions = {}) {
     });
     cp2Store = store;
     registerMcpRoutes(routes, { store, allowedOrigins: [...allowedCorsOrigins] });
+    if (options.renderDeployWebhookSecret !== undefined) {
+      registerRenderDeployWebhook(routes, {
+        store,
+        signingSecret: options.renderDeployWebhookSecret
+      });
+    }
   });
 
   return app;
