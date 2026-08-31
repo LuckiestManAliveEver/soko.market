@@ -58,27 +58,27 @@ create index if not exists cp2_supplier_contacts_contact_idx
   on cp2_supplier_contact_relationships (business_id, (record ->> 'contactId'));
 
 create index if not exists cp2_purchase_price_product_effective_idx
-  on cp2_purchase_price_history (business_id, (record ->> 'productId'), ((record ->> 'effectiveFrom')::timestamptz) desc);
+  on cp2_purchase_price_history (business_id, (record ->> 'productId'), (record ->> 'effectiveFrom') desc);
 create index if not exists cp2_purchase_price_supplier_effective_idx
-  on cp2_purchase_price_history (business_id, (record ->> 'supplierId'), ((record ->> 'effectiveFrom')::timestamptz) desc);
+  on cp2_purchase_price_history (business_id, (record ->> 'supplierId'), (record ->> 'effectiveFrom') desc);
 create unique index if not exists cp2_purchase_price_one_current_idx
   on cp2_purchase_price_history (business_id, (record ->> 'productId'))
   where record ->> 'effectiveTo' is null;
 
 create index if not exists cp2_purchase_records_supplier_date_idx
-  on cp2_purchase_records (business_id, (record ->> 'supplierId'), ((record ->> 'effectiveAt')::timestamptz) desc);
+  on cp2_purchase_records (business_id, (record ->> 'supplierId'), (record ->> 'effectiveAt') desc);
 create unique index if not exists cp2_purchase_records_external_source_idx
   on cp2_purchase_records (business_id, (record ->> 'externalSourceId'))
   where record ->> 'externalSourceId' is not null;
 create index if not exists cp2_sale_records_customer_date_idx
-  on cp2_sale_records (business_id, (record ->> 'customerId'), ((record ->> 'soldAt')::timestamptz) desc);
+  on cp2_sale_records (business_id, (record ->> 'customerId'), (record ->> 'soldAt') desc);
 create unique index if not exists cp2_sale_records_external_source_idx
   on cp2_sale_records (business_id, (record ->> 'externalSourceId'))
   where record ->> 'externalSourceId' is not null;
 create index if not exists cp2_delivery_routes_destination_idx
   on cp2_delivery_routes (business_id, (record ->> 'destinationLocationId'));
 create index if not exists cp2_delivery_routes_created_idx
-  on cp2_delivery_routes (business_id, ((record ->> 'createdAt')::timestamptz) desc);
+  on cp2_delivery_routes (business_id, (record ->> 'createdAt') desc);
 
 -- Existing products carry the compatibility cache. Backfill one initial immutable truth row.
 insert into cp2_purchase_price_history
@@ -98,13 +98,16 @@ select
     'contactNameSnapshot', null,
     'price', (product.record ->> 'buyingPrice')::numeric,
     'currency', 'KES',
-    'effectiveFrom', coalesce(product.record ->> 'createdAt', now()::text),
+    'effectiveFrom', coalesce(
+      product.record ->> 'createdAt',
+      to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+    ),
     'effectiveTo', null,
     'deliveredAt', null,
     'purchaseRecordId', null,
     'createdBy', 'system',
     'source', 'LEGACY_BACKFILL',
-    'createdAt', now()::text,
+    'createdAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
     'supersedesId', null
   ),
   now()
