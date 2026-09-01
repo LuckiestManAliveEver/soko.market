@@ -53,12 +53,11 @@ export function createNeonModelArtifactStore(
   const now = options.now ?? (() => new Date());
   const request = options.request ?? fetch;
 
-  const createDownloadUrl = async (artifact: ModelArtifact): Promise<ResolvedModelArtifact> => {
-    assertSafeArtifactLocation(artifact);
+  const presign = (artifact: ModelArtifact, method: "GET" | "HEAD") => {
     const signedAt = now();
     return {
-      ...artifact,
-      downloadUrl: presignS3Get({
+      downloadUrl: presignS3Request({
+        method,
         endpoint,
         bucket: artifact.bucket,
         objectKey: artifact.objectKey,
@@ -70,6 +69,12 @@ export function createNeonModelArtifactStore(
       }),
       expiresAt: new Date(signedAt.getTime() + ttlSeconds * 1000).toISOString()
     };
+  };
+
+  const createDownloadUrl = async (artifact: ModelArtifact): Promise<ResolvedModelArtifact> => {
+    assertSafeArtifactLocation(artifact);
+    const { downloadUrl, expiresAt } = presign(artifact, "GET");
+    return { ...artifact, downloadUrl, expiresAt };
   };
 
   return {
@@ -98,8 +103,14 @@ export function createNeonModelArtifactStore(
     createDownloadUrl,
     async verifyArtifact(artifact, signal) {
       try {
-        const resolved = await createDownloadUrl(artifact);
-        const response = await request(resolved.downloadUrl, {
+        assertSafeArtifactLocation(artifact);
+        // Signed independently of createDownloadUrl(): a SigV4 presigned URL's signature is bound
+        // to the HTTP method it was signed for. Real AWS S3 tolerates a HEAD against a GET-signed
+        // URL, but Neon's S3-compatible backend enforces the method strictly and returns 403 -
+        // reusing the GET-signed download URL here made every verifyArtifact() call fail against
+        // real infrastructure even for a correctly uploaded, checksum-matching object.
+        const { downloadUrl } = presign(artifact, "HEAD");
+        const response = await request(downloadUrl, {
           method: "HEAD",
           ...(signal === undefined ? {} : { signal })
         });
@@ -203,7 +214,8 @@ function assertSafeArtifactLocation(artifact: ModelArtifact): void {
   }
 }
 
-function presignS3Get(input: {
+function presignS3Request(input: {
+  method: "GET" | "HEAD";
   endpoint: URL;
   bucket: string;
   objectKey: string;
@@ -229,7 +241,7 @@ function presignS3Get(input: {
   });
   query.sort();
   const canonicalRequest = [
-    "GET",
+    input.method,
     path,
     query.toString(),
     `host:${input.endpoint.host}\n`,
