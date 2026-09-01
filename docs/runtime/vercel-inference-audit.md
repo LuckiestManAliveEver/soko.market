@@ -275,21 +275,38 @@ standalone Vercel project still failed with `Unsupported engine ... current: v24
   `node-llama-cpp`'s `getLlama({ gpu: false })`/`dispose()` - the same init/dispose lifecycle
   `loadLlamaRuntime` performs - with no GGUF file needed, so it runs in the regular gate-test suite
   instead of only the opt-in `pnpm inference:live-probe`.
-- **No repository-level guard against a fake `public/` directory or an `outputDirectory` in
-  `vercel.json`.** Added an assertion to `tests/ai-runtime-deployment-boundary.test.ts` that
-  `services/ai-runtime/public` never exists and `vercel.json` never declares `outputDirectory` or
-  `builds`, plus a check that every rewrite destination in `vercel.json` resolves to a real handler
-  file - so a future "just add `public/`" workaround for a misconfigured Vercel project fails CI
-  instead of shipping.
-- **The stale-commit and `public`-output-directory failures are not repository bugs.** With
-  `services/ai-runtime/vercel.json` correct (functions-only, no `outputDirectory`) and every Node
-  version declaration now consistent, the remaining two symptoms - Vercel rebuilding `8671ce0`
-  instead of the current `main` tip, and Vercel expecting a `public` Output Directory - live
-  entirely in the standalone Vercel project's dashboard configuration (Root Directory, Framework
-  Preset, Git integration/production branch, and/or a manually-set Output Directory), which this
-  environment has no network access or Vercel credentials to inspect or change. See
-  [../deployment/vercel-inference.md](../deployment/vercel-inference.md)'s "Vercel project settings"
-  table for the exact values the dashboard project must have.
+- **No repository-level guard against a fake `public/` directory.** Added an assertion to
+  `tests/ai-runtime-deployment-boundary.test.ts` that `services/ai-runtime/public` never exists and
+  `vercel.json` never declares `builds` (the legacy config that would bypass this project's
+  `functions`/`rewrites` setup), plus a check that every rewrite destination in `vercel.json`
+  resolves to a real handler file - so a future "just add `public/`" workaround for a misconfigured
+  Vercel project fails CI instead of shipping.
+- **The stale-commit theory was wrong; the Output Directory failure was real and had a real
+  cause.** Pushing the fixes above (with Vercel API credentials Julien provided mid-session)
+  triggered a genuinely new deployment for the new commit - proving the Vercel↔GitHub Git
+  integration was never stuck, and disproving the original hypothesis that `8671ce0` indicated a
+  broken production-branch/root-directory link. That new deployment still failed with the exact
+  reported error, and reading its real build log (`GET /v13/deployments/{id}` /
+  `GET /v3/deployments/{id}/events` against the Vercel API) showed why: the project's Root
+  Directory, Framework Preset ("Other"/unset), and production branch were all already correct, but
+  **`nodeVersion` was explicitly `"24.x"` in the live project settings** (only the `engines.node`
+  field in `package.json` saved the actual runtime - the build log showed Vercel's own warning that
+  it was overriding the dashboard's `24.x` with `22.x` because of it), and **no `outputDirectory`
+  was set while a `build` script exists in `package.json`** - Vercel's zero-config for a
+  no-framework project always runs a package.json `build` script as a _static_ build and requires a
+  real output directory afterward (documented at
+  [vercel.com/docs/builds/configure-a-build](https://vercel.com/docs/builds/configure-a-build)),
+  regardless of the `functions`/`rewrites` config; `api/*.ts` Vercel Functions are compiled directly
+  from TypeScript source by `@vercel/node` independently of this step and were never the problem.
+  Fixed by setting the live project's `nodeVersion` to `22.x` via the Vercel API, and by declaring
+  `installCommand`, `buildCommand`, and `outputDirectory: "dist"` directly in
+  `services/ai-runtime/vercel.json` (config as code instead of a dashboard-only setting that can
+  drift silently again) - `dist` is `pnpm run build`'s real, already-necessary compiled output, not
+  a directory invented to satisfy Vercel, and only exposes compiled JS/type-declarations that are
+  already public in this open-source repository, unlike skipping the build step entirely (which
+  would serve the whole `services/ai-runtime` root, including `node_modules` and TypeScript source,
+  as static files). See [../deployment/vercel-inference.md](../deployment/vercel-inference.md)'s
+  "Vercel project settings" table for the corrected values.
 
 See [../deployment/vercel-inference.md](../deployment/vercel-inference.md) for the resulting
 dashboard settings, pnpm configuration, and rollout order.

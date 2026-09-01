@@ -95,17 +95,27 @@ describe("services/ai-runtime deployment boundary", () => {
     expect(runtimeManifest.engines?.node).toBe(">=22.19.0 <23.0.0");
   });
 
-  it("requires no static output directory - this is a functions-only inference service", () => {
-    // A Vercel project misconfigured with an Output Directory setting fails with "No Output
-    // Directory named 'public' found" even though this service has nothing to serve statically.
-    // The fix belongs in the Vercel dashboard, but the repository must never grow a fake public/
-    // directory to paper over that - assert it never exists and vercel.json never declares one.
+  it("declares its build/install/output config as code instead of relying on Vercel zero-config", () => {
+    // A no-framework Vercel project with a package.json `build` script always runs it as a static
+    // build and fails with STATIC_BUILD_NO_OUT_DIR unless a real Output Directory exists
+    // (vercel.com/docs/builds/configure-a-build) - this is unrelated to the api/*.ts Vercel
+    // Functions, which @vercel/node compiles directly from TypeScript source regardless. `dist` is
+    // pnpm run build's real, already-necessary compiled output (consumed by
+    // scripts/ai-runtime-live-inference-probe.mjs), not a directory invented to satisfy Vercel, and
+    // exposes only compiled JS/type-declarations already public in this open-source repo - a public/
+    // directory, or skipping the build step (which would statically serve the whole
+    // services/ai-runtime root, including node_modules and TypeScript source), would not.
     expect(existsSync("services/ai-runtime/public")).toBe(false);
     const vercelConfig = JSON.parse(readFileSync("services/ai-runtime/vercel.json", "utf8")) as {
+      installCommand?: unknown;
+      buildCommand?: unknown;
       outputDirectory?: unknown;
       builds?: unknown;
     };
-    expect(vercelConfig.outputDirectory).toBeUndefined();
+    expect(vercelConfig.installCommand).toBe("pnpm install --frozen-lockfile");
+    expect(vercelConfig.buildCommand).toBe("pnpm run build");
+    expect(vercelConfig.outputDirectory).toBe("dist");
+    expect(vercelConfig.outputDirectory).not.toBe("public");
     expect(vercelConfig.builds).toBeUndefined();
   });
 

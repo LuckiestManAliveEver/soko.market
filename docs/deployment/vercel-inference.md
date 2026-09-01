@@ -25,15 +25,32 @@ Repository:       LuckiestManAliveEver/soko.market
 Root Directory:    services/ai-runtime
 Framework Preset:  Other
 Node.js Version:   22.x
-Install Command:   pnpm install
+Install Command:   pnpm install --frozen-lockfile
 Build Command:     pnpm run build
-Output Directory:  (none / default)
+Output Directory:  dist
 Region:            iad1
 ```
 
 `services/ai-runtime/package.json` also declares `"engines": {"node": ">=22.19.0 <23.0.0"}`
 directly, matching the repository root and `.nvmrc` - this is what makes Vercel's automatic runtime
 detection agree with the dashboard setting instead of silently picking its own default.
+
+`installCommand`, `buildCommand`, and `outputDirectory` are also declared directly in
+`services/ai-runtime/vercel.json`, so they travel with the repository instead of depending on a
+dashboard click that can silently drift (exactly what happened to `nodeVersion` - see the
+"Follow-up" section of [../runtime/vercel-inference-audit.md](../runtime/vercel-inference-audit.md)
+for why `outputDirectory: dist` is required and is not a `public/`-style workaround: `api/*.ts`'s
+Vercel Functions are built independently of this setting by `@vercel/node` directly from
+TypeScript source, so it has no effect on inference - it only satisfies Vercel's build step, which
+treats any project without a recognized frontend framework as a static site and, since
+`package.json` has a `build` script Vercel picks up as running one, requires a real, existing
+output directory or fails with `STATIC_BUILD_NO_OUT_DIR`. `dist` is `pnpm run build`'s actual,
+already-necessary compiled output (consumed by `scripts/ai-runtime-live-inference-probe.mjs` and
+`pnpm build:production`), not a directory created solely to satisfy Vercel - and unlike the
+alternative of skipping the build step (which would make Vercel serve the entire
+`services/ai-runtime` root, including `node_modules` and TypeScript source, as static files), it
+only exposes compiled JS/type-declaration output that is already public in this open-source
+repository.
 
 ### node-llama-cpp install
 
