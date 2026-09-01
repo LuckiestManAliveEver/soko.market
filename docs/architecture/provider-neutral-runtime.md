@@ -63,8 +63,8 @@ target):
 
 | Target               | Meaning                                                                                                                                                                               |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `vercel`              | Inference runs on Soko's Vercel deployment (`services/ai-runtime`) - the platform default. Render mints a signed model-artifact URL; Vercel downloads, verifies, and executes it.     |
-| `backend`            | Reserved for a future self-hosted server-side execution path, dispatched through the same `ModelRuntimeAdapter` interface - not currently registered by any adapter in production.     |
+| `vercel`             | Inference runs on Soko's Vercel deployment (`services/ai-runtime`) - the platform default. Render mints a signed model-artifact URL; Vercel downloads, verifies, and executes it.     |
+| `backend`            | Reserved for a future self-hosted server-side execution path, dispatched through the same `ModelRuntimeAdapter` interface - not currently registered by any adapter in production.    |
 | `remote-shop-device` | Inference runs on a shop-owned machine registered as an execution host in the shop runtime graph (e.g. a merchant's laptop running Ollama) — never the currently-open browser/device. |
 
 `vercel`/`backend` do not mean any specific model vendor. Multiple model/provider bindings can use
@@ -175,7 +175,7 @@ normally; only an actual inference turn against it surfaces `RUNTIME_MODEL_NOT_C
 `services/api/src/inference/openai-provider.ts`, `createOpenAiProvider`, and the `openai-fast` /
 `openai-reasoning` catalog entries were removed entirely as part of the Vercel inference migration
 (`docs/runtime/vercel-inference-audit.md`) - not because OpenAI-as-one-optional-provider was ever
-wrong in principle (the paragraph below is preserved as the historical rationale for *why* it was
+wrong in principle (the paragraph below is preserved as the historical rationale for _why_ it was
 never required infrastructure), but because no code in this repository constructs an OpenAI adapter
 any more. Re-introducing an OpenAI-backed model means writing a new `ModelRuntimeAdapter`
 implementation and registering it under a chosen `ModelExecutionTarget` key, the same way

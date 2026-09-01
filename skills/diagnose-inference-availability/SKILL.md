@@ -36,7 +36,7 @@ catalogue model being downloadable does not mean a backend adapter is configured
 Production runs inference on Vercel (`services/ai-runtime`, deployed independently of Render - see
 `docs/deployment/vercel-inference.md`), not a Render-hosted service. `render.yaml` no longer
 declares any inference `pserv`; `scripts/check-render-inference-boundaries.mjs` now enforces the
-*opposite* of what it used to - it fails the build if `render.yaml` ever reintroduces a
+_opposite_ of what it used to - it fails the build if `render.yaml` ever reintroduces a
 `soko-market-inference` private service, `BACKEND_INFERENCE_*` env vars, or an `node-llama-cpp`
 dependency in `services/api`, and requires `VERCEL_INFERENCE_URL`/`SOKO_INFERENCE_SERVICE_TOKEN` on
 the API service instead. Do not remove or bypass the Vercel deployment, and do not reintroduce a

@@ -101,11 +101,14 @@ describe("contact-synced immutable commercial history", () => {
       owner.cookie
     );
 
+    // Must postdate the product-creation and purchase steps above, whose price-history entries
+    // fall back to the real wall-clock "now" at the moment each ran - a fixed calendar date
+    // eventually gets overtaken by that "now" and silently breaks the ordering assertion below.
     const changed = await post(
       app,
       `/businesses/${owner.businessId}/products/${product.id}/purchase-prices`,
       owner.cookie,
-      { price: 3400, currency: "KES", effectiveAt: "2026-09-01T00:00:00.000Z" }
+      { price: 3400, currency: "KES", effectiveAt: new Date(Date.now() + 60_000).toISOString() }
     );
     expect(changed.current.price).toBe(3400);
     expect(changed.previous.price).toBe(3350);

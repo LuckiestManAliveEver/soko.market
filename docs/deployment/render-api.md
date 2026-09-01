@@ -40,11 +40,12 @@ INFERENCE_JOB_SIGNING_SECRET=<generateValue: true>
 ```
 
 `VERCEL_INFERENCE_URL` and the `NEON_MODEL_STORAGE_*` credentials are `sync: false` in `render.yaml`
+
 - they must be set by hand in the Render dashboard, since they reference infrastructure Render does
-not provision itself. `SOKO_INFERENCE_SERVICE_TOKEN` and `INFERENCE_JOB_SIGNING_SECRET` are
-`generateValue: true`; copy the generated `SOKO_INFERENCE_SERVICE_TOKEN` into the Vercel project's
-own environment variables (see [vercel-inference.md](./vercel-inference.md)) - Render cannot push it
-there automatically, since Vercel is not a service declared in this Blueprint.
+  not provision itself. `SOKO_INFERENCE_SERVICE_TOKEN` and `INFERENCE_JOB_SIGNING_SECRET` are
+  `generateValue: true`; copy the generated `SOKO_INFERENCE_SERVICE_TOKEN` into the Vercel project's
+  own environment variables (see [vercel-inference.md](./vercel-inference.md)) - Render cannot push it
+  there automatically, since Vercel is not a service declared in this Blueprint.
 
 ## What the API does and does not do
 
@@ -54,7 +55,7 @@ Does:
 - resolve the agent, model, and runtime binding through the native runtime graph
   (`resolveExecutionTarget`, `resolveNativeRuntimeModelProvider`);
 - mint short-lived signed artifact download URLs (`services/api/src/inference/
-  model-artifact-store.ts`) - the URL, not the bytes, crosses to Vercel;
+model-artifact-store.ts`) - the URL, not the bytes, crosses to Vercel;
 - authorize and execute tool calls the model requests;
 - persist the conversation and stream the response to the client.
 
