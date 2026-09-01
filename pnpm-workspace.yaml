@@ -2,3 +2,10 @@ packages:
   - "apps/*"
   - "services/*"
   - "packages/*"
+
+# node-llama-cpp's postinstall (dist/cli/cli.js postinstall) resolves/links the correct prebuilt
+# native binary for the host platform; without this, pnpm 10 blocks it by default and the Vercel
+# inference runtime (services/ai-runtime) cannot load a GGUF model. Only this dependency is
+# allowed to run install scripts - do not add others here without the same scrutiny.
+onlyBuiltDependencies:
+  - node-llama-cpp

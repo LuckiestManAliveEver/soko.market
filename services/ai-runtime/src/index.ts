@@ -5,6 +5,7 @@ export { InferenceServiceError } from "./service-error.js";
 export {
   createVercelHealthHandler,
   createVercelInferenceHandler,
+  createVercelReadyHandler,
   readVercelInferenceConfig,
   type VercelInferenceConfig,
   type VercelInferenceDependencies

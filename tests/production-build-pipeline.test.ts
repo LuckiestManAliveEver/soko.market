@@ -84,5 +84,31 @@ describe("production workspace build pipeline", () => {
     expect(entryPoint).toContain('from "./vercel-handler.js"');
     expect(entryPoint).toContain("createVercelInferenceHandler");
     expect(entryPoint).toContain("createVercelHealthHandler");
+    expect(entryPoint).toContain("createVercelReadyHandler");
+  });
+
+  it("declares an explicit Node engine and the pnpm build-script allowlist node-llama-cpp needs", async () => {
+    const runtimeManifest = JSON.parse(
+      await readFile("services/ai-runtime/package.json", "utf8")
+    ) as { engines?: Record<string, string> };
+    const rootManifest = JSON.parse(await readFile("package.json", "utf8")) as {
+      engines?: Record<string, string>;
+    };
+    const workspace = await readFile("pnpm-workspace.yaml", "utf8");
+
+    expect(runtimeManifest.engines?.node).toBe(rootManifest.engines?.node);
+    expect(workspace).toMatch(/onlyBuiltDependencies:\s*\n\s*-\s*node-llama-cpp/u);
+  });
+
+  it("rewrites /health and /ready to separate functions with distinct honesty guarantees", async () => {
+    const vercelConfig = JSON.parse(await readFile("services/ai-runtime/vercel.json", "utf8")) as {
+      rewrites: Array<{ source: string; destination: string }>;
+    };
+    const health = vercelConfig.rewrites.find((rewrite) => rewrite.source === "/health");
+    const ready = vercelConfig.rewrites.find((rewrite) => rewrite.source === "/ready");
+
+    expect(health?.destination).toBe("/api/health");
+    expect(ready?.destination).toBe("/api/ready");
+    expect(ready?.destination).not.toBe(health?.destination);
   });
 });

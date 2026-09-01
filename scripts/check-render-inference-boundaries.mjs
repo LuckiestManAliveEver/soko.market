@@ -48,6 +48,44 @@ for (const root of ["services/api/src", "services/api/dist"]) {
   }
 }
 
+// The inverse boundary: services/ai-runtime is a standalone Vercel deployment that executes
+// inference only. It must never import Render's application code (auth, commerce APIs, database
+// business logic, agent orchestration, MCP, messaging) or the web app - if it did, `vercel build`
+// would either fail (services/api/apps/web aren't installed in the Vercel project) or silently
+// bundle application code into the inference deployment.
+const aiRuntimeManifest = JSON.parse(readFileSync("services/ai-runtime/package.json", "utf8"));
+const allowedAiRuntimeDependencies = new Set(["@soko/shared-types", "node-llama-cpp"]);
+for (const dependency of Object.keys(aiRuntimeManifest.dependencies ?? {})) {
+  if (!allowedAiRuntimeDependencies.has(dependency)) {
+    violations.push(
+      `services/ai-runtime/package.json depends on ${dependency}, which is outside the ` +
+        `narrow allowlist (${[...allowedAiRuntimeDependencies].join(", ")})`
+    );
+  }
+}
+const aiRuntimeForbiddenImportPatterns = [
+  /(^|\/)services\/api(\/|$)/u,
+  /(^|\/)apps\/web(\/|$)/u,
+  /^(\.\.\/)+api\//u,
+  /^(\.\.\/)+web\//u
+];
+for (const root of ["services/ai-runtime/src", "services/ai-runtime/api"]) {
+  for (const file of listCodeFiles(root)) {
+    const source = readFileSync(file, "utf8");
+    for (const pattern of importPatterns) {
+      for (const match of source.matchAll(pattern)) {
+        const specifier = match[1] ?? "";
+        if (aiRuntimeForbiddenImportPatterns.some((blocked) => blocked.test(specifier))) {
+          violations.push(
+            `${relative(process.cwd(), file)} imports ${specifier}, crossing the ` +
+              "Vercel inference deployment boundary into Render/web application code"
+          );
+        }
+      }
+    }
+  }
+}
+
 const blueprint = readFileSync("render.yaml", "utf8");
 
 // The Render Blueprint must no longer declare a Render-hosted inference service of any kind.

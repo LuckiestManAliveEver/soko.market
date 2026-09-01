@@ -3,7 +3,7 @@
   "rewrites": [
     { "source": "/v1/inference", "destination": "/api/inference" },
     { "source": "/health", "destination": "/api/health" },
-    { "source": "/ready", "destination": "/api/health" }
+    { "source": "/ready", "destination": "/api/ready" }
   ],
   "functions": {
     "api/inference.ts": {

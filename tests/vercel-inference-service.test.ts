@@ -11,6 +11,7 @@ import { InferenceServiceError } from "../services/ai-runtime/src/service-error"
 import {
   createVercelHealthHandler,
   createVercelInferenceHandler,
+  createVercelReadyHandler,
   readVercelInferenceConfig,
   type VercelInferenceConfig
 } from "../services/ai-runtime/src/vercel-handler";
@@ -132,6 +133,14 @@ describe("Vercel inference request handler", () => {
       )
     );
     expect(tooManyTokens.status).toBe(400);
+
+    const invalidSize = await handler(post(requestBody({ artifact: artifact({ sizeBytes: -1 }) })));
+    expect(invalidSize.status).toBe(400);
+
+    const invalidTemperature = await handler(
+      post(requestBody({ generation: { maxTokens: 64, temperature: 5, jsonOutput: false } }))
+    );
+    expect(invalidTemperature.status).toBe(400);
   });
 
   it("streams status, delta, and result NDJSON events on success", async () => {
@@ -217,13 +226,120 @@ describe("Vercel inference request handler", () => {
       retryable: true
     });
   });
+
+  it("rejects an oversized request body before parsing it", async () => {
+    const handler = createVercelInferenceHandler(baseConfig());
+    const response = await handler(
+      post(requestBody(), { "content-length": String(64_000 * 4 + 8_192 + 1) })
+    );
+    expect(response.status).toBe(413);
+  });
+
+  it("recovers on the next request after a failed initialization instead of staying poisoned", async () => {
+    const cache = new RuntimeCache<DisposableRuntime & { generate: ReturnType<typeof vi.fn> }>(1);
+    const downloadArtifact = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new InferenceServiceError("ARTIFACT_DOWNLOAD_FAILED", "download failed", true, 502)
+      )
+      .mockResolvedValueOnce({ path: "/tmp/model.gguf", downloadMs: 5 });
+    const loadRuntime = vi.fn(async () => ({
+      dispose: vi.fn(async () => undefined),
+      generate: vi.fn(async ({ onText }: { onText: (text: string) => void }) => {
+        onText("ok");
+        return { text: "ok", finishReason: "stop", inputTokens: 1, outputTokens: 1 };
+      })
+    }));
+    const handler = createVercelInferenceHandler(baseConfig(), {
+      cache: cache as never,
+      downloadArtifact: downloadArtifact as never,
+      loadRuntime: loadRuntime as never
+    });
+
+    const first = await handler(
+      post(requestBody({ requestId: "11111111-1111-1111-1111-111111111111" }))
+    );
+    const firstEvents = await readNdjson(first);
+    expect(firstEvents.some((event) => event.type === "error")).toBe(true);
+    expect(cache.size).toBe(0);
+
+    const second = await handler(
+      post(requestBody({ requestId: "22222222-2222-2222-2222-222222222222" }))
+    );
+    const secondEvents = await readNdjson(second);
+    const result = secondEvents.at(-1) as Record<string, unknown>;
+    expect(result).toMatchObject({ type: "result", text: "ok" });
+    expect(cache.size).toBe(1);
+  });
+
+  it("does not share a mutable conversation/session across unrelated requests to the same model", async () => {
+    const seenPrompts: string[] = [];
+    const runtime: DisposableRuntime & { generate: ReturnType<typeof vi.fn> } = {
+      dispose: vi.fn(async () => undefined),
+      generate: vi.fn(
+        async ({ prompt, onText }: { prompt: string; onText: (t: string) => void }) => {
+          seenPrompts.push(prompt);
+          onText(prompt);
+          return { text: prompt, finishReason: "stop", inputTokens: 1, outputTokens: 1 };
+        }
+      )
+    };
+    const handler = createVercelInferenceHandler(baseConfig(), {
+      loadRuntime: vi.fn(async () => runtime as never),
+      downloadArtifact: vi.fn(async () => ({ path: "/tmp/model.gguf", downloadMs: 5 }))
+    });
+
+    const first = await handler(
+      post(requestBody({ requestId: "11111111-1111-1111-1111-111111111111", prompt: "Prompt A" }))
+    );
+    const second = await handler(
+      post(requestBody({ requestId: "22222222-2222-2222-2222-222222222222", prompt: "Prompt B" }))
+    );
+    const firstResult = (await readNdjson(first)).at(-1) as Record<string, unknown>;
+    const secondResult = (await readNdjson(second)).at(-1) as Record<string, unknown>;
+    expect(firstResult.text).toBe("Prompt A");
+    expect(secondResult.text).toBe("Prompt B");
+    expect(seenPrompts).toEqual(["Prompt A", "Prompt B"]);
+  });
 });
 
 describe("Vercel inference health handler", () => {
-  it("reports readiness without requiring authentication", () => {
-    const handler = createVercelHealthHandler(baseConfig());
+  it("reports bare liveness without requiring authentication or configuration", () => {
+    const handler = createVercelHealthHandler();
     const response = handler();
     expect(response.status).toBe(200);
+  });
+
+  it("does not claim the model or runtime is initialized", async () => {
+    const handler = createVercelHealthHandler();
+    const body = await handler().json();
+    expect(body).toEqual({ ok: true, service: "soko-ai-runtime" });
+  });
+});
+
+describe("Vercel inference ready handler", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("reports 200 ready when configuration is valid, without downloading anything", async () => {
+    const handler = createVercelReadyHandler({
+      SOKO_INFERENCE_SERVICE_TOKEN: token,
+      MODEL_ARTIFACT_ALLOWED_HOSTS: "models.example.neon.tech"
+    });
+    const response = handler();
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({ ok: true, ready: true, configured: true, artifactHosts: 1 });
+  });
+
+  it("reports 503 not-ready when required configuration is missing, without leaking the token", async () => {
+    const handler = createVercelReadyHandler({ SOKO_INFERENCE_SERVICE_TOKEN: "too-short" });
+    const response = handler();
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toMatchObject({ ok: false, ready: false });
+    expect(JSON.stringify(body)).not.toContain("too-short");
   });
 });
 

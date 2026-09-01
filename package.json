@@ -59,6 +59,7 @@
     "inference:build": "pnpm --filter @soko/ai-runtime build",
     "inference:health": "node scripts/inference-health.mjs",
     "inference:probe": "node scripts/inference-probe.mjs",
+    "inference:live-probe": "node scripts/ai-runtime-live-inference-probe.mjs",
     "inference:dev": "pnpm --filter @soko/ai-runtime dev",
     "lint": "eslint . --max-warnings=0",
     "restart:dev": "pnpm clean:dev && pnpm dev",

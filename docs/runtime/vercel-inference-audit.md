@@ -36,7 +36,7 @@ Ollama bound to loopback inside the container. The API received the service's pr
   `AgentRuntimeDomain.createRuntimeTurn` (`store.ts`).
 - **Runtime resolver:** `resolveExecutionTarget()` /
   `resolveNativeRuntimeModelProvider()` (`services/api/src/cp2/domains/agent-runtime/
-  native-runtime-routing.ts`) - already fully generic over `ModelExecutionTarget`, driven by the
+native-runtime-routing.ts`) - already fully generic over `ModelExecutionTarget`, driven by the
   native runtime graph (`cp2_native_execution_hosts`, `cp2_native_runtime_models`,
   `cp2_native_model_installations`, `cp2_native_runtime_bindings`). This module required **no**
   changes; it never hardcoded a target.
@@ -181,7 +181,7 @@ See `tests/model-activation-runtime.test.ts`, `tests/native-runtime-execution-ta
    regression, see above).
 6. Rewrite `render.yaml`, `docker-compose.yml`, `.env.example`, the ops scripts
    (`inference-health.mjs`, `inference-probe.mjs`, `verify-production-runtime.mjs`), and
-   `scripts/check-render-inference-boundaries.mjs` (which had been asserting the *old* boundary and
+   `scripts/check-render-inference-boundaries.mjs` (which had been asserting the _old_ boundary and
    would have failed Render's own build) to match the new contract.
 
 ## Final target flow
@@ -216,3 +216,44 @@ the identical resolver/routing/telemetry path with no chat-code branching.
 - [../deployment/vercel-inference.md](../deployment/vercel-inference.md) - Vercel deployment runbook.
 - [../deployment/render-api.md](../deployment/render-api.md) - Render API deployment/config.
 - [../storage/model-artifacts.md](../storage/model-artifacts.md) - Neon artifact storage contract.
+
+## Hardening addendum (2026-09-01)
+
+A follow-up pass found the migration above architecturally correct but not yet deploy-ready, and
+verified it with real inference rather than a compiled build:
+
+- **Wrong Vercel Node runtime.** Vercel resolves `engines.node` from the `package.json` at its
+  configured Root Directory (`services/ai-runtime`), not the repository root's - that file had no
+  `engines` field, so Vercel silently picked its own default instead of the repository's pinned
+  `>=22.19.0 <23.0.0`. Fixed by adding the same `engines` field to
+  `services/ai-runtime/package.json`.
+- **`node-llama-cpp` install script blocked.** pnpm 10 blocks arbitrary `postinstall` scripts by
+  default; `node-llama-cpp`'s links the correct prebuilt native binary and never ran. Fixed with
+  `onlyBuiltDependencies: [node-llama-cpp]` in `pnpm-workspace.yaml` - the one dependency that
+  legitimately needs it, nothing else approved.
+- **`/health` and `/ready` made the same claim.** Both rewrote to the same handler
+  (`{ok: true, state: "READY"}`) regardless of whether inference could actually run. Split into
+  `api/health.ts` (bare liveness, no configuration dependency, cannot fail on misconfiguration) and
+  a new `api/ready.ts` / `createVercelReadyHandler` (parses configuration, returns 503 when it's
+  invalid, never triggers a download). Neither can know whether `/v1/inference`'s separate function
+  has a warm model - documented explicitly rather than faked, consistent with the existing "Render's
+  `/health/ai` is the real end-to-end probe" design.
+- **Reverse deployment boundary was unchecked.** `scripts/check-render-inference-boundaries.mjs`
+  only checked that Render doesn't depend on a local inference engine; nothing checked the other
+  direction. Added a dependency-allowlist and import-scan check for `services/ai-runtime` (must
+  depend on nothing but `@soko/shared-types` and `node-llama-cpp`, must never import
+  `services/api`/`apps/web`), plus a standalone `tests/ai-runtime-deployment-boundary.test.ts` that
+  asserts the same invariant independently of the script.
+- **Wrong artifact size found by actually running inference.** Downloading the real upstream GGUF
+  identified by migration 079's own `sha256` (byte-for-byte match) measured its real size as
+  `229733280`, not the `230000000` the migration seeded. `downloadVerifiedArtifact` fails closed on
+  any size mismatch by design, so the placeholder would have rejected the first real production
+  download. Corrected in `infra/db/migrations/080_correct_smollm2_artifact_size.sql`.
+- **Live proof, not just a compiled build.** `scripts/ai-runtime-live-inference-probe.mjs`
+  (`pnpm inference:live-probe`) runs the real `createVercelInferenceHandler` against a real GGUF
+  file and the real `node-llama-cpp` native binding, served from a throwaway local HTTP server. Two
+  calls confirm both a cold load (`cacheHit: false`, real generated text) and warm-instance reuse
+  (`cacheHit: true`, no re-download/re-load) with the real runtime, not a mock.
+
+See [../deployment/vercel-inference.md](../deployment/vercel-inference.md) for the resulting
+dashboard settings, pnpm configuration, and rollout order.

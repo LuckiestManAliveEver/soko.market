@@ -12,6 +12,44 @@ The inference function is CPU-only (`vercel.json` excludes the CUDA/Vulkan/ARM
 `node-llama-cpp` native binaries from the deploy bundle), runs in region `iad1`, and is configured
 for `maxDuration: 300` / `memory: 2048` to accommodate a cold model load plus a full generation.
 
+### Vercel project settings
+
+Vercel resolves the Node.js runtime from the `engines.node` field of the `package.json` at its
+configured Root Directory - for a monorepo-rooted project that is
+`services/ai-runtime/package.json`, not the repository root's. Set these explicitly in the Vercel
+dashboard when creating/verifying the project, and confirm no Node engine warning appears in the
+deploy log:
+
+```text
+Repository:       LuckiestManAliveEver/soko.market
+Root Directory:    services/ai-runtime
+Framework Preset:  Other
+Node.js Version:   22.x
+Install Command:   pnpm install
+Build Command:     pnpm run build
+Output Directory:  (none / default)
+Region:            iad1
+```
+
+`services/ai-runtime/package.json` also declares `"engines": {"node": ">=22.19.0 <23.0.0"}`
+directly, matching the repository root and `.nvmrc` - this is what makes Vercel's automatic runtime
+detection agree with the dashboard setting instead of silently picking its own default.
+
+### node-llama-cpp install
+
+`node-llama-cpp` ships a `postinstall` script that links the correct prebuilt native binary for the
+target platform; pnpm 10 blocks arbitrary install scripts by default. The root `pnpm-workspace.yaml`
+explicitly allows only this one:
+
+```yaml
+onlyBuiltDependencies:
+  - node-llama-cpp
+```
+
+No other dependency's install scripts are approved. `services/api` must never depend on
+`node-llama-cpp` or any other native inference engine - `pnpm check:render-inference-boundaries`
+fails the build if it does.
+
 Vercel has no access to Postgres, no business data, no tool-execution authority, and no permanent
 storage credentials. Render mints a short-lived signed download URL for the GGUF artifact and sends
 it as part of each request; Vercel downloads, verifies (SHA-256 + size + format), loads via
@@ -63,16 +101,42 @@ switched to Vercel. See [../storage/model-artifacts.md](../storage/model-artifac
 
 ## Health and rollout
 
-Vercel's `/health` is unauthenticated and only proves the deployment is live and reachable - it has
-no artifact/model context of its own (there's no per-model probe endpoint on Vercel; a fully
-resolved request always comes from Render). Real model readiness is proven end-to-end through
-Render's `/health/ai`, which resolves the runtime binding, mints a signed artifact URL, and performs
-a real inference call against Vercel.
+`/health` and `/ready` are separate Vercel serverless functions (`api/health.ts`, `api/ready.ts`)
+with deliberately different, honest claims:
+
+- `/health` is unauthenticated bare liveness - `{ ok: true, service: "soko-ai-runtime" }` - and
+  never depends on configuration, so it cannot fail because an environment variable is missing. It
+  proves nothing about whether inference can run.
+- `/ready` parses this function's own configuration (service token, artifact host allowlist, size/
+  token limits) and returns `200 { ready: true, ... }` or `503 { ready: false, reason }`. It never
+  triggers a model download or load, so probing it repeatedly is cheap.
+
+Neither endpoint can report whether a model is actually loaded: `/v1/inference` is a _separate_
+Vercel serverless function with its own process memory, so `/ready` can never observe whether that
+function's warm-instance model cache is populated, and there is no single fixed "the" model to
+preload - Render resolves and sends the artifact per request, and Vercel is intentionally not a
+model registry. Real per-request model readiness is proven end-to-end through Render's `/health/ai`,
+which resolves the runtime binding, mints a signed artifact URL, and performs a real inference call
+against Vercel.
+
+For a live proof that goes further than a compiled build - a real GGUF file, the real
+`node-llama-cpp` native binding, and the real `createVercelInferenceHandler` request handler, all
+run locally without deploying anything - see `pnpm inference:live-probe`
+(`scripts/ai-runtime-live-inference-probe.mjs`). It downloads a GGUF you point it at, serves it from
+a throwaway local HTTP server standing in for Neon object storage, and asserts two real inference
+calls succeed with non-empty generated text - the second reusing the warm model cache
+(`cacheHit: true`), proving the caching behavior with the real runtime, not a mock.
 
 Roll out in this order:
 
+0. before touching Neon/Vercel/Render at all, run `pnpm inference:live-probe` locally against a
+   downloaded copy of the target GGUF file - it proves node-llama-cpp can actually load and run
+   that exact file before spending time on the rest of the rollout;
 1. upload the GGUF artifact to Neon object storage at the object key `cp2_model_artifacts` expects
-   (migration 079's seed row, or a new row for a different model);
+   (migration 079's seed row, or a new row for a different model) - verify its real byte size and
+   SHA-256 first (`sha256sum`) and make sure both match the `cp2_model_artifacts` row exactly;
+   `size_bytes` must be the artifact's _actual_ size, not an estimate (migration 080 corrected an
+   estimated placeholder that would have made every real download fail `ARTIFACT_SIZE_MISMATCH`);
 2. deploy `services/ai-runtime` to Vercel; run `pnpm inference:health` against the new
    `VERCEL_INFERENCE_URL` to confirm the deployment is live;
 3. set `VERCEL_INFERENCE_URL`, `SOKO_INFERENCE_SERVICE_TOKEN`, and the `NEON_MODEL_STORAGE_*`
@@ -89,6 +153,7 @@ Roll out in this order:
 
 ```sh
 pnpm build:production
+SOKO_LIVE_GGUF_PATH=/path/to/model.gguf pnpm inference:live-probe
 VERCEL_INFERENCE_URL=https://<deployment>.vercel.app pnpm inference:health
 SOKO_API_URL=https://api.soko.market pnpm inference:probe
 pnpm verify:production-runtime

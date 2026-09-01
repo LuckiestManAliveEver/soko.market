@@ -71,6 +71,11 @@ export function createVercelInferenceHandler(
         false
       );
     }
+    const maximumBodyBytes = config.maximumInputCharacters * 4 + 8_192;
+    const declaredBodyBytes = Number(request.headers.get("content-length"));
+    if (Number.isFinite(declaredBodyBytes) && declaredBodyBytes > maximumBodyBytes) {
+      return errorResponse(413, "INVALID_INFERENCE_REQUEST", "Request body is too large.", false);
+    }
     let input: InferenceExecutionRequest;
     try {
       input = parseRequest(await request.json(), config);
@@ -174,18 +179,62 @@ export function createVercelInferenceHandler(
   };
 }
 
-export function createVercelHealthHandler(config: VercelInferenceConfig): () => Response {
+/**
+ * Bare process/function liveness. Deliberately takes no configuration and cannot fail because of
+ * environment misconfiguration - it answers "is this Vercel function executing at all", nothing
+ * about whether inference can actually run. See createVercelReadyHandler for that.
+ */
+export function createVercelHealthHandler(): () => Response {
   return () =>
     Response.json(
+      { ok: true, service: "soko-ai-runtime" },
+      { headers: { "cache-control": "no-store" } }
+    );
+}
+
+/**
+ * Reports whether this function's own preconditions for serving inference are satisfied:
+ * configuration parses (service token, artifact host allowlist, size/token limits). It does NOT
+ * report per-model or per-artifact readiness - `/v1/inference` is a standalone Vercel serverless
+ * function with its own memory, so this process can never observe whether a model is warm in the
+ * function serving `/v1/inference`, and there is no fixed "the" model to preload (Render resolves
+ * and sends the artifact per request; Vercel is not a model registry). It also never triggers a
+ * model download/load - probing readiness must stay cheap. Real per-request model readiness is
+ * proven end-to-end by Render's `/health/ai`, which performs an actual signed-artifact inference
+ * call (see docs/deployment/vercel-inference.md).
+ */
+export function createVercelReadyHandler(
+  environment: NodeJS.ProcessEnv = process.env
+): () => Response {
+  return () => {
+    let config: VercelInferenceConfig;
+    try {
+      config = readVercelInferenceConfig(environment);
+    } catch (error) {
+      return Response.json(
+        {
+          ok: false,
+          ready: false,
+          service: "soko-ai-runtime",
+          reason: error instanceof Error ? error.message : "Configuration is invalid."
+        },
+        { status: 503, headers: { "cache-control": "no-store" } }
+      );
+    }
+    return Response.json(
       {
         ok: true,
-        service: "soko-vercel-inference",
-        state: "READY",
+        ready: true,
+        service: "soko-ai-runtime",
+        configured: true,
         capabilities: { formats: ["gguf"], streaming: true, harnesses: ["pi"] },
-        artifactHosts: config.artifactAllowedHosts.size
+        artifactHosts: config.artifactAllowedHosts.size,
+        maximumOutputTokens: config.maximumOutputTokens,
+        cacheCapacity: config.cacheEntries
       },
       { headers: { "cache-control": "no-store" } }
     );
+  };
 }
 
 function parseRequest(value: unknown, config: VercelInferenceConfig): InferenceExecutionRequest {
