@@ -255,5 +255,41 @@ verified it with real inference rather than a compiled build:
   calls confirm both a cold load (`cacheHit: false`, real generated text) and warm-instance reuse
   (`cacheHit: true`, no re-download/re-load) with the real runtime, not a mock.
 
+### Follow-up: `.node-version` drift and a stuck Vercel project (2026-09-01)
+
+The hardening above fixed every repository-side cause of the wrong-runtime failure, but the
+standalone Vercel project still failed with `Unsupported engine ... current: v24.19.0` followed by
+`No Output Directory named "public" found`, and kept rebuilding an old commit
+(`8671ce0`) after two further commits landed on `main`. Root-caused and fixed:
+
+- **`.node-version` still said `20.19.0`.** `.nvmrc`, both `package.json` `engines.node` fields,
+  `render.yaml`, and the CI workflows had all already moved to `22.19.0`; only `.node-version` was
+  never updated in the Node 20 → 22 migration (`docs/adr/ADR-default-runtime-pi-smollm.md`). Some
+  Vercel build-image detectors read `.node-version` in preference to `.nvmrc` or the `package.json`
+  Root Directory `engines` field it depends on, so a stale `.node-version` can override the correct
+  value even though the audit above found and fixed every other declaration. Corrected to
+  `22.19.0`, and `tests/ai-runtime-deployment-boundary.test.ts` now asserts `.nvmrc`,
+  `.node-version`, and both `engines.node` fields all agree, so this cannot drift silently again.
+- **Native binding load was never actually proven under Node 22, only TypeScript compilation.**
+  Added `services/ai-runtime/src/llama-runtime.native.test.ts`: a fast (~1s) real call to
+  `node-llama-cpp`'s `getLlama({ gpu: false })`/`dispose()` - the same init/dispose lifecycle
+  `loadLlamaRuntime` performs - with no GGUF file needed, so it runs in the regular gate-test suite
+  instead of only the opt-in `pnpm inference:live-probe`.
+- **No repository-level guard against a fake `public/` directory or an `outputDirectory` in
+  `vercel.json`.** Added an assertion to `tests/ai-runtime-deployment-boundary.test.ts` that
+  `services/ai-runtime/public` never exists and `vercel.json` never declares `outputDirectory` or
+  `builds`, plus a check that every rewrite destination in `vercel.json` resolves to a real handler
+  file - so a future "just add `public/`" workaround for a misconfigured Vercel project fails CI
+  instead of shipping.
+- **The stale-commit and `public`-output-directory failures are not repository bugs.** With
+  `services/ai-runtime/vercel.json` correct (functions-only, no `outputDirectory`) and every Node
+  version declaration now consistent, the remaining two symptoms - Vercel rebuilding `8671ce0`
+  instead of the current `main` tip, and Vercel expecting a `public` Output Directory - live
+  entirely in the standalone Vercel project's dashboard configuration (Root Directory, Framework
+  Preset, Git integration/production branch, and/or a manually-set Output Directory), which this
+  environment has no network access or Vercel credentials to inspect or change. See
+  [../deployment/vercel-inference.md](../deployment/vercel-inference.md)'s "Vercel project settings"
+  table for the exact values the dashboard project must have.
+
 See [../deployment/vercel-inference.md](../deployment/vercel-inference.md) for the resulting
 dashboard settings, pnpm configuration, and rollout order.

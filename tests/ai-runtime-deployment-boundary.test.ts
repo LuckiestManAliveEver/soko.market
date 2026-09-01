@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { extname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -71,5 +71,57 @@ describe("services/ai-runtime deployment boundary", () => {
       engines?: Record<string, string>;
     };
     expect(manifest.engines?.node).toBe(">=22.19.0 <23.0.0");
+  });
+
+  it("agrees on the Node major across every version declaration Vercel/Node tooling reads", () => {
+    // A prior incident shipped .node-version at 20.19.0 while .nvmrc, both package.json engines
+    // fields, render.yaml, and the CI workflows had already moved to 22 - Vercel's build image can
+    // read either .nvmrc or .node-version depending on the detector version, so a stale one is a
+    // live risk of the exact "current: v24.x" wrong-runtime failure this suite exists to prevent.
+    const nvmrc = readFileSync(".nvmrc", "utf8").trim();
+    const nodeVersion = readFileSync(".node-version", "utf8").trim();
+    const rootManifest = JSON.parse(readFileSync("package.json", "utf8")) as {
+      engines?: Record<string, string>;
+    };
+    const runtimeManifest = JSON.parse(
+      readFileSync("services/ai-runtime/package.json", "utf8")
+    ) as {
+      engines?: Record<string, string>;
+    };
+
+    expect(nvmrc).toBe("22.19.0");
+    expect(nodeVersion).toBe("22.19.0");
+    expect(rootManifest.engines?.node).toBe(">=22.19.0 <23.0.0");
+    expect(runtimeManifest.engines?.node).toBe(">=22.19.0 <23.0.0");
+  });
+
+  it("requires no static output directory - this is a functions-only inference service", () => {
+    // A Vercel project misconfigured with an Output Directory setting fails with "No Output
+    // Directory named 'public' found" even though this service has nothing to serve statically.
+    // The fix belongs in the Vercel dashboard, but the repository must never grow a fake public/
+    // directory to paper over that - assert it never exists and vercel.json never declares one.
+    expect(existsSync("services/ai-runtime/public")).toBe(false);
+    const vercelConfig = JSON.parse(readFileSync("services/ai-runtime/vercel.json", "utf8")) as {
+      outputDirectory?: unknown;
+      builds?: unknown;
+    };
+    expect(vercelConfig.outputDirectory).toBeUndefined();
+    expect(vercelConfig.builds).toBeUndefined();
+  });
+
+  it("keeps the documented inference/health/ready rewrites wired to Vercel functions", () => {
+    const vercelConfig = JSON.parse(readFileSync("services/ai-runtime/vercel.json", "utf8")) as {
+      rewrites: Array<{ source: string; destination: string }>;
+    };
+    const bySource = Object.fromEntries(
+      vercelConfig.rewrites.map((rewrite) => [rewrite.source, rewrite.destination])
+    );
+    expect(bySource["/v1/inference"]).toBe("/api/inference");
+    expect(bySource["/health"]).toBe("/api/health");
+    expect(bySource["/ready"]).toBe("/api/ready");
+    for (const destination of Object.values(bySource)) {
+      const handlerPath = join("services/ai-runtime", destination.replace(/^\//, "") + ".ts");
+      expect(existsSync(handlerPath)).toBe(true);
+    }
   });
 });
