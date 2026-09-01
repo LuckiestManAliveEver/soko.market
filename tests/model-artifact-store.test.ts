@@ -66,7 +66,10 @@ function expectedSignature(method: "GET" | "HEAD"): string {
   ].join("\n");
   const hmac = (key: string | Buffer, value: string) =>
     createHmac("sha256", key).update(value).digest();
-  const signingKey = hmac(hmac(hmac(hmac(`AWS4${secretAccessKey}`, date), region), "s3"), "aws4_request");
+  const signingKey = hmac(
+    hmac(hmac(hmac(`AWS4${secretAccessKey}`, date), region), "s3"),
+    "aws4_request"
+  );
   return createHmac("sha256", signingKey).update(stringToSign).digest("hex");
 }
 
