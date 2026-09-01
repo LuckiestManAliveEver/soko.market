@@ -89,7 +89,7 @@ pnpm inference:probe    # SOKO_API_URL - real end-to-end inference through Rende
 
 1. Apply Neon-compatible migrations (`pnpm db:migrate`, includes `079_vercel_inference_artifacts`).
 2. Upload the GGUF artifact to Neon object storage at the object key
-   `cp2_model_artifacts` expects for the model being deployed.
+   `cp2_runtime_model_artifacts` expects for the model being deployed.
 3. Deploy `services/ai-runtime` to Vercel. Confirm liveness with `pnpm inference:health`.
 4. Configure the Render API's `VERCEL_INFERENCE_URL`, `SOKO_INFERENCE_SERVICE_TOKEN` (identical to
    Vercel's), and `NEON_MODEL_STORAGE_*` credentials, then deploy the API.

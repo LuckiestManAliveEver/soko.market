@@ -1,7 +1,16 @@
 -- Vercel is an execution host. Neon remains the control plane and stores artifact metadata only;
 -- GGUF bytes live in the configured Neon object-storage bucket, never in a PostgreSQL bytea.
-
-create table if not exists cp2_model_artifacts (
+--
+-- cp2_runtime_model_artifacts is a distinct table from cp2_model_artifacts (migration 066).
+-- cp2_model_artifacts is the legacy account-scoped subsystem: private, user-uploaded GGUF chunks
+-- stored as Postgres bytea (artifact_id/account_id/user_id/metadata/chunk_*), still owned by
+-- services/api/src/cp2/postgres-store.ts. cp2_runtime_model_artifacts below is the platform's
+-- shared runtime model registry: pointers to objects in Neon's S3-compatible object storage,
+-- owned by services/api/src/inference/model-artifact-store.ts. Never merge these two tables or
+-- reuse either name for the other concept - a prior draft of this migration collided with the
+-- legacy table by reusing its name, which fails in production because the schemas differ (the
+-- legacy table has no `id` column).
+create table if not exists cp2_runtime_model_artifacts (
   id text primary key,
   model_id text not null references cp2_native_runtime_models(entity_id) on delete restrict,
   storage_provider text not null,
@@ -15,23 +24,26 @@ create table if not exists cp2_model_artifacts (
   status text not null,
   created_at timestamp with time zone not null default now(),
   updated_at timestamp with time zone not null default now(),
-  constraint cp2_model_artifacts_location_unique unique (storage_provider, bucket, object_key),
-  constraint cp2_model_artifacts_status_check
+  constraint cp2_runtime_model_artifacts_location_unique
+    unique (storage_provider, bucket, object_key),
+  constraint cp2_runtime_model_artifacts_status_check
     check (status in ('pending', 'available', 'invalid', 'retired')),
-  constraint cp2_model_artifacts_format_check check (format ~ '^[a-z0-9][a-z0-9._-]{0,31}$'),
-  constraint cp2_model_artifacts_object_key_check check (
+  constraint cp2_runtime_model_artifacts_format_check
+    check (format ~ '^[a-z0-9][a-z0-9._-]{0,31}$'),
+  constraint cp2_runtime_model_artifacts_object_key_check check (
     object_key !~ '(^|/)\.\.(/|$)' and object_key !~ '^/' and object_key !~ '[\\]'
   ),
-  constraint cp2_model_artifacts_size_check check (size_bytes is null or size_bytes > 0),
-  constraint cp2_model_artifacts_sha256_check check (sha256 is null or sha256 ~ '^[0-9a-f]{64}$')
+  constraint cp2_runtime_model_artifacts_size_check check (size_bytes is null or size_bytes > 0),
+  constraint cp2_runtime_model_artifacts_sha256_check
+    check (sha256 is null or sha256 ~ '^[0-9a-f]{64}$')
 );
 
-create unique index if not exists cp2_model_artifacts_one_available_per_model_idx
-  on cp2_model_artifacts (model_id) where status = 'available';
+create unique index if not exists cp2_runtime_model_artifacts_one_available_per_model_idx
+  on cp2_runtime_model_artifacts (model_id) where status = 'available';
 
 -- Seed normal runtime data for the existing platform default. Operators upload this exact object
 -- to NEON_MODEL_STORAGE_BUCKET before switching traffic; the checksum is the upstream GGUF hash.
-insert into cp2_model_artifacts (
+insert into cp2_runtime_model_artifacts (
   id, model_id, storage_provider, bucket, object_key, format, quantization, size_bytes, sha256,
   content_type, status, created_at, updated_at
 ) values (

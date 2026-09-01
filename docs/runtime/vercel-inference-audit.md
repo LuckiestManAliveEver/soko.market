@@ -109,7 +109,7 @@ native-runtime-routing.ts`) - already fully generic over `ModelExecutionTarget`,
 
 Migration `079_vercel_inference_artifacts.sql`:
 
-- Creates `cp2_model_artifacts` (metadata-only: `storage_provider`, `bucket`, `object_key`,
+- Creates `cp2_runtime_model_artifacts` (metadata-only: `storage_provider`, `bucket`, `object_key`,
   `format`, `quantization`, `size_bytes`, `sha256`, `content_type`, `status`), with a CHECK
   constraint rejecting path traversal / absolute / backslash object keys, a format regex, a
   sha256-hex regex, and a partial unique index enforcing at most one `status = 'available'` artifact
@@ -193,7 +193,7 @@ Chat client
         -> resolve agent + model + runtime binding (native runtime graph, unchanged)
         -> resolve execution target: "vercel" (isModelExecutionTarget-driven, generic)
         -> createVercelModelAdapter.generate()
-            -> resolve artifact metadata (Neon Postgres, cp2_model_artifacts)
+            -> resolve artifact metadata (Neon Postgres, cp2_runtime_model_artifacts)
             -> mint a short-lived signed download URL (Neon object storage, SigV4)
             -> POST https://<vercel-deployment>/v1/inference (bearer token, NDJSON stream)
                 -> services/ai-runtime (Vercel serverless function)

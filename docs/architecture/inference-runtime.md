@@ -56,7 +56,7 @@ and `services/api/src/inference/model-runtime.ts`:
 
 - **Agent** - `agentRuntimeAdapterId` (e.g. `"pi"`), resolved via `agentRuntimeAdapterResolver`.
 - **Model** - a catalog entry (`AiModelSummary`) plus its `NativeRuntimeModelSummary` row.
-- **Model artifact** - a `ModelArtifact` row (`cp2_model_artifacts`): storage location, format,
+- **Model artifact** - a `ModelArtifact` row (`cp2_runtime_model_artifacts`): storage location, format,
   quantization, size, hash. A model can have zero, one, or (over time) several artifact rows; only
   one is `status: "available"` at a time per the DB's partial unique index.
 - **Execution host** - a `ModelExecutionTarget` (`"vercel" | "backend" | "remote-shop-device"`) plus
@@ -95,7 +95,7 @@ incident this caused).
 `PLATFORM_DEFAULT_MODEL_ID`/`platformDefaultRuntime.modelId`, or activate a different model through
 `POST /api/agents/:agentId/models/:modelId/activate`. `index.ts` already builds a
 `createVercelModelAdapter` per enabled catalog model, so no code change is needed as long as the
-new model has an available `cp2_model_artifacts` row.
+new model has an available `cp2_runtime_model_artifacts` row.
 
 **Swap the execution host** (same agent/model): change `PLATFORM_DEFAULT_EXECUTION_TARGET`, or pass
 `executionTarget` explicitly to the activation endpoint. Registering a new host type means adding an

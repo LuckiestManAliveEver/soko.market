@@ -31,6 +31,10 @@ export interface NeonModelArtifactStoreOptions {
 /**
  * Neon/PostgreSQL is authoritative for artifact metadata. The referenced bytes are fetched from
  * Neon's S3-compatible object storage through short-lived SigV4 URLs; credentials stay on Render.
+ *
+ * Backed by cp2_runtime_model_artifacts (migration 079), not cp2_model_artifacts (migration 066,
+ * the legacy account-scoped Postgres-bytea upload subsystem in cp2/postgres-store.ts) - the two
+ * tables model unrelated concepts and must never be merged or share a name.
  */
 export function createNeonModelArtifactStore(
   options: NeonModelArtifactStoreOptions
@@ -73,7 +77,7 @@ export function createNeonModelArtifactStore(
       const result = await options.database.query(
         `select id, model_id, storage_provider, bucket, object_key, format, quantization,
                 size_bytes, sha256, content_type, status, created_at, updated_at
-           from cp2_model_artifacts
+           from cp2_runtime_model_artifacts
           where model_id = $1 and status = 'available'
           order by updated_at desc, id asc
           limit 1`,

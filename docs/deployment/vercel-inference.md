@@ -110,7 +110,7 @@ variables.
 ## Model artifacts
 
 GGUF model weights never live in this repository or in a PostgreSQL BYTEA column. Migration
-`infra/db/migrations/079_vercel_inference_artifacts.sql` creates `cp2_model_artifacts` (metadata
+`infra/db/migrations/079_vercel_inference_artifacts.sql` creates `cp2_runtime_model_artifacts` (metadata
 only: bucket, object key, format, quantization, size, SHA-256, status) and seeds the platform
 default (`builtin:smollm2-360m:q4_0:gguf`). The actual `.gguf` file must be uploaded to the
 configured Neon object-storage bucket at the exact `object_key` the row declares, before traffic is
@@ -149,9 +149,9 @@ Roll out in this order:
 0. before touching Neon/Vercel/Render at all, run `pnpm inference:live-probe` locally against a
    downloaded copy of the target GGUF file - it proves node-llama-cpp can actually load and run
    that exact file before spending time on the rest of the rollout;
-1. upload the GGUF artifact to Neon object storage at the object key `cp2_model_artifacts` expects
+1. upload the GGUF artifact to Neon object storage at the object key `cp2_runtime_model_artifacts` expects
    (migration 079's seed row, or a new row for a different model) - verify its real byte size and
-   SHA-256 first (`sha256sum`) and make sure both match the `cp2_model_artifacts` row exactly;
+   SHA-256 first (`sha256sum`) and make sure both match the `cp2_runtime_model_artifacts` row exactly;
    `size_bytes` must be the artifact's _actual_ size, not an estimate (migration 080 corrected an
    estimated placeholder that would have made every real download fail `ARTIFACT_SIZE_MISMATCH`);
 2. deploy `services/ai-runtime` to Vercel; run `pnpm inference:health` against the new
@@ -193,11 +193,11 @@ Rollback options are independent:
   diagnosis (no adapter is registered under `vercel:*` when the URL is empty);
 - change the platform agent adapter from Pi to another registered adapter;
 - change the platform model/artifact mapping and bootstrap model
-  (`PLATFORM_DEFAULT_MODEL_ID`, a new `cp2_model_artifacts` row);
+  (`PLATFORM_DEFAULT_MODEL_ID`, a new `cp2_runtime_model_artifacts` row);
 - roll back the Vercel deployment to a previous version through the Vercel dashboard/CLI
   independently of the Render API's deploy state - the two platforms deploy independently by
   design.
 
-Never delete a `cp2_model_artifacts` row that a live binding still references. Never place the
+Never delete a `cp2_runtime_model_artifacts` row that a live binding still references. Never place the
 service token or Neon storage credentials in a browser-facing variable, database row, command
 output, or log bundle.
