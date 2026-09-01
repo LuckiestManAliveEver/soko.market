@@ -19,14 +19,12 @@ import { getJson, patchJson, postJson } from "../api-helpers";
 import { navigateToBrowserUrl, navigateToOwnerRoute } from "../browser-navigation";
 import { getErrorMessage, logAuthenticationLifecycle } from "../chat-message-plumbing";
 import { inferCountryCode } from "../country-dial-codes";
-import { shellViewForSurface } from "../cross-device-session-context";
-import { recoverDeviceAccount } from "../device-recovery";
 import {
-  ApiRequestError,
-  apiFetch,
-  isDefinitiveAuthenticationError,
-  isRetryableApiRequestError
-} from "../lib/api";
+  applySessionContextPatchWithConflictRetry,
+  shellViewForSurface
+} from "../cross-device-session-context";
+import { recoverDeviceAccount } from "../device-recovery";
+import { apiFetch, isDefinitiveAuthenticationError, isRetryableApiRequestError } from "../lib/api";
 import {
   createDefaultAgent,
   readPendingOAuthLogin,
@@ -509,24 +507,29 @@ export function useAuthState(deps: UseAuthStateDeps) {
     conversationId?: string;
   }) {
     if (sokoSessionContext === null) return;
+    const accountId = sokoSessionContext.accountId;
     try {
-      const updated = await patchJson<SokoSessionContext>("/v1/session/context", {
-        ...patch,
-        expectedSessionVersion: sokoSessionContext.sessionVersion
-      });
-      setSokoSessionContext(updated);
-    } catch (error) {
-      if (!(error instanceof ApiRequestError) || error.code !== "session_context_conflict") return;
-      try {
-        const latest = await apiFetch<SokoSessionContext>("/v1/session/context");
-        const updated = await patchJson<SokoSessionContext>("/v1/session/context", {
-          ...patch,
-          expectedSessionVersion: latest.sessionVersion
-        });
-        setSokoSessionContext(updated);
-      } catch {
-        // Offline navigation remains available; the next connected state change retries sync.
-      }
+      const updated = await applySessionContextPatchWithConflictRetry(
+        patch,
+        sokoSessionContext.sessionVersion,
+        {
+          patchContext: (body) => patchJson<SokoSessionContext>("/v1/session/context", body),
+          fetchLatestContext: () => apiFetch<SokoSessionContext>("/v1/session/context"),
+          onDropped: (attempts) => {
+            console.info(
+              JSON.stringify({
+                event: "session.context_update_dropped",
+                accountId,
+                conversationId: patch.conversationId ?? sokoSessionContext.conversationId,
+                attempts
+              })
+            );
+          }
+        }
+      );
+      if (updated !== null) setSokoSessionContext(updated);
+    } catch {
+      // Offline navigation remains available; the next connected state change retries sync.
     }
   }
 

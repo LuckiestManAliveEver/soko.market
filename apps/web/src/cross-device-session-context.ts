@@ -1,5 +1,6 @@
-import type { SokoChatSurface, SokoMode } from "@soko/shared-types";
+import type { SokoChatSurface, SokoMode, SokoSessionContext } from "@soko/shared-types";
 import type { ShellView } from "./app-shell";
+import { ApiRequestError } from "./lib/api";
 
 export function surfaceForShellView(view: ShellView, mode: SokoMode): SokoChatSurface {
   if (mode === "marketplace") return "conversation";
@@ -19,4 +20,50 @@ export function shellViewForSurface(surface: SokoChatSurface, mode: SokoMode): S
   if (surface === "receipt") return "imports";
   if (surface === "owner-controls") return "home";
   return "chat";
+}
+
+export interface SokoSessionContextPatch {
+  mode?: SokoMode;
+  activeShopId?: string | null;
+  activeSurface?: SokoChatSurface;
+  conversationId?: string;
+}
+
+// PATCH /v1/session/context uses optimistic concurrency (expectedSessionVersion):
+// concurrent writers (another tab, another device, a stale in-flight request) race
+// each other and the loser gets back a 409 session_context_conflict. A single retry
+// is not enough - if two other writers land back to back, that lone retry's refetch
+// can itself already be stale by the time its PATCH lands, producing a second 409
+// (this is the "409 twice in a row" pattern seen in production logs). Retry with a
+// fresh version fetched each time, up to SESSION_CONTEXT_PATCH_MAX_ATTEMPTS, before
+// giving up and letting the caller know the update was dropped.
+export const SESSION_CONTEXT_PATCH_MAX_ATTEMPTS = 3;
+
+export async function applySessionContextPatchWithConflictRetry(
+  patch: SokoSessionContextPatch,
+  initialSessionVersion: number,
+  deps: {
+    patchContext: (body: Record<string, unknown>) => Promise<SokoSessionContext>;
+    fetchLatestContext: () => Promise<SokoSessionContext>;
+    onDropped?: (attempts: number) => void;
+  }
+): Promise<SokoSessionContext | null> {
+  let expectedSessionVersion = initialSessionVersion;
+
+  for (let attempt = 1; attempt <= SESSION_CONTEXT_PATCH_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await deps.patchContext({ ...patch, expectedSessionVersion });
+    } catch (error) {
+      if (!(error instanceof ApiRequestError) || error.code !== "session_context_conflict") {
+        throw error;
+      }
+      if (attempt === SESSION_CONTEXT_PATCH_MAX_ATTEMPTS) {
+        deps.onDropped?.(attempt);
+        return null;
+      }
+      const latest = await deps.fetchLatestContext();
+      expectedSessionVersion = latest.sessionVersion;
+    }
+  }
+  return null;
 }
