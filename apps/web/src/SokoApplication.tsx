@@ -117,7 +117,8 @@ import {
 import {
   isHumanDirectConversation,
   isRedundantAgentErrorMessage,
-  getErrorMessage
+  getErrorMessage,
+  logClientEvent
 } from "./chat-message-plumbing";
 
 import { useInstallPrompt } from "./misc-browser-utils";
@@ -1117,31 +1118,23 @@ export function OwnerApp() {
     const businessId = business.id;
 
     if (navigator.onLine && hasServerAuthenticatedSession(authBootstrapState)) {
-      console.info(
-        JSON.stringify({ event: "agent.runtime_restore_started", accountId, businessId })
-      );
+      logClientEvent("agent.runtime_restore_started", { accountId, businessId });
       void restoreOrCreateRuntimeSession(setRuntimeSessionId)
         .then((restoredRuntimeSessionId) => {
           if (cancelled) return;
-          console.info(
-            JSON.stringify({
-              event: "agent.runtime_restore_completed",
-              accountId,
-              businessId,
-              runtimeSessionId: restoredRuntimeSessionId
-            })
-          );
+          logClientEvent("agent.runtime_restore_completed", {
+            accountId,
+            businessId,
+            runtimeSessionId: restoredRuntimeSessionId
+          });
         })
         .catch((error) => {
           if (cancelled) return;
-          console.info(
-            JSON.stringify({
-              event: "agent.runtime_restore_failed",
-              accountId,
-              businessId,
-              errorCode: getErrorMessage(error)
-            })
-          );
+          logClientEvent("agent.runtime_restore_failed", {
+            accountId,
+            businessId,
+            errorCode: getErrorMessage(error)
+          });
           if (!rejectDefinitiveAuthenticationFailure(error)) {
             setStatusMessage(
               `Your shop is open, but its agent session could not start. ${getErrorMessage(error)}`

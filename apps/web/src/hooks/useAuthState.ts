@@ -17,7 +17,11 @@ import {
 } from "../auth-bootstrap";
 import { getJson, patchJson, postJson } from "../api-helpers";
 import { navigateToBrowserUrl, navigateToOwnerRoute } from "../browser-navigation";
-import { getErrorMessage, logAuthenticationLifecycle } from "../chat-message-plumbing";
+import {
+  getErrorMessage,
+  logAuthenticationLifecycle,
+  logClientEvent
+} from "../chat-message-plumbing";
 import { inferCountryCode } from "../country-dial-codes";
 import {
   applySessionContextPatchWithConflictRetry,
@@ -516,14 +520,11 @@ export function useAuthState(deps: UseAuthStateDeps) {
           patchContext: (body) => patchJson<SokoSessionContext>("/v1/session/context", body),
           fetchLatestContext: () => apiFetch<SokoSessionContext>("/v1/session/context"),
           onDropped: (attempts) => {
-            console.info(
-              JSON.stringify({
-                event: "session.context_update_dropped",
-                accountId,
-                conversationId: patch.conversationId ?? sokoSessionContext.conversationId,
-                attempts
-              })
-            );
+            logClientEvent("session.context_update_dropped", {
+              accountId,
+              conversationId: patch.conversationId ?? sokoSessionContext.conversationId,
+              attempts
+            });
           }
         }
       );

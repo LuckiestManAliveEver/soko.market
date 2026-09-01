@@ -19,6 +19,42 @@ import {
 import { postJson, getJson } from "./api-helpers";
 import { formatFileSize, formatAttachmentCategory } from "./formatters";
 
+// Keys that must never reach the browser console, in development or production: real
+// authentication/session credentials, not identifiers like accountId/businessId that are
+// merely useful for debugging (and are dropped in production by buildClientLogPayload below).
+const CLIENT_LOG_DENYLIST = new Set([
+  "sessionId",
+  "sessionToken",
+  "accessToken",
+  "refreshToken",
+  "authorization",
+  "cookie",
+  "password",
+  "pin",
+  "passkey",
+  "secret"
+]);
+
+export function sanitizeClientLogMetadata(
+  metadata: Record<string, unknown>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(metadata).filter(([key]) => !CLIENT_LOG_DENYLIST.has(key))
+  );
+}
+
+export function buildClientLogPayload(
+  event: string,
+  metadata: Record<string, unknown>,
+  isProduction: boolean
+): Record<string, unknown> {
+  return isProduction ? { event } : { event, ...sanitizeClientLogMetadata(metadata) };
+}
+
+export function logClientEvent(event: string, metadata: Record<string, unknown> = {}): void {
+  console.info(JSON.stringify(buildClientLogPayload(event, metadata, import.meta.env.PROD)));
+}
+
 export function conversationTitle(view: ConversationView, accountId: string): string {
   if (view.conversation.title?.trim()) return view.conversation.title;
   return (
@@ -390,14 +426,11 @@ export function logAuthenticationLifecycle(
   session: SessionResponse,
   details: Record<string, unknown> = {}
 ): void {
-  console.info(
-    JSON.stringify({
-      event: `auth.${event}`,
-      accountId: session.account.id,
-      sessionId: session.session.id,
-      ...details
-    })
-  );
+  logClientEvent(`auth.${event}`, {
+    accountId: session.account.id,
+    sessionId: session.session.id,
+    ...details
+  });
 }
 
 export interface BrowserSpeechRecognition {
