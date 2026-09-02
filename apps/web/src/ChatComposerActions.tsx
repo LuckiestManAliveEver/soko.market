@@ -8,7 +8,6 @@ interface ChatComposerActionsProps {
   onAttachFiles: () => void;
   onClose: () => void;
   onOpenCommand: () => void;
-  onRecordVoice: () => void;
   onSendSms: () => void;
   onShareApps: () => void;
   onTakePhoto: () => void;
@@ -21,7 +20,6 @@ export function ChatComposerActions({
   onAttachFiles,
   onClose,
   onOpenCommand,
-  onRecordVoice,
   onSendSms,
   onShareApps,
   onTakePhoto
@@ -49,10 +47,6 @@ export function ChatComposerActions({
         <button type="button" aria-label="Photos or files" onClick={onAttachFiles}>
           <span className="attach-icon" aria-hidden="true" />
           <span>Photos or files</span>
-        </button>
-        <button type="button" aria-label="Record voice" onClick={onRecordVoice}>
-          <span className="mic-icon" aria-hidden="true" />
-          <span>Voice</span>
         </button>
         {mode === "seller" ? (
           <button type="button" aria-label="Open command" onClick={onOpenCommand}>

@@ -3390,15 +3390,70 @@ details.nested-form-section summary {
 }
 
 .composer {
-  align-items: end;
   background: #ffffff;
   border-top: 1px solid #dde4dc;
   gap: 8px;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: 1fr;
   min-width: 0;
   padding: 10px;
   position: sticky;
   bottom: 0;
+}
+
+.composer-bottom-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.composer-bottom-row-trailing {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.composer-pill {
+  align-items: center;
+  background: #eef2f6;
+  border: 1px solid #d8e0e7;
+  border-radius: 999px;
+  color: #17211b;
+  display: inline-flex;
+  flex-shrink: 1;
+  gap: 6px;
+  min-height: 36px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 12px;
+}
+
+.composer-pill:hover,
+.composer-pill:focus-visible {
+  background: #e2ebe4;
+  border-color: #86b89c;
+}
+
+.composer-pill-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.composer-pill-label {
+  font-size: 12px;
+  font-weight: 700;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer .composer-mic-button {
+  border-radius: 999px;
+  flex-shrink: 0;
 }
 
 .composer-agent-indicator {
@@ -3417,12 +3472,23 @@ details.nested-form-section summary {
   transform: rotate(0deg);
 }
 
-.stacked-module.composer-actions-module {
+.stacked-module.composer-actions-module,
+.stacked-module.composer-model-module {
   max-width: 520px;
 }
 
-.composer-actions-module .stacked-module-content {
+.composer-actions-module .stacked-module-content,
+.composer-model-module .stacked-module-content {
   padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+}
+
+.composer-model-module .quick-runtime-switcher {
+  margin: 0;
+}
+
+.composer-model-module .stacked-module-content > button.secondary {
+  margin-top: 10px;
+  width: 100%;
 }
 
 .composer-action-grid {
@@ -3483,6 +3549,7 @@ details.nested-form-section summary {
   background: #eef2f6;
   border: 1px solid #d8e0e7;
   color: #17211b;
+  flex-shrink: 0;
   min-height: 42px;
   padding: 8px;
 }
@@ -3708,12 +3775,6 @@ details.nested-form-section summary {
   min-width: 46px;
   padding: 8px 12px;
   white-space: nowrap;
-}
-
-.composer-send-actions {
-  display: grid;
-  gap: 4px;
-  justify-items: stretch;
 }
 
 .external-share-notice {
@@ -5269,11 +5330,6 @@ details.nested-form-section summary {
     justify-content: start;
   }
 
-  .composer {
-    align-items: center;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
   .composer-input span {
     display: none;
   }
@@ -6427,6 +6483,19 @@ body {
   min-width: 40px;
 }
 
+.app-frame:not(.auth-frame) .composer-pill {
+  background: transparent;
+  border-color: var(--soko-line);
+  color: var(--soko-ink-soft);
+}
+
+.app-frame:not(.auth-frame) .composer-pill:hover,
+.app-frame:not(.auth-frame) .composer-pill:focus-visible {
+  background: color-mix(in srgb, var(--soko-accent) 12%, transparent);
+  border-color: var(--soko-accent);
+  color: var(--soko-ink);
+}
+
 .composer-input span {
   color: var(--soko-ink-faint);
   font-family: var(--soko-mono-font);
@@ -7178,15 +7247,6 @@ body {
     max-width: 91%;
   }
 
-  .composer {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .composer-send-actions {
-    align-items: center;
-    display: flex;
-  }
-
   .buy-result-card {
     grid-template-columns: 40px minmax(0, 1fr) auto;
   }
@@ -7239,8 +7299,8 @@ body {
     padding-inline: 10px;
   }
 
-  .composer-send-actions {
-    display: grid;
+  .composer-pill-label {
+    max-width: 72px;
   }
 
   .composer-action-grid {

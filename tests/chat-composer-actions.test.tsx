@@ -25,7 +25,7 @@ describe("mobile chat composer actions", () => {
     document.body.replaceChildren();
   });
 
-  it("keeps only More, message, and Send inline and opens the accessible action sheet", async () => {
+  it("puts the message box on top, a bottom row with More/pills/mic/Send, and opens the accessible action sheet", async () => {
     function Harness() {
       const composer = useChatComposerState({
         activeConversationId: "conversation-1",
@@ -40,6 +40,8 @@ describe("mobile chat composer actions", () => {
       return (
         <ChatComposer
           activeAgentName="Shopkeeper"
+          agent={null}
+          business={null}
           channelEndpoints={[]}
           composer={composer}
           invoices={[]}
@@ -51,9 +53,11 @@ describe("mobile chat composer actions", () => {
           replyToMessageId={null}
           selectedConversationTitle=""
           selectedEmailCustomerId={null}
+          onAgentChange={vi.fn()}
           onAttachmentChange={vi.fn()}
           onCancelGeneration={vi.fn()}
           onCancelReply={vi.fn()}
+          onOpenAgentProfile={vi.fn()}
           onRemoveAttachment={vi.fn()}
           onRequireSignIn={vi.fn()}
           onSellerPhotoCapture={vi.fn()}
@@ -65,11 +69,20 @@ describe("mobile chat composer actions", () => {
     await act(async () => root.render(<Harness />));
 
     const composer = host.querySelector(".composer")!;
-    expect(composer.querySelectorAll(":scope > .composer-icon-button")).toHaveLength(1);
-    expect(composer.querySelector('textarea[aria-label="Message"]')).not.toBeNull();
-    expect(composer.querySelectorAll(":scope > .composer-send-actions .send-button")).toHaveLength(
+    const bottomRow = composer.querySelector(".composer-bottom-row")!;
+    expect(bottomRow).not.toBeNull();
+    // The message box is its own top row, above the bottom action row.
+    const textarea = composer.querySelector('textarea[aria-label="Message"]')!;
+    expect(textarea).not.toBeNull();
+    expect(bottomRow.contains(textarea)).toBe(false);
+    expect(bottomRow.querySelectorAll(".composer-icon-button")).toHaveLength(2); // "+" and mic
+    expect(bottomRow.querySelector('[aria-label="Open message actions"]')).not.toBeNull();
+    expect(bottomRow.querySelector('[aria-label="Record voice"]')).not.toBeNull();
+    expect(bottomRow.querySelectorAll(".composer-bottom-row-trailing .send-button")).toHaveLength(
       1
     );
+    // No business/agent in this harness, so the model/library pills stay hidden.
+    expect(bottomRow.querySelectorAll(".composer-pill")).toHaveLength(0);
     expect(composer.textContent).toContain("Shopkeeper will answer");
     expect(host.querySelector('[aria-label="Voice input"]')).toBeNull();
     expect(host.querySelector('[aria-label="Attach file"]')).toBeNull();
@@ -79,16 +92,11 @@ describe("mobile chat composer actions", () => {
 
     const dialog = document.body.querySelector('[role="dialog"]');
     expect(dialog?.getAttribute("aria-labelledby")).toBe("composer-message-actions-title");
-    for (const label of [
-      "Take photo",
-      "Photos or files",
-      "Record voice",
-      "Open command",
-      "Send as SMS",
-      "Share to apps"
-    ]) {
+    for (const label of ["Take photo", "Photos or files", "Open command", "Send as SMS", "Share to apps"]) {
       expect(dialog?.querySelector(`[aria-label="${label}"]`)).not.toBeNull();
     }
+    // Voice moved out of the action sheet into the always-visible mic button.
+    expect(dialog?.querySelector('[aria-label="Record voice"]')).toBeNull();
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

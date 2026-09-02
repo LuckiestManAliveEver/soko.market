@@ -380,7 +380,9 @@ test("mobile composer keeps one More control and exposes secondary actions in a 
   await expect(composer).toBeVisible({ timeout: 15_000 });
   await expect(more).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Record voice", exact: true })).toHaveCount(0);
+  // Voice is a standalone, always-visible control in the bottom row (shown while the draft is
+  // empty), not tucked inside the action sheet.
+  await expect(page.getByRole("button", { name: "Record voice", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Take photo", exact: true })).toHaveCount(0);
   await expect(page.getByText(/will answer$/)).toBeVisible();
 
@@ -389,7 +391,7 @@ test("mobile composer keeps one More control and exposes secondary actions in a 
   await expect(actions).toBeVisible();
   await expect(actions.getByRole("button", { name: "Take photo", exact: true })).toBeVisible();
   await expect(actions.getByRole("button", { name: "Photos or files", exact: true })).toBeVisible();
-  await expect(actions.getByRole("button", { name: "Record voice", exact: true })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Record voice", exact: true })).toHaveCount(0);
   await expect(actions.getByRole("button", { name: "Open command", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(actions).toHaveCount(0);
