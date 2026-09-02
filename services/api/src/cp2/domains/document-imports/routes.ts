@@ -1,7 +1,7 @@
 /**
  * Sixth domain slice of in-process modularization for services/api/src/cp2/routes.ts (see
  * docs/architecture/routes-modularization-roadmap.md). Needs `binaryUploadPipeline`/
- * `receiptOCRProcessor` passed in as parameters, same as suppliers. `parseDocumentImportBody` is
+ * `ocrProcessor` passed in as parameters, same as suppliers. `parseDocumentImportBody` is
  * exported since the not-yet-extracted commerce product-captures route calls it too - a genuine
  * cross-domain reference. `decodeReceiptBase64` is imported back from `domains/suppliers/routes.js`
  * (extracted first, in row 5) rather than duplicated.
@@ -17,7 +17,7 @@ import {
   type DocumentUploadInput
 } from "../../document-extraction.js";
 import type { BinaryUploadPipeline } from "../../binary-upload-pipeline.js";
-import type { ReceiptOCRProcessor } from "../../receipt-ocr-provider.js";
+import type { OcrExtractionProcessor } from "../../ocr-provider.js";
 import { decodeReceiptBase64 } from "../suppliers/routes.js";
 import {
   parseBoolean,
@@ -86,7 +86,7 @@ export function registerDocumentImportsRoutes(
   app: FastifyInstance,
   store: Cp2Store,
   binaryUploadPipeline: BinaryUploadPipeline | undefined,
-  receiptOCRProcessor: ReceiptOCRProcessor | undefined
+  ocrProcessor: OcrExtractionProcessor | undefined
 ): void {
   async function prepareDocumentUpload(
     input: DocumentUploadInput,
@@ -204,7 +204,7 @@ export function registerDocumentImportsRoutes(
           sessionId,
           businessId: request.params.businessId
         });
-        if (receiptOCRProcessor === undefined) {
+        if (ocrProcessor === undefined) {
           throw new Cp2Error(
             503,
             "document_ocr_worker_unconfigured",
@@ -247,7 +247,7 @@ export function registerDocumentImportsRoutes(
           },
           { retain: false }
         );
-        const extraction = await receiptOCRProcessor.process({
+        const extraction = await ocrProcessor.process({
           fileName: upload.fileName,
           contentType,
           contentBase64: binary.toString("base64")

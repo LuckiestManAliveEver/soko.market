@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { createHttpReceiptOCRProcessor } from "../services/api/src/cp2/receipt-ocr-provider";
+import { createHttpOcrExtractionProcessor } from "../services/api/src/cp2/ocr-provider";
 
-describe("receipt OCR provider", () => {
+describe("OCR provider", () => {
   it("retries transient worker errors and validates the extraction response", async () => {
     const fetcher = vi
       .fn<typeof fetch>()
@@ -35,7 +35,7 @@ describe("receipt OCR provider", () => {
           { status: 200, headers: { "content-type": "application/json" } }
         )
       );
-    const processor = createHttpReceiptOCRProcessor({
+    const processor = createHttpOcrExtractionProcessor({
       endpoint: "http://ocr.internal/",
       fetcher,
       maxRetries: 1,
@@ -57,7 +57,7 @@ describe("receipt OCR provider", () => {
   });
 
   it("rejects malformed successful worker responses", async () => {
-    const processor = createHttpReceiptOCRProcessor({
+    const processor = createHttpOcrExtractionProcessor({
       endpoint: "http://ocr.internal",
       fetcher: vi.fn<typeof fetch>().mockResolvedValue(
         new Response(JSON.stringify({ ok: true }), {
@@ -75,7 +75,7 @@ describe("receipt OCR provider", () => {
         contentBase64: "iVBORw0KGgo="
       })
     ).rejects.toMatchObject({
-      code: "receipt_ocr_worker_response_invalid",
+      code: "ocr_worker_response_invalid",
       statusCode: 502
     });
   });

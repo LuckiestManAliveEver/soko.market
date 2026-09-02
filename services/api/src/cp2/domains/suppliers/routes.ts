@@ -1,7 +1,7 @@
 /**
  * Fifth domain slice of in-process modularization for services/api/src/cp2/routes.ts (see
  * docs/architecture/routes-modularization-roadmap.md). Needs `binaryUploadPipeline`/
- * `receiptOCRProcessor` (both derived once in `registerCp2Routes` from `Cp2RouteOptions`) passed
+ * `ocrProcessor` (both derived once in `registerCp2Routes` from `Cp2RouteOptions`) passed
  * in as parameters. `decodeReceiptBase64` is exported since `domains/document-imports/routes.ts`
  * (not yet extracted) calls it too - a genuine cross-domain reference, not duplicated logic.
  */
@@ -10,10 +10,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
 import type { BinaryUploadPipeline } from "../../binary-upload-pipeline.js";
-import type {
-  ReceiptOCRExtractionResult,
-  ReceiptOCRProcessor
-} from "../../receipt-ocr-provider.js";
+import type { OcrExtractionResult, OcrExtractionProcessor } from "../../ocr-provider.js";
 import {
   parseBoolean,
   parseContactRecordBody,
@@ -79,7 +76,7 @@ export function registerSuppliersRoutes(
   app: FastifyInstance,
   store: Cp2Store,
   binaryUploadPipeline: BinaryUploadPipeline | undefined,
-  receiptOCRProcessor: ReceiptOCRProcessor | undefined
+  ocrProcessor: OcrExtractionProcessor | undefined
 ): void {
   app.get(
     "/businesses/:businessId/suppliers",
@@ -303,13 +300,13 @@ export function registerSuppliersRoutes(
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId
         });
-        let extraction: ReceiptOCRExtractionResult | undefined;
+        let extraction: OcrExtractionResult | undefined;
         let fileSizeBytes = body.fileSizeBytes;
         let fileSignature = body.fileSignature;
         let sourceChecksum: string | undefined;
 
         if (body.extractedText.trim().length === 0 && body.contentBase64 !== null) {
-          if (receiptOCRProcessor === undefined) {
+          if (ocrProcessor === undefined) {
             throw new Cp2Error(
               503,
               "receipt_ocr_worker_unconfigured",
@@ -329,7 +326,7 @@ export function registerSuppliersRoutes(
             },
             { retain: false }
           );
-          extraction = await receiptOCRProcessor.process({
+          extraction = await ocrProcessor.process({
             fileName: body.fileName,
             contentType: body.contentType,
             contentBase64: binary.toString("base64")

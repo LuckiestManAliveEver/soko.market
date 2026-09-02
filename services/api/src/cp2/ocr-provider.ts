@@ -1,33 +1,35 @@
-import type {
-  ReceiptOCRBlockSummary,
-  ReceiptOCREngine,
-  ReceiptOCRProfile
-} from "@soko/shared-types";
+/**
+ * Bridge to the self-hosted PaddleOCR/Tesseract worker (services/receipt-ocr-service). This is a
+ * generic OCR extraction capability - receipt parsing (domains/suppliers), chat document
+ * extraction (domains/document-imports), and camera product capture (domains/commerce) all consume
+ * the same processor instance rather than each talking to the worker directly.
+ */
+import type { OcrBlockSummary, OcrEngine, OcrProfile } from "@soko/shared-types";
 import { Cp2Error } from "./store.js";
 
-export interface ReceiptOCRProcessorInput {
+export interface OcrExtractionInput {
   fileName: string;
   contentType: string;
   contentBase64: string;
 }
 
-export interface ReceiptOCRExtractionResult {
-  engine: ReceiptOCREngine;
+export interface OcrExtractionResult {
+  engine: OcrEngine;
   engineVersion: string;
   modelVersion: string;
-  profile: ReceiptOCRProfile;
+  profile: OcrProfile;
   fallbackUsed: boolean;
-  blocks: ReceiptOCRBlockSummary[];
+  blocks: OcrBlockSummary[];
   fullText: string;
   averageConfidence: number;
   warnings: string[];
 }
 
-export interface ReceiptOCRProcessor {
-  process(input: ReceiptOCRProcessorInput): Promise<ReceiptOCRExtractionResult>;
+export interface OcrExtractionProcessor {
+  process(input: OcrExtractionInput): Promise<OcrExtractionResult>;
 }
 
-export interface HttpReceiptOCRProcessorOptions {
+export interface HttpOcrExtractionProcessorOptions {
   endpoint: string;
   concurrency?: number;
   fetcher?: typeof fetch;
@@ -35,9 +37,9 @@ export interface HttpReceiptOCRProcessorOptions {
   timeoutMs?: number;
 }
 
-export function createHttpReceiptOCRProcessor(
-  options: HttpReceiptOCRProcessorOptions
-): ReceiptOCRProcessor {
+export function createHttpOcrExtractionProcessor(
+  options: HttpOcrExtractionProcessorOptions
+): OcrExtractionProcessor {
   const endpoint = options.endpoint.trim().replace(/\/+$/u, "");
   const fetcher = options.fetcher ?? globalThis.fetch;
   const maxRetries = Math.max(0, options.maxRetries ?? 2);
@@ -45,7 +47,7 @@ export function createHttpReceiptOCRProcessor(
   const semaphore = createSemaphore(Math.max(1, options.concurrency ?? 1));
 
   if (endpoint.length === 0) {
-    throw new Error("Receipt OCR worker endpoint is required.");
+    throw new Error("OCR worker endpoint is required.");
   }
 
   return {
@@ -70,11 +72,7 @@ export function createHttpReceiptOCRProcessor(
 
             const message = await readWorkerError(response);
             if (response.status < 500 || attempt === maxRetries) {
-              throw new Cp2Error(
-                response.status >= 500 ? 503 : 422,
-                "receipt_ocr_worker_failed",
-                message
-              );
+              throw new Cp2Error(response.status >= 500 ? 503 : 422, "ocr_worker_failed", message);
             }
             finalError = new Error(message);
           } catch (error) {
@@ -90,10 +88,10 @@ export function createHttpReceiptOCRProcessor(
 
         throw new Cp2Error(
           503,
-          "receipt_ocr_worker_unavailable",
+          "ocr_worker_unavailable",
           finalError instanceof Error
-            ? `Receipt OCR worker is unavailable: ${finalError.message}`
-            : "Receipt OCR worker is unavailable."
+            ? `OCR worker is unavailable: ${finalError.message}`
+            : "OCR worker is unavailable."
         );
       } finally {
         release();
@@ -102,16 +100,16 @@ export function createHttpReceiptOCRProcessor(
   };
 }
 
-export function createReceiptOCRProcessorFromEnvironment(
+export function createOcrExtractionProcessorFromEnvironment(
   env: NodeJS.ProcessEnv = process.env
-): ReceiptOCRProcessor | undefined {
+): OcrExtractionProcessor | undefined {
   const endpoint = env.OCR_WORKER_URL?.trim();
 
   if (endpoint === undefined || endpoint.length === 0) {
     return undefined;
   }
 
-  return createHttpReceiptOCRProcessor({
+  return createHttpOcrExtractionProcessor({
     endpoint,
     concurrency: readPositiveInteger(env.OCR_CONCURRENCY, 1),
     maxRetries: readNonNegativeInteger(env.OCR_MAX_RETRIES, 2),
@@ -119,7 +117,7 @@ export function createReceiptOCRProcessorFromEnvironment(
   });
 }
 
-function parseExtractionResult(value: unknown): ReceiptOCRExtractionResult {
+function parseExtractionResult(value: unknown): OcrExtractionResult {
   if (typeof value !== "object" || value === null) {
     throw invalidWorkerResponse();
   }
@@ -144,7 +142,7 @@ function parseExtractionResult(value: unknown): ReceiptOCRExtractionResult {
     throw invalidWorkerResponse();
   }
 
-  const parsedBlocks = blocks.map((block): ReceiptOCRBlockSummary => {
+  const parsedBlocks = blocks.map((block): OcrBlockSummary => {
     if (typeof block !== "object" || block === null) {
       throw invalidWorkerResponse();
     }
@@ -207,8 +205,8 @@ function parseExtractionResult(value: unknown): ReceiptOCRExtractionResult {
 function invalidWorkerResponse(): Cp2Error {
   return new Cp2Error(
     502,
-    "receipt_ocr_worker_response_invalid",
-    "Receipt OCR worker returned an invalid response."
+    "ocr_worker_response_invalid",
+    "OCR worker returned an invalid response."
   );
 }
 
@@ -221,7 +219,7 @@ async function readWorkerError(response: Response): Promise<string> {
   } catch {
     // Fall through to the stable error below.
   }
-  return `Receipt OCR worker failed with HTTP ${response.status}.`;
+  return `OCR worker failed with HTTP ${response.status}.`;
 }
 
 function createSemaphore(limit: number): {

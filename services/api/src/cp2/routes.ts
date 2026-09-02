@@ -93,7 +93,7 @@ import {
   createHuggingFaceAgentCatalogFromEnvironment,
   type HuggingFaceAgentCatalog
 } from "./huggingface-agent-catalog.js";
-import type { ReceiptOCRProcessor } from "./receipt-ocr-provider.js";
+import type { OcrExtractionProcessor } from "./ocr-provider.js";
 import type { BinaryUploadPipeline } from "./binary-upload-pipeline.js";
 import type { OwnerNodeBroker } from "../inference/owner-node-broker.js";
 import { readAuthRuntimeConfig } from "./auth-runtime-config.js";
@@ -122,7 +122,7 @@ export interface Cp2RouteOptions {
   /** Defaults to an in-memory store; pass a Postgres-backed one
    *  (createPostgresRuntimeRegistryImportStore) in a deployment that persists imports. */
   runtimeRegistryImportStore?: RuntimeRegistryImportStore;
-  receiptOCRProcessor?: ReceiptOCRProcessor;
+  ocrProcessor?: OcrExtractionProcessor;
   store?: Cp2Store;
   vapidPublicKey?: string;
   /** Origin the web PWA is actually served from - used only to build the universal `/s/:slug`
@@ -272,7 +272,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   const store = options.store ?? createCp2Store();
   const webPublicUrl = (options.webPublicUrl ?? "https://soko.market").replace(/\/+$/u, "");
   const telegramBotUsername = options.telegramBotUsername ?? "";
-  const receiptOCRProcessor = options.receiptOCRProcessor;
+  const ocrProcessor = options.ocrProcessor;
   const binaryUploadPipeline = options.binaryUploadPipeline;
   const githubModelCatalog =
     options.githubModelCatalog ?? createGitHubModelCatalogFromEnvironment();
@@ -1839,7 +1839,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   registerSalesRoutes(app, store);
 
-  registerSuppliersRoutes(app, store, binaryUploadPipeline, receiptOCRProcessor);
+  registerSuppliersRoutes(app, store, binaryUploadPipeline, ocrProcessor);
 
   registerLogisticsRoutes(app, store);
   registerCommercialRecordsRoutes(app, store);
@@ -2048,9 +2048,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  registerDocumentImportsRoutes(app, store, binaryUploadPipeline, receiptOCRProcessor);
+  registerDocumentImportsRoutes(app, store, binaryUploadPipeline, ocrProcessor);
 
-  registerCommerceRoutes(app, store, binaryUploadPipeline, receiptOCRProcessor);
+  registerCommerceRoutes(app, store, binaryUploadPipeline, ocrProcessor);
 
   app.get(
     "/businesses/:businessId/offline-cache",
