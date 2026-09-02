@@ -103,11 +103,17 @@ export function createHttpOcrExtractionProcessor(
 export function createOcrExtractionProcessorFromEnvironment(
   env: NodeJS.ProcessEnv = process.env
 ): OcrExtractionProcessor | undefined {
-  const endpoint = env.OCR_WORKER_URL?.trim();
+  const configured = env.OCR_WORKER_URL?.trim();
 
-  if (endpoint === undefined || endpoint.length === 0) {
+  if (configured === undefined || configured.length === 0) {
     return undefined;
   }
+
+  // Render's fromService "hostport" property (used to wire this to the soko-market-ocr-worker
+  // private service in render.yaml) yields a bare "host:port", not a URL with a scheme.
+  const endpoint = /^[a-z][a-z0-9+.-]*:\/\//iu.test(configured)
+    ? configured
+    : `http://${configured}`;
 
   return createHttpOcrExtractionProcessor({
     endpoint,

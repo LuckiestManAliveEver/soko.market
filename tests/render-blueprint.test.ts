@@ -86,12 +86,15 @@ describe("Render Blueprint", () => {
     expect(rootManifest.scripts["build:production"]).toContain("check:render-inference-boundaries");
 
     // Render no longer hosts a private inference service - Vercel executes inference
-    // (docs/architecture/inference-runtime.md), so none of the old private-pserv/Docker/disk
-    // machinery may appear in the Blueprint at all.
+    // (docs/architecture/inference-runtime.md), so none of the old inference private-service/
+    // Docker/disk machinery may appear in the Blueprint at all. A private service is not banned
+    // outright, though: soko-market-ocr-worker (docs/receipt-ocr.md) is a legitimate `type: pserv`
+    // for a bounded OCR tool, not a model runtime, and check:render-inference-boundaries already
+    // guards the API service block specifically against reintroducing `type: pserv` there.
     expect(blueprint).not.toContain("soko-market-inference");
     expect(blueprint).not.toContain("dockerfilePath: ./services/ai-runtime/Dockerfile");
     expect(blueprint).not.toContain("mountPath: /var/lib/soko-models");
-    expect(blueprint).not.toContain("type: pserv");
+    expect(blueprint).not.toMatch(/type: pserv\n\s+name: soko-market-inference/u);
     expect(blueprint).not.toContain("BACKEND_INFERENCE_ENABLED");
     expect(blueprint).not.toContain("BACKEND_INFERENCE_BASE_URL");
     expect(blueprint).not.toContain("BACKEND_INFERENCE_MODEL_ID");
@@ -121,5 +124,33 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("INFERENCE_JOB_SIGNING_SECRET\n        generateValue: true");
     expect(production).toContain('VITE_INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(production).toContain('VITE_INFERENCE_MAX_FALLBACKS\n        value: "3"');
+  });
+
+  it("deploys the OCR worker as a private service and wires the API to it", async () => {
+    const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
+    const api = blueprint.slice(
+      blueprint.indexOf("name: soko-market-api"),
+      blueprint.indexOf("name: soko-market-rate-limit-cache")
+    );
+    // The API's fromService reference to this worker (asserted below) textually precedes the
+    // worker's own service block, so anchor on the block header itself rather than a bare
+    // `indexOf("name: soko-market-ocr-worker")`, which would match that earlier reference first.
+    const ocrWorkerStart = blueprint.indexOf("- type: pserv\n    name: soko-market-ocr-worker");
+    const nextService = blueprint.indexOf("\n  - type:", ocrWorkerStart + 1);
+    const ocrWorker = blueprint.slice(ocrWorkerStart, nextService === -1 ? undefined : nextService);
+
+    expect(ocrWorkerStart).toBeGreaterThan(-1);
+    expect(ocrWorker).toContain("runtime: docker");
+    expect(ocrWorker).toContain("dockerfilePath: ./services/receipt-ocr-service/Dockerfile");
+    expect(ocrWorker).toContain("dockerContext: ./services/receipt-ocr-service");
+    expect(ocrWorker).toContain('key: OCR_WORKER_PORT\n        value: "8090"');
+    expect(ocrWorker).toContain("key: OCR_ENGINE_PRIMARY\n        value: paddleocr");
+
+    // The API resolves OCR_WORKER_URL from the worker's private-network address rather than a
+    // manually pasted URL - see the http:// normalization in services/api/src/cp2/ocr-provider.ts
+    // for the "hostport" -> URL translation this requires.
+    expect(api).toMatch(
+      /key: OCR_WORKER_URL\n\s+fromService:\n\s+name: soko-market-ocr-worker\n\s+type: pserv\n\s+property: hostport/u
+    );
   });
 });

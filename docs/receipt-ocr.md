@@ -21,6 +21,19 @@ The API connects through `OCR_WORKER_URL` (locally `http://127.0.0.1:8090`). Bin
 bytes are sent only after the API authenticates the business and the signed malware scanner returns
 `clean`. Worker responses are schema-validated before entering parsing and contact matching.
 
+## Production deployment
+
+`render.yaml` declares `soko-market-ocr-worker` as a `type: pserv` (private, not internet-facing)
+Docker service built from `services/receipt-ocr-service/Dockerfile`. `soko-market-api`'s
+`OCR_WORKER_URL` is wired to it automatically via Render's `fromService`/`hostport` linking rather
+than a manually pasted value - `createOcrExtractionProcessorFromEnvironment`
+(`services/api/src/cp2/ocr-provider.ts`) normalizes the bare `host:port` Render provides into an
+`http://` endpoint. No persistent disk is mounted, so PaddleOCR re-downloads its model weights on
+each deploy/restart (a one-time cold-start cost, not a per-request one); see the comment on that
+service block in `render.yaml` if that cost needs to be traded for a disk later. The `starter` plan
+may need sizing up under real PaddleOCR memory pressure - watch the worker's Render metrics after
+the first production deploy.
+
 ## A shared OCR capability, not a receipt-only one
 
 The bridge to the worker (`services/api/src/cp2/ocr-provider.ts`, exporting
