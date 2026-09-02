@@ -23,6 +23,7 @@ import { PublicStorefrontPanel } from "./PublicStorefrontPanel";
 import { QuickRuntimeSwitcher } from "./QuickRuntimeSwitcher";
 import { ModelTemplateReportCardPanel } from "./ModelTemplateReportCardPanel";
 import { ModelTemplateWorkbenchPanel } from "./ModelTemplateWorkbenchPanel";
+import { ModelTemplateGovernancePanel } from "./ModelTemplateGovernancePanel";
 import { YourShopsPanel } from "./YourShopsPanel";
 
 import {
@@ -468,6 +469,8 @@ export function AgentProfileSurface({
           <ModelTemplateReportCardPanel businessId={business.id} />
 
           <ModelTemplateWorkbenchPanel businessId={business.id} />
+
+          <ModelTemplateGovernancePanel businessId={business.id} />
 
           <Suspense fallback={<div className="inline-loading-card">Opening model settings…</div>}>
             <AgentModelPanel
