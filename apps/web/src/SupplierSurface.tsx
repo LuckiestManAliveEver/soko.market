@@ -11,8 +11,10 @@ import {
 } from "./soko-application-shared";
 
 import { formatMoney } from "./formatters";
+import PurchaseSaleRecordsCard from "./PurchaseSaleRecordsCard";
 
 export interface SupplierSurfaceProps {
+  businessId: string;
   suppliers: SupplierBusinessCardSummary[];
   purchaseReceipts: PurchaseReceiptSummary[];
   form: SupplierFormState;
@@ -75,6 +77,8 @@ export function SupplierSurface(props: SupplierSurfaceProps) {
 
   return (
     <div className="records-surface">
+      <PurchaseSaleRecordsCard businessId={props.businessId} />
+
       <section className="record-form" aria-label="Supplier form">
         <div className="section-heading with-action">
           <div>

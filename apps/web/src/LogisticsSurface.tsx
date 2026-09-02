@@ -4,8 +4,10 @@ import {
   type LogisticsFormState,
   type LogisticsSummary
 } from "./soko-application-shared";
+import DeliveryRoutesCard from "./DeliveryRoutesCard";
 
 export interface LogisticsSurfaceProps {
+  businessId: string;
   invoices: InvoiceSummary[];
   logistics: LogisticsSummary[];
   form: LogisticsFormState;
@@ -26,6 +28,8 @@ export function LogisticsSurface(props: LogisticsSurfaceProps) {
 
   return (
     <div className="records-surface">
+      <DeliveryRoutesCard businessId={props.businessId} />
+
       <section className="record-form" aria-label="Logistics form">
         <div className="section-heading">
           <p className="eyebrow">Logistics</p>
