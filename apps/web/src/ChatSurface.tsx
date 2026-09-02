@@ -305,51 +305,33 @@ export function ChatSurface({
     <div className={`chat-surface ${showMessageThread && isInboxOpen ? "inbox-open" : ""}`}>
       {showMessageThread ? (
         <aside
-          className={`messenger-inbox ${isInboxOpen ? "open" : ""}`}
+          className={`messenger-inbox ${isInboxOpen ? "open" : ""} ${
+            isSessionListView ? "sessions-view" : ""
+          }`}
           aria-label="Conversations"
         >
           <div className="messenger-inbox-heading">
-            <div>
-              <span>{isSessionListView ? "Your workspace" : "Your network"}</span>
-              <h2>{isSessionListView ? "Sessions" : "Messages"}</h2>
-            </div>
-            {isSessionListView ? (
-              <button
-                type="button"
-                onClick={() =>
-                  isAuthenticated ? setIsNewSessionOpen((open) => !open) : onRequireSignIn()
-                }
-              >
-                New session
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() =>
-                  isAuthenticated ? setIsNewConversationOpen((open) => !open) : onRequireSignIn()
-                }
-              >
-                New
-              </button>
-            )}
+            <h2>{isSessionListView ? "Chats" : "Messages"}</h2>
+            <button
+              type="button"
+              className="inbox-icon-button"
+              aria-label="Notifications"
+              onClick={isAuthenticated ? onEnableNotifications : onRequireSignIn}
+            >
+              <span aria-hidden="true" />
+            </button>
           </div>
           <div className="messenger-inbox-tools">
-            <label>
+            <label className="inbox-search-field">
               <span className="visually-hidden">Search conversations</span>
+              <span className="inbox-search-icon" aria-hidden="true" />
               <input
                 type="search"
                 value={inboxSearch}
                 onChange={(event) => setInboxSearch(event.target.value)}
-                placeholder={isSessionListView ? "Search sessions" : "Search messages"}
+                placeholder={isSessionListView ? "Search chats" : "Search messages"}
               />
             </label>
-            <button
-              className="secondary"
-              type="button"
-              onClick={isAuthenticated ? onEnableNotifications : onRequireSignIn}
-            >
-              Notifications
-            </button>
           </div>
           {isNewConversationOpen && !isSessionListView ? (
             <form
@@ -517,6 +499,20 @@ export function ChatSurface({
               </p>
             ) : null}
           </div>
+          <button
+            type="button"
+            className="new-chat-fab"
+            onClick={() =>
+              isAuthenticated
+                ? isSessionListView
+                  ? setIsNewSessionOpen((open) => !open)
+                  : setIsNewConversationOpen((open) => !open)
+                : onRequireSignIn()
+            }
+          >
+            <span aria-hidden="true">+</span>
+            {isSessionListView ? "New chat" : "New message"}
+          </button>
         </aside>
       ) : null}
       <section className="messenger-thread" aria-label={selectedConversation?.title ?? "Chat"}>
