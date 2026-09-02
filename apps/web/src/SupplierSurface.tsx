@@ -12,6 +12,7 @@ import {
 
 import { formatMoney } from "./formatters";
 import PurchaseSaleRecordsCard from "./PurchaseSaleRecordsCard";
+import SupplierContactRolesCard from "./SupplierContactRolesCard";
 
 export interface SupplierSurfaceProps {
   businessId: string;
@@ -466,6 +467,10 @@ export function SupplierSurface(props: SupplierSurfaceProps) {
                         ))
                       )}
                     </section>
+                    <SupplierContactRolesCard
+                      businessId={props.businessId}
+                      supplierId={supplier.id}
+                    />
                   </div>
                 ) : null}
               </article>
