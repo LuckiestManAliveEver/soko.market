@@ -80,6 +80,7 @@ export type BusinessPermission =
   | "compliance:read"
   | "compliance:export"
   | "compliance:delete"
+  | "conversation:delete"
   | "verification:read"
   | "verification:write"
   | "tax:read"
@@ -122,6 +123,7 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "compliance:read",
     "compliance:export",
     "compliance:delete",
+    "conversation:delete",
     "verification:read",
     "verification:write",
     "tax:read",

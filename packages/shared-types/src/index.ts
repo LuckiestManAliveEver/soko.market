@@ -791,6 +791,36 @@ export interface ConversationSummary {
   title?: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Set when an admin has moved this conversation to the recycle bin. The conversation is hidden
+   * from every normal listing/read but its data is kept until `recycleBinPurgeAt` so it can be
+   * restored; a background sweep hard-deletes it once that time passes.
+   */
+  deletedAt?: string | null;
+  deletedByUserId?: string | null;
+}
+
+/** A conversation currently sitting in the recycle bin, as shown to an admin. */
+export interface RecycleBinItemSummary {
+  conversation: ConversationSummary;
+  title: string | null;
+  deletedAt: string;
+  deletedByUserId: string;
+  purgeAt: string;
+  sizeBytes: number;
+}
+
+/**
+ * Recycle-bin capacity for one scope (a business, or an account with no business). Capacity is
+ * enforced per scope so one busy shop's deletions can't starve another account's recycle bin.
+ */
+export interface RecycleBinStatusSummary {
+  scope: "business" | "account";
+  scopeId: string;
+  items: RecycleBinItemSummary[];
+  usedBytes: number;
+  capacityBytes: number;
+  isFull: boolean;
 }
 
 export interface ConversationMessageSummary {

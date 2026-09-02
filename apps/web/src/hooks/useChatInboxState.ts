@@ -5,8 +5,10 @@ import type {
   ConversationInboxItem,
   ConversationMessageContent,
   ConversationMessageSummary,
+  ConversationSummary,
   ConversationView,
-  MessageHandoffStatus
+  MessageHandoffStatus,
+  RecycleBinStatusSummary
 } from "@soko/shared-types";
 
 import { deleteJson, getJson, patchJson, postJson } from "../api-helpers";
@@ -66,6 +68,7 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [activeConversation, setActiveConversation] = useState<ConversationView | null>(null);
   const [isContactTyping, setIsContactTyping] = useState(false);
+  const [recycleBin, setRecycleBin] = useState<RecycleBinStatusSummary | null>(null);
 
   const {
     business,
@@ -82,34 +85,30 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
     setReplyToMessageId
   } = deps;
 
+  // Deliberately never auto-selects or auto-creates a conversation when no valid preferred id is
+  // given: the startup chat window stays blank (like a fresh ChatGPT tab) until the account picks
+  // an existing chat from the sidebar or starts a new one via onCreateAgentSession/
+  // onCreateConversation. See docs/frontend/frontend.md Phase 3 "New chat" affordance.
   async function loadMessagingInbox(preferredConversationId: string | null = activeConversationId) {
     if (session === null) return;
     try {
-      let response = await getJson<{ conversations: ConversationInboxItem[] }>(
+      const response = await getJson<{ conversations: ConversationInboxItem[] }>(
         "/v1/conversations",
         (refreshed) => setConversationInbox(refreshed.conversations)
       );
-      if (response.conversations.length === 0) {
-        const created = await postJson<ConversationView>("/v1/conversations", {
-          kind: "personal",
-          activeShopId: business?.id ?? null,
-          title: "Soko agent"
-        });
-        response = await getJson<{ conversations: ConversationInboxItem[] }>(
-          "/v1/conversations",
-          (refreshed) => setConversationInbox(refreshed.conversations)
-        );
-        preferredConversationId = created.conversation.id;
-      }
       setConversationInbox(response.conversations);
       const selectedId =
         preferredConversationId !== null &&
         response.conversations.some((conversation) => conversation.id === preferredConversationId)
           ? preferredConversationId
-          : (response.conversations[0]?.id ?? null);
+          : null;
       if (selectedId !== null) {
         setActiveConversationId(selectedId);
         await loadConversationThread(selectedId);
+      } else {
+        if (activeConversationId !== null) setActiveConversationId(null);
+        if (activeConversation !== null) setActiveConversation(null);
+        if (chatMessages.length > 0) setChatMessages([]);
       }
     } catch (error) {
       if (navigator.onLine) setStatusMessage(getErrorMessage(error));
@@ -257,7 +256,63 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
                 : new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString()
             };
     await patchJson<ConversationView>(`/v1/conversations/${conversationId}`, body);
-    await loadMessagingInbox(preference === "archive" ? null : conversationId);
+    // Archiving the conversation you're currently viewing goes back to the blank chat window
+    // (loadMessagingInbox no longer auto-jumps to another chat); archiving a different one leaves
+    // your current view untouched.
+    await loadMessagingInbox(
+      preference === "archive"
+        ? activeConversationId === conversationId
+          ? null
+          : activeConversationId
+        : conversationId
+    );
+  }
+
+  // Deleting requires admin privileges server-side (the shop owner, or - for a personal chat with
+  // no shop - an account that owns no business yet or owns one); a non-admin sees the server's
+  // "ask an admin" message as a status banner. A full recycle bin (RECYCLE_BIN_CAPACITY_BYTES on
+  // the API) surfaces the same way, pointing the user at emptying it.
+  async function deleteConversation(conversationId: string) {
+    try {
+      await deleteJson<ConversationSummary>(`/v1/conversations/${conversationId}`);
+      setStatusMessage("Chat moved to the recycle bin. It will be deleted for good in 14 days.");
+      await loadMessagingInbox(activeConversationId === conversationId ? null : activeConversationId);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function restoreConversation(conversationId: string) {
+    try {
+      await postJson<ConversationSummary>(`/v1/conversations/${conversationId}/restore`, {});
+      setStatusMessage("Chat restored.");
+      await loadRecycleBin();
+      await loadMessagingInbox(activeConversationId);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadRecycleBin() {
+    try {
+      setRecycleBin(await getJson<RecycleBinStatusSummary>("/v1/conversations/recycle-bin"));
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function emptyRecycleBin(conversationIds?: string[]) {
+    try {
+      const result = await postJson<{ purged: number }>("/v1/conversations/recycle-bin/empty", {
+        ...(conversationIds === undefined ? {} : { conversationIds })
+      });
+      setStatusMessage(
+        result.purged === 1 ? "Deleted 1 chat for good." : `Deleted ${result.purged} chats for good.`
+      );
+      await loadRecycleBin();
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
   }
 
   async function updateMessageAction(
@@ -501,6 +556,7 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
     setActiveConversationId(null);
     setActiveConversation(null);
     setIsContactTyping(false);
+    setRecycleBin(null);
     setIsMessagingInboxOpen(window.matchMedia("(min-width: 760px)").matches);
   });
 
@@ -514,12 +570,17 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
     activeConversation,
     setActiveConversation,
     isContactTyping,
+    recycleBin,
     loadMessagingInbox,
     loadConversationThread,
     selectConversation,
     createAgentSession,
     createDirectConversation,
     updateConversationPreference,
+    deleteConversation,
+    restoreConversation,
+    loadRecycleBin,
+    emptyRecycleBin,
     updateMessageAction,
     forwardMessage,
     requestMessagingNotifications,

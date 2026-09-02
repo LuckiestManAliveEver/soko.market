@@ -657,11 +657,16 @@ export function OwnerApp() {
     setActiveConversationId,
     activeConversation,
     isContactTyping,
+    recycleBin,
     loadMessagingInbox,
     loadConversationThread,
     selectConversation,
     createDirectConversation,
     updateConversationPreference,
+    deleteConversation,
+    restoreConversation,
+    loadRecycleBin,
+    emptyRecycleBin,
     updateMessageAction,
     forwardMessage,
     requestMessagingNotifications,
@@ -1822,6 +1827,17 @@ export function OwnerApp() {
                   void runAction("conversation-preference", () =>
                     updateConversationPreference(conversationId, preference)
                   )
+                }
+                recycleBin={recycleBin}
+                onDeleteConversation={(conversationId) =>
+                  void runAction("conversation-delete", () => deleteConversation(conversationId))
+                }
+                onRestoreConversation={(conversationId) =>
+                  void runAction("conversation-restore", () => restoreConversation(conversationId))
+                }
+                onLoadRecycleBin={() => void runAction("recycle-bin-load", loadRecycleBin)}
+                onEmptyRecycleBin={(conversationIds) =>
+                  void runAction("recycle-bin-empty", () => emptyRecycleBin(conversationIds))
                 }
                 onEnableNotifications={() =>
                   void runAction("push-notifications", requestMessagingNotifications)

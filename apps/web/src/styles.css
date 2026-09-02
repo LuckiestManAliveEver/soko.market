@@ -5820,6 +5820,31 @@ details.nested-form-section summary {
   margin: 8px auto 12px;
 }
 
+.blank-session-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: auto;
+  padding: 32px 24px;
+  text-align: center;
+  max-width: 320px;
+}
+
+.blank-session-state h3 {
+  margin: 0;
+}
+
+.blank-session-state p {
+  margin: 0;
+  opacity: 0.75;
+}
+
+.blank-session-state button {
+  margin-top: 8px;
+}
+
 [data-capability-profile="constrained"] .top-bar {
   backdrop-filter: none;
 }

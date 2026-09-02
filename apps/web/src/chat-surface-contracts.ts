@@ -7,7 +7,8 @@ import type {
   ChannelProvider,
   ConversationInboxItem,
   MessageHandoffStatus,
-  ProductFieldDefinition
+  ProductFieldDefinition,
+  RecycleBinStatusSummary
 } from "@soko/shared-types";
 
 import type { ChatAttachment, ChatMessage, ShellView, SokoMode } from "./app-shell";
@@ -89,6 +90,11 @@ export interface ChatSurfaceProps {
     conversationId: string,
     preference: "archive" | "mute" | "pin"
   ) => void;
+  recycleBin: RecycleBinStatusSummary | null;
+  onDeleteConversation: (conversationId: string) => void;
+  onRestoreConversation: (conversationId: string) => void;
+  onLoadRecycleBin: () => void;
+  onEmptyRecycleBin: (conversationIds?: string[]) => void;
   onEnableNotifications: () => void;
   onInboxOpenChange: (open: boolean) => void;
   onReply: (messageId: string) => void;

@@ -3592,6 +3592,31 @@ export class Cp2Store {
   ): ReturnType<MessagingDomain["updateConversationSettings"]> {
     return this.messagingDomain.updateConversationSettings(...args);
   }
+  deleteConversation(
+    ...args: Parameters<MessagingDomain["deleteConversation"]>
+  ): ReturnType<MessagingDomain["deleteConversation"]> {
+    return this.messagingDomain.deleteConversation(...args);
+  }
+  restoreConversationFromRecycleBin(
+    ...args: Parameters<MessagingDomain["restoreConversationFromRecycleBin"]>
+  ): ReturnType<MessagingDomain["restoreConversationFromRecycleBin"]> {
+    return this.messagingDomain.restoreConversationFromRecycleBin(...args);
+  }
+  listRecycleBin(
+    ...args: Parameters<MessagingDomain["listRecycleBin"]>
+  ): ReturnType<MessagingDomain["listRecycleBin"]> {
+    return this.messagingDomain.listRecycleBin(...args);
+  }
+  emptyRecycleBin(
+    ...args: Parameters<MessagingDomain["emptyRecycleBin"]>
+  ): ReturnType<MessagingDomain["emptyRecycleBin"]> {
+    return this.messagingDomain.emptyRecycleBin(...args);
+  }
+  purgeExpiredRecycleBinConversations(
+    ...args: Parameters<MessagingDomain["purgeExpiredRecycleBinConversations"]>
+  ): ReturnType<MessagingDomain["purgeExpiredRecycleBinConversations"]> {
+    return this.messagingDomain.purgeExpiredRecycleBinConversations(...args);
+  }
   updateConversationMessage(
     ...args: Parameters<MessagingDomain["updateConversationMessage"]>
   ): ReturnType<MessagingDomain["updateConversationMessage"]> {
