@@ -6184,10 +6184,11 @@ body {
 }
 
 .conversation-select {
+  align-items: center;
   color: var(--soko-ink);
   display: grid;
   gap: 10px;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-columns: 40px minmax(0, 1fr) auto auto;
   min-height: 62px;
   padding: 8px;
 }
@@ -6242,6 +6243,7 @@ body {
   display: flex !important;
   gap: 8px;
   justify-content: space-between;
+  min-width: 0;
 }
 
 .conversation-title-line strong {
@@ -6294,7 +6296,8 @@ body {
 }
 
 .conversation-select b {
-  grid-column: 3;
+  align-self: center;
+  grid-column: 4;
   background: var(--soko-accent);
   font-family: var(--soko-mono-font);
   font-size: 9px;
