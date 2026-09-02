@@ -243,6 +243,15 @@ import type {
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
 import { NativeRuntimeBindingStore } from "./domains/native-runtime/store.js";
 import {
+  ModelTemplatesDomain,
+  type ModelTemplatesSnapshot
+} from "./domains/model-templates/store.js";
+import type {
+  JudgeEvaluator,
+  TemplateExecutor,
+  TemplateTelemetryEvent
+} from "./domains/model-templates/types.js";
+import {
   createChannelGatewayFromEnvironment,
   type ChannelGateway
 } from "../messaging/channel-gateway.js";
@@ -530,7 +539,7 @@ export interface RoleCheckResult {
   permission: BusinessPermission;
 }
 
-export interface Cp2Snapshot {
+export interface Cp2Snapshot extends ModelTemplatesSnapshot {
   accounts: AccountSummary[];
   users: UserSummary[];
   deviceAccountBootstraps?: DeviceAccountBootstrapRecord[];
@@ -678,6 +687,9 @@ export interface Cp2StoreOptions {
   workspaceDeliveryMaxFileBytes?: number;
   conversationAttachmentBlobStore?: ConversationAttachmentBlobStore;
   accountAiAssetStore?: AccountAiAssetStore;
+  templateExecutor?: TemplateExecutor;
+  templateJudgeEvaluator?: JudgeEvaluator;
+  templateTelemetrySink?: (event: TemplateTelemetryEvent) => void;
 }
 
 export interface NetworkInviteDeliveryInput {
@@ -1062,6 +1074,33 @@ export class Cp2Store {
         ? {}
         : { workspaceDeliveryMaxFileBytes: this.options.workspaceDeliveryMaxFileBytes })
     });
+    this.modelTemplatesDomain = new ModelTemplatesDomain({
+      requireAccess: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
+      resolveBaseModel: (modelId) => {
+        const model = this.resolveCatalogModel(modelId);
+        return model === undefined
+          ? null
+          : {
+              id: model.id,
+              provider: model.provider,
+              capabilities: [...model.capabilities],
+              contextWindow: model.contextWindow,
+              available: model.available
+            };
+      },
+      ...(this.options.templateExecutor === undefined
+        ? {}
+        : { executeTemplate: this.options.templateExecutor }),
+      ...(this.options.templateJudgeEvaluator === undefined
+        ? {}
+        : { judgeEvaluator: this.options.templateJudgeEvaluator }),
+      emitTelemetry:
+        this.options.templateTelemetrySink ??
+        ((event) => {
+          console.info(JSON.stringify(event));
+        })
+    });
     this.agentRuntimeDomain = new AgentRuntimeDomain({
       platformDefaultRuntime: this.options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy,
       listModelCatalog: () => this.listModelCatalog(),
@@ -1184,6 +1223,8 @@ export class Cp2Store {
       },
       resolveAgentRuntimeAdapterId: (agentId) =>
         this.nativeRuntimeBindings.resolveAgentRuntimeAdapterId(agentId),
+      resolveProductionModelTemplate: (businessId, agentId, modelId) =>
+        this.modelTemplatesDomain.resolveProductionTemplate({ businessId, agentId, modelId }),
       getActiveNativeRuntimeBinding: (businessId, agentId, accountId) =>
         this.nativeRuntimeBindings.getActiveBindingForAgent(businessId, agentId, accountId),
       ensureDefaultRuntimeBinding: (input) => {
@@ -1306,6 +1347,7 @@ export class Cp2Store {
   // `nativeRuntimeBindings` (NativeRuntimeBindingStore) just below. `mcpAccessTokens`/
   // `mcpTokenIdByHash` deliberately stay here (see that domain's header comment for why).
   private readonly agentRuntimeDomain: AgentRuntimeDomain;
+  private readonly modelTemplatesDomain: ModelTemplatesDomain;
   private readonly nativeRuntimeBindings: NativeRuntimeBindingStore;
   // DB-hosted model/agent catalog (see infra/db/migrations/071_platform_catalog.sql) and the
   // platform-operator grants that authorize editing it - see requirePlatformOperator,
@@ -5537,6 +5579,138 @@ export class Cp2Store {
     return this.networkDomain.rejectAgentRoute(...args);
   }
 
+  createModelTemplate(
+    ...args: Parameters<ModelTemplatesDomain["createTemplate"]>
+  ): ReturnType<ModelTemplatesDomain["createTemplate"]> {
+    return this.modelTemplatesDomain.createTemplate(...args);
+  }
+
+  listModelTemplates(
+    ...args: Parameters<ModelTemplatesDomain["listTemplates"]>
+  ): ReturnType<ModelTemplatesDomain["listTemplates"]> {
+    return this.modelTemplatesDomain.listTemplates(...args);
+  }
+
+  getModelTemplate(
+    ...args: Parameters<ModelTemplatesDomain["getTemplate"]>
+  ): ReturnType<ModelTemplatesDomain["getTemplate"]> {
+    return this.modelTemplatesDomain.getTemplate(...args);
+  }
+
+  listModelTemplateVersions(
+    ...args: Parameters<ModelTemplatesDomain["listVersions"]>
+  ): ReturnType<ModelTemplatesDomain["listVersions"]> {
+    return this.modelTemplatesDomain.listVersions(...args);
+  }
+
+  getModelTemplateLineage(
+    ...args: Parameters<ModelTemplatesDomain["getLineage"]>
+  ): ReturnType<ModelTemplatesDomain["getLineage"]> {
+    return this.modelTemplatesDomain.getLineage(...args);
+  }
+
+  createModelTemplateEvaluationSuite(
+    ...args: Parameters<ModelTemplatesDomain["createEvaluationSuite"]>
+  ): ReturnType<ModelTemplatesDomain["createEvaluationSuite"]> {
+    return this.modelTemplatesDomain.createEvaluationSuite(...args);
+  }
+
+  addModelTemplateEvaluationCase(
+    ...args: Parameters<ModelTemplatesDomain["addEvaluationCase"]>
+  ): ReturnType<ModelTemplatesDomain["addEvaluationCase"]> {
+    return this.modelTemplatesDomain.addEvaluationCase(...args);
+  }
+
+  runModelTemplateEvaluation(
+    ...args: Parameters<ModelTemplatesDomain["runEvaluation"]>
+  ): ReturnType<ModelTemplatesDomain["runEvaluation"]> {
+    return this.modelTemplatesDomain.runEvaluation(...args);
+  }
+
+  getModelTemplateEvaluation(
+    ...args: Parameters<ModelTemplatesDomain["getEvaluation"]>
+  ): ReturnType<ModelTemplatesDomain["getEvaluation"]> {
+    return this.modelTemplatesDomain.getEvaluation(...args);
+  }
+
+  getModelTemplateReportCard(
+    ...args: Parameters<ModelTemplatesDomain["getReportCard"]>
+  ): ReturnType<ModelTemplatesDomain["getReportCard"]> {
+    return this.modelTemplatesDomain.getReportCard(...args);
+  }
+
+  recordModelTemplateObservation(
+    ...args: Parameters<ModelTemplatesDomain["recordObservation"]>
+  ): ReturnType<ModelTemplatesDomain["recordObservation"]> {
+    return this.modelTemplatesDomain.recordObservation(...args);
+  }
+
+  reviewModelTemplateObservation(
+    ...args: Parameters<ModelTemplatesDomain["reviewObservation"]>
+  ): ReturnType<ModelTemplatesDomain["reviewObservation"]> {
+    return this.modelTemplatesDomain.reviewObservation(...args);
+  }
+
+  submitModelTemplateCorrection(
+    ...args: Parameters<ModelTemplatesDomain["submitCorrection"]>
+  ): ReturnType<ModelTemplatesDomain["submitCorrection"]> {
+    return this.modelTemplatesDomain.submitCorrection(...args);
+  }
+
+  approveModelTemplateCorrection(
+    ...args: Parameters<ModelTemplatesDomain["approveCorrection"]>
+  ): ReturnType<ModelTemplatesDomain["approveCorrection"]> {
+    return this.modelTemplatesDomain.approveCorrection(...args);
+  }
+
+  createModelTemplateDatasetVersion(
+    ...args: Parameters<ModelTemplatesDomain["createDatasetVersion"]>
+  ): ReturnType<ModelTemplatesDomain["createDatasetVersion"]> {
+    return this.modelTemplatesDomain.createDatasetVersion(...args);
+  }
+
+  getModelTemplateDataset(
+    ...args: Parameters<ModelTemplatesDomain["getDataset"]>
+  ): ReturnType<ModelTemplatesDomain["getDataset"]> {
+    return this.modelTemplatesDomain.getDataset(...args);
+  }
+
+  startModelTemplateImprovementRun(
+    ...args: Parameters<ModelTemplatesDomain["startImprovementRun"]>
+  ): ReturnType<ModelTemplatesDomain["startImprovementRun"]> {
+    return this.modelTemplatesDomain.startImprovementRun(...args);
+  }
+
+  getModelTemplateImprovementRun(
+    ...args: Parameters<ModelTemplatesDomain["getImprovementRun"]>
+  ): ReturnType<ModelTemplatesDomain["getImprovementRun"]> {
+    return this.modelTemplatesDomain.getImprovementRun(...args);
+  }
+
+  promoteModelTemplate(
+    ...args: Parameters<ModelTemplatesDomain["promote"]>
+  ): ReturnType<ModelTemplatesDomain["promote"]> {
+    return this.modelTemplatesDomain.promote(...args);
+  }
+
+  rollbackModelTemplate(
+    ...args: Parameters<ModelTemplatesDomain["rollback"]>
+  ): ReturnType<ModelTemplatesDomain["rollback"]> {
+    return this.modelTemplatesDomain.rollback(...args);
+  }
+
+  exportModelTemplate(
+    ...args: Parameters<ModelTemplatesDomain["exportTemplate"]>
+  ): ReturnType<ModelTemplatesDomain["exportTemplate"]> {
+    return this.modelTemplatesDomain.exportTemplate(...args);
+  }
+
+  verifyModelTemplateArtifact(
+    ...args: Parameters<ModelTemplatesDomain["verifyArtifact"]>
+  ): ReturnType<ModelTemplatesDomain["verifyArtifact"]> {
+    return this.modelTemplatesDomain.verifyArtifact(...args);
+  }
+
   deleteNetworkSource(
     ...args: Parameters<NetworkDomain["deleteNetworkSource"]>
   ): ReturnType<NetworkDomain["deleteNetworkSource"]> {
@@ -5603,6 +5777,48 @@ export class Cp2Store {
       installedAgentModels: [...this.agentRuntimeDomain.installedAgentModelsMap.values()].map(
         cloneInstalledAgentModel
       ),
+      modelTemplates: [...this.modelTemplatesDomain.modelTemplatesMap.values()].map(
+        cloneSnapshotValue
+      ),
+      modelTemplateVersions: [...this.modelTemplatesDomain.modelTemplateVersionsMap.values()].map(
+        cloneSnapshotValue
+      ),
+      expertiseArtifacts: [...this.modelTemplatesDomain.expertiseArtifactsMap.values()].map(
+        cloneSnapshotValue
+      ),
+      evaluationSuites: [...this.modelTemplatesDomain.evaluationSuitesMap.values()].map(
+        cloneSnapshotValue
+      ),
+      evaluationCases: [...this.modelTemplatesDomain.evaluationCasesMap.values()].map(
+        cloneSnapshotValue
+      ),
+      evaluationRuns: [...this.modelTemplatesDomain.evaluationRunsMap.values()].map(
+        cloneSnapshotValue
+      ),
+      evaluationResults: [...this.modelTemplatesDomain.evaluationResultsMap.values()].map(
+        cloneSnapshotValue
+      ),
+      productionObservations: [...this.modelTemplatesDomain.productionObservationsMap.values()].map(
+        cloneSnapshotValue
+      ),
+      expertCorrections: [...this.modelTemplatesDomain.expertCorrectionsMap.values()].map(
+        cloneSnapshotValue
+      ),
+      datasetVersions: [...this.modelTemplatesDomain.datasetVersionsMap.values()].map(
+        cloneSnapshotValue
+      ),
+      datasetExamples: [...this.modelTemplatesDomain.datasetExamplesMap.values()].map(
+        cloneSnapshotValue
+      ),
+      improvementRuns: [...this.modelTemplatesDomain.improvementRunsMap.values()].map(
+        cloneSnapshotValue
+      ),
+      templatePromotions: [...this.modelTemplatesDomain.templatePromotionsMap.values()].map(
+        cloneSnapshotValue
+      ),
+      templateRuntimeBindings: [
+        ...this.modelTemplatesDomain.templateRuntimeBindingsMap.values()
+      ].map(cloneSnapshotValue),
       nativeRuntimeAgents: [...this.nativeRuntimeBindings.agentsMap.values()],
       nativeRuntimeModels: [...this.nativeRuntimeBindings.modelsMap.values()],
       nativeExecutionHosts: [...this.nativeRuntimeBindings.hostsMap.values()],
@@ -5712,6 +5928,7 @@ export class Cp2Store {
     this.messagingDomain.clear();
     this.marketplaceIntroStates.clear();
     this.agentRuntimeDomain.clear();
+    this.modelTemplatesDomain.clear();
     this.nativeRuntimeBindings.clear();
     this.modelCatalog.clear();
     this.agentCatalog.clear();
@@ -5800,6 +6017,7 @@ export class Cp2Store {
 
     this.messagingDomain.restore(snapshot);
     this.agentRuntimeDomain.restore(snapshot);
+    this.modelTemplatesDomain.restore(snapshot);
     this.nativeRuntimeBindings.restore(snapshot);
     this.salesDomain.restore(snapshot);
 
@@ -8686,6 +8904,7 @@ export class Cp2Store {
   }
 
   private deleteShopOwnedData(businessId: string, accountId: string, now: Date): void {
+    this.modelTemplatesDomain.deleteBusinessData(businessId);
     this.recordSyncChange({
       accountId,
       collection: "shops",
@@ -8941,6 +9160,7 @@ export class Cp2Store {
 
     while (previousScopeSize !== scope.size) {
       previousScopeSize = scope.size;
+      deletedRecordCount += this.modelTemplatesDomain.deleteBusinessesInScope(scope);
       deletedRecordCount += deleteScopedMapRecords(this.accounts, scope);
       deletedRecordCount += deleteScopedMapRecords(this.users, scope);
       deletedRecordCount += deleteScopedMapRecords(
@@ -9448,6 +9668,10 @@ export class Cp2Store {
 
 export function createCp2Store(options: Cp2StoreOptions = {}): Cp2Store {
   return new Cp2Store(options);
+}
+
+function cloneSnapshotValue<T>(value: T): T {
+  return structuredClone(value);
 }
 
 function assertSafeAccountAgentManifest(agent: OssAgentSummary): void {

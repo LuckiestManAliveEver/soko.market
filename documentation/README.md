@@ -202,6 +202,15 @@ Mobile PWA / optional native shell
 
 ## AI and Model Integration Position
 
+### Model Templates and executable expertise
+
+The current recursive expertise architecture is indexed in
+[`docs/README.md`](../docs/README.md). Start with the
+[Model Template flywheel](../docs/architecture/model-template-flywheel.md) and canonical
+[`.soko` v1 specification](../docs/specs/soko-model-template-v1.md). These documents supersede the
+older assumption that a marketplace model asset is only weights or a prompt; the existing native
+agent/model/runtime architecture remains authoritative for execution.
+
 Use a clean adapter boundary:
 
 ```text

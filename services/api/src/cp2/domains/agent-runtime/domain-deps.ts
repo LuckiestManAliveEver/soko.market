@@ -99,6 +99,18 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
   // has never explicitly activated a model or received the platform default) - callers fall back to
   // platformDefaultRuntime.agentRuntimeAdapterId rather than treating that as an error.
   resolveAgentRuntimeAdapterId: (agentId: string) => string | undefined;
+  resolveProductionModelTemplate?: (
+    businessId: string,
+    agentId: string,
+    modelId: string
+  ) => {
+    templateId: string;
+    templateVersionId: string;
+    version: string;
+    compiledInstructions: string[];
+    nativeRuntimeBindingId: string | null;
+    baseModelId: string;
+  } | null;
   ensureDefaultRuntimeBinding: (
     input: NativeDefaultRuntimeProvisioningInput
   ) => NativeDefaultRuntimeProvisioningResult;

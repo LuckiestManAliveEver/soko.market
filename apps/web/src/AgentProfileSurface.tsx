@@ -21,6 +21,7 @@ import { NotificationsSessionsPanel } from "./NotificationsSessionsPanel";
 import { ProtectedContextFilesPanel } from "./ProtectedContextFilesPanel";
 import { PublicStorefrontPanel } from "./PublicStorefrontPanel";
 import { QuickRuntimeSwitcher } from "./QuickRuntimeSwitcher";
+import { ModelTemplateReportCardPanel } from "./ModelTemplateReportCardPanel";
 import { YourShopsPanel } from "./YourShopsPanel";
 
 import {
@@ -462,6 +463,8 @@ export function AgentProfileSurface({
             updateAgent={updateAgent}
             onAgentChange={onAgentChange}
           />
+
+          <ModelTemplateReportCardPanel businessId={business.id} />
 
           <Suspense fallback={<div className="inline-loading-card">Opening model settings…</div>}>
             <AgentModelPanel

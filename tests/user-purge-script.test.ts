@@ -33,8 +33,8 @@ describe("registered-user purge script", () => {
     // removed from this classification list entirely once infra/db/migrations/
     // 075_drop_dead_runtime_assignment_tables.sql and 076_drop_legacy_agent_model_bindings.sql
     // dropped the tables - there is nothing left to classify.
-    expect(plan.size).toBe(171);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(164);
+    expect(plan.size).toBe(185);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(178);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

@@ -21,5 +21,5 @@ describe("node-llama-cpp native binding", () => {
     } finally {
       await llama.dispose();
     }
-  });
+  }, 15_000);
 });

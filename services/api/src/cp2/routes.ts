@@ -71,6 +71,7 @@ import { registerAgentRuntimeRoutes } from "./domains/agent-runtime/routes.js";
 import { registerMessagingRoutes } from "./domains/messaging/routes.js";
 import { registerOtpRoutes } from "./domains/otp/routes.js";
 import { registerDeviceBootstrapRoutes } from "./domains/device-bootstrap/routes.js";
+import { registerModelTemplateRoutes } from "./domains/model-templates/routes.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
   normalizeInternationalOwnerPhoneNumber,
@@ -1558,6 +1559,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     githubAgentCatalog,
     huggingFaceAgentCatalog
   );
+  registerModelTemplateRoutes(app, store);
 
   registerRuntimeRegistryRoutes(app, {
     searchService: runtimeRegistrySearchService,

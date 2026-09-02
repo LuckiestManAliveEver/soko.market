@@ -87,6 +87,20 @@ export const normalizedCollections: NormalizedCollection[] = [
   { key: "agentEvaluationEvents", tableName: "cp2_agent_evaluation_events" },
   { key: "agentOwnerCorrections", tableName: "cp2_agent_owner_corrections" },
   { key: "installedAgentModels", tableName: "cp2_installed_agent_models" },
+  { key: "modelTemplates", tableName: "cp2_model_templates" },
+  { key: "modelTemplateVersions", tableName: "cp2_model_template_versions" },
+  { key: "expertiseArtifacts", tableName: "cp2_expertise_artifacts" },
+  { key: "evaluationSuites", tableName: "cp2_template_evaluation_suites" },
+  { key: "evaluationCases", tableName: "cp2_template_evaluation_cases" },
+  { key: "evaluationRuns", tableName: "cp2_template_evaluation_runs" },
+  { key: "evaluationResults", tableName: "cp2_template_evaluation_results" },
+  { key: "productionObservations", tableName: "cp2_template_production_observations" },
+  { key: "expertCorrections", tableName: "cp2_template_expert_corrections" },
+  { key: "datasetVersions", tableName: "cp2_template_dataset_versions" },
+  { key: "datasetExamples", tableName: "cp2_template_dataset_examples" },
+  { key: "improvementRuns", tableName: "cp2_template_improvement_runs" },
+  { key: "templatePromotions", tableName: "cp2_template_promotions" },
+  { key: "templateRuntimeBindings", tableName: "cp2_template_runtime_bindings" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
   { key: "productMedia", tableName: "product_media" },
@@ -348,7 +362,19 @@ const mutatingMethodNames = new Set([
   "registerPushSubscription",
   "registerInstalledAgentModel",
   "validateInstalledAgentModel",
-  "removePushSubscription"
+  "removePushSubscription",
+  "createModelTemplate",
+  "createModelTemplateEvaluationSuite",
+  "addModelTemplateEvaluationCase",
+  "runModelTemplateEvaluation",
+  "recordModelTemplateObservation",
+  "reviewModelTemplateObservation",
+  "submitModelTemplateCorrection",
+  "approveModelTemplateCorrection",
+  "createModelTemplateDatasetVersion",
+  "startModelTemplateImprovementRun",
+  "promoteModelTemplate",
+  "rollbackModelTemplate"
 ]);
 
 const targetedPasskeyCeremonyMethodNames = new Set([
@@ -466,6 +492,15 @@ export async function createPostgresCp2Store(
       ...(options.agentRuntimeAdapterResolver === undefined
         ? {}
         : { agentRuntimeAdapterResolver: options.agentRuntimeAdapterResolver }),
+      ...(options.templateExecutor === undefined
+        ? {}
+        : { templateExecutor: options.templateExecutor }),
+      ...(options.templateJudgeEvaluator === undefined
+        ? {}
+        : { templateJudgeEvaluator: options.templateJudgeEvaluator }),
+      ...(options.templateTelemetrySink === undefined
+        ? {}
+        : { templateTelemetrySink: options.templateTelemetrySink }),
       ...(options.pushNotificationSender === undefined
         ? {}
         : { pushNotificationSender: options.pushNotificationSender }),
@@ -2589,19 +2624,7 @@ async function saveCollectionRecords(
         firstText(record, ["businessId", "shopId", "tenantId"]),
         firstText(record, ["accountId", "buyerAccountId"]),
         firstText(record, ["userId", "ownerUserId", "actorId", "postedBy"]),
-        firstText(record, [
-          "invoiceId",
-          "importJobId",
-          "sourceId",
-          "eventId",
-          "permissionId",
-          // runtimeBindingId must win over executionHostId: a native runtime binding-model role
-          // carries both fields, but its parent_id foreign key (and record check constraint)
-          // point at the binding, not the host it happens to route to.
-          "runtimeBindingId",
-          "executionHostId",
-          "agentId"
-        ]),
+        recordParentId(collection.key, record),
         JSON.stringify(record)
       ]
     );
@@ -4021,6 +4044,20 @@ function emptySnapshot(): Cp2Snapshot {
     agentEvaluationEvents: [],
     agentOwnerCorrections: [],
     installedAgentModels: [],
+    modelTemplates: [],
+    modelTemplateVersions: [],
+    expertiseArtifacts: [],
+    evaluationSuites: [],
+    evaluationCases: [],
+    evaluationRuns: [],
+    evaluationResults: [],
+    productionObservations: [],
+    expertCorrections: [],
+    datasetVersions: [],
+    datasetExamples: [],
+    improvementRuns: [],
+    templatePromotions: [],
+    templateRuntimeBindings: [],
     nativeRuntimeAgents: [],
     nativeRuntimeModels: [],
     nativeExecutionHosts: [],
@@ -4203,6 +4240,38 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
   }
 
   return requiredText(record, "id");
+}
+
+function recordParentId(key: SnapshotCollectionKey, record: SnapshotRecord): string | null {
+  const modelTemplateParents: Partial<Record<SnapshotCollectionKey, string>> = {
+    modelTemplateVersions: "templateId",
+    expertiseArtifacts: "templateVersionId",
+    evaluationSuites: "templateId",
+    evaluationCases: "suiteId",
+    evaluationRuns: "suiteId",
+    evaluationResults: "evaluationRunId",
+    productionObservations: "templateVersionId",
+    expertCorrections: "observationId",
+    datasetVersions: "templateId",
+    datasetExamples: "datasetVersionId",
+    improvementRuns: "templateVersionId",
+    templatePromotions: "candidateVersionId",
+    templateRuntimeBindings: "templateVersionId"
+  };
+  const modelTemplateParent = modelTemplateParents[key];
+  if (modelTemplateParent !== undefined) return firstText(record, [modelTemplateParent]);
+  return firstText(record, [
+    "invoiceId",
+    "importJobId",
+    "sourceId",
+    "eventId",
+    "permissionId",
+    // runtimeBindingId must win over executionHostId: a native runtime binding-model role
+    // carries both fields, but its parent_id foreign key points at the binding.
+    "runtimeBindingId",
+    "executionHostId",
+    "agentId"
+  ]);
 }
 
 function requiredText(record: SnapshotRecord, field: string): string {

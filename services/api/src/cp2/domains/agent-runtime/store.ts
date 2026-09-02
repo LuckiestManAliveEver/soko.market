@@ -1933,6 +1933,17 @@ export class AgentRuntimeDomain {
       runtimeModelId,
       activeBinding
     );
+    const modelTemplate = this.deps.resolveProductionModelTemplate?.(
+      input.businessId,
+      storedAgentProfile.agentId,
+      runtimeModelId
+    );
+    if (modelTemplate !== undefined && modelTemplate !== null) {
+      shopRuntime.instructions.generalOperatingRules = [
+        ...shopRuntime.instructions.generalOperatingRules,
+        ...modelTemplate.compiledInstructions
+      ];
+    }
     const runtimeSession =
       input.runtimeSessionId === undefined
         ? this.createRuntimeSession({
@@ -1980,7 +1991,10 @@ export class AgentRuntimeDomain {
       executionHostId: nativeResolution?.selected.host?.id ?? null,
       modelInstallationId: nativeResolution?.selected.installation?.id ?? null,
       fallbackUsed: nativeResolution?.fallbackUsed ?? false,
-      fallbackReason: nativeResolution?.fallbackReason ?? null
+      fallbackReason: nativeResolution?.fallbackReason ?? null,
+      modelTemplateId: modelTemplate?.templateId ?? null,
+      modelTemplateVersionId: modelTemplate?.templateVersionId ?? null,
+      modelTemplateVersion: modelTemplate?.version ?? null
     });
 
     if (runtimeSession.turnCount >= maxRuntimeTurnsPerSession) {

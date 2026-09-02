@@ -1,0 +1,17 @@
+drop trigger if exists cp2_template_dataset_examples_immutable on cp2_template_dataset_examples;
+drop trigger if exists cp2_template_dataset_versions_immutable on cp2_template_dataset_versions;
+drop function if exists reject_changed_frozen_template_record();
+drop table if exists cp2_template_runtime_bindings;
+drop table if exists cp2_template_promotions;
+drop table if exists cp2_template_improvement_runs;
+drop table if exists cp2_template_dataset_examples;
+drop table if exists cp2_template_dataset_versions;
+drop table if exists cp2_template_expert_corrections;
+drop table if exists cp2_template_production_observations;
+drop table if exists cp2_template_evaluation_results;
+drop table if exists cp2_template_evaluation_runs;
+drop table if exists cp2_template_evaluation_cases;
+drop table if exists cp2_template_evaluation_suites;
+drop table if exists cp2_expertise_artifacts;
+drop table if exists cp2_model_template_versions;
+drop table if exists cp2_model_templates;

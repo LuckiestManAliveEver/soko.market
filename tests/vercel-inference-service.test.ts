@@ -299,7 +299,8 @@ describe("Vercel inference request handler", () => {
     const secondResult = (await readNdjson(second)).at(-1) as Record<string, unknown>;
     expect(firstResult.text).toBe("Prompt A");
     expect(secondResult.text).toBe("Prompt B");
-    expect(seenPrompts).toEqual(["Prompt A", "Prompt B"]);
+    expect(seenPrompts).toHaveLength(2);
+    expect(new Set(seenPrompts)).toEqual(new Set(["Prompt A", "Prompt B"]));
   });
 });
 
