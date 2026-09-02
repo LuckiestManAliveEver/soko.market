@@ -11,8 +11,10 @@ import {
 } from "./soko-application-shared";
 
 import { formatMoney } from "./formatters";
+import SupplierContactRolesCard from "./SupplierContactRolesCard";
 
 export interface SupplierSurfaceProps {
+  businessId: string;
   suppliers: SupplierBusinessCardSummary[];
   purchaseReceipts: PurchaseReceiptSummary[];
   form: SupplierFormState;
@@ -462,6 +464,10 @@ export function SupplierSurface(props: SupplierSurfaceProps) {
                         ))
                       )}
                     </section>
+                    <SupplierContactRolesCard
+                      businessId={props.businessId}
+                      supplierId={supplier.id}
+                    />
                   </div>
                 ) : null}
               </article>
