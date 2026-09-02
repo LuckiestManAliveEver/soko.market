@@ -17,3 +17,4 @@ mongodb/*.env
 /CLAUDE.md
 /.agents/
 /.codex/
+/.claude/
