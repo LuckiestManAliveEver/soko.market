@@ -441,6 +441,7 @@ export function renderOwnerWorkspace(input: OwnerWorkspaceBindings) {
     case "suppliers":
       return (
         <SupplierSurface
+          businessId={businessId}
           suppliers={suppliers}
           purchaseReceipts={purchaseReceipts}
           form={supplierForm}
@@ -678,6 +679,7 @@ export function renderOwnerWorkspace(input: OwnerWorkspaceBindings) {
     case "logistics":
       return (
         <LogisticsSurface
+          businessId={businessId}
           invoices={invoices}
           logistics={logistics}
           form={logisticsForm}
