@@ -343,9 +343,7 @@ export function ChatSurface({
                 type="button"
                 className="new-direct-message-link"
                 onClick={() =>
-                  isAuthenticated
-                    ? setIsNewConversationOpen((open) => !open)
-                    : onRequireSignIn()
+                  isAuthenticated ? setIsNewConversationOpen((open) => !open) : onRequireSignIn()
                 }
               >
                 Message a phone number or email
