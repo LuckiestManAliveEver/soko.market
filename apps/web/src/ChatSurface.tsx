@@ -96,6 +96,7 @@ export function ChatSurface({
   onLogIn,
   onRefreshPublicStorefronts,
   onConversationPreference,
+  onRenameConversation,
   onEnableNotifications,
   onInboxOpenChange,
   onReply,
@@ -149,6 +150,7 @@ export function ChatSurface({
   const defaultMessageWindow = useRef(detectCapabilitySettings().messageWindowSize).current;
   const [messageWindowSize, setMessageWindowSize] = useState(defaultMessageWindow);
   const [inboxSearch, setInboxSearch] = useState("");
+  const [editingTopic, setEditingTopic] = useState<string | null>(null);
   const [isNewConversationOpen, setIsNewConversationOpen] = useState(false);
   const [newRecipient, setNewRecipient] = useState("");
   const [newConversationTitle, setNewConversationTitle] = useState("");
@@ -269,6 +271,10 @@ export function ChatSurface({
   }, [activeConversationId, defaultMessageWindow]);
 
   useEffect(() => {
+    setEditingTopic(null);
+  }, [activeConversationId]);
+
+  useEffect(() => {
     recordReadiness("composer");
   }, []);
 
@@ -332,6 +338,17 @@ export function ChatSurface({
                 placeholder={isSessionListView ? "Search chats" : "Search messages"}
               />
             </label>
+            {isSessionListView ? null : (
+              <button
+                type="button"
+                className="new-direct-message-link"
+                onClick={() =>
+                  isAuthenticated ? setIsNewConversationOpen((open) => !open) : onRequireSignIn()
+                }
+              >
+                Message a phone number or email
+              </button>
+            )}
           </div>
           {isNewConversationOpen && !isSessionListView ? (
             <form
@@ -502,13 +519,22 @@ export function ChatSurface({
           <button
             type="button"
             className="new-chat-fab"
-            onClick={() =>
-              isAuthenticated
-                ? isSessionListView
-                  ? setIsNewSessionOpen((open) => !open)
-                  : setIsNewConversationOpen((open) => !open)
-                : onRequireSignIn()
-            }
+            onClick={() => {
+              if (!isAuthenticated) {
+                onRequireSignIn();
+                return;
+              }
+              if (isSessionListView) {
+                setIsNewSessionOpen((open) => !open);
+                return;
+              }
+              // A blank session with the shop agent, ready to type into immediately - matches
+              // "New chat" in the session-list view instead of requiring a recipient up front.
+              // Starting a chat with a specific phone/email contact is still available via
+              // "Message a phone number or email" below the search field.
+              onCreateAgentSession();
+              onInboxOpenChange(false);
+            }}
           >
             <span aria-hidden="true">+</span>
             {isSessionListView ? "New chat" : "New message"}
@@ -525,7 +551,43 @@ export function ChatSurface({
               {(selectedConversation?.title ?? agent.name).trim().slice(0, 1).toUpperCase()}
             </span>
             <div>
-              <strong>{selectedConversation?.title ?? agent.name}</strong>
+              {editingTopic !== null ? (
+                <form
+                  className="thread-topic-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (activeConversationId !== null) {
+                      onRenameConversation(activeConversationId, editingTopic);
+                    }
+                    setEditingTopic(null);
+                  }}
+                >
+                  <label>
+                    <span className="visually-hidden">Conversation topic</span>
+                    <input
+                      autoFocus
+                      value={editingTopic}
+                      onChange={(event) => setEditingTopic(event.target.value)}
+                    />
+                  </label>
+                  <button type="submit" disabled={editingTopic.trim().length === 0}>
+                    Save
+                  </button>
+                  <button type="button" onClick={() => setEditingTopic(null)}>
+                    Cancel
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  className="thread-topic-button"
+                  disabled={selectedConversation === undefined}
+                  aria-label="Edit conversation topic"
+                  onClick={() => setEditingTopic(selectedConversation?.title ?? agent.name)}
+                >
+                  <strong>{selectedConversation?.title ?? agent.name}</strong>
+                </button>
+              )}
               <small>
                 {mode === "seller" ? "Sell session" : "Buy session"} ·{" "}
                 {isContactTyping ? "typing…" : securityLabel}

@@ -430,6 +430,37 @@ button:disabled {
   width: 0;
 }
 
+.phonebook-icon {
+  border: 2px solid currentColor;
+  border-radius: 3px;
+  display: inline-block;
+  height: 16px;
+  position: relative;
+  width: 18px;
+}
+
+.phonebook-icon::before {
+  background: currentColor;
+  border-radius: 50%;
+  content: "";
+  height: 6px;
+  left: 3px;
+  position: absolute;
+  top: 2px;
+  width: 6px;
+}
+
+.phonebook-icon::after {
+  background: currentColor;
+  border-radius: 6px 6px 0 0;
+  bottom: 2px;
+  content: "";
+  height: 4px;
+  left: 2px;
+  position: absolute;
+  width: 8px;
+}
+
 /* The seller-mode "add product from photo" button (ChatComposer.tsx) has rendered this class
    with no matching CSS since it was added - the button itself worked, it just showed an empty
    circle. Drawn in the same hand-built, border/pseudo-element style as the mic/attach/send icons
@@ -3454,7 +3485,8 @@ details.nested-form-section summary {
 
 .composer-command-icon,
 .composer-sms-icon,
-.composer-share-icon {
+.composer-share-icon,
+.channel-picker-icon {
   align-items: center;
   display: inline-flex;
   font-size: 18px;
@@ -3463,7 +3495,8 @@ details.nested-form-section summary {
   min-width: 24px;
 }
 
-.composer-sms-icon {
+.composer-sms-icon,
+.channel-picker-icon {
   font-size: 9px;
 }
 
@@ -6125,6 +6158,18 @@ body {
   padding: 0 16px 12px;
 }
 
+.new-direct-message-link {
+  background: none;
+  border: 0;
+  color: var(--soko-accent);
+  font-family: var(--soko-mono-font);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  margin-top: 8px;
+  padding: 0;
+  text-align: left;
+}
+
 .inbox-search-field {
   align-items: center;
   display: flex;
@@ -6229,6 +6274,13 @@ body {
 .conversation-avatar.chat,
 .status-contact-avatar {
   background: linear-gradient(135deg, #f23596, #8a0f5c);
+}
+
+/* Merged chat mockup: conversation/thread avatars read as circular contact
+   badges, distinct from the softer squircle used for product/cart thumbs. */
+.conversation-avatar,
+.thread-avatar {
+  border-radius: 50%;
 }
 
 .conversation-copy {
@@ -6431,6 +6483,39 @@ body {
   font-size: 13px;
 }
 
+.thread-topic-button {
+  background: none;
+  border: 0;
+  color: inherit;
+  display: block;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.thread-topic-form {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.thread-topic-form input {
+  background: rgb(255 255 255 / 76%);
+  border: 1px solid var(--soko-line-strong);
+  border-radius: 999px;
+  color: var(--soko-ink);
+  font-family: var(--soko-display-font);
+  font-size: 13px;
+  min-height: 28px;
+  padding: 3px 10px;
+}
+
+.thread-topic-form button {
+  color: var(--soko-accent);
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+}
+
 .messenger-thread-header small,
 .message-meta,
 .message-context {
@@ -6473,6 +6558,17 @@ body {
   color: #fff;
 }
 
+/* Merged chat mockup: give bubbles a tail corner toward the sender's avatar
+   instead of a uniform radius on all four corners. */
+.message.merchant {
+  border-radius: 16px 16px 4px 16px;
+}
+
+.message.sokoclaw,
+.message.contact {
+  border-radius: 16px 16px 16px 4px;
+}
+
 .message.merchant p,
 .message.merchant .message-meta,
 .message.merchant .message-actions button {
@@ -6502,21 +6598,26 @@ body {
   font-size: 9px;
 }
 
-/* Composer */
+/* Composer -----------------------------------------------------------------
+   Merged chat mockup: attach/message/send read as one bordered pill-shaped
+   bar (like the app's search field and new-chat FAB) instead of three
+   separately-outlined controls sitting in a row. */
 .app-frame:not(.auth-frame) .composer {
-  background: color-mix(in srgb, var(--soko-paper) 95%, transparent);
-  border-color: var(--soko-line);
-  gap: 7px;
-  padding: 10px clamp(10px, 2vw, 18px) calc(10px + env(safe-area-inset-bottom, 0px));
+  background: var(--soko-paper);
+  border: 1px solid var(--soko-line);
+  border-radius: 26px;
+  margin: 0 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  gap: 6px;
+  padding: 6px 6px 6px 10px;
 }
 
 .app-frame:not(.auth-frame) .composer .icon-button {
   background: transparent;
-  border-color: var(--soko-line);
+  border: none;
   border-radius: 999px;
   color: var(--soko-ink-soft);
-  min-height: 40px;
-  min-width: 40px;
+  min-height: 38px;
+  min-width: 38px;
 }
 
 .composer-input span {
@@ -6528,22 +6629,24 @@ body {
 }
 
 .composer-input textarea {
-  background: rgb(255 255 255 / 76%);
-  border-color: var(--soko-line-strong);
-  border-radius: 999px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   color: var(--soko-ink);
-  height: 43px;
-  overflow: hidden;
-  padding: 10px 16px;
+  height: auto;
+  min-height: 38px;
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 8px 4px;
 }
 
 .composer .send-button {
   background: var(--soko-accent);
   border-radius: 999px;
   box-shadow: 0 5px 14px rgb(224 17 127 / 22%);
-  min-height: 43px;
-  min-width: 43px;
-  padding: 8px 12px;
+  min-height: 38px;
+  min-width: 38px;
+  padding: 6px;
 }
 
 /* Stacked conversational modules */
