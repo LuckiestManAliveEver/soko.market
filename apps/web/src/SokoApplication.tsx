@@ -662,6 +662,7 @@ export function OwnerApp() {
     selectConversation,
     createDirectConversation,
     updateConversationPreference,
+    renameConversation,
     updateMessageAction,
     forwardMessage,
     requestMessagingNotifications,
@@ -1821,6 +1822,11 @@ export function OwnerApp() {
                 onConversationPreference={(conversationId, preference) =>
                   void runAction("conversation-preference", () =>
                     updateConversationPreference(conversationId, preference)
+                  )
+                }
+                onRenameConversation={(conversationId, title) =>
+                  void runAction("conversation-rename", () =>
+                    renameConversation(conversationId, title)
                   )
                 }
                 onEnableNotifications={() =>

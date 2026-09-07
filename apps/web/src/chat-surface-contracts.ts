@@ -89,6 +89,7 @@ export interface ChatSurfaceProps {
     conversationId: string,
     preference: "archive" | "mute" | "pin"
   ) => void;
+  onRenameConversation: (conversationId: string, title: string) => void;
   onEnableNotifications: () => void;
   onInboxOpenChange: (open: boolean) => void;
   onReply: (messageId: string) => void;

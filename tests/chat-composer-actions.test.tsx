@@ -25,7 +25,7 @@ describe("mobile chat composer actions", () => {
     document.body.replaceChildren();
   });
 
-  it("keeps only More, message, and Send inline and opens the accessible action sheet", async () => {
+  it("keeps only More, channel, message, and Send inline and opens the accessible action sheet", async () => {
     function Harness() {
       const composer = useChatComposerState({
         activeConversationId: "conversation-1",
@@ -65,7 +65,7 @@ describe("mobile chat composer actions", () => {
     await act(async () => root.render(<Harness />));
 
     const composer = host.querySelector(".composer")!;
-    expect(composer.querySelectorAll(":scope > .composer-icon-button")).toHaveLength(1);
+    expect(composer.querySelectorAll(":scope > .composer-icon-button")).toHaveLength(2);
     expect(composer.querySelector('textarea[aria-label="Message"]')).not.toBeNull();
     expect(composer.querySelectorAll(":scope > .composer-send-actions .send-button")).toHaveLength(
       1
@@ -73,6 +73,11 @@ describe("mobile chat composer actions", () => {
     expect(composer.textContent).toContain("Shopkeeper will answer");
     expect(host.querySelector('[aria-label="Voice input"]')).toBeNull();
     expect(host.querySelector('[aria-label="Attach file"]')).toBeNull();
+
+    const channelButton = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Choose how to send"]'
+    )!;
+    expect(channelButton).not.toBeNull();
 
     const more = host.querySelector<HTMLButtonElement>('[aria-label="Open message actions"]')!;
     await act(async () => more.click());

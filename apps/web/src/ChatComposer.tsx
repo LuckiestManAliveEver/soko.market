@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 
-import type { ChannelEndpointSummary, ChannelProvider } from "@soko/shared-types";
+import type { ChannelEndpointSummary } from "@soko/shared-types";
 import { runtimeHashtagCapabilities, runtimeHashtagQuery } from "@soko/tool-core";
 
 import type { ChatAttachment, SokoMode } from "./app-shell";
 import { type InvoiceSummary, chatAttachmentAccept } from "./soko-application-shared";
-import { formatAttachmentCategory, formatChannelProvider, formatFileSize } from "./formatters";
+import { formatAttachmentCategory, formatFileSize } from "./formatters";
 import { chatModuleCommands } from "./chat-module-commands";
 import { isExtractableChatAttachment, startVoiceInput } from "./chat-message-plumbing";
 import type { ChatComposerState } from "./hooks/useChatComposerState";
+import { ChatChannelPicker } from "./ChatChannelPicker";
 import { ChatComposerActions } from "./ChatComposerActions";
 import { ChatHashtagCapabilityPicker } from "./ChatHashtagCapabilityPicker";
 
@@ -71,6 +72,7 @@ export function ChatComposer({
     updateLiveDraft
   } = composer;
   const [messageActionsOpen, setMessageActionsOpen] = useState(false);
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false);
   const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const hashtagQuery = mode === "seller" ? runtimeHashtagQuery(liveDraft) : null;
   const sellerHashtagCapabilities = [...chatModuleCommands, ...runtimeHashtagCapabilities];
@@ -140,6 +142,16 @@ export function ChatComposer({
           >
             <span className="attach-icon" aria-hidden="true" />
           </button>
+          <button
+            className="icon-button composer-icon-button composer-channel-button"
+            type="button"
+            aria-label="Choose how to send"
+            aria-haspopup="dialog"
+            aria-expanded={channelPickerOpen}
+            onClick={() => setChannelPickerOpen(true)}
+          >
+            <span className="phonebook-icon" aria-hidden="true" />
+          </button>
           <input
             ref={fileInputRef}
             className="chat-file-input"
@@ -208,50 +220,6 @@ export function ChatComposer({
                 </div>
               ) : null}
             </div>
-          ) : null}
-          {channelEndpoints.length > 0 ? (
-            <label className="composer-channel-selector">
-              <span>Send via</span>
-              <select
-                aria-label="Send message via"
-                value={selectedProvider ?? ""}
-                onChange={(event) =>
-                  setSelectedProvider(
-                    event.target.value === "" ? null : (event.target.value as ChannelProvider)
-                  )
-                }
-              >
-                <option value="" disabled>
-                  No available channel
-                </option>
-                {channelEndpoints.map((endpoint) => {
-                  const available =
-                    (endpoint.status === "available" ||
-                      (endpoint.status === "offline" &&
-                        endpoint.capabilities.includes("SUPPORTS_OFFLINE"))) &&
-                    endpoint.configured &&
-                    endpoint.authorized &&
-                    (endpoint.capabilities.includes("CAN_REPLY") ||
-                      endpoint.capabilities.includes("CAN_INITIATE"));
-                  return (
-                    <option
-                      key={endpoint.channelId}
-                      value={endpoint.provider}
-                      disabled={!available}
-                    >
-                      {formatChannelProvider(endpoint.provider)} ·{" "}
-                      {endpoint.provider === "native_sms" && endpoint.status === "offline"
-                        ? "queued — waiting for Android device"
-                        : available
-                          ? endpoint.provider === "native_sms"
-                            ? "via Android device"
-                            : "available"
-                          : endpoint.status}
-                    </option>
-                  );
-                })}
-              </select>
-            </label>
           ) : null}
           {selectedProvider === "email" ? (
             <>
@@ -364,6 +332,13 @@ export function ChatComposer({
               runMessageAction(() => void openPlatformHandoff(selectedConversationTitle))
             }
             onTakePhoto={() => runMessageAction(() => sellerPhotoInputRef.current?.click())}
+          />
+          <ChatChannelPicker
+            channelEndpoints={channelEndpoints}
+            open={channelPickerOpen}
+            selectedProvider={selectedProvider}
+            onClose={() => setChannelPickerOpen(false)}
+            onSelect={setSelectedProvider}
           />
         </div>
       )}
