@@ -59,9 +59,13 @@ describe("stacked secondary modules", () => {
     expect(chatSurface).toContain("const isCompactViewport = useCompactViewport();");
     expect(chatSurface).toContain("isCompactViewport ? (");
     expect(chatSurface).toContain('moduleId="messenger-inbox"');
-    expect(chatSurface).toContain("{renderConversationListPanel(false)}");
+    expect(chatSurface).toContain(
+      "<ConversationListPanel showHeading={false} {...conversationListPanelProps} />"
+    );
     expect(chatSurface).toContain('aria-label="Conversations"');
-    expect(chatSurface).toContain("{renderConversationListPanel(true)}");
+    expect(chatSurface).toContain(
+      "<ConversationListPanel showHeading={true} {...conversationListPanelProps} />"
+    );
     // The desktop sidebar still opens/closes without becoming a modal - only the compact
     // StackedModule branch traps focus and makes the conversation thread behind it inert.
     expect(chatSurface.indexOf("isCompactViewport ? (")).toBeLessThan(
