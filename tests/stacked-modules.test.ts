@@ -53,6 +53,23 @@ describe("stacked secondary modules", () => {
     expect(openAgentBlock).not.toContain("navigateToOwnerRoute");
   });
 
+  it("drops the conversation list into the shared StackedModule drawer below the desktop breakpoint", () => {
+    const compactViewportHook = readFileSync("apps/web/src/hooks/useCompactViewport.ts", "utf8");
+
+    expect(chatSurface).toContain("const isCompactViewport = useCompactViewport();");
+    expect(chatSurface).toContain("isCompactViewport ? (");
+    expect(chatSurface).toContain('moduleId="messenger-inbox"');
+    expect(chatSurface).toContain("{renderConversationListPanel(false)}");
+    expect(chatSurface).toContain('aria-label="Conversations"');
+    expect(chatSurface).toContain("{renderConversationListPanel(true)}");
+    // The desktop sidebar still opens/closes without becoming a modal - only the compact
+    // StackedModule branch traps focus and makes the conversation thread behind it inert.
+    expect(chatSurface.indexOf("isCompactViewport ? (")).toBeLessThan(
+      chatSurface.indexOf('aria-label="Conversations"')
+    );
+    expect(compactViewportHook).toContain('"(max-width: 759px)"');
+  });
+
   it("retains legacy links as module-preopened bootstrap payloads", () => {
     expect(readOwnerRoute("/marketplace")).toEqual({ mode: "marketplace", view: "chat" });
     expect(readOwnerRoute("/settings")).toEqual({ mode: "seller", view: "agent" });

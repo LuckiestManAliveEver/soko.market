@@ -16,6 +16,16 @@ before the fixed module layer and continue receiving streamed agent updates whil
 visible. The module effect is keyed only by open state, so underlying stream renders do not refocus
 or remount it.
 
+Below the 760 px breakpoint (`useCompactViewport`, the same threshold `useChatInboxState` already
+used for the inbox's initial open state), the conversation list also renders through `StackedModule`
+instead of a plain `display: none`/`grid` toggle, so it picks up the same scrim, Escape, focus
+containment, and swipe-down close as every other secondary surface, and the thread behind it becomes
+inert while it's open. At and above 760 px the conversation list stays the non-modal sidebar `<aside>`
+next to the thread - a real StackedModule there would incorrectly make the thread inert while both
+panes are meant to stay simultaneously visible and interactive. Both branches render the same
+`renderConversationListPanel` content; only the outer wrapper and the redundant "Chats"/"Messages"
+heading (StackedModule already supplies a title bar) differ.
+
 ## Route and deep-link audit
 
 The repository has no router library with a modal-route facility. It uses `AppRouter`, a typed
