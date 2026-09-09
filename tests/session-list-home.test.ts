@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const chatSurface = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
+const conversationListPanel = readFileSync("apps/web/src/ConversationListPanel.tsx", "utf8");
 const chatInboxState = readFileSync("apps/web/src/hooks/useChatInboxState.ts", "utf8");
 const useAuthState = readFileSync("apps/web/src/hooks/useAuthState.ts", "utf8");
 const sokoApplication = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
@@ -21,9 +22,9 @@ describe("session-list home screen (Phase 3)", () => {
 
   it("offers a New session action on home, distinct from New direct-message conversation", () => {
     expect(chatSurface).toContain("onCreateAgentSession");
-    expect(chatSurface).toContain("Start session");
-    expect(chatSurface).toContain("isNewSessionOpen && isSessionListView");
-    expect(chatSurface).toContain("isNewConversationOpen && !isSessionListView");
+    expect(conversationListPanel).toContain("Start session");
+    expect(conversationListPanel).toContain("isNewSessionOpen && isSessionListView");
+    expect(conversationListPanel).toContain("isNewConversationOpen && !isSessionListView");
   });
 
   it("creates a genuinely new personal conversation, not the login-time singleton", () => {

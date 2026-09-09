@@ -5701,21 +5701,8 @@ details.nested-form-section summary {
     position: relative;
   }
 
-  .messenger-inbox {
-    bottom: 0;
-    box-shadow: 8px 0 28px rgba(17, 63, 45, 0.22);
-    display: none;
-    left: 0;
-    max-width: min(88vw, 340px);
-    position: absolute;
-    top: 0;
-    width: 100%;
-    z-index: 20;
-  }
-
-  .messenger-inbox.open {
-    display: grid;
-  }
+  /* Below 760px the conversation list renders as a StackedModule drawer (see ChatSurface's
+     isCompactViewport branch) instead of this aside, so it needs no standalone overlay styling. */
 
   .messenger-thread {
     grid-row: 2;
@@ -6400,11 +6387,13 @@ body {
   transform: scale(0.97);
 }
 
-.messenger-inbox.sessions-view .conversation-item {
+.messenger-inbox.sessions-view .conversation-item,
+.messenger-inbox-module.sessions-view .conversation-item {
   border-bottom: 0;
 }
 
-.messenger-inbox.sessions-view .conversation-select {
+.messenger-inbox.sessions-view .conversation-select,
+.messenger-inbox-module.sessions-view .conversation-select {
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 0;
   padding: 12px 10px;
@@ -6412,32 +6401,45 @@ body {
 
 .messenger-inbox.sessions-view .conversation-avatar,
 .messenger-inbox.sessions-view .session-badge,
-.messenger-inbox.sessions-view .conversation-select small {
+.messenger-inbox.sessions-view .conversation-select small,
+.messenger-inbox-module.sessions-view .conversation-avatar,
+.messenger-inbox-module.sessions-view .session-badge,
+.messenger-inbox-module.sessions-view .conversation-select small {
   display: none;
 }
 
-.messenger-inbox.sessions-view .conversation-title-line {
+.messenger-inbox.sessions-view .conversation-title-line,
+.messenger-inbox-module.sessions-view .conversation-title-line {
   align-items: flex-start;
   flex-direction: column;
   gap: 3px;
 }
 
-.messenger-inbox.sessions-view .conversation-title-line strong {
+.messenger-inbox.sessions-view .conversation-title-line strong,
+.messenger-inbox-module.sessions-view .conversation-title-line strong {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   font-size: 15px;
   font-weight: 600;
   white-space: normal;
 }
 
-.messenger-inbox.sessions-view .conversation-title-line time {
+.messenger-inbox.sessions-view .conversation-title-line time,
+.messenger-inbox-module.sessions-view .conversation-title-line time {
   color: var(--soko-ink-faint);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   font-size: 12px;
   font-weight: 400;
 }
 
-.messenger-inbox.sessions-view .conversation-select b {
+.messenger-inbox.sessions-view .conversation-select b,
+.messenger-inbox-module.sessions-view .conversation-select b {
   grid-column: 2;
+}
+
+/* .new-chat-fab positions itself against the nearest positioned ancestor - that's the aside
+   itself on desktop, but inside the StackedModule drawer it's the scrollable content pane. */
+.messenger-inbox-module .stacked-module-content {
+  position: relative;
 }
 
 .new-session-form {
@@ -7361,12 +7363,6 @@ body {
   .shell-secondary-actions .workspace,
   .shell-secondary-actions [data-testid="install-app-button"] {
     display: none;
-  }
-
-  .messenger-inbox {
-    background: var(--soko-paper);
-    box-shadow: 12px 0 44px rgb(28 23 48 / 22%);
-    max-width: min(92vw, 370px);
   }
 
   .message {
