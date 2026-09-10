@@ -1,10 +1,57 @@
 import react from "@vitejs/plugin-react";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import webPackage from "./package.json";
 
 const workspaceRoot = fileURLToPath(new URL("../..", import.meta.url));
+
+/**
+ * The on-device receipt-OCR engine (tesseract.js). These are large, self-contained WASM/data
+ * files fetched and cache-verified on demand (packages/offline-runtime's cacheArtifactsByUrl)
+ * only when a user opts into offline OCR - never part of the mandatory app-shell precache, so they
+ * are emitted under tesseract/ rather than assets/ and excluded from offline-manifest.json below.
+ */
+function tesseractOfflineAssets(): Plugin {
+  const require = createRequire(import.meta.url);
+  const packageDir = (name: string) => dirname(require.resolve(`${name}/package.json`));
+  const files: Array<{ source: string; fileName: string }> = [
+    { source: join(packageDir("tesseract.js"), "dist/worker.min.js"), fileName: "worker.min.js" },
+    ...(
+      [
+        "tesseract-core-lstm.wasm.js",
+        "tesseract-core-simd-lstm.wasm.js",
+        "tesseract-core-relaxedsimd-lstm.wasm.js"
+      ] as const
+    ).map((name) => ({ source: join(packageDir("tesseract.js-core"), name), fileName: name })),
+    {
+      source: join(packageDir("@tesseract.js-data/eng"), "4.0.0_best_int/eng.traineddata.gz"),
+      fileName: "lang/eng.traineddata.gz"
+    }
+  ];
+  return {
+    name: "tesseract-offline-assets",
+    generateBundle() {
+      const artifacts = files.map(({ source, fileName }) => {
+        const buffer = readFileSync(source);
+        this.emitFile({ type: "asset", fileName: `tesseract/${fileName}`, source: buffer });
+        return {
+          url: `/tesseract/${fileName}`,
+          sha256: createHash("sha256").update(buffer).digest("hex"),
+          bytes: buffer.byteLength
+        };
+      });
+      this.emitFile({
+        type: "asset",
+        fileName: "tesseract/manifest.json",
+        source: JSON.stringify({ artifacts })
+      });
+    }
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, workspaceRoot, "");
@@ -69,6 +116,7 @@ export default defineConfig(({ mode }) => {
     envDir: workspaceRoot,
     plugins: [
       react(),
+      tesseractOfflineAssets(),
       {
         name: "offline-shell-manifest",
         generateBundle(_options, bundle) {

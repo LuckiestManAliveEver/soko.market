@@ -228,6 +228,97 @@ describe("Offline runtime API integration", () => {
       await fixture.app.close();
     }
   });
+  it("captures a receipt offline with an on-device OCR engine and syncs it into a full OCR job", async () => {
+    const fixture = await serverFixture();
+    try {
+      const db = await database();
+      await install(db, fixture.scope);
+      const extraction = {
+        engine: "tesseract" as const,
+        engineVersion: "7.0.0",
+        modelVersion: "eng-4.0.0_best_int",
+        profile: "mobile" as const,
+        fallbackUsed: false,
+        blocks: [
+          {
+            id: "line-0",
+            page: 0,
+            text: "Acme Supplies",
+            confidence: 0.9,
+            boundingBox: [
+              { x: 0, y: 0 },
+              { x: 10, y: 0 },
+              { x: 10, y: 5 },
+              { x: 0, y: 5 }
+            ]
+          }
+        ],
+        fullText: "Acme Supplies\nTotal 500",
+        averageConfidence: 0.87,
+        warnings: []
+      };
+      const ocr = vi.fn(async () => extraction);
+      const local = new LocalProvider(db, fixture.scope, undefined, ocr);
+      await expect(
+        new LocalProvider(db, fixture.scope).call("receipts.ocr.create", {
+          body: { fileName: "receipt.jpg", contentType: "image/jpeg", contentBase64: "Zm9v" }
+        })
+      ).rejects.toThrow("not installed");
+      await expect(
+        local.call("receipts.ocr.create", {
+          body: { fileName: "receipt.pdf", contentType: "application/pdf", contentBase64: "Zm9v" }
+        })
+      ).rejects.toThrow("online connection");
+      expect(ocr).not.toHaveBeenCalled();
+      const captured = await local.call<Entity>("receipts.ocr.create", {
+        body: { fileName: "receipt.jpg", contentType: "image/jpeg", contentBase64: "Zm9v" }
+      });
+      expect(ocr).toHaveBeenCalledTimes(1);
+      expect(captured).toMatchObject({ status: "REVIEW_REQUIRED", engine: "tesseract" });
+      expect(captured.warnings).toContain(
+        "Captured offline. Supplier matching and confirmation need an online connection."
+      );
+      const sync = new SyncClient(db, fixture.scope, fixture.transport);
+      await sync.sync();
+      expect((await db.read(fixture.scope)).operations[0]?.syncStatus).toBe("ACKED");
+      const jobs = await fixture.request(
+        "GET",
+        `/businesses/${fixture.scope.storeId}/receipt-ocr/jobs`
+      );
+      expect(jobs.json()).toMatchObject([
+        { fullText: "Acme Supplies\nTotal 500", engine: "tesseract", averageConfidence: 0.87 }
+      ]);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+  it("rejects a tampered offline OCR extraction instead of trusting client-supplied confidence", async () => {
+    const fixture = await serverFixture();
+    try {
+      const db = await database();
+      await install(db, fixture.scope);
+      const ocr = vi.fn(async () => ({
+        engine: "not-a-real-engine",
+        engineVersion: "1",
+        modelVersion: "1",
+        profile: "mobile",
+        fallbackUsed: false,
+        blocks: [],
+        fullText: "hi",
+        averageConfidence: 2,
+        warnings: []
+      }));
+      const local = new LocalProvider(db, fixture.scope, undefined, ocr as never);
+      await local.call("receipts.ocr.create", {
+        body: { fileName: "receipt.jpg", contentType: "image/jpeg", contentBase64: "Zm9v" }
+      });
+      const sync = new SyncClient(db, fixture.scope, fixture.transport);
+      await sync.sync();
+      expect((await db.read(fixture.scope)).operations[0]?.syncStatus).toBe("REJECTED");
+    } finally {
+      await fixture.app.close();
+    }
+  });
   it("surfaces a two-device stock conflict and supports explicit resolution", async () => {
     const fixture = await serverFixture();
     try {

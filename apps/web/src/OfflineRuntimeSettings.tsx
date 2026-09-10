@@ -4,6 +4,7 @@ import { SettingsGroup } from "./SettingsGroup";
 import { prepareOfflineShell } from "./offline-shell";
 import { readStableDeviceId } from "./lib/api";
 import { clearApiRequestCache } from "./api-request-cache";
+import { ensureOcrEngineCached, isOcrEngineCached } from "./offline-ocr";
 import {
   offlineDatabase,
   getOfflineState,
@@ -35,6 +36,9 @@ export function OfflineRuntimeSettings({
     total: number;
   } | null>(null);
   const [dataOnly, setDataOnly] = useState(true);
+  const [ocrCached, setOcrCached] = useState(false);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState<{ done: number; total: number } | null>(null);
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
@@ -48,6 +52,9 @@ export function OfflineRuntimeSettings({
             setMessage(error instanceof Error ? error.message : "Offline storage is unavailable.");
         }
       );
+      void isOcrEngineCached().then((cached) => {
+        if (!cancelled) setOcrCached(cached);
+      });
     };
     refresh();
     window.addEventListener("online", refresh);
@@ -168,7 +175,9 @@ export function OfflineRuntimeSettings({
           <p>
             Download a snapshot of products, customers, invoices and orders. Catalogue changes,
             customer creation and stock counts will stay on this device until you choose to sync.
-            Payments, checkout, OCR and account changes require an online connection.
+            Payments, checkout and account changes require an online connection. Receipts can be
+            scanned offline if you enable on-device scanning below; confirming a scan into a
+            supplier and purchase record still requires reconnecting.
           </p>
           <p>
             Allow at least 16 MiB for business data. Installation reserves at least 256 MiB or 20%
@@ -224,6 +233,51 @@ export function OfflineRuntimeSettings({
             value={progress.done}
             max={Math.max(1, progress.total)}
           />
+        </div>
+      )}
+      {state?.installed && (
+        <div>
+          <p>
+            {ocrCached
+              ? "Offline receipt scanning is ready. Photos are read on this device; confirming a scan still needs a connection."
+              : "Offline receipt scanning is off. Enable it to read receipt photos on this device while offline (about 14 MB)."}
+          </p>
+          {!ocrCached && (
+            <button
+              type="button"
+              disabled={ocrBusy || !online}
+              onClick={() => {
+                setOcrBusy(true);
+                setMessage("");
+                void ensureOcrEngineCached((done, total) => setOcrProgress({ done, total }))
+                  .then(() => isOcrEngineCached())
+                  .then(setOcrCached)
+                  .catch((error: unknown) => {
+                    setMessage(
+                      error instanceof Error
+                        ? error.message
+                        : "Could not download the offline receipt scanner."
+                    );
+                  })
+                  .finally(() => {
+                    setOcrBusy(false);
+                    setOcrProgress(null);
+                  });
+              }}
+            >
+              Enable offline receipt scanning
+            </button>
+          )}
+          {ocrBusy && ocrProgress && (
+            <div role="status">
+              <span>Downloading the offline receipt scanner</span>
+              <progress
+                aria-label="Offline receipt scanner download progress"
+                value={ocrProgress.done}
+                max={Math.max(1, ocrProgress.total)}
+              />
+            </div>
+          )}
         </div>
       )}
       {state?.installed && (

@@ -119,7 +119,9 @@ export function createReceiptOCRProcessorFromEnvironment(
   });
 }
 
-function parseExtractionResult(value: unknown): ReceiptOCRExtractionResult {
+/** Exported for reuse validating a client-supplied extraction (services/api/src/cp2/store.ts's
+ * offline-sync dispatcher), not only the response from our own hosted OCR worker. */
+export function parseExtractionResult(value: unknown): ReceiptOCRExtractionResult {
   if (typeof value !== "object" || value === null) {
     throw invalidWorkerResponse();
   }

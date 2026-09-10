@@ -68,7 +68,7 @@ export async function routeOfflineRequest<T>(
   const scope = currentOfflineScope();
   if (!scope) throw new Error("The offline account is no longer signed in.");
   const match =
-    /^\/businesses\/([^/]+)\/(products|customers|invoices|storefront\/orders)(?:\/([^/]+))?(?:\/(stock-adjustments))?$/.exec(
+    /^\/businesses\/([^/]+)\/(products|customers|invoices|storefront\/orders|receipt-ocr\/jobs)(?:\/([^/]+))?(?:\/(stock-adjustments))?$/.exec(
       path
     );
   const resource = match?.[2];
@@ -81,7 +81,8 @@ export async function routeOfflineRequest<T>(
           products: "catalogue.list",
           customers: "customers.list",
           invoices: "invoices.list",
-          "storefront/orders": "orders.list"
+          "storefront/orders": "orders.list",
+          "receipt-ocr/jobs": "receipts.ocr.list"
         } as Record<string, string>
       )[resource!]!;
     if (method === "GET" && resource === "products" && id === "fields") op = "catalogue.fields";
@@ -89,12 +90,15 @@ export async function routeOfflineRequest<T>(
     if (method === "PATCH" && resource === "products" && id) op = "catalogue.update";
     if (method === "POST" && resource === "products" && id && match[4]) op = "inventory.adjust";
     if (method === "POST" && resource === "customers" && !id) op = "customers.create";
+    if (method === "POST" && resource === "receipt-ocr/jobs" && !id) op = "receipts.ocr.create";
   }
   const db = await offlineDatabase();
+  const { runLocalOcr } = await import("./offline-ocr");
   const local = new LocalProvider(
     db,
     scope,
-    adapter ? (pin, args) => adapter!.infer(pin, args) : undefined
+    adapter ? (pin, args) => adapter!.infer(pin, args) : undefined,
+    runLocalOcr
   );
   const result = await executeProviderCall<T>(
     op,

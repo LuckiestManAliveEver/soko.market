@@ -12,6 +12,8 @@ import {
   parseStockAdjustmentBody as parseOfflineStock
 } from "./domains/sales/routes.js";
 import { parseContactRecordBody as parseOfflineCustomer } from "./route-helpers.js";
+import { parseReceiptOCRBody as parseOfflineReceiptOcr } from "./domains/suppliers/routes.js";
+import { parseExtractionResult as parseOfflineReceiptOcrExtraction } from "./receipt-ocr-provider.js";
 import {
   createHash,
   createHmac,
@@ -5355,7 +5357,9 @@ export class Cp2Store {
         ? "customer:write"
         : operation.opType === "inventory.adjust"
           ? "inventory:adjust"
-          : "product:write";
+          : operation.opType === "receipts.ocr.create"
+            ? "import:write"
+            : "product:write";
     const actor = this.requireAuthorizedSession(sessionId, businessId, permission);
     if (actor.account.id !== operation.accountId)
       throw new Cp2Error(
@@ -5434,6 +5438,35 @@ export class Cp2Store {
             return {
               ...this.createCustomer({ ...input, customer: parseOfflineCustomer(payload) })
             };
+          case "receipts.ocr.create": {
+            const receipt = parseOfflineReceiptOcr(payload);
+            let extraction: ReturnType<typeof parseOfflineReceiptOcrExtraction> | undefined;
+            if (payload.extraction !== undefined) {
+              try {
+                extraction = parseOfflineReceiptOcrExtraction(payload.extraction);
+              } catch {
+                // A malformed client-supplied scan is this device's bad input, not our OCR
+                // worker's fault (parseExtractionResult's own 502 is for that trust boundary) -
+                // reject just this operation instead of failing the whole sync batch.
+                throw new Cp2Error(
+                  400,
+                  "offline_receipt_extraction_invalid",
+                  "This device's receipt scan could not be read. Rescan and sync again."
+                );
+              }
+            }
+            return {
+              ...this.createReceiptOCRJob({
+                ...input,
+                sourceFileName: receipt.fileName,
+                contentType: receipt.contentType,
+                extractedText: receipt.extractedText,
+                fileSizeBytes: receipt.fileSizeBytes,
+                fileSignature: receipt.fileSignature,
+                ...(extraction === undefined ? {} : { extraction })
+              })
+            };
+          }
           default:
             throw new Cp2Error(
               400,

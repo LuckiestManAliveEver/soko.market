@@ -34,7 +34,8 @@ export function openSqliteLocalDatabase(driver: SqliteDriver): LocalDatabase {
           "customers",
           "invoices",
           "orders",
-          "productFields"
+          "productFields",
+          "receiptOcrJobs"
         ] as const) {
           driver.prepare(`DELETE FROM ${table} WHERE scope_key = ?`).run(key);
           for (const row of state.rows.filter((entry) => entry.collection === table))
