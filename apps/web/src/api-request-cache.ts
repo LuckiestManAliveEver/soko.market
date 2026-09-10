@@ -1,4 +1,5 @@
 import { apiFetch } from "./lib/api";
+import { isExplicitOfflineMode } from "./offline-runtime";
 import {
   clearAllLocalData,
   createLocalDataRepository,
@@ -26,6 +27,7 @@ export async function getCachedJson<TResponse>(
   path: string,
   options: CachedGetOptions<TResponse> = {}
 ): Promise<TResponse> {
+  if (isExplicitOfflineMode()) return apiFetch<TResponse>(path);
   const now = Date.now();
   const staleTimeMs = options.staleTimeMs ?? staleTimeForPath(path);
   const existing = responseCache.get(path);

@@ -67,7 +67,30 @@ export default defineConfig(({ mode }) => {
       __GIT_COMMIT_SHA__: JSON.stringify(gitCommitSha)
     },
     envDir: workspaceRoot,
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: "offline-shell-manifest",
+        generateBundle(_options, bundle) {
+          const entries = Object.entries(bundle).filter(([name]) => name.startsWith("assets/"));
+          const bytes = entries.reduce(
+            (sum, [, entry]) =>
+              sum +
+              (entry.type === "chunk"
+                ? Buffer.byteLength(entry.code)
+                : typeof entry.source === "string"
+                  ? Buffer.byteLength(entry.source)
+                  : entry.source.byteLength),
+            0
+          );
+          this.emitFile({
+            type: "asset",
+            fileName: "offline-manifest.json",
+            source: JSON.stringify({ files: entries.map(([name]) => name), bytes })
+          });
+        }
+      }
+    ],
     server: {
       headers: {
         "Cache-Control": "no-store",

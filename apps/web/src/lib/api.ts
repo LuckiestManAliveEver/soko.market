@@ -1,3 +1,4 @@
+import { isExplicitOfflineMode, routeOfflineRequest } from "../offline-runtime";
 import { getResponseErrorMessage } from "../user-facing-error";
 import { recordApiRequest } from "../performance";
 
@@ -87,6 +88,30 @@ export function readApiBaseUrl(): string {
 }
 
 export async function apiFetch<T>(
+  pathOrUrl: string,
+  options?: {
+    method?: string;
+    body?: unknown;
+    signal?: AbortSignal;
+    headers?: Record<string, string>;
+    requestId?: string;
+    idempotencyKey?: string;
+    skipAuthRefresh?: boolean;
+    timeoutMs?: number;
+  }
+) {
+  if (isExplicitOfflineMode()) {
+    options?.signal?.throwIfAborted();
+    return routeOfflineRequest<T>(
+      pathOrUrl,
+      (options?.method ?? "GET").toUpperCase(),
+      options?.body
+    );
+  }
+  return apiCloudFetch<T>(pathOrUrl, options);
+}
+
+export async function apiCloudFetch<T>(
   pathOrUrl: string,
   options?: {
     method?: string;

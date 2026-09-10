@@ -7448,3 +7448,15 @@ body {
     width: 34px;
   }
 }
+
+.offline-runtime-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.65rem 1rem;
+  background: #fff4d6;
+  color: #563b00;
+  font-size: 0.875rem;
+}

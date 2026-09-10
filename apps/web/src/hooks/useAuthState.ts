@@ -1,3 +1,4 @@
+import { isExplicitOfflineMode } from "../offline-runtime";
 import { useRef, useState } from "react";
 
 import type {
@@ -322,12 +323,16 @@ export function useAuthState(deps: UseAuthStateDeps) {
     } catch (error) {
       const cached = readCachedAuthSession();
       const storedBusiness = readStoredBusiness();
-      if (!navigator.onLine && cached !== null && storedBusiness !== null) {
+      if (
+        (!navigator.onLine || isExplicitOfflineMode()) &&
+        cached !== null &&
+        storedBusiness !== null
+      ) {
         setSession(cached);
         setBusiness(storedBusiness);
         setAuthBootstrapState("offline-authenticated");
         setIsAuthOpen(false);
-        setStatusMessage("Offline workspace restored. Cloud data will refresh after reconnect.");
+        setStatusMessage("Offline workspace restored. Choose Sync in Settings when you are ready.");
         return null;
       }
 

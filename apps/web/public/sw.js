@@ -77,7 +77,9 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (request.mode === "navigate") {
-    event.respondWith(navigationResponse(event));
+    event.respondWith(
+      offlineShellResponse(request).then((cached) => cached || navigationResponse(event))
+    );
     return;
   }
 
@@ -86,7 +88,9 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (url.pathname.startsWith("/assets/")) {
-    event.respondWith(cacheFirst(request, STATIC_CACHE));
+    event.respondWith(
+      offlineShellResponse(request).then((cached) => cached || cacheFirst(request, STATIC_CACHE))
+    );
     return;
   }
 
@@ -99,6 +103,12 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(staleWhileRevalidate(event, request, PUBLIC_READ_CACHE));
   }
 });
+
+async function offlineShellResponse(request) {
+  const cache = await caches.open("soko-offline-shell-v1");
+  if (!(await cache.match("/__soko_offline_active__"))) return undefined;
+  return cache.match(request.mode === "navigate" ? "/" : request);
+}
 
 async function navigationResponse(event) {
   const shellCache = await caches.open(CACHE_NAME);

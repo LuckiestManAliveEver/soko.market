@@ -1,3 +1,4 @@
+import { isExplicitOfflineMode, offlineModeEvent, offlineRuntimeEnabled } from "../offline-runtime";
 import { useEffect, useRef, useState } from "react";
 
 import type { SyncMutationPayload, SyncMutationType } from "@soko/shared-types";
@@ -63,8 +64,15 @@ export function useSyncState(deps: UseSyncStateDeps) {
     let catchUpPromise: Promise<void> | null = null;
     let synchronize: (() => Promise<void>) | null = null;
     const synchronizeWhenOnline = () => {
-      if (navigator.onLine) void synchronize?.();
+      if (navigator.onLine && !isExplicitOfflineMode()) void synchronize?.();
     };
+    const modeChanged = () => {
+      if (isExplicitOfflineMode()) {
+        closeRealtime?.();
+        closeRealtime = undefined;
+      } else synchronizeWhenOnline();
+    };
+    window.addEventListener(offlineModeEvent, modeChanged);
     window.addEventListener("online", synchronizeWhenOnline);
     void openIndexedDbSyncRepository()
       .then(async (repository) => {
@@ -76,6 +84,7 @@ export function useSyncState(deps: UseSyncStateDeps) {
         openedRepository = repository;
         syncRepositoryRef.current = repository;
         const catchUp = () => {
+          if (isExplicitOfflineMode()) return Promise.resolve();
           if (catchUpPromise === null) {
             catchUpPromise = catchUpAccountSync({
               accountId: session.account.id,
@@ -90,7 +99,13 @@ export function useSyncState(deps: UseSyncStateDeps) {
           return catchUpPromise;
         };
         const startRealtime = () => {
-          if (cancelled || closeRealtime !== undefined || !navigator.onLine) return;
+          if (
+            cancelled ||
+            closeRealtime !== undefined ||
+            !navigator.onLine ||
+            isExplicitOfflineMode()
+          )
+            return;
           const realtimeUrl = new URL("/v1/realtime", apiBaseUrl);
           realtimeUrl.protocol = realtimeUrl.protocol === "https:" ? "wss:" : "ws:";
           closeRealtime = subscribeToAccountRealtime({
@@ -100,7 +115,7 @@ export function useSyncState(deps: UseSyncStateDeps) {
           });
         };
         synchronize = async () => {
-          if (cancelled || !navigator.onLine) return;
+          if (cancelled || !navigator.onLine || isExplicitOfflineMode()) return;
           const transferred = await flushLocalSyncMutations({
             accountId: session.account.id,
             repository,
@@ -130,6 +145,7 @@ export function useSyncState(deps: UseSyncStateDeps) {
 
     return () => {
       cancelled = true;
+      window.removeEventListener(offlineModeEvent, modeChanged);
       window.removeEventListener("online", synchronizeWhenOnline);
       closeRealtime?.();
       if (syncRepositoryRef.current === openedRepository) {
@@ -210,6 +226,8 @@ export function useSyncState(deps: UseSyncStateDeps) {
     payload: SyncMutationPayload
   ): Promise<boolean> {
     if (
+      isExplicitOfflineMode() ||
+      offlineRuntimeEnabled ||
       deps.businessId === null ||
       deps.session === null ||
       globalThis.indexedDB === undefined ||

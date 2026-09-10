@@ -4,6 +4,7 @@ import type {
   InferenceRequest,
   InferenceRuntime
 } from "@soko/shared-types";
+import { isExplicitOfflineMode } from "../offline-runtime";
 
 export function createRemoteInferenceProvider(input: {
   id: string;
@@ -18,12 +19,14 @@ export function createRemoteInferenceProvider(input: {
     id: input.id,
     runtime: input.runtime,
     async isAvailable() {
-      return input.enabled && navigator.onLine;
+      return input.enabled && navigator.onLine && !isExplicitOfflineMode();
     },
     async supports(modelId) {
       return input.modelIds.includes(modelId);
     },
     async *generate(request) {
+      if (isExplicitOfflineMode())
+        throw new Error("Remote inference is unavailable in explicit offline mode.");
       const controller = new AbortController();
       activeControllers.set(request.requestId, controller);
       const cancelFromCaller = () => controller.abort();

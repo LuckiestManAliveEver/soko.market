@@ -32,9 +32,13 @@ describe("registered-user purge script", () => {
     // cp2_agent_model_assignments/cp2_browser_inference_assignments/cp2_agent_model_bindings were
     // removed from this classification list entirely once infra/db/migrations/
     // 075_drop_dead_runtime_assignment_tables.sql and 076_drop_legacy_agent_model_bindings.sql
-    // dropped the tables - there is nothing left to classify.
-    expect(plan.size).toBe(185);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(178);
+    // dropped the tables - there is nothing left to classify. The offline runtime
+    // (infra/db/migrations/082_offline_runtime.sql) added cp2_offline_receipts,
+    // cp2_offline_changes and cp2_offline_metadata, each classified DELETE: they hold a device's
+    // pending mutation receipts and the business change log used to serve /sync/pull, all of it
+    // scoped to a purged account or business.
+    expect(plan.size).toBe(188);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(181);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")
