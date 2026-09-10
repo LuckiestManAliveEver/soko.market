@@ -199,8 +199,7 @@ export class LocalProvider implements SokoProvider {
         (current, operation) => {
           const existing = current.rows.find((row) => row.local_id === operation.entityLocalId);
           if (!existing) throw new Error("This invoice is not in the downloaded snapshot.");
-          if (existing.payload.status !== "draft")
-            throw new Error("Invoice is already confirmed.");
+          if (existing.payload.status !== "draft") throw new Error("Invoice is already confirmed.");
           const items =
             (existing.payload.items as Array<{ productId: string; quantity: number }>) ?? [];
           const required = new Map<string, number>();

@@ -152,10 +152,10 @@ the repository default; nothing here changes `repositoryDefaultRuntimePolicy`.
 ## Update: a narrow, disclosed exception for explicit offline mode
 
 The Soko Offline Runtime (`docs/offline/README.md`) reintroduces on-device model execution for one
-specific, narrow case: a device the merchant has *explicitly* put into offline mode from Settings,
+specific, narrow case: a device the merchant has _explicitly_ put into offline mode from Settings,
 where the alternative is not "route to the hosted default" but "the agent is unavailable at all."
 This is not a reversal of the decision above - the "keep on-device inference as an offline fallback"
-alternative rejected there was a *silent* fallback on an ordinary connectivity blip, where the
+alternative rejected there was a _silent_ fallback on an ordinary connectivity blip, where the
 merchant has no way to know a different, privately-downloaded model just answered instead of the
 configured runtime. That specific hazard does not apply here, because:
 

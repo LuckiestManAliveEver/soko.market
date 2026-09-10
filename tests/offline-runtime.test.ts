@@ -327,7 +327,9 @@ describe("Offline runtime API integration", () => {
       const secondState = await secondDb.read(second);
       const confirmOp = secondState.operations.find((op) => op.opType === "orders.confirmInvoice");
       expect(confirmOp?.syncStatus).toBe("CONFLICT");
-      expect(secondState.conflicts).toMatchObject([{ message: expect.stringContaining("confirmed") }]);
+      expect(secondState.conflicts).toMatchObject([
+        { message: expect.stringContaining("confirmed") }
+      ]);
     } finally {
       await fixture.app.close();
     }

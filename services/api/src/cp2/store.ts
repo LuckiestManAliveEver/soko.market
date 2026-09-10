@@ -5362,7 +5362,8 @@ export class Cp2Store {
             ? "import:write"
             : operation.opType === "orders.confirmInvoice"
               ? "invoice:confirm"
-              : operation.opType === "orders.createInvoice" || operation.opType === "orders.updateInvoice"
+              : operation.opType === "orders.createInvoice" ||
+                  operation.opType === "orders.updateInvoice"
                 ? "invoice:write"
                 : "product:write";
     const actor = this.requireAuthorizedSession(sessionId, businessId, permission);
@@ -5461,7 +5462,9 @@ export class Cp2Store {
             // fall through to this function's existing catch block below, which maps any 409 to a
             // CONFLICT ack - so a double-confirm race or stock that changed since this device's
             // last sync surfaces through the same conflict-review flow as everything else.
-            return { ...this.confirmInvoice({ ...input, invoiceId: operation.entityCloudId! }).invoice };
+            return {
+              ...this.confirmInvoice({ ...input, invoiceId: operation.entityCloudId! }).invoice
+            };
           case "receipts.ocr.create": {
             const receipt = parseOfflineReceiptOcr(payload);
             let extraction: ReturnType<typeof parseOfflineReceiptOcrExtraction> | undefined;
