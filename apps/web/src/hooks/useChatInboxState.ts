@@ -260,6 +260,13 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
     await loadMessagingInbox(preference === "archive" ? null : conversationId);
   }
 
+  async function renameConversation(conversationId: string, title: string) {
+    const trimmed = title.trim();
+    if (trimmed.length === 0) return;
+    await patchJson<ConversationView>(`/v1/conversations/${conversationId}`, { title: trimmed });
+    await loadMessagingInbox(conversationId);
+  }
+
   async function updateMessageAction(
     messageId: string,
     action: { text?: string; deleted?: boolean; reaction?: string | null }
@@ -520,6 +527,7 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
     createAgentSession,
     createDirectConversation,
     updateConversationPreference,
+    renameConversation,
     updateMessageAction,
     forwardMessage,
     requestMessagingNotifications,
