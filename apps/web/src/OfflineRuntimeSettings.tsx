@@ -5,6 +5,7 @@ import { prepareOfflineShell } from "./offline-shell";
 import { readStableDeviceId } from "./lib/api";
 import { clearApiRequestCache } from "./api-request-cache";
 import { ensureOcrEngineCached, isOcrEngineCached } from "./offline-ocr";
+import type { OfflineAssistantReply } from "./webllm-runtime";
 import {
   offlineDatabase,
   getOfflineState,
@@ -14,7 +15,9 @@ import {
   offlineRuntimeEnabled,
   setOfflineMode,
   offlineModeEvent,
-  currentOfflineScope
+  currentOfflineScope,
+  ensureInstalledOfflineRuntime,
+  askOfflineAssistant
 } from "./offline-runtime";
 
 export function OfflineRuntimeSettings({
@@ -39,6 +42,10 @@ export function OfflineRuntimeSettings({
   const [ocrCached, setOcrCached] = useState(false);
   const [ocrBusy, setOcrBusy] = useState(false);
   const [ocrProgress, setOcrProgress] = useState<{ done: number; total: number } | null>(null);
+  const [assistantPrompt, setAssistantPrompt] = useState("");
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantReply, setAssistantReply] = useState<OfflineAssistantReply | null>(null);
+  const [assistantError, setAssistantError] = useState("");
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
@@ -95,6 +102,7 @@ export function OfflineRuntimeSettings({
     }
   }
   async function install() {
+    if (!dataOnly) await ensureInstalledOfflineRuntime();
     const runtime = installedOfflineRuntime();
     await installOfflineRuntime({
       db: await offlineDatabase(),
@@ -195,9 +203,10 @@ export function OfflineRuntimeSettings({
           </label>
           {!dataOnly && (
             <p>
-              The exact agent, harness and model must be installed by a compatible local runtime.
-              Its artifact sizes are checked before installation. This PWA does not include a local
-              model engine.
+              Downloads a small on-device assistant model (WebGPU required; about 1 GB of device
+              memory). The exact agent, harness and model version are pinned at install time and
+              will not change on reconnect. It answers from the prompt alone, with no catalogue,
+              order, customer or account data - unsupported devices fall back to business data only.
             </p>
           )}
           <button
@@ -278,6 +287,43 @@ export function OfflineRuntimeSettings({
               />
             </div>
           )}
+        </div>
+      )}
+      {modeActive && state?.pin?.active && (
+        <div>
+          <p>Ask the offline assistant something. It answers on-device from your message alone.</p>
+          <textarea
+            aria-label="Message the offline assistant"
+            value={assistantPrompt}
+            disabled={assistantBusy}
+            onChange={(event) => setAssistantPrompt(event.target.value)}
+          />
+          <button
+            type="button"
+            disabled={assistantBusy || !assistantPrompt.trim()}
+            onClick={() => {
+              setAssistantBusy(true);
+              setAssistantError("");
+              setAssistantReply(null);
+              void askOfflineAssistant(scope, { prompt: assistantPrompt })
+                .then((result) => setAssistantReply(result as OfflineAssistantReply))
+                .catch((error: unknown) => {
+                  setAssistantError(
+                    error instanceof Error ? error.message : "The offline assistant is unavailable."
+                  );
+                })
+                .finally(() => setAssistantBusy(false));
+            }}
+          >
+            Ask offline
+          </button>
+          {assistantBusy && <p role="status">Thinking on-device&hellip;</p>}
+          {assistantReply && (
+            <p role="status">
+              Answered offline by {assistantReply.modelId}: {assistantReply.reply}
+            </p>
+          )}
+          {assistantError && <p role="alert">{assistantError}</p>}
         </div>
       )}
       {state?.installed && (

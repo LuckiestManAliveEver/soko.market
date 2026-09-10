@@ -12,11 +12,30 @@ import {
 } from "@soko/offline-runtime";
 import { readCachedAuthSession } from "./auth-bootstrap";
 import { activateOfflineShell } from "./offline-shell";
+import { createWebLLMRuntimeAdapter, resolveWebLLMRuntimeBinding } from "./webllm-runtime";
 
 const modeKey = "soko.offline-runtime.active.v1";
 let database: Promise<LocalDatabase> | null = null;
 let adapter: InstalledRuntimeAdapter | undefined;
 let binding: RuntimeBinding | null = null;
+let installedRuntimeReady: Promise<void> | null = null;
+
+/**
+ * Resolves and registers the on-device WebLLM runtime adapter, lazily and only once. Callers
+ * trigger this only from an explicit user action (opting into AI install, or asking the offline
+ * assistant something) - never on page load - so it never turns "go offline with business data
+ * only" into a surprise network call for a feature the merchant didn't ask for.
+ */
+export function ensureInstalledOfflineRuntime(): Promise<void> {
+  return (installedRuntimeReady ??= resolveWebLLMRuntimeBinding()
+    .then((resolvedBinding) => {
+      registerInstalledOfflineRuntime(createWebLLMRuntimeAdapter(), resolvedBinding);
+    })
+    .catch((error) => {
+      installedRuntimeReady = null;
+      throw error;
+    }));
+}
 export const offlineRuntimeEnabled = import.meta.env.VITE_OFFLINE_RUNTIME_ENABLED === "true";
 export const offlineModeEvent = "soko:offline-mode-changed";
 
@@ -143,4 +162,27 @@ export async function createOfflineSyncClient(scope: Scope): Promise<SyncClient>
 export async function fetchOfflineSnapshot(scope: Scope): Promise<InstallSnapshot> {
   const { apiCloudFetch } = await import("./lib/api");
   return apiCloudFetch(`/businesses/${encodeURIComponent(scope.storeId)}/offline-runtime/snapshot`);
+}
+/**
+ * Calls the pinned on-device model through the same LocalProvider/resolver path business-data
+ * mutations use, rather than a bespoke call site - so agent.infer gets the same "unavailable
+ * offline" and pin-mismatch handling as every other offline-relevant operation.
+ */
+export async function askOfflineAssistant(
+  scope: Scope,
+  request: { prompt: string; history?: Array<{ role: "user" | "assistant"; content: string }> }
+): Promise<unknown> {
+  await ensureInstalledOfflineRuntime();
+  const db = await offlineDatabase();
+  const runtime = installedOfflineRuntime();
+  const local = new LocalProvider(
+    db,
+    scope,
+    runtime.adapter ? (pin, args) => runtime.adapter!.infer(pin, args) : undefined
+  );
+  return executeProviderCall("agent.infer", request, [local], {
+    online: navigator.onLine,
+    offlineModeActive: true,
+    localAuthorized: true
+  });
 }
