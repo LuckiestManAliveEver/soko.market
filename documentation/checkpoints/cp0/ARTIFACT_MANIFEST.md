@@ -42,9 +42,11 @@ Date passed: 2026-07-01
 ## Integrity Notes
 
 - The two Master Control DOCX files have identical extracted text, even though their container file hashes differ.
-- The workspace has a read-only environment mount at `.git`.
-- Git metadata is stored in `.repo.git`.
-- CP0 is Git-tagged in `.repo.git`.
+- **Correction (added after implementation):** no `.repo.git` directory exists in this checkout,
+  and no checkpoint tags were ever created. Whether a read-only `.git` mount and an alternate
+  `.repo.git` genuinely existed in some earlier, now-lost environment cannot be verified — either
+  way, neither exists today. `.git` in this checkout is a normal writable repository. See the
+  corrected Git Directory Note in `documentation/checkpoints/CHECKPOINT_LOG.md`.
 
 ## CP0 Completion Checklist
 
@@ -57,6 +59,6 @@ Date passed: 2026-07-01
 - [x] Scope baseline created.
 - [x] Artifact manifest created.
 - [x] Checkpoint log created.
-- [x] Alternate Git repository initialized at `.repo.git`.
-- [x] `checkpoint/cp0-planning-baseline` tag created.
+- [ ] Alternate Git repository initialized at `.repo.git`. **Not actually done** — see correction above.
+- [ ] `checkpoint/cp0-planning-baseline` tag created. **Not actually done** — see correction above.
 - [x] CP0 marked `passed` in checkpoint log.

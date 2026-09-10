@@ -4,7 +4,7 @@ Status: passed
 Date opened: 2026-07-02
 Date passed: 2026-07-02
 Target tag: `checkpoint/cp5-business-core-records`
-Actual tag: `checkpoint/cp5-business-core-records` in `.repo.git`
+Actual tag: not created. No `.repo.git` directory exists in this checkout; see the corrected Git Directory Note in `documentation/checkpoints/CHECKPOINT_LOG.md`.
 
 ## Purpose
 
