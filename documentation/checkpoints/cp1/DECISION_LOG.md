@@ -10,7 +10,7 @@ This file records engineering foundation decisions for CP1.
 
 | ID      | Decision                                                                     | Rationale                                                                                                                                                          | Impact                                                                                                                   |
 | ------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| CP1-D01 | Use this folder as the implementation repository.                            | CP0 documents and checkpoint tags already live here.                                                                                                               | Source code will be added beside `documentation/`, while Git metadata continues through `.repo.git` in this environment. |
+| CP1-D01 | Use this folder as the implementation repository.                            | CP0 documents live here.                                                                                                               | Source code will be added beside `documentation/`. Correction: no `.repo.git` directory or checkpoint tags were ever actually created; `.git` in this checkout is a normal writable repository — see the corrected Git Directory Note in `documentation/checkpoints/CHECKPOINT_LOG.md`. |
 | CP1-D02 | Use `pnpm` workspaces for the monorepo.                                      | It is lightweight, common for TypeScript workspaces, and avoids adopting a heavier task graph before the repo needs one.                                           | CP1 will create workspace package boundaries without Nx or Turborepo.                                                    |
 | CP1-D03 | Use React for the mobile PWA frontend.                                       | React has broad PWA support, mature ecosystem coverage, and predictable hiring/maintenance characteristics.                                                        | `apps/web` will be the primary mobile-first app shell.                                                                   |
 | CP1-D04 | Use Node.js with Fastify for service runtimes.                               | Fastify keeps the API boundary small, typed, and operationally straightforward.                                                                                    | `services/api`, `services/sync`, and `services/ai-runtime` should expose explicit HTTP boundaries.                       |
@@ -29,7 +29,7 @@ This file records engineering foundation decisions for CP1.
 | CP0-O02 | React.                                                                        |
 | CP0-O04 | Node.js with Fastify.                                                         |
 | CP0-O05 | Drizzle with committed SQL migrations as source of truth.                     |
-| CP0-O11 | Use this folder with `.repo.git` until a normal `.git` checkout is available. |
+| CP0-O11 | Correction: no `.repo.git` was ever created; `.git` in this checkout is already a normal, writable repository. |
 
 ## Deferred Decisions
 

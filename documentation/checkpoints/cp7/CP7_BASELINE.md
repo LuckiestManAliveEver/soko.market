@@ -4,7 +4,7 @@ Status: passed
 Date opened: 2026-07-03
 Date passed: 2026-07-03
 Target tag: `checkpoint/cp7-offline-sync`
-Actual tag: `checkpoint/cp7-offline-sync` in `.repo.git`
+Actual tag: not created. No `.repo.git` directory exists in this checkout; see the corrected Git Directory Note in `documentation/checkpoints/CHECKPOINT_LOG.md`.
 
 ## Purpose
 

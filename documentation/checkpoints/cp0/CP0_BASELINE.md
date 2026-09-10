@@ -4,7 +4,7 @@ Status: passed
 Date opened: 2026-07-01
 Date passed: 2026-07-01
 Target tag: `checkpoint/cp0-planning-baseline`
-Actual tag: `checkpoint/cp0-planning-baseline` in `.repo.git`
+Actual tag: not created. No `.repo.git` directory exists in this checkout; see the corrected Git Directory Note in `documentation/checkpoints/CHECKPOINT_LOG.md`.
 
 ## Purpose
 
@@ -170,9 +170,10 @@ CP0 can be marked passed when:
 Current status:
 
 - All planning artifacts are created.
-- The normal `.git` path is a read-only environment mount.
-- Git metadata is stored in `.repo.git`.
-- CP0 is tagged in `.repo.git`.
+- **Correction (added after implementation):** no `.repo.git` directory exists in this checkout
+  and no `checkpoint/cp0-planning-baseline` tag was ever created. `.git` in this checkout is a
+  normal writable repository. See the corrected Git Directory Note in
+  `documentation/checkpoints/CHECKPOINT_LOG.md`.
 
 ## Rollback Instructions
 

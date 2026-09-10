@@ -15,7 +15,7 @@ This log tracks formal planning and implementation checkpoints. Each checkpoint 
 
 | Checkpoint | Name                                                  |   Status | Date Opened | Date Passed | Git Tag                                       | Notes                                                                                                                                                  |
 | ---------- | ----------------------------------------------------- | -------: | ----------: | ----------: | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| CP0        | Planning Baseline                                     |   passed |  2026-07-01 |  2026-07-01 | `checkpoint/cp0-planning-baseline`            | Formal CP0 packet created. Tag stored in alternate Git directory `.repo.git` because `.git` is a read-only environment mount.                          |
+| CP0        | Planning Baseline                                     |   passed |  2026-07-01 |  2026-07-01 | `checkpoint/cp0-planning-baseline`            | Formal CP0 packet created. Tag was never actually created — no `.repo.git` directory exists in this checkout; see the corrected Git Directory Note below.                          |
 | CP1        | Repository and Engineering Foundation                 |   passed |  2026-07-02 |  2026-07-02 | `checkpoint/cp1-engineering-foundation`       | Monorepo foundation, local stack, health check, CI, migration baseline, and runtime boundaries implemented.                                            |
 | CP2        | Account, Auth, and Business Creation                  |   passed |  2026-07-02 |  2026-07-02 | `checkpoint/cp2-auth-business`                | Passwordless OTP, sessions, first business creation, language preference, owner membership, role checks, and audit events implemented.                 |
 | CP3        | Mobile Shell and Chat Shell                           |   passed |  2026-07-02 |  2026-07-02 | `checkpoint/cp3-mobile-chat-shell`            | Installable mobile shell, chat shell, quick actions, offline/sync placeholders, and commerce empty states implemented.                                 |
@@ -31,9 +31,9 @@ This log tracks formal planning and implementation checkpoints. Each checkpoint 
 | CP13       | Logistics                                             |   passed |  2026-07-04 |  2026-07-04 | `checkpoint/cp13-logistics`                   | Deterministic in-app logistics records, lifecycle validation, API, owner UI, sync replay, bounded runtime/report context, docs, and tests implemented. |
 | CP14       | Security, Compliance, and TIEL Preparation            |   passed |  2026-07-05 |  2026-07-05 | `checkpoint/cp14-security-compliance`         | Data export, deletion scheduling, retention summaries, verification tiers, tax config, device trust placeholder, security review, UI, and tests.       |
 | CP15       | Beta Release Hardening                                |   passed |  2026-07-05 |  2026-07-05 | `checkpoint/cp15-closed-beta`                 | Closed beta gates, feature flags, device tests, support process, telemetry, readiness reports, UI, runtime context, and tests implemented.             |
-| CP16       | Public Launch                                         |   passed |  2026-07-05 |  2026-07-05 | `checkpoint/cp16-public-launch`               | Public launch gates, onboarding controls, production checklist, incidents, readiness reports, UI, runtime context, and tests implemented.              |
+| CP16       | Public Launch                                         |   passed |  2026-07-05 |  2026-07-05 | `checkpoint/cp16-public-launch`               | Public launch gates, onboarding controls, production readiness *documentation*, readiness reports, UI, runtime context, and tests implemented. Scope was narrowed vs. the original `documentation/README.md` deliverable list without disclosure: performance hardening, accessibility pass, SMS fallback, USSD stub, real production observability, executed backup/restore testing, and an incident response runbook were never built. See the CP16 scope-correction note in `documentation/README.md`. Tag not actually created — see Git Directory Note below. |
 | CP17       | Marketplace Foundation                                | deferred |  2026-07-07 |     pending | `checkpoint/cp17-marketplace-foundation`      | Bypassed for now; marketplace trigger gates remain unmet.                                                                                              |
-| CP18       | Global Shop ID                                        |   passed |  2026-07-07 |  2026-07-07 | `checkpoint/cp18-global-shop-id`              | Implemented from `documentation/Soko_Global_Shop_ID_Concept.docx`; establishes the Business Agent ID as the permanent storefront identity.             |
+| CP18       | Global Shop ID                                        |   passed |  2026-07-07 |  2026-07-07 | `checkpoint/cp18-global-shop-id`              | Implemented from `documentation/Soko_Global_Shop_ID_Concept.docx`; establishes the Business Agent ID as the permanent storefront identity. Shipped format is `soko.<handle>`, not the concept doc's `countryA########` — see the format-correction note in `documentation/CP18_GLOBAL_SHOP_ID.md` and `docs/architecture/soko-id-slug-system.md`. Tag not actually created — see Git Directory Note below. |
 | CP19       | Continuous Learning Architecture                      |  planned |     pending |     pending | `checkpoint/cp19-continuous-learning`         | Future expansion from `documentation/Soko.market_Continuous_Learning_Architecture_v1.pdf`; runtime, memory, skill, eval, and feedback learning layer.  |
 | CP20       | Unified Account, Conversation, and Session Foundation |   passed |  2026-07-11 |  2026-07-12 | `checkpoint/cp20-unified-session-foundation`  | Phase 1 foundation implemented and verified; checkpoint commit and tag captured in the alternate Git directory.                                        |
 | CP21       | Offline Client Data and Catch-up Foundation           |   active |  2026-07-12 |     pending | `checkpoint/cp21-offline-client-sync`         | Phase 2 implementation and CI passed; migration 018 and read-only schema verification await Neon pooled/direct connection secrets.                     |
@@ -42,17 +42,24 @@ This log tracks formal planning and implementation checkpoints. Each checkpoint 
 | CP26       | Android Release Identity Foundation                   |   active |  2026-07-15 |     pending | `checkpoint/cp26-android-release-identity`    | Production origins and proposed Android identity are machine-verified; permanent package, developer account, ownership, and signing approvals remain.  |
 | CP27       | Play Legal Identity and Account Deletion              |   active |  2026-07-15 |     pending | `checkpoint/cp27-play-legal-account-deletion` | Public and in-app deletion paths are implemented; legal particulars, final policies, owners, and end-to-end fulfillment evidence remain pending.       |
 
-## Git Directory Note
+## Git Directory Note (corrected)
 
-The workspace contains a read-only tmpfs mounted at `.git`, so a normal Git repository cannot be written there.
+Earlier checkpoint documentation (CP0 through CP16, and CP18) claimed that a read-only `.git`
+mount forced Git metadata into an alternate `.repo.git` directory, and recorded specific checkpoint
+tags (e.g. `checkpoint/cp0-planning-baseline` through `checkpoint/cp18-global-shop-id`) as created
+there.
 
-Current workaround:
+This claim is false for the current checkout: no `.repo.git` directory exists anywhere in this
+repository (`find . -name .repo.git` returns nothing), and `git tag` on the real `.git` history
+returns zero results. None of the checkpoint tags referenced in this log or in any
+`CP*_BASELINE.md` file were ever actually created, in `.repo.git` or anywhere else. Whether an
+alternate Git directory genuinely existed in a now-lost earlier environment, or the claim was
+simply never true, can't be determined from what's present today — either way, the tags do not
+exist now and every "Actual tag: ... in `.repo.git`" line in the per-checkpoint baseline docs is
+inaccurate.
 
-- Git metadata is stored in `.repo.git`.
-- Commands must use:
-
-```bash
-git --git-dir=.repo.git --work-tree=. status
-```
-
-If the project is moved to a normal checkout later, preserve the CP0 commit and tag.
+`.git` in this checkout is a normal, writable repository (this is how every commit in the current
+history, including this one, was made). There is no environment constraint requiring an alternate
+Git directory. Going forward, checkpoint tags should be created directly against `.git` with
+standard `git tag` commands, and this note should be the reference for why none of the
+historical tags below can be resolved.
