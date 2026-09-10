@@ -778,7 +778,7 @@ Goal:
 **Scope correction (added after implementation):** the deliverables and exit criteria originally
 planned below were not all built. `documentation/checkpoints/cp16/CP16_BASELINE.md` narrowed CP16's
 actual scope to a launch-readiness gate/report (public onboarding toggle, beta/support/telemetry
-health aggregation, production readiness *documentation*) without flagging the drop against this
+health aggregation, production readiness _documentation_) without flagging the drop against this
 list, and `CHECKPOINT_LOG.md` still marked CP16 "passed" against the original list below. Status of
 each original deliverable, verified against code:
 
