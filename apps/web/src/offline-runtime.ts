@@ -87,11 +87,12 @@ export async function routeOfflineRequest<T>(
   const scope = currentOfflineScope();
   if (!scope) throw new Error("The offline account is no longer signed in.");
   const match =
-    /^\/businesses\/([^/]+)\/(products|customers|invoices|storefront\/orders|receipt-ocr\/jobs)(?:\/([^/]+))?(?:\/(stock-adjustments))?$/.exec(
+    /^\/businesses\/([^/]+)\/(products|customers|invoices|storefront\/orders|receipt-ocr\/jobs)(?:\/([^/]+))?(?:\/(stock-adjustments|confirm))?$/.exec(
       path
     );
   const resource = match?.[2];
   const id = match?.[3];
+  const subAction = match?.[4];
   let op = "unsupported";
   if (match && decodeURIComponent(match[1]!) === scope.storeId) {
     if (method === "GET" && !id)
@@ -107,9 +108,15 @@ export async function routeOfflineRequest<T>(
     if (method === "GET" && resource === "products" && id === "fields") op = "catalogue.fields";
     if (method === "POST" && resource === "products" && !id) op = "catalogue.create";
     if (method === "PATCH" && resource === "products" && id) op = "catalogue.update";
-    if (method === "POST" && resource === "products" && id && match[4]) op = "inventory.adjust";
+    if (method === "POST" && resource === "products" && id && subAction === "stock-adjustments")
+      op = "inventory.adjust";
     if (method === "POST" && resource === "customers" && !id) op = "customers.create";
     if (method === "POST" && resource === "receipt-ocr/jobs" && !id) op = "receipts.ocr.create";
+    if (method === "POST" && resource === "invoices" && !id) op = "orders.createInvoice";
+    if (method === "PATCH" && resource === "invoices" && id && !subAction)
+      op = "orders.updateInvoice";
+    if (method === "POST" && resource === "invoices" && id && subAction === "confirm")
+      op = "orders.confirmInvoice";
   }
   const db = await offlineDatabase();
   const { runLocalOcr } = await import("./offline-ocr");

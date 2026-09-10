@@ -94,7 +94,10 @@ function parseOperation(raw: unknown): Operation {
       "catalogue.update",
       "inventory.adjust",
       "customers.create",
-      "receipts.ocr.create"
+      "receipts.ocr.create",
+      "orders.createInvoice",
+      "orders.updateInvoice",
+      "orders.confirmInvoice"
     ].includes(String(record.opType))
   )
     throw new Cp2Error(
@@ -107,7 +110,11 @@ function parseOperation(raw: unknown): Operation {
       ? "customers"
       : record.opType === "receipts.ocr.create"
         ? "receiptOcrJobs"
-        : "products";
+        : record.opType === "orders.createInvoice" ||
+            record.opType === "orders.updateInvoice" ||
+            record.opType === "orders.confirmInvoice"
+          ? "invoices"
+          : "products";
   if (record.collection !== expected)
     throw new Cp2Error(
       400,

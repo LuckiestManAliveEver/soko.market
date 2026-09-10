@@ -6,7 +6,10 @@ export type Mutation =
   | "catalogue.update"
   | "inventory.adjust"
   | "customers.create"
-  | "receipts.ocr.create";
+  | "receipts.ocr.create"
+  | "orders.createInvoice"
+  | "orders.updateInvoice"
+  | "orders.confirmInvoice";
 export type SyncStatus = "PENDING" | "PUSHED" | "ACKED" | "REJECTED" | "CONFLICT";
 export interface Scope {
   accountId: string;

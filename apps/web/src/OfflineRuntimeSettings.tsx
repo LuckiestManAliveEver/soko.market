@@ -153,7 +153,8 @@ export function OfflineRuntimeSettings({
           <li>
             <strong>Business data</strong> (always available): any device. Downloads a snapshot of
             your products, customers, invoices and orders - at least 16 MiB, plus 256 MiB or 20% of
-            your browser's storage quota reserved as headroom.
+            your browser's storage quota reserved as headroom. Creating, editing and confirming
+            invoices works offline too, decrementing stock once you sync.
           </li>
           <li>
             <strong>Offline receipt scanning</strong> (optional): any modern browser. One-time ~14
@@ -170,13 +171,21 @@ export function OfflineRuntimeSettings({
       <section aria-labelledby="go-offline-disclaimers-title">
         <h4 id="go-offline-disclaimers-title">What still needs a connection</h4>
         <ul>
-          <li>Checkout, payment settlement and account or authentication changes.</li>
+          <li>
+            Checkout and payment settlement - taking a customer's payment always needs an online
+            connection, even when everything else here is installed.
+          </li>
+          <li>Account or authentication changes, such as passwords, PINs and security settings.</li>
           <li>
             Confirming a scanned receipt into a supplier and purchase record - text extraction
-            itself runs offline, but confirming needs your live contact directory.
+            itself runs offline, but confirming needs supplier and sales-agent data this device
+            hasn't downloaded yet.
           </li>
           <li>
-            Invoice and order confirmation, and anything else that changes stock through them.
+            Confirming an invoice checks stock against this device's last sync, not live stock on
+            other devices - a confirmation that looked fine offline can still be rejected on sync if
+            stock ran out elsewhere first, the same as any two people editing the same invoice at
+            once.
           </li>
           <li>
             Nearby device-to-device messaging - a research prototype, not available in this PWA.
@@ -230,10 +239,11 @@ export function OfflineRuntimeSettings({
           <h3 id="offline-confirm-title">Prepare this device for offline use</h3>
           <p>
             Download a snapshot of products, customers, invoices and orders. Catalogue changes,
-            customer creation and stock counts will stay on this device until you choose to sync.
-            Payments, checkout and account changes require an online connection. Receipts can be
-            scanned offline if you enable on-device scanning below; confirming a scan into a
-            supplier and purchase record still requires reconnecting.
+            customer creation, stock counts, and creating, editing and confirming invoices will stay
+            on this device until you choose to sync. Payments, checkout and account changes require
+            an online connection. Receipts can be scanned offline if you enable on-device scanning
+            below; confirming a scan into a supplier and purchase record still requires
+            reconnecting.
           </p>
           <p>
             Allow at least 16 MiB for business data. Installation reserves at least 256 MiB or 20%
