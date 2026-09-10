@@ -297,6 +297,9 @@ import {
   dataExportCreatedEvent,
   isBusinessRole,
   normalizeAccountDeletionInput,
+  normalizeContactRecordInput,
+  normalizePaymentInput,
+  normalizeProductInput,
   permissionsForRole,
   roleCan,
   validateAccountDeletionInput,
@@ -8288,21 +8291,29 @@ export class Cp2Store {
     now: Date;
   }): unknown {
     switch (input.mutationType) {
-      case "product.create":
+      case "product.create": {
+        const product = input.payload as ProductInput;
+        this.rejectDuplicateOfflineProduct(input.businessId, product);
+
         return this.createProduct({
           sessionId: input.sessionId,
           businessId: input.businessId,
-          product: input.payload as ProductInput,
+          product,
           now: input.now
         });
+      }
 
-      case "customer.create":
+      case "customer.create": {
+        const customer = input.payload as ContactRecordInput;
+        this.rejectDuplicateOfflineCustomer(input.businessId, customer);
+
         return this.createCustomer({
           sessionId: input.sessionId,
           businessId: input.businessId,
-          customer: input.payload as ContactRecordInput,
+          customer,
           now: input.now
         });
+      }
 
       case "supplier.create":
         return this.createSupplier({
@@ -8340,13 +8351,17 @@ export class Cp2Store {
           now: input.now
         });
 
-      case "payment.record":
+      case "payment.record": {
+        const payment = input.payload as PaymentInput;
+        this.rejectDuplicateOfflinePayment(input.businessId, payment);
+
         return this.recordPayment({
           sessionId: input.sessionId,
           businessId: input.businessId,
-          payment: input.payload as PaymentInput,
+          payment,
           now: input.now
         });
+      }
 
       case "logistics.create":
         return this.createLogistics({
@@ -8367,6 +8382,86 @@ export class Cp2Store {
           now: input.now
         });
       }
+    }
+  }
+
+  /**
+   * Two offline devices/sessions can each queue a "create this product" mutation for the same
+   * shop while disconnected, under different idempotency keys — idempotency-key dedup (which only
+   * catches an exact retry of the same key) never sees this as a duplicate. CP7 requires such
+   * duplicates be flagged for review rather than silently creating a second row, so this runs only
+   * on the sync-replay path (never on direct product creation) and blocks the replay as a
+   * "conflict" sync-queue item instead of letting it succeed.
+   */
+  private rejectDuplicateOfflineProduct(businessId: string, product: ProductInput): void {
+    const normalizedName = normalizeProductInput(product).name.toLowerCase();
+    const hasMatch = [...this.salesDomain.productsMap.values()].some(
+      (existing) =>
+        existing.businessId === businessId && existing.name.toLowerCase() === normalizedName
+    );
+
+    if (hasMatch) {
+      throw new Cp2Error(
+        409,
+        "duplicate_product_detected",
+        `A product named "${normalizeProductInput(product).name}" already exists for this business. Resolve the duplicate before syncing this record.`
+      );
+    }
+  }
+
+  /**
+   * Same offline-duplicate concern as products, scoped to customers. Matching requires both name
+   * and phone to agree (phone omitted skips the check entirely) because name alone is too weak a
+   * signal — many real customers share a first name, and a false "duplicate" would block a
+   * legitimate offline record from ever syncing.
+   */
+  private rejectDuplicateOfflineCustomer(businessId: string, customer: ContactRecordInput): void {
+    const normalized = normalizeContactRecordInput(customer);
+
+    if (normalized.phone === null) {
+      return;
+    }
+
+    const hasMatch = [...this.salesDomain.customersMap.values()].some(
+      (existing) =>
+        existing.businessId === businessId &&
+        existing.phone !== null &&
+        existing.phone === normalized.phone &&
+        existing.name.toLowerCase() === normalized.name.toLowerCase()
+    );
+
+    if (hasMatch) {
+      throw new Cp2Error(
+        409,
+        "duplicate_customer_detected",
+        `A customer named "${normalized.name}" with this phone number already exists for this business. Resolve the duplicate before syncing this record.`
+      );
+    }
+  }
+
+  /**
+   * Same offline-duplicate concern as products/customers, scoped to payments. Matching on the same
+   * invoice, amount, and method (not idempotency key) catches a double-tapped "record payment"
+   * queued twice offline — a real risk since two distinct legitimate partial payments could also
+   * share an amount, so this blocks the replay for owner review rather than silently rejecting or
+   * accepting it.
+   */
+  private rejectDuplicateOfflinePayment(businessId: string, payment: PaymentInput): void {
+    const normalized = normalizePaymentInput(payment);
+    const hasMatch = [...this.salesDomain.paymentsMap.values()].some(
+      (existing) =>
+        existing.businessId === businessId &&
+        existing.invoiceId === normalized.invoiceId &&
+        existing.amount === normalized.amount &&
+        existing.method === normalized.method
+    );
+
+    if (hasMatch) {
+      throw new Cp2Error(
+        409,
+        "duplicate_payment_detected",
+        `A payment of this amount and method already exists for this invoice. Resolve the duplicate before syncing this record.`
+      );
     }
   }
 

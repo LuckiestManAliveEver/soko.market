@@ -517,9 +517,29 @@ Exit criteria:
 - Payment, invoice total, tax, discount, and product quantity conflicts block auto-resolution.
 - Duplicate offline records are flagged, not merged silently.
 
+**Implementation note (added after the original exit criteria above were found to be only
+partially built):** `SyncConflict` (`packages/shared-types/src/index.ts`) carries an explicit
+`category` field — `"money"`, `"product_quantity"`, `"duplicate"`, or `"generic"` — computed by
+`classifySyncConflict` (`packages/sync-core/src/index.ts`) from the business-error code a replay
+failed with, so a conflict's kind is inspectable rather than only inferred from "conflict vs.
+retryable." There is no `"tax"` or `"discount"` category: tax is a single server-validated rate
+with no client-trusted value to ever conflict over, and invoices have no discount field in this
+codebase at all — adding one would be a new product feature, not a sync-conflict fix, so this
+document no longer claims tax/discount conflict handling exists. Duplicate offline records ARE now
+detected and blocked, not silently created twice: `Cp2Store.replaySyncMutation`
+(`services/api/src/cp2/store.ts`) rejects a `product.create`, `customer.create`, or
+`payment.record` replay as a `"duplicate"` conflict when it matches an existing record (product:
+same business + name, case-insensitive; customer: same business + name + phone, phone required to
+avoid false positives on common first names; payment: same business + invoice + amount + method).
+This runs only on the sync-replay path, not on direct REST creation, and the duplicate mutation is
+never applied — it is surfaced as a conflict in the sync queue for the owner to resolve, rather than
+"created both and flagged," since this codebase has no side-by-side conflict-resolution UI to show
+two versions of a record. Covered by `tests/cp7-offline-sync.test.ts`.
+
 Rollback point:
 
-- Tag: `checkpoint/cp7-offline-sync`
+- Tag: `checkpoint/cp7-offline-sync` — not actually created; see the Git Directory Note in
+  `documentation/checkpoints/CHECKPOINT_LOG.md`.
 - Backup: server database dump, local-store schema version, sync cursor state.
 - Rollback action: stop accepting sync pushes, preserve queued events, restore server snapshot if conflicts corrupt state.
 
@@ -1020,9 +1040,15 @@ Use this order:
 Data rollback rules:
 
 - Payments: never overwrite silently; preserve both versions and require owner/admin resolution.
-- Invoice totals, tax, and discount: block auto-resolution.
-- Product quantity: block auto-resolution.
-- Duplicate offline records: create both and flag for review.
+- Invoice totals, tax, and discount: block auto-resolution. In practice, invoice totals are always
+  computed server-side from items and never trusted from a client, and there is no discount field
+  in this codebase, so there is no client-supplied total/discount value that could ever conflict —
+  see the CP7 implementation note above.
+- Product quantity: block auto-resolution (`SyncConflict.category === "product_quantity"`, from the
+  `stock_insufficient` business error).
+- Duplicate offline records: blocked from applying and flagged as a sync conflict
+  (`SyncConflict.category === "duplicate"`) for owner review, rather than silently created twice.
+  Not "create both" — see the CP7 implementation note above for why.
 - Delete/edit conflict: prefer edit and log deletion attempt.
 
 ## MVP Scope

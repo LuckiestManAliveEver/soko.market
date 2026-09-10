@@ -45,6 +45,7 @@ interface SyncQueueItemResponse {
   conflict: {
     code: string;
     message: string;
+    category: string;
   } | null;
 }
 
@@ -255,7 +256,8 @@ describe("CP7 offline local data and sync queue", () => {
 
     expect(replay.item.status).toBe("conflict");
     expect(replay.item.conflict).toMatchObject({
-      code: "stock_insufficient"
+      code: "stock_insufficient",
+      category: "product_quantity"
     });
     expect(store.snapshot().products.find((item) => item.id === product.id)?.quantity).toBe(1);
     expect(store.snapshot().invoices.find((invoice) => invoice.id === draft.id)?.status).toBe(
@@ -286,6 +288,158 @@ describe("CP7 offline local data and sync queue", () => {
       conflict: 1,
       synced: 0
     });
+
+    await app.close();
+  });
+
+  it("flags duplicate offline product, customer, and payment records instead of silently duplicating them", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const existingProduct = await postJson<ProductResponse>(
+      app,
+      `/businesses/${businessId}/products`,
+      { name: "Rice", quantity: 5 },
+      sessionCookie
+    );
+    const duplicateProductQueueItem = await postJson<SyncQueueItemResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue`,
+      {
+        idempotencyKey: "cp7-dup-product-1",
+        mutationType: "product.create",
+        payload: { name: "  RICE  ", quantity: 9 }
+      },
+      sessionCookie
+    );
+    const duplicateProductReplay = await postJson<SyncReplayItemResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue/${duplicateProductQueueItem.id}/replay`,
+      {},
+      sessionCookie
+    );
+
+    expect(duplicateProductReplay.item.status).toBe("conflict");
+    expect(duplicateProductReplay.item.conflict).toMatchObject({
+      code: "duplicate_product_detected",
+      category: "duplicate"
+    });
+    expect(
+      store
+        .snapshot()
+        .products.filter((product) => product.businessId === businessId && product.name === "Rice")
+    ).toHaveLength(1);
+
+    const existingCustomer = await postJson<{ id: string }>(
+      app,
+      `/businesses/${businessId}/customers`,
+      { name: "Amina Otieno", phone: "+254700000002" },
+      sessionCookie
+    );
+    const duplicateCustomerQueueItem = await postJson<SyncQueueItemResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue`,
+      {
+        idempotencyKey: "cp7-dup-customer-1",
+        mutationType: "customer.create",
+        payload: { name: "Amina Otieno", phone: "+254700000002" }
+      },
+      sessionCookie
+    );
+    const duplicateCustomerReplay = await postJson<SyncReplayItemResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue/${duplicateCustomerQueueItem.id}/replay`,
+      {},
+      sessionCookie
+    );
+
+    expect(duplicateCustomerReplay.item.status).toBe("conflict");
+    expect(duplicateCustomerReplay.item.conflict).toMatchObject({
+      code: "duplicate_customer_detected",
+      category: "duplicate"
+    });
+
+    const namesakeWithoutPhoneQueueItem = await postJson<SyncQueueItemResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue`,
+      {
+        idempotencyKey: "cp7-namesake-customer-1",
+        mutationType: "customer.create",
+        payload: { name: "Amina Otieno" }
+      },
+      sessionCookie
+    );
+    const namesakeReplay = await postJson<SyncReplayItemResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue/${namesakeWithoutPhoneQueueItem.id}/replay`,
+      {},
+      sessionCookie
+    );
+
+    expect(namesakeReplay.item.status).toBe("synced");
+    expect(
+      store
+        .snapshot()
+        .customers.filter(
+          (customer) => customer.businessId === businessId && customer.name === "Amina Otieno"
+        )
+    ).toHaveLength(2);
+
+    const invoiceProduct = await postJson<ProductResponse>(
+      app,
+      `/businesses/${businessId}/products`,
+      { name: "Cooking Oil", quantity: 10, sellingPrice: 100 },
+      sessionCookie
+    );
+    const draftInvoice = await postJson<InvoiceResponse>(
+      app,
+      `/businesses/${businessId}/invoices`,
+      { items: [{ productId: invoiceProduct.id, quantity: 10, unitPrice: 100 }] },
+      sessionCookie
+    );
+    const confirmedInvoice = await postJson<{ invoice: InvoiceResponse }>(
+      app,
+      `/businesses/${businessId}/invoices/${draftInvoice.id}/confirm`,
+      {},
+      sessionCookie
+    );
+    await postJson(
+      app,
+      `/businesses/${businessId}/payments`,
+      { invoiceId: confirmedInvoice.invoice.id, amount: 400, method: "cash" },
+      sessionCookie
+    );
+    const duplicatePaymentQueueItem = await postJson<SyncQueueItemResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue`,
+      {
+        idempotencyKey: "cp7-dup-payment-1",
+        mutationType: "payment.record",
+        payload: { invoiceId: confirmedInvoice.invoice.id, amount: 400, method: "cash" }
+      },
+      sessionCookie
+    );
+    const duplicatePaymentReplay = await postJson<SyncReplayItemResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue/${duplicatePaymentQueueItem.id}/replay`,
+      {},
+      sessionCookie
+    );
+
+    expect(duplicatePaymentReplay.item.status).toBe("conflict");
+    expect(duplicatePaymentReplay.item.conflict).toMatchObject({
+      code: "duplicate_payment_detected",
+      category: "duplicate"
+    });
+    expect(
+      store
+        .snapshot()
+        .payments.filter((payment) => payment.invoiceId === confirmedInvoice.invoice.id)
+    ).toHaveLength(1);
+
+    expect(existingProduct.id).not.toBe(invoiceProduct.id);
+    expect(existingCustomer.id).toBeTruthy();
 
     await app.close();
   });

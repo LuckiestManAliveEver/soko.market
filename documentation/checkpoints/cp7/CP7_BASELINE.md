@@ -97,7 +97,14 @@ CP7 is marked passed because:
 - [x] Tests cover CP5 product/inventory conflict behavior.
 - [x] Tests cover CP6 invoice confirmation conflict behavior.
 - [x] Existing CP1 through CP6 checks still pass.
-- [x] Checkpoint tag `checkpoint/cp7-offline-sync` is created.
+- [ ] Checkpoint tag `checkpoint/cp7-offline-sync` is created. **Not actually done** — see the
+      corrected Git Directory Note in `documentation/checkpoints/CHECKPOINT_LOG.md`.
+
+**Follow-up (added after the original pass above):** conflicts now carry an explicit `category`
+(`money` / `product_quantity` / `duplicate` / `generic`), and `product.create`, `customer.create`,
+and `payment.record` replays are checked against existing business records and blocked as a
+`duplicate` conflict rather than silently creating a second row. See the CP7 implementation note in
+`documentation/README.md` and `tests/cp7-offline-sync.test.ts`.
 
 ## Rollback Instructions
 
