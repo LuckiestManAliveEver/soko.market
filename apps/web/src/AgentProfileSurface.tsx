@@ -1,3 +1,4 @@
+import { OfflineRuntimeSettings } from "./OfflineRuntimeSettings";
 import { Suspense, useEffect, useState } from "react";
 
 import type {
@@ -355,6 +356,7 @@ export function AgentProfileSurface({
       </section>
 
       <section className="agent-settings-grid">
+        <OfflineRuntimeSettings accountId={accountId} businessId={business.id} />
         <SettingsGroup
           title="Business"
           description="Shops, storefront link, and runtime readiness"

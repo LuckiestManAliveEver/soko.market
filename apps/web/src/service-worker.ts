@@ -1,3 +1,4 @@
+import { isExplicitOfflineMode } from "./offline-runtime";
 export function registerAppServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
 
@@ -9,7 +10,7 @@ export function registerAppServiceWorker() {
   const controlledAtStartup = navigator.serviceWorker.controller !== null;
   let reloadingForUpdate = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (!controlledAtStartup || reloadingForUpdate) return;
+    if (!controlledAtStartup || reloadingForUpdate || isExplicitOfflineMode()) return;
     reloadingForUpdate = true;
     window.location.reload();
   });
@@ -19,7 +20,9 @@ export function registerAppServiceWorker() {
       scope: "/",
       updateViaCache: "none"
     })
-    .then((registration) => registration.update())
+    .then((registration) => {
+      if (!isExplicitOfflineMode()) return registration.update();
+    })
     .catch((error: unknown) => {
       console.error("Unable to register the Soko.market service worker.", error);
     });

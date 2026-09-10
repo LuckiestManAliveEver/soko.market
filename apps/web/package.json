@@ -20,7 +20,8 @@
     "@soko/ui": "workspace:*",
     "libphonenumber-js": "^1.13.9",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "@soko/offline-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.0.4",

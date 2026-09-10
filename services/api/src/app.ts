@@ -184,6 +184,8 @@ export function buildApi(options: BuildApiOptions = {}) {
       }
     } catch (error) {
       if (error instanceof PersistenceFlushDeadlineExceeded) {
+        // An offline ACK must prove durability before the device clears its pending mutation.
+        if (request.routeOptions.url === "/sync/push") throw error;
         // The write is still queued and will complete/retry in the background (see
         // Cp2Store.flush()) - holding this response open until then would leave the caller's
         // "Working..." state spinning for as long as the queue is backed up, with no bound. A

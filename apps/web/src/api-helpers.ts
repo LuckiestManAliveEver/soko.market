@@ -1,3 +1,4 @@
+import { isExplicitOfflineMode } from "./offline-runtime";
 import { apiFetch } from "./lib/api";
 import { getCachedJson, invalidateApiCacheForMutation } from "./api-request-cache";
 
@@ -43,6 +44,7 @@ export async function getJson<TResponse>(
   path: string,
   onBackgroundUpdate?: (value: TResponse) => void
 ): Promise<TResponse> {
+  if (isExplicitOfflineMode()) return apiFetch<TResponse>(path);
   return getCachedJson<TResponse>(
     path,
     onBackgroundUpdate === undefined ? {} : { onBackgroundUpdate }

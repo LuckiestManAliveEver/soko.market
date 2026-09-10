@@ -1,3 +1,17 @@
+import { OfflineJournal, type OfflineReceipt } from "./offline-runtime.js";
+import {
+  same,
+  resolveConflict,
+  type Operation as OfflineOperation,
+  type Ack as OfflineAck,
+  type BusinessChange as OfflineBusinessChange,
+  type Entity as OfflineEntity
+} from "@soko/offline-runtime";
+import {
+  parseProductBody as parseOfflineProduct,
+  parseStockAdjustmentBody as parseOfflineStock
+} from "./domains/sales/routes.js";
+import { parseContactRecordBody as parseOfflineCustomer } from "./route-helpers.js";
 import {
   createHash,
   createHmac,
@@ -636,6 +650,9 @@ export interface Cp2Snapshot extends ModelTemplatesSnapshot {
   runtimeTurns: RuntimeTurnSummary[];
   inventoryMovements: InventoryMovementSummary[];
   syncQueue: SyncQueueItem[];
+  offlineReceipts?: OfflineReceipt[];
+  offlineChanges?: OfflineBusinessChange[];
+  offlineMetadata?: Array<{ id: string; sequence: number }>;
   otpChallenges: OtpChallenge[];
   smsDeliveryAttempts?: SmsDeliveryAttemptRecord[];
   sessions: SessionRecord[];
@@ -1402,6 +1419,7 @@ export class Cp2Store {
   // (services/api/src/cp2/domains/notifications/store.ts) - accessed via its map getters
   // for the generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
   private readonly notificationsDomain: NotificationsDomain;
+  private readonly offlineJournal = new OfflineJournal();
   private readonly syncQueue = new Map<string, SyncQueueItem>();
   private readonly syncQueueIdByIdempotency = new Map<string, string>();
   // otpChallenges/smsDeliveryAttempts/otpRequestHistory now live inside `otpDomain`
@@ -5294,6 +5312,157 @@ export class Cp2Store {
     return this.compliance.updateLaunchIncidentStatus(...args);
   }
 
+  getOfflineRuntimeSnapshot(sessionId: string | null, businessId: string) {
+    const actor = this.requireAuthorizedSession(sessionId, businessId, "business:read");
+    const input = { sessionId, businessId };
+    // Keep this synchronous so the snapshot and its cursor describe the same store state.
+    const products = this.listProducts(input).map((entity) => ({ ...entity }));
+    const customers = this.listCustomers(input).map((entity) => ({ ...entity }));
+    const invoices = this.listInvoices(input).map((entity) => ({ ...entity }));
+    const orders = this.listPublicOrders(input).map((entity) => ({ ...entity }));
+    const fields = this.getProductFieldSchema(input);
+    return {
+      accountId: actor.account.id,
+      storeId: businessId,
+      cursor: this.offlineJournal.cursor,
+      collections: {
+        products,
+        customers,
+        invoices,
+        orders,
+        productFields: [{ ...fields, id: businessId }]
+      }
+    };
+  }
+
+  pullOfflineOperations(sessionId: string | null, businessId: string, since: string | null) {
+    const actor = this.requireAuthorizedSession(sessionId, businessId, "business:read");
+    this.requireAuthorizedSession(sessionId, businessId, "product:read");
+    this.requireAuthorizedSession(sessionId, businessId, "customer:read");
+    this.requireAuthorizedSession(sessionId, businessId, "invoice:read");
+    return {
+      accountId: actor.account.id,
+      storeId: businessId,
+      fromCursor: since,
+      ...this.offlineJournal.pull(businessId, since)
+    };
+  }
+
+  pushOfflineOperation(sessionId: string | null, operation: OfflineOperation): OfflineAck {
+    const businessId = operation.storeId;
+    const permission =
+      operation.opType === "customers.create"
+        ? "customer:write"
+        : operation.opType === "inventory.adjust"
+          ? "inventory:adjust"
+          : "product:write";
+    const actor = this.requireAuthorizedSession(sessionId, businessId, permission);
+    if (actor.account.id !== operation.accountId)
+      throw new Cp2Error(
+        403,
+        "offline_account_mismatch",
+        "This operation belongs to another account."
+      );
+    const input = { sessionId, businessId };
+    let current: OfflineEntity | null = null;
+    try {
+      return this.offlineJournal.replay(operation, () => {
+        let payload = operation.payload;
+        if (operation.opType === "catalogue.update" || operation.opType === "inventory.adjust") {
+          const product = this.listProducts(input).find(
+            (entity) => entity.id === operation.entityCloudId
+          );
+          current = product ? { ...product } : null;
+          if (!current || !operation.base)
+            throw new Cp2Error(
+              409,
+              "offline_entity_missing",
+              "The original product is unavailable; review this change."
+            );
+          if (!same(current, operation.base)) {
+            if (operation.opType === "inventory.adjust")
+              throw new Cp2Error(
+                409,
+                "offline_stock_conflict",
+                "Stock changed on another device. Review the new count before retrying."
+              );
+            const decision = resolveConflict({
+              policy: "merge",
+              base: operation.base,
+              local: { ...operation.base, ...payload },
+              server: current,
+              allowedFields: [
+                "name",
+                "sku",
+                "aliases",
+                "unit",
+                "quantity",
+                "buyingPrice",
+                "sellingPrice",
+                "fieldValues"
+              ]
+            });
+            if (!decision.resolved || !decision.entity)
+              throw new Cp2Error(
+                409,
+                "offline_product_conflict",
+                "Product fields changed on another device. Review both versions."
+              );
+            payload = decision.entity;
+          }
+        }
+        switch (operation.opType) {
+          case "catalogue.create":
+            return { ...this.createProduct({ ...input, product: parseOfflineProduct(payload) }) };
+          case "catalogue.update":
+            return {
+              ...this.updateProduct({
+                ...input,
+                productId: operation.entityCloudId!,
+                product: parseOfflineProduct(payload)
+              })
+            };
+          case "inventory.adjust":
+            return {
+              ...this.adjustProductStock({
+                ...input,
+                productId: operation.entityCloudId!,
+                adjustment: parseOfflineStock(payload)
+              }).product
+            };
+          case "customers.create":
+            return {
+              ...this.createCustomer({ ...input, customer: parseOfflineCustomer(payload) })
+            };
+          default:
+            throw new Cp2Error(
+              400,
+              "offline_operation_unsupported",
+              "Unsupported offline operation."
+            );
+        }
+      });
+    } catch (error) {
+      if (
+        !(error instanceof Cp2Error) ||
+        error.statusCode === 401 ||
+        error.statusCode === 403 ||
+        error.statusCode >= 500
+      )
+        throw error;
+      const ack: OfflineAck = {
+        id: operation.id,
+        localSeq: operation.localSeq,
+        status: error.statusCode === 409 ? "CONFLICT" : "REJECTED",
+        serverOpId: operation.id,
+        entity: current,
+        message: error.message
+      };
+      this.offlineJournal.recordFailure(operation, ack);
+      return ack;
+    }
+  }
+
   enqueueSyncMutation(input: {
     sessionId: string | null;
     businessId: string;
@@ -5885,6 +6054,9 @@ export class Cp2Store {
       runtimeTurns: [...this.agentRuntimeDomain.runtimeTurnsMap.values()],
       inventoryMovements: [...this.salesDomain.inventoryMovementsMap.values()],
       syncQueue: [...this.syncQueue.values()],
+      offlineReceipts: [...this.offlineJournal.receipts.values()],
+      offlineChanges: [...this.offlineJournal.changes.values()],
+      offlineMetadata: [{ id: "server-sequence", sequence: Number(this.offlineJournal.cursor) }],
       otpChallenges: [...this.otpDomain.otpChallengesMap.values()],
       smsDeliveryAttempts: [...this.otpDomain.smsDeliveryAttemptsMap.values()],
       sessions: [...this.sessions.values()],
@@ -5949,6 +6121,11 @@ export class Cp2Store {
     this.compliance.clear();
     this.documentImportDomain.clear();
     this.notificationsDomain.clear();
+    this.offlineJournal.restore(
+      snapshot.offlineReceipts,
+      snapshot.offlineChanges,
+      snapshot.offlineMetadata?.[0]?.sequence ?? 0
+    );
     this.syncQueue.clear();
     this.syncQueueIdByIdempotency.clear();
     this.otpDomain.clear();
@@ -9373,6 +9550,8 @@ export class Cp2Store {
       );
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.inventoryMovementsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.syncQueue, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.offlineJournal.receipts, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.offlineJournal.changes, scope);
       deletedRecordCount += deleteScopedMapRecords(this.otpDomain.otpChallengesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.otpDomain.smsDeliveryAttemptsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.sessions, scope);
@@ -9483,6 +9662,36 @@ export class Cp2Store {
 
   private appendBusinessEvent(event: BusinessEvent): void {
     this.auditEvents.push(event);
+    const collection =
+      event.aggregateType === "product"
+        ? "products"
+        : event.aggregateType === "customer"
+          ? "customers"
+          : event.aggregateType === "invoice"
+            ? "invoices"
+            : null;
+    if (collection !== null) {
+      const maps = {
+        products: this.salesDomain.productsMap,
+        customers: this.salesDomain.customersMap,
+        invoices: this.salesDomain.invoicesMap
+      };
+      const entity = maps[collection].get(event.aggregateId);
+      const original =
+        event.payload.product ??
+        event.payload.customer ??
+        event.payload.invoice ??
+        event.payload.movement;
+      const businessId =
+        entity?.businessId ?? (original as { businessId?: string } | undefined)?.businessId;
+      if (businessId)
+        this.offlineJournal.append(
+          businessId,
+          collection,
+          event.aggregateId,
+          entity ? { ...entity } : null
+        );
+    }
   }
 
   private recordAuditEvent(input: {
@@ -9493,6 +9702,21 @@ export class Cp2Store {
     occurredAt: string;
     payload: Record<string, unknown>;
   }): void {
+    if (input.type === "product.fields_updated") {
+      const fields = this.salesDomain.productFieldSchemasMap.get(input.aggregateId);
+      if (fields)
+        this.offlineJournal.append(fields.businessId, "productFields", fields.businessId, {
+          ...fields,
+          id: fields.businessId
+        });
+    }
+    if (input.type === "storefront.order_requested") {
+      const order = this.salesDomain.publicOrdersMap.get(input.aggregateId);
+      if (order) this.offlineJournal.append(order.businessId, "orders", order.id, { ...order });
+      const invoice = this.salesDomain.invoicesMap.get(String(input.payload.invoiceId));
+      if (invoice)
+        this.offlineJournal.append(invoice.businessId, "invoices", invoice.id, { ...invoice });
+    }
     this.auditEvents.push(
       createAuditEvent({
         id: randomUUID(),

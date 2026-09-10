@@ -1,3 +1,4 @@
+import { OfflineRuntimeNotice } from "./OfflineRuntimeNotice";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { Surface } from "@soko/ui";
@@ -1563,6 +1564,7 @@ export function OwnerApp() {
               </button>
             ) : null}
           </header>
+          {!isAuthScreen && <OfflineRuntimeNotice onReview={openAgentProfile} />}
 
           {!isAuthScreen ? (
             <nav className="shell-mode-bar" aria-label="Commerce mode and messages">

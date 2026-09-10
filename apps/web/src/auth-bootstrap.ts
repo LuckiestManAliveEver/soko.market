@@ -42,6 +42,8 @@ export function readCachedAuthSession(): CachedAuthSession | null {
 
 export function clearCachedAuthSession(): void {
   localStorage.removeItem(cachedSessionKey);
+  // Retain unsynced data under its account key; remove the active routing grant on sign-out.
+  localStorage.removeItem("soko.offline-runtime.active.v1");
 }
 
 export function bootstrapProgressMessage(

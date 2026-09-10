@@ -1,3 +1,4 @@
+import { registerOfflineRuntimeRoutes } from "./offline-runtime-routes.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { BusinessPermission } from "@soko/business-core";
 import type {
@@ -1838,6 +1839,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   registerSalesRoutes(app, store);
+  registerOfflineRuntimeRoutes(app, store);
 
   registerSuppliersRoutes(app, store, binaryUploadPipeline, receiptOCRProcessor);
 
