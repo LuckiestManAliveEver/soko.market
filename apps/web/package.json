@@ -21,10 +21,13 @@
     "libphonenumber-js": "^1.13.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "@soko/offline-runtime": "workspace:*"
+    "@soko/offline-runtime": "workspace:*",
+    "tesseract.js": "7.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.4",
-    "@types/react-dom": "^19.0.2"
+    "@types/react-dom": "^19.0.2",
+    "@tesseract.js-data/eng": "1.0.0",
+    "tesseract.js-core": "7.0.0"
   }
 }

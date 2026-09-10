@@ -1,7 +1,12 @@
 export type Entity = Record<string, unknown> & { id: string; businessId?: string };
-export type Collection = "products" | "customers" | "invoices" | "orders" | "productFields";
+export type Collection =
+  "products" | "customers" | "invoices" | "orders" | "productFields" | "receiptOcrJobs";
 export type Mutation =
-  "catalogue.create" | "catalogue.update" | "inventory.adjust" | "customers.create";
+  | "catalogue.create"
+  | "catalogue.update"
+  | "inventory.adjust"
+  | "customers.create"
+  | "receipts.ocr.create";
 export type SyncStatus = "PENDING" | "PUSHED" | "ACKED" | "REJECTED" | "CONFLICT";
 export interface Scope {
   accountId: string;
@@ -38,6 +43,18 @@ export interface Artifact {
   url: string;
   sha256: string;
   bytes: number;
+}
+/** What the on-device OCR engine produces for one captured receipt image. */
+export interface ReceiptOcrExtraction {
+  engine: ReceiptOCREngine;
+  engineVersion: string;
+  modelVersion: string;
+  profile: ReceiptOCRProfile;
+  fallbackUsed: boolean;
+  blocks: ReceiptOCRBlockSummary[];
+  fullText: string;
+  averageConfidence: number;
+  warnings: string[];
 }
 export interface RuntimeBinding {
   agentId: string;
@@ -127,4 +144,9 @@ export class OfflineError extends Error {
     this.name = "OfflineError";
   }
 }
-import type { ConversationMessageSummary } from "@soko/shared-types";
+import type {
+  ConversationMessageSummary,
+  ReceiptOCREngine,
+  ReceiptOCRProfile,
+  ReceiptOCRBlockSummary
+} from "@soko/shared-types";

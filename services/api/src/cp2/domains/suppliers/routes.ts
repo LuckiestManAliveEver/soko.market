@@ -463,7 +463,9 @@ function parsePhonebookLinkBody(body: PhonebookLinkBody | null | undefined) {
   };
 }
 
-function parseReceiptOCRBody(body: ReceiptOCRBody | null | undefined) {
+/** Exported - services/api/src/cp2/store.ts's offline-sync dispatcher reuses this to parse the
+ * same shape from a queued receipts.ocr.create operation instead of an HTTP request body. */
+export function parseReceiptOCRBody(body: ReceiptOCRBody | null | undefined) {
   const record = parseRequestBody(body);
 
   return {

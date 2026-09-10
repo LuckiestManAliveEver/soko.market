@@ -89,16 +89,25 @@ function parseOperation(raw: unknown): Operation {
       "Invalid operation sequence or timestamp."
     );
   if (
-    !["catalogue.create", "catalogue.update", "inventory.adjust", "customers.create"].includes(
-      String(record.opType)
-    )
+    ![
+      "catalogue.create",
+      "catalogue.update",
+      "inventory.adjust",
+      "customers.create",
+      "receipts.ocr.create"
+    ].includes(String(record.opType))
   )
     throw new Cp2Error(
       400,
       "offline_operation_unsupported",
       "This mutation is not supported offline."
     );
-  const expected = record.opType === "customers.create" ? "customers" : "products";
+  const expected =
+    record.opType === "customers.create"
+      ? "customers"
+      : record.opType === "receipts.ocr.create"
+        ? "receiptOcrJobs"
+        : "products";
   if (record.collection !== expected)
     throw new Cp2Error(
       400,

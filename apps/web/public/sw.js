@@ -94,6 +94,14 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  if (url.pathname.startsWith("/tesseract/")) {
+    // Cache-verified by apps/web/src/offline-ocr.ts (packages/offline-runtime's
+    // cacheArtifactsByUrl), keyed by this same request URL so a worker's own importScripts/fetch
+    // for the OCR engine resolves offline with no code here needing to know about that cache.
+    event.respondWith(ocrEngineResponse(request).then((cached) => cached || fetch(request)));
+    return;
+  }
+
   if (APP_SHELL.includes(url.pathname)) {
     event.respondWith(cacheFirst(request, CACHE_NAME));
     return;
@@ -108,6 +116,11 @@ async function offlineShellResponse(request) {
   const cache = await caches.open("soko-offline-shell-v1");
   if (!(await cache.match("/__soko_offline_active__"))) return undefined;
   return cache.match(request.mode === "navigate" ? "/" : request);
+}
+
+async function ocrEngineResponse(request) {
+  const cache = await caches.open("soko-ocr-engine-v1");
+  return cache.match(request);
 }
 
 async function navigationResponse(event) {

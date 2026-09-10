@@ -15,8 +15,10 @@ import {
   type Scope,
   type Collection,
   type Entity,
-  type RuntimePin
+  type RuntimePin,
+  type ReceiptOcrExtraction
 } from "../types.js";
+import { receiptOcrJobEntity } from "./receipt-ocr-entity.js";
 import type { SokoProvider } from "./types.js";
 
 export const localReads: Record<string, Collection> = {
@@ -24,19 +26,29 @@ export const localReads: Record<string, Collection> = {
   "customers.list": "customers",
   "invoices.list": "invoices",
   "orders.list": "orders",
-  "catalogue.fields": "productFields"
+  "catalogue.fields": "productFields",
+  "receipts.ocr.list": "receiptOcrJobs"
 };
 const writes = ["catalogue.create", "catalogue.update", "inventory.adjust", "customers.create"];
+export type ReceiptOcrEngine = (input: {
+  fileName: string;
+  contentType: string;
+  contentBase64: string;
+}) => Promise<ReceiptOcrExtraction>;
 export class LocalProvider implements SokoProvider {
   readonly name = "local";
   constructor(
     private db: LocalDatabase,
     private scope: Scope,
-    private infer?: (pin: RuntimePin, args: unknown) => Promise<unknown>
+    private infer?: (pin: RuntimePin, args: unknown) => Promise<unknown>,
+    private ocr?: ReceiptOcrEngine
   ) {}
   supports(op: string): boolean {
     return (
-      Object.hasOwn(localReads, op) || writes.includes(op) || (op === "agent.infer" && !!this.infer)
+      Object.hasOwn(localReads, op) ||
+      writes.includes(op) ||
+      (op === "agent.infer" && !!this.infer) ||
+      (op === "receipts.ocr.create" && !!this.ocr)
     );
   }
   async isAvailable(): Promise<boolean> {
@@ -107,6 +119,59 @@ export class LocalProvider implements SokoProvider {
           createdAt: operation.createdAtLocal,
           updatedAt: operation.createdAtLocal
         })
+      )) as T;
+    }
+    if (op === "receipts.ocr.create") {
+      if (!this.ocr)
+        throw new OfflineError(
+          "OCR_NOT_INSTALLED",
+          "The on-device receipt scanner is not installed on this device."
+        );
+      const capture = body as unknown as {
+        fileName?: string;
+        contentType?: string;
+        contentBase64?: string;
+      };
+      if (
+        typeof capture.fileName !== "string" ||
+        !capture.fileName.trim() ||
+        typeof capture.contentType !== "string" ||
+        !capture.contentType.trim() ||
+        typeof capture.contentBase64 !== "string" ||
+        !capture.contentBase64.trim()
+      )
+        throw new OfflineError("VALIDATION_FAILED", "A receipt photo is required.");
+      if (capture.contentType === "application/pdf")
+        throw new OfflineError(
+          "OPERATION_UNAVAILABLE",
+          "PDF receipts need an online connection. Photograph the receipt instead, or reconnect."
+        );
+      const fileName = capture.fileName;
+      const contentType = capture.contentType;
+      const extraction = await this.ocr({
+        fileName,
+        contentType,
+        contentBase64: capture.contentBase64
+      });
+      return (await recordOperation(
+        this.db,
+        this.scope,
+        {
+          opType: op,
+          collection: "receiptOcrJobs",
+          entityLocalId: id,
+          payload: { fileName, contentType, extractedText: extraction.fullText, extraction }
+        },
+        (_current, operation) =>
+          receiptOcrJobEntity(
+            id,
+            this.scope.storeId,
+            this.scope.accountId,
+            fileName,
+            contentType,
+            extraction,
+            operation.createdAtLocal
+          )
       )) as T;
     }
     if (op === "inventory.adjust") {

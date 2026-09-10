@@ -50,11 +50,20 @@ CREATE TABLE IF NOT EXISTS productFields (
   PRIMARY KEY(scope_key, local_id), UNIQUE(scope_key, cloud_id),
   FOREIGN KEY(scope_key, store_id) REFERENCES runtime_scopes(scope_key, store_id)
 );
+CREATE TABLE IF NOT EXISTS receiptOcrJobs (
+  local_id TEXT NOT NULL, cloud_id TEXT, store_id TEXT NOT NULL,
+  scope_key TEXT NOT NULL REFERENCES runtime_scopes(scope_key) ON DELETE CASCADE,
+  updated_at_local TEXT NOT NULL, synced_at TEXT,
+  dirty INTEGER NOT NULL DEFAULT 0 CHECK(dirty IN (0,1)),
+  payload TEXT NOT NULL CHECK(json_valid(payload)),
+  PRIMARY KEY(scope_key, local_id), UNIQUE(scope_key, cloud_id),
+  FOREIGN KEY(scope_key, store_id) REFERENCES runtime_scopes(scope_key, store_id)
+);
 CREATE TABLE IF NOT EXISTS sync_operations (
   local_id TEXT NOT NULL, scope_key TEXT NOT NULL REFERENCES runtime_scopes(scope_key) ON DELETE CASCADE,
   cloud_id TEXT, store_id TEXT NOT NULL, device_id TEXT NOT NULL,
   local_seq INTEGER NOT NULL CHECK(local_seq > 0), op_type TEXT NOT NULL,
-  entity_table TEXT NOT NULL CHECK(entity_table IN ('products','customers')),
+  entity_table TEXT NOT NULL CHECK(entity_table IN ('products','customers','receiptOcrJobs')),
   entity_local_id TEXT NOT NULL, entity_cloud_id TEXT, payload TEXT NOT NULL CHECK(json_valid(payload)),
   updated_at_local TEXT NOT NULL, synced_at TEXT,
   dirty INTEGER NOT NULL DEFAULT 1 CHECK(dirty IN (0,1)),
