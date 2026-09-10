@@ -140,9 +140,57 @@ export function OfflineRuntimeSettings({
   }
   return (
     <SettingsGroup
-      title="Offline runtime"
-      description="Download your business and control when changes sync"
+      title="Go Offline"
+      description="Install business data, receipt scanning and an on-device assistant so you can keep working without a connection"
     >
+      <section aria-labelledby="go-offline-requirements-title">
+        <h4 id="go-offline-requirements-title">What you need to go fully offline</h4>
+        <p>
+          Everything below installs inside this browser - no separate app, OS package or admin
+          rights needed.
+        </p>
+        <ul>
+          <li>
+            <strong>Business data</strong> (always available): any device. Downloads a snapshot of
+            your products, customers, invoices and orders - at least 16 MiB, plus 256 MiB or 20% of
+            your browser's storage quota reserved as headroom.
+          </li>
+          <li>
+            <strong>Offline receipt scanning</strong> (optional): any modern browser. One-time ~14
+            MB download (tesseract.js, runs entirely on-device).
+          </li>
+          <li>
+            <strong>On-device AI assistant</strong> (optional): needs a WebGPU-capable browser and
+            device (recent Chrome or Edge on desktop or Android; not available on unsupported
+            browsers, including older Safari) and about 1 GB of free device storage/memory for the
+            pinned model. Unsupported devices automatically fall back to business data only.
+          </li>
+        </ul>
+      </section>
+      <section aria-labelledby="go-offline-disclaimers-title">
+        <h4 id="go-offline-disclaimers-title">What still needs a connection</h4>
+        <ul>
+          <li>Checkout, payment settlement and account or authentication changes.</li>
+          <li>
+            Confirming a scanned receipt into a supplier and purchase record - text extraction
+            itself runs offline, but confirming needs your live contact directory.
+          </li>
+          <li>
+            Invoice and order confirmation, and anything else that changes stock through them.
+          </li>
+          <li>
+            Nearby device-to-device messaging - a research prototype, not available in this PWA.
+          </li>
+          <li>
+            The on-device assistant answers only from what you type - it has no catalogue, order,
+            customer or account data, and is told to say so rather than guess.
+          </li>
+          <li>
+            Whatever business snapshot and AI runtime you install are pinned at that moment and
+            won't silently change until you explicitly sync, reinstall or swap them.
+          </li>
+        </ul>
+      </section>
       <p>
         {modeActive ? "Offline mode is active." : "Online mode."} {pending} change
         {pending === 1 ? "" : "s"} waiting to sync.
@@ -385,7 +433,6 @@ export function OfflineRuntimeSettings({
           </button>
         </section>
       ))}
-      <p>Nearby messaging is an experimental native transport and is unavailable in this PWA.</p>
       {message && <p role="status">{message}</p>}
     </SettingsGroup>
   );
