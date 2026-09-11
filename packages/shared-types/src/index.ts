@@ -3045,11 +3045,26 @@ export type SyncMutationPayload =
   | SyncLogisticsCreatePayload
   | SyncLogisticsStatusPayload;
 
+/**
+ * Which field/record class a blocked sync conflict touches. "money" and
+ * "product_quantity" cover the two conflict-prone value types the current
+ * invoice/payment model actually has (payment amounts against balance, and
+ * stock on hand). There is no "tax" or "discount" category: tax is a single
+ * server-validated rate with no client-trusted value to conflict over, and
+ * invoices have no discount field at all — adding either would be a new
+ * product feature, not a sync-conflict fix. "duplicate" covers offline
+ * records that look like the same real-world event recorded twice under
+ * different idempotency keys (e.g. two devices queuing the same product or
+ * payment while disconnected).
+ */
+export type SyncConflictCategory = "money" | "product_quantity" | "duplicate" | "generic";
+
 export interface SyncConflict {
   code: string;
   message: string;
   statusCode: number;
   retryable: boolean;
+  category: SyncConflictCategory;
 }
 
 export interface SyncQueueItem {

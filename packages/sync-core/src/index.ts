@@ -4,6 +4,7 @@ import type {
   LocalSyncSnapshot,
   SyncChange,
   SyncConflict,
+  SyncConflictCategory,
   SyncMutationPayload,
   SyncMutationType,
   SyncPullPage,
@@ -11,6 +12,21 @@ import type {
   SyncQueueStatus,
   SyncQueueSummary
 } from "@soko/shared-types";
+
+/**
+ * Known business-error codes mapped to the conflict category they represent.
+ * Any code not listed here (including transport/infra failures) falls back
+ * to "generic" — still non-retryable and still blocked from auto-resolution,
+ * just without a more specific field/record classification.
+ */
+const conflictCategoryByCode: Record<string, SyncConflictCategory> = {
+  stock_insufficient: "product_quantity",
+  payment_exceeds_balance: "money",
+  invoice_not_confirmed: "money",
+  duplicate_product_detected: "duplicate",
+  duplicate_customer_detected: "duplicate",
+  duplicate_payment_detected: "duplicate"
+};
 
 export const syncQueueStatuses: SyncQueueStatus[] = [
   "pending",
@@ -176,7 +192,8 @@ export function classifySyncConflict(input: Omit<ReplayFailureInput, "now">): Sy
     code: input.code,
     message: input.message,
     statusCode: input.statusCode,
-    retryable
+    retryable,
+    category: conflictCategoryByCode[input.code] ?? "generic"
   };
 }
 
