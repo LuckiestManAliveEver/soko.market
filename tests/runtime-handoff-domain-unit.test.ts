@@ -84,7 +84,12 @@ interface Harness {
   domain: RuntimeHandoffDomain;
   conversations: Map<string, ConversationSummary>;
   native: NativeRuntimeBindingStore;
-  auditEvents: Array<{ type: string; aggregateId: string; actorId: string; payload: Record<string, unknown> }>;
+  auditEvents: Array<{
+    type: string;
+    aggregateId: string;
+    actorId: string;
+    payload: Record<string, unknown>;
+  }>;
   sessionIdFor(accountId: string): string;
 }
 
@@ -149,7 +154,10 @@ function buildHarness(depsOverrides: Partial<RuntimeHandoffDomainDeps> = {}): Ha
 
 /** Materializes an available primary model (+ host + installation) on the global default binding,
  *  and creates+registers one conversation pointed at it, ready for immediate use. */
-function seedConversation(harness: Harness, modelId: string): { conversationId: string; accountId: string } {
+function seedConversation(
+  harness: Harness,
+  modelId: string
+): { conversationId: string; accountId: string } {
   const accountId = `acct-${modelId}`;
   const now = new Date().toISOString();
   harness.native.activateGlobalDefaultModel({
@@ -175,9 +183,9 @@ describe("RuntimeHandoffDomain", () => {
     expect(resolved.taskHead.nextCheckpointVersion).toBe(2);
     expect(resolved.isRuntimeStale).toBe(false);
     expect(resolved.runtimeInstance).toBeNull();
-    expect(harness.auditEvents.some((event) => event.type === "runtime_handoff.legacy_bootstrapped")).toBe(
-      true
-    );
+    expect(
+      harness.auditEvents.some((event) => event.type === "runtime_handoff.legacy_bootstrapped")
+    ).toBe(true);
   });
 
   it("rejects resolving a task that belongs to another account", () => {
@@ -436,7 +444,11 @@ describe("RuntimeHandoffDomain", () => {
       setConversationRuntimeBinding: (conversationId, runtimeBindingId, now) => {
         const conversation = conversations.get(conversationId);
         if (conversation === undefined) return;
-        conversations.set(conversationId, { ...conversation, runtimeBindingId, updatedAt: now.toISOString() });
+        conversations.set(conversationId, {
+          ...conversation,
+          runtimeBindingId,
+          updatedAt: now.toISOString()
+        });
       },
       recordAuditEvent: (input) =>
         auditEvents.push({
@@ -577,9 +589,9 @@ describe("RuntimeHandoffDomain", () => {
     });
 
     expect(second.handoff.id).toBe(first.handoff.id);
-    expect(harness.domain.resolveHandoff(sessionId, conversationId).taskHead.nextCheckpointVersion).toBe(
-      before.taskHead.nextCheckpointVersion + 1
-    );
+    expect(
+      harness.domain.resolveHandoff(sessionId, conversationId).taskHead.nextCheckpointVersion
+    ).toBe(before.taskHead.nextCheckpointVersion + 1);
   });
 
   it("does not create duplicate promoted checkpoints for a repeated checkpoint request with the same idempotency key", () => {
@@ -605,9 +617,9 @@ describe("RuntimeHandoffDomain", () => {
     });
 
     expect(second.handoff.id).toBe(first.handoff.id);
-    expect(harness.domain.resolveHandoff(sessionId, conversationId).taskHead.nextCheckpointVersion).toBe(
-      before.taskHead.nextCheckpointVersion + 1
-    );
+    expect(
+      harness.domain.resolveHandoff(sessionId, conversationId).taskHead.nextCheckpointVersion
+    ).toBe(before.taskHead.nextCheckpointVersion + 1);
   });
 
   it("gives concurrent conflicting swaps against the same expected head exactly one winner and one 409 (no lost update)", () => {
@@ -641,12 +653,15 @@ describe("RuntimeHandoffDomain", () => {
 
     const attempt = (targetId: string) => {
       try {
-        return { ok: true as const, result: harness.domain.performSwap(sessionId, {
-          taskId: conversationId,
-          dimension: "agent",
-          targetId,
-          expectedHandoffId: before.activeHandoff.id
-        }) };
+        return {
+          ok: true as const,
+          result: harness.domain.performSwap(sessionId, {
+            taskId: conversationId,
+            dimension: "agent",
+            targetId,
+            expectedHandoffId: before.activeHandoff.id
+          })
+        };
       } catch (error) {
         return { ok: false as const, error };
       }
@@ -665,8 +680,11 @@ describe("RuntimeHandoffDomain", () => {
     expect((losers[0] as { ok: false; error: unknown }).error).toBeInstanceOf(Cp2Error);
     expect(((losers[0] as { ok: false; error: unknown }).error as Cp2Error).statusCode).toBe(409);
 
-    const finalVersions = [...harness.domain.resolveHandoff(sessionId, conversationId).taskHead ?
-      [harness.domain.resolveHandoff(sessionId, conversationId).taskHead.activeHandoffId] : []];
+    const finalVersions = [
+      ...(harness.domain.resolveHandoff(sessionId, conversationId).taskHead
+        ? [harness.domain.resolveHandoff(sessionId, conversationId).taskHead.activeHandoffId]
+        : [])
+    ];
     expect(finalVersions).toHaveLength(1);
   });
 
@@ -781,9 +799,9 @@ describe("RuntimeHandoffDomain offline sync and merge", () => {
     });
 
     expect(result.taskHead.activeHandoffId).toBe("offline-b-c1");
-    expect(
-      harness.domain.resolveHandoff(sessionId, conversationId).taskHead.activeHandoffId
-    ).toBe("offline-b-c1");
+    expect(harness.domain.resolveHandoff(sessionId, conversationId).taskHead.activeHandoffId).toBe(
+      "offline-b-c1"
+    );
   });
 
   it("rejects a batch submitted out of causal order", () => {
@@ -915,9 +933,9 @@ describe("RuntimeHandoffDomain offline sync and merge", () => {
     expect(merge.handoff.mergedFromHandoffIds).toEqual(["offline-f-b"]);
     expect(merge.handoff.currentState).toBe("merged branch A and B");
     expect(merge.taskHead.activeHandoffId).toBe(merge.handoff.id);
-    expect(
-      harness.domain.resolveHandoff(sessionId, conversationId).taskHead.activeHandoffId
-    ).toBe(merge.handoff.id);
+    expect(harness.domain.resolveHandoff(sessionId, conversationId).taskHead.activeHandoffId).toBe(
+      merge.handoff.id
+    );
   });
 
   it("rejects a merge with fewer than two branches, an unknown branch id, or a stale expectedHandoffId", () => {

@@ -110,7 +110,11 @@ export interface RuntimeHandoffDomainDeps {
    *  globalDefaultRuntimeBindingId), used only as the legacy-bootstrap fallback when a
    *  conversation predates the native runtime graph and has no explicit runtimeBindingId yet. */
   defaultRuntimeBindingId: string;
-  setConversationRuntimeBinding: (conversationId: string, runtimeBindingId: string, now: Date) => void;
+  setConversationRuntimeBinding: (
+    conversationId: string,
+    runtimeBindingId: string,
+    now: Date
+  ) => void;
   recordAuditEvent: (input: {
     type: string;
     aggregateType: string;
@@ -175,7 +179,11 @@ export class RuntimeHandoffDomain {
     const { conversation } = this.requireConversation(sessionId, taskId, now);
     const handoff = this.handoffs.get(handoffId);
     if (handoff === undefined || handoff.taskId !== conversation.id) {
-      throw new Cp2Error(404, "RUNTIME_HANDOFF_NOT_FOUND", "Checkpoint was not found for this task.");
+      throw new Cp2Error(
+        404,
+        "RUNTIME_HANDOFF_NOT_FOUND",
+        "Checkpoint was not found for this task."
+      );
     }
     return handoff;
   }
@@ -316,7 +324,14 @@ export class RuntimeHandoffDomain {
       let runtimeInstance: RuntimeTaskInstance;
       try {
         this.deps.nativeRuntimeBindings.resolveBindingForConversation(binding.id, conversation.id);
-        runtimeInstance = this.setTaskInstanceHandoff(input.taskId, handoff.id, "READY", candidate, now, null);
+        runtimeInstance = this.setTaskInstanceHandoff(
+          input.taskId,
+          handoff.id,
+          "READY",
+          candidate,
+          now,
+          null
+        );
       } catch (error) {
         activationFailed = true;
         activationError = error instanceof Cp2Error ? error.message : "Runtime activation failed.";
@@ -413,7 +428,10 @@ export class RuntimeHandoffDomain {
       aggregateId: input.taskId,
       actorId,
       occurredAt: now.toISOString(),
-      payload: { handoffId: resolved.activeHandoff.id, nextAction: resolved.activeHandoff.nextAction }
+      payload: {
+        handoffId: resolved.activeHandoff.id,
+        nextAction: resolved.activeHandoff.nextAction
+      }
     });
     return {
       taskHead: resolved.taskHead,
@@ -451,7 +469,9 @@ export class RuntimeHandoffDomain {
       }
       const syncedHandoffs: RuntimeHandoff[] = [];
       for (const offline of input.checkpoints) {
-        syncedHandoffs.push(this.syncOneOfflineCheckpoint(input.taskId, resolved.conversationId, offline, now));
+        syncedHandoffs.push(
+          this.syncOneOfflineCheckpoint(input.taskId, resolved.conversationId, offline, now)
+        );
       }
       let taskHead = this.taskHeads.get(input.taskId) as RuntimeTaskHead;
       if (input.promote === true && syncedHandoffs.length > 0) {
@@ -763,7 +783,13 @@ export class RuntimeHandoffDomain {
     });
     // Advance the head's version counter without moving activeHandoffId - a sync's optional
     // promotion happens exactly once, after the whole batch lands (syncOfflineCheckpoints).
-    this.moveTaskHead(taskId, version, existingHead, (existingHead as RuntimeTaskHead).activeHandoffId, now);
+    this.moveTaskHead(
+      taskId,
+      version,
+      existingHead,
+      (existingHead as RuntimeTaskHead).activeHandoffId,
+      now
+    );
     return handoff;
   }
 
@@ -926,8 +952,16 @@ export class RuntimeHandoffDomain {
       now: input.now
     });
     const promoteHead = input.promote || existingHead === undefined;
-    const activeHandoffId = promoteHead ? handoff.id : (existingHead as RuntimeTaskHead).activeHandoffId;
-    const taskHead = this.moveTaskHead(input.taskId, version, existingHead, activeHandoffId, input.now);
+    const activeHandoffId = promoteHead
+      ? handoff.id
+      : (existingHead as RuntimeTaskHead).activeHandoffId;
+    const taskHead = this.moveTaskHead(
+      input.taskId,
+      version,
+      existingHead,
+      activeHandoffId,
+      input.now
+    );
     return { handoff, taskHead };
   }
 

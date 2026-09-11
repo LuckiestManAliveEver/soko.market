@@ -42,7 +42,8 @@ export interface RuntimeRejectedPath {
   reason: string;
 }
 
-export type RuntimeContextReferenceKind = "recall" | "message" | "document" | "artifact" | "external";
+export type RuntimeContextReferenceKind =
+  "recall" | "message" | "document" | "artifact" | "external";
 
 /** A pointer into durable state (recall, a conversation message, a stored document, ...) - never
  *  the content itself. Keeping this a reference, not a copy, is what keeps `recall` (long-term
@@ -135,12 +136,7 @@ export interface RuntimeTaskHead {
 /** Runtime health is independent of task state (section 12) - a valid task head can coexist with
  *  a FAILED runtime instance. */
 export type RuntimeTaskInstanceStatus =
-  | "STARTING"
-  | "READY"
-  | "RUNNING"
-  | "DEGRADED"
-  | "FAILED"
-  | "STOPPED";
+  "STARTING" | "READY" | "RUNNING" | "DEGRADED" | "FAILED" | "STOPPED";
 
 /** The checkpoint this task's current executor *believes* it is running, plus its lifecycle
  *  status. Comparing `activeHandoffId` here against `RuntimeTaskHead.activeHandoffId` for the

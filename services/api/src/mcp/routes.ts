@@ -362,7 +362,10 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
             : { currentState: stringValue(args.currentState, "currentState") }),
           ...(args.nextAction === undefined
             ? {}
-            : { nextAction: args.nextAction === null ? null : stringValue(args.nextAction, "nextAction") }),
+            : {
+                nextAction:
+                  args.nextAction === null ? null : stringValue(args.nextAction, "nextAction")
+              }),
           ...(args.promote === undefined ? {} : { promote: args.promote === true }),
           ...(args.expectedHandoffId === undefined
             ? {}
@@ -401,7 +404,10 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
             : { currentState: stringValue(args.currentState, "currentState") }),
           ...(args.nextAction === undefined
             ? {}
-            : { nextAction: args.nextAction === null ? null : stringValue(args.nextAction, "nextAction") })
+            : {
+                nextAction:
+                  args.nextAction === null ? null : stringValue(args.nextAction, "nextAction")
+              })
         }
       });
     } else if (

@@ -20,7 +20,8 @@ describe("Runtime Handoff Protocol REST surface", () => {
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId, executionTarget }) => {
         if (modelId === primaryModelId && executionTarget === "backend") return adapter;
-        if (modelId === replacementModelId && executionTarget === "backend") return replacementAdapter;
+        if (modelId === replacementModelId && executionTarget === "backend")
+          return replacementAdapter;
         return undefined;
       }
     });
@@ -197,7 +198,11 @@ describe("Runtime Handoff Protocol REST surface", () => {
       payload: JSON.stringify({ kind: "personal", activeShopId: owner.businessId })
     });
     const taskId = created.json<{ conversation: { id: string } }>().conversation.id;
-    await app.inject({ method: "GET", url: `/v1/runtime/${taskId}`, headers: { cookie: owner.cookie } });
+    await app.inject({
+      method: "GET",
+      url: `/v1/runtime/${taskId}`,
+      headers: { cookie: owner.cookie }
+    });
 
     const headers = { ...jsonHeaders(owner.cookie), "idempotency-key": "retry-checkpoint-1" };
     const first = await app.inject({
@@ -225,9 +230,10 @@ describe("Runtime Handoff Protocol REST surface", () => {
     });
     // Exactly one unpromoted checkpoint was recorded - retry must not have produced a second one,
     // which would show up as the head's nextCheckpointVersion advancing twice.
-    expect(resolved.json<{ taskHead: { nextCheckpointVersion: number } }>().taskHead.nextCheckpointVersion).toBe(
-      3
-    );
+    expect(
+      resolved.json<{ taskHead: { nextCheckpointVersion: number } }>().taskHead
+        .nextCheckpointVersion
+    ).toBe(3);
 
     await app.close();
   });
@@ -270,7 +276,8 @@ describe("Runtime Handoff Protocol REST surface", () => {
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId, executionTarget }) => {
         if (modelId === primaryModelId && executionTarget === "backend") return adapter;
-        if (modelId === replacementModelId && executionTarget === "backend") return replacementAdapter;
+        if (modelId === replacementModelId && executionTarget === "backend")
+          return replacementAdapter;
         return undefined;
       }
     });
@@ -335,7 +342,8 @@ describe("Runtime Handoff Protocol REST surface", () => {
       headers: { cookie: owner.cookie }
     });
     expect(
-      restConfirm.json<{ activeHandoff: { runtime: { modelId: string } } }>().activeHandoff.runtime.modelId
+      restConfirm.json<{ activeHandoff: { runtime: { modelId: string } } }>().activeHandoff.runtime
+        .modelId
     ).toBe(replacementModelId);
 
     await app.close();
@@ -365,7 +373,10 @@ describe("Runtime Handoff Protocol REST surface", () => {
       headers: { cookie: owner.cookie }
     });
     const bootstrap = resolved.json<{
-      activeHandoff: { id: string; runtime: { agentId: string; modelId: string; executionHostId: string } };
+      activeHandoff: {
+        id: string;
+        runtime: { agentId: string; modelId: string; executionHostId: string };
+      };
     }>();
     const runtime = bootstrap.activeHandoff.runtime;
 
@@ -374,8 +385,18 @@ describe("Runtime Handoff Protocol REST surface", () => {
     // retries the *same* local record, not a freshly re-timestamped one.
     const checkpointsPayload = {
       checkpoints: [
-        offlineCheckpoint("branch-a", bootstrap.activeHandoff.id, runtime, "Branch A: tried supplier 1"),
-        offlineCheckpoint("branch-b", bootstrap.activeHandoff.id, runtime, "Branch B: tried supplier 2")
+        offlineCheckpoint(
+          "branch-a",
+          bootstrap.activeHandoff.id,
+          runtime,
+          "Branch A: tried supplier 1"
+        ),
+        offlineCheckpoint(
+          "branch-b",
+          bootstrap.activeHandoff.id,
+          runtime,
+          "Branch B: tried supplier 2"
+        )
       ]
     };
     const sync = await app.inject({
@@ -404,7 +425,9 @@ describe("Runtime Handoff Protocol REST surface", () => {
     });
     expect(retried.statusCode).toBe(200);
     expect(
-      retried.json<{ syncedHandoffs: { id: string }[] }>().syncedHandoffs.map((handoff) => handoff.id)
+      retried
+        .json<{ syncedHandoffs: { id: string }[] }>()
+        .syncedHandoffs.map((handoff) => handoff.id)
     ).toEqual(["branch-a", "branch-b"]);
 
     const merge = await app.inject({
@@ -419,7 +442,12 @@ describe("Runtime Handoff Protocol REST surface", () => {
     });
     expect(merge.statusCode).toBe(200);
     const mergeBody = merge.json<{
-      handoff: { id: string; parentHandoffId: string; mergedFromHandoffIds: string[]; currentState: string };
+      handoff: {
+        id: string;
+        parentHandoffId: string;
+        mergedFromHandoffIds: string[];
+        currentState: string;
+      };
       taskHead: { activeHandoffId: string };
     }>();
     expect(mergeBody.handoff.parentHandoffId).toBe("branch-a");

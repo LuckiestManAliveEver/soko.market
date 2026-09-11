@@ -1041,7 +1041,14 @@ export class NativeRuntimeBindingStore {
       updatedBy: input.updatedBy
     };
     this.bindings.set(binding.id, binding);
-    const role = roleRecord(binding.id, input.modelId, "primary", 0, input.executionHostId, timestamp);
+    const role = roleRecord(
+      binding.id,
+      input.modelId,
+      "primary",
+      0,
+      input.executionHostId,
+      timestamp
+    );
     const existingRole = this.bindingModels.get(role.id);
     this.bindingModels.set(role.id, { ...role, createdAt: existingRole?.createdAt ?? timestamp });
     return binding;

@@ -1,7 +1,7 @@
 # Runtime Handoff Protocol
 
 Soko's native runtime graph (`063_native_runtime_bindings.sql` onward, see
-[native-runtime-bindings.md](./native-runtime-bindings.md)) resolves *which* agent, model, and
+[native-runtime-bindings.md](./native-runtime-bindings.md)) resolves _which_ agent, model, and
 execution host a conversation uses. Until this protocol, it had no way to represent a task's
 in-flight execution state independently of that binding, so swapping the agent, model, or host had
 no portable checkpoint for the new runtime to resume from.
@@ -66,7 +66,7 @@ flowchart TD
 - **A handoff represents task state** - goal, current state, completed/pending actions,
   decisions, rejected paths, test results, and the `next_action` a resumed runtime should take.
 - **A binding represents the selected executor configuration** - which agent, model, and host a
-  conversation currently uses to run its *next* turn.
+  conversation currently uses to run its _next_ turn.
 - **A runtime instance represents the process currently believed to be executing** that
   configuration, and its own health, independent of whether the checkpoint/binding are valid.
 
@@ -149,7 +149,7 @@ the reference `/runtime/...`).
    [Migration and legacy tasks](#migration-and-legacy-tasks)).
 2. Resolve the current task head.
 3. Merge the caller's provided fields over the previous handoff's fields (anything omitted is
-   carried forward unchanged - a checkpoint is a snapshot of *current* state, not a diff).
+   carried forward unchanged - a checkpoint is a snapshot of _current_ state, not a diff).
 4. Insert a new immutable `RuntimeHandoff` with `parentHandoffId` set to the current head.
 5. Allocate the next `checkpointVersion` atomically (see [Concurrency model](#concurrency-model)).
 6. Optionally move the task head, only when the caller passed `promote: true` **and** a matching
@@ -232,7 +232,7 @@ is exactly one compatibility system in this codebase, not two.
 
 `cp2_native_runtime_bindings` rows are shared/reusable - one binding can be referenced by many
 conversations (the global default binding, or a business-wide binding chosen via "Use with
-agent"). Mutating a shared binding in place to perform a swap would silently change *every*
+agent"). Mutating a shared binding in place to perform a swap would silently change _every_
 conversation that references it, which invariant 1.3/section 9 forbid.
 
 `NativeRuntimeBindingStore.materializeConversationBinding` therefore treats bindings as
@@ -287,7 +287,7 @@ I doing."
 
 Existing conversations have no handoff. The first time `resolveHandoff` (called by every other
 operation) is invoked for such a task, `RuntimeHandoffDomain.bootstrapLegacyHandoff` derives an
-initial handoff from the conversation's *current* runtime binding (resolved via
+initial handoff from the conversation's _current_ runtime binding (resolved via
 `NativeRuntimeBindingStore.resolveBindingForConversation`, falling back to the provider-neutral
 global default binding when the conversation has no explicit one), inserts it as checkpoint version
 1, and creates the task head pointing at it. No destructive migration of historical conversations
@@ -314,7 +314,7 @@ runtime instance still believes it is running `H40` - `isRuntimeStale` is `true`
 - **Conversation** - human + agent messages (`cp2_conversation_messages`). Never embedded in a
   handoff.
 - **Recall** - durable learned/user/business knowledge. Out of scope for this protocol; a handoff
-  may *reference* it via `relevantContext` (kind `"recall"`, carrying a `refId`), never duplicate
+  may _reference_ it via `relevantContext` (kind `"recall"`, carrying a `refId`), never duplicate
   it.
 - **Runtime handoff** - in-flight task execution state, exactly the fields listed above. No
   message content, no full recall dumps.
@@ -376,7 +376,7 @@ checkpoint `H43`:
   `mergedFromHandoffIds` is empty for every ordinary (non-merge) checkpoint.
 - The merged `goal`/`currentState`/action lists/etc. are supplied explicitly by the caller
   (arbitrary N-way conflict resolution across divergent action lists is out of scope for this
-  protocol - a merge records *that* branches converged and what the resulting state is, not how to
+  protocol - a merge records _that_ branches converged and what the resulting state is, not how to
   auto-reconcile them); any field the caller omits defaults to the first branch's.
 - Goes through `allocateAndInsertCheckpoint` like every other checkpoint-creating path - a merge
   checkpoint is an ordinary immutable handoff with more than one parent recorded, not a special

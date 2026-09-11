@@ -139,7 +139,7 @@ credentials, or host secrets.
 
 ## Runtime Handoff Protocol
 
-This document covers *which* agent/model/host a conversation resolves to. It does not represent
+This document covers _which_ agent/model/host a conversation resolves to. It does not represent
 the task's in-flight execution state (goal, progress, next action) independently of that
 resolution - swapping the agent, model, or host has nothing to hand the new runtime beyond "start
 fresh." [runtime-handoff-protocol.md](./runtime-handoff-protocol.md) adds that: an immutable,

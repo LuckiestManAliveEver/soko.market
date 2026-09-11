@@ -58,9 +58,7 @@ function parseActions(value: unknown, name: string): RuntimeAction[] | undefined
     ...(entry.status === undefined
       ? {}
       : { status: parseString(entry.status, `${name}.status`) as RuntimeActionStatus }),
-    ...(entry.metadata === undefined
-      ? {}
-      : { metadata: parseRequestBody(entry.metadata) })
+    ...(entry.metadata === undefined ? {} : { metadata: parseRequestBody(entry.metadata) })
   }));
 }
 
@@ -118,7 +116,10 @@ function parseStringList(value: unknown, name: string): string[] | undefined {
   return value as string[];
 }
 
-function parseRuntimeRef(value: unknown, name: string): { agentId: string; modelId: string; executionHostId: string } {
+function parseRuntimeRef(
+  value: unknown,
+  name: string
+): { agentId: string; modelId: string; executionHostId: string } {
   const entry = parseRequestBody(value);
   return {
     agentId: parseString(entry.agentId, `${name}.agentId`),
