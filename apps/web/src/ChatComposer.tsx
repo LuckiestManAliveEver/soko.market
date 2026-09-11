@@ -4,16 +4,24 @@ import type { ChannelEndpointSummary } from "@soko/shared-types";
 import { runtimeHashtagCapabilities, runtimeHashtagQuery } from "@soko/tool-core";
 
 import type { ChatAttachment, SokoMode } from "./app-shell";
-import { type InvoiceSummary, chatAttachmentAccept } from "./soko-application-shared";
-import { formatAttachmentCategory, formatFileSize } from "./formatters";
+import {
+  type ActiveBusiness,
+  type AgentSettings,
+  type InvoiceSummary,
+  chatAttachmentAccept
+} from "./soko-application-shared";
 import { chatModuleCommands } from "./chat-module-commands";
-import { isExtractableChatAttachment, startVoiceInput } from "./chat-message-plumbing";
+import { startVoiceInput } from "./chat-message-plumbing";
 import type { ChatComposerState } from "./hooks/useChatComposerState";
 import { ChatChannelPicker } from "./ChatChannelPicker";
 import { ChatComposerActions } from "./ChatComposerActions";
 import { ChatHashtagCapabilityPicker } from "./ChatHashtagCapabilityPicker";
+import { ComposerAttachmentWorkbench } from "./ComposerAttachmentWorkbench";
+import { ComposerModelSwitcher } from "./ComposerModelSwitcher";
 
 interface ChatComposerProps {
+  agent: AgentSettings | null;
+  business: ActiveBusiness | null;
   channelEndpoints: ChannelEndpointSummary[];
   composer: ChatComposerState;
   invoices: InvoiceSummary[];
@@ -26,15 +34,19 @@ interface ChatComposerProps {
   replyToMessageId: string | null;
   selectedConversationTitle: string;
   selectedEmailCustomerId: string | null | undefined;
+  onAgentChange: (agent: AgentSettings) => void;
   onAttachmentChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onCancelGeneration: () => void;
   onCancelReply: () => void;
+  onOpenAgentProfile: () => void;
   onRemoveAttachment: (attachmentId: string) => void;
   onRequireSignIn: () => void;
   onSellerPhotoCapture: (file: File) => void;
 }
 
 export function ChatComposer({
+  agent,
+  business,
   channelEndpoints,
   composer,
   invoices,
@@ -47,9 +59,11 @@ export function ChatComposer({
   replyToMessageId,
   selectedConversationTitle,
   selectedEmailCustomerId,
+  onAgentChange,
   onAttachmentChange,
   onCancelGeneration,
   onCancelReply,
+  onOpenAgentProfile,
   onRemoveAttachment,
   onRequireSignIn,
   onSellerPhotoCapture
@@ -133,16 +147,6 @@ export function ChatComposer({
           ) : null}
           <small className="composer-agent-indicator">{activeAgentName} will answer</small>
           <button
-            className="icon-button composer-icon-button composer-more-button"
-            type="button"
-            aria-label="Open message actions"
-            aria-haspopup="dialog"
-            aria-expanded={messageActionsOpen}
-            onClick={openMessageActions}
-          >
-            <span className="attach-icon" aria-hidden="true" />
-          </button>
-          <button
             className="icon-button composer-icon-button composer-channel-button"
             type="button"
             aria-label="Choose how to send"
@@ -175,52 +179,11 @@ export function ChatComposer({
               }}
             />
           ) : null}
-          {pendingAttachments.length > 0 ? (
-            <div className="attachment-workbench">
-              <div className="attachment-tray" aria-label="Selected attachments">
-                {pendingAttachments.map((attachment) => (
-                  <span className="attachment-chip" key={attachment.id}>
-                    <span>
-                      <strong>{attachment.name}</strong>
-                      <small>
-                        {formatAttachmentCategory(attachment.category)} ·{" "}
-                        {formatFileSize(attachment.size)}
-                      </small>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${attachment.name}`}
-                      onClick={() => onRemoveAttachment(attachment.id)}
-                    >
-                      x
-                    </button>
-                  </span>
-                ))}
-              </div>
-              {pendingAttachments.some(isExtractableChatAttachment) ? (
-                <div className="document-instructions" aria-label="Document instructions">
-                  <span>OCR ready for scans and images</span>
-                  <button type="button" onClick={() => commitDraft("Extract all readable text")}>
-                    Extract text
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => commitDraft("Summarize this document in simple bullet points")}
-                  >
-                    Summarize
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      commitDraft("Extract names, dates, totals, and line items into a table")
-                    }
-                  >
-                    Extract fields
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
+          <ComposerAttachmentWorkbench
+            pendingAttachments={pendingAttachments}
+            onRemoveAttachment={onRemoveAttachment}
+            onCommitDraft={commitDraft}
+          />
           {selectedProvider === "email" ? (
             <>
               <label className="composer-input">
@@ -278,31 +241,62 @@ export function ChatComposer({
               }
             />
           </label>
-          <div className="composer-send-actions">
-            {isBrowserGenerating ? (
-              <button
-                className="secondary"
-                type="button"
-                onClick={onCancelGeneration}
-                aria-label="Cancel on-device generation"
-              >
-                Cancel
-              </button>
-            ) : null}
+          <div className="composer-bottom-row">
             <button
-              className="send-button"
+              className="icon-button composer-icon-button composer-more-button"
               type="button"
-              onClick={sendLiveDraft}
-              disabled={
-                isSending ||
-                (selectedProvider === "email" && emailSubject.trim().length === 0) ||
-                (liveDraft.trim().length === 0 && pendingAttachments.length === 0)
-              }
-              aria-busy={isSending}
+              aria-label="Open message actions"
+              aria-haspopup="dialog"
+              aria-expanded={messageActionsOpen}
+              onClick={openMessageActions}
             >
-              <span className="send-icon" aria-hidden="true" />
-              <span className="visually-hidden">Send</span>
+              <span className="attach-icon" aria-hidden="true" />
+              <span className="visually-hidden">More</span>
             </button>
+            <ComposerModelSwitcher
+              agent={agent}
+              business={business}
+              onAgentChange={onAgentChange}
+              onOpenAgentProfile={onOpenAgentProfile}
+              onBeforeOpen={() => messageInputRef.current?.blur()}
+            />
+            <div className="composer-bottom-row-trailing">
+              {isBrowserGenerating ? (
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={onCancelGeneration}
+                  aria-label="Cancel on-device generation"
+                >
+                  Cancel
+                </button>
+              ) : null}
+              {liveDraft.trim().length === 0 ? (
+                <button
+                  className="icon-button composer-icon-button composer-mic-button"
+                  type="button"
+                  aria-label="Record voice"
+                  onClick={() => startVoiceInput(commitDraft)}
+                >
+                  <span className="mic-icon" aria-hidden="true" />
+                  <span className="visually-hidden">Voice</span>
+                </button>
+              ) : null}
+              <button
+                className="send-button"
+                type="button"
+                onClick={sendLiveDraft}
+                disabled={
+                  isSending ||
+                  (selectedProvider === "email" && emailSubject.trim().length === 0) ||
+                  (liveDraft.trim().length === 0 && pendingAttachments.length === 0)
+                }
+                aria-busy={isSending}
+              >
+                <span className="send-icon" aria-hidden="true" />
+                <span className="visually-hidden">Send</span>
+              </button>
+            </div>
           </div>
           {externalShareNotice !== null ? (
             <small className="external-share-notice" role="status">
@@ -319,7 +313,6 @@ export function ChatComposer({
             onClose={() => setMessageActionsOpen(false)}
             onAttachFiles={() => runMessageAction(() => fileInputRef.current?.click())}
             onOpenCommand={() => runMessageAction(() => updateLiveDraft("#"))}
-            onRecordVoice={() => runMessageAction(() => startVoiceInput(commitDraft))}
             onSendSms={() =>
               runMessageAction(() =>
                 openSmsHandoff(

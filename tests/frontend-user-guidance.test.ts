@@ -146,10 +146,13 @@ describe("frontend user guidance", () => {
     expect(agentProfilePayload).toContain(
       "ensureRequiredAgentContextScripts(sanitizeContextScripts(agent.contextScripts))"
     );
-    const chatComposer = readFileSync("apps/web/src/ChatComposer.tsx", "utf8");
-    expect(chatComposer).toContain("OCR ready for scans and images");
+    const composerAttachmentWorkbench = readFileSync(
+      "apps/web/src/ComposerAttachmentWorkbench.tsx",
+      "utf8"
+    );
+    expect(composerAttachmentWorkbench).toContain("OCR ready for scans and images");
     expect(chatMessagePlumbing).toContain("/documents/ocr");
-    expect(chatComposer).toContain("Extract all readable text");
+    expect(composerAttachmentWorkbench).toContain("Extract all readable text");
   });
 
   it("keeps model activation entirely backend-hosted with no device install step", () => {

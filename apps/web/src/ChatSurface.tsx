@@ -143,7 +143,7 @@ export function ChatSurface({
   // children) - read directly from OwnerCoreContext instead of threading through OwnerApp's JSX
   // call site as props, since ChatSurface is the parent of those surfaces, not a peer of them.
   // Kept under the same local names the rest of this component already uses throughout.
-  const { session, business, agentSettings, view, mode } = useOwnerCore();
+  const { session, business, agentSettings, setAgentSettings, view, mode } = useOwnerCore();
   const activeView = view;
   const agent = agentSettings;
   const businessId = business?.id ?? null;
@@ -978,6 +978,8 @@ export function ChatSurface({
         </StackedModule>
         <ChatComposer
           activeAgentName={agent.name}
+          agent={agentSettings}
+          business={business}
           channelEndpoints={channelEndpoints}
           composer={composer}
           invoices={invoices}
@@ -989,9 +991,11 @@ export function ChatSurface({
           replyToMessageId={replyToMessageId}
           selectedConversationTitle={selectedConversation?.title ?? ""}
           selectedEmailCustomerId={selectedEmailCustomerId}
+          onAgentChange={setAgentSettings}
           onAttachmentChange={onAttachmentChange}
           onCancelGeneration={onCancelGeneration}
           onCancelReply={onCancelReply}
+          onOpenAgentProfile={onOpenAgentProfile}
           onRemoveAttachment={onRemoveAttachment}
           onRequireSignIn={onRequireSignIn}
           onSellerPhotoCapture={onSellerPhotoCapture}
