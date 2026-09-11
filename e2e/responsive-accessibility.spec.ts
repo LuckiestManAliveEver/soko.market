@@ -431,7 +431,10 @@ test("persisted owner-control cards stay attached to their historical message", 
   page
 }) => {
   await page.setExtraHTTPHeaders({ "x-soko-test-owner-controls": "true" });
-  await page.goto("/sell");
+  // The startup chat window stays blank unless the URL deep-links to a conversation (see
+  // useChatInboxState.loadMessagingInbox) - go straight to the historical conversation instead of
+  // relying on auto-selecting the first inbox entry.
+  await page.goto("/sell/conversations/responsive-conversation");
   const historicalMessage = page
     .locator("article.message")
     .filter({ hasText: "Shared owner controls" });
