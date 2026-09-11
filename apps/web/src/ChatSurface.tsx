@@ -19,7 +19,7 @@ import { SmsHandoffDialog } from "./soko-application-shared";
 import { renderGeneratedSurface } from "./generated-surface-registry";
 
 import { getJson } from "./api-helpers";
-import { formatMessageTime } from "./formatters";
+import { formatFileSize, formatMessageTime } from "./formatters";
 
 import { viewLabel } from "./agent-command-engine";
 import {
@@ -99,6 +99,11 @@ export function ChatSurface({
   onRefreshPublicStorefronts,
   onConversationPreference,
   onRenameConversation,
+  recycleBin,
+  onDeleteConversation,
+  onRestoreConversation,
+  onLoadRecycleBin,
+  onEmptyRecycleBin,
   onEnableNotifications,
   onInboxOpenChange,
   onReply,
@@ -159,6 +164,8 @@ export function ChatSurface({
   const [newConversationTitle, setNewConversationTitle] = useState("");
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
   const [newSessionTitle, setNewSessionTitle] = useState("");
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
+  const [isRecycleBinOpen, setIsRecycleBinOpen] = useState(false);
   const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
   const [openDeliveryAttemptsMessageId, setOpenDeliveryAttemptsMessageId] = useState<string | null>(
     null
@@ -208,6 +215,10 @@ export function ChatSurface({
   const showMessageThread = true;
   const activeModuleView = activeView === "chat" || activeView === "home" ? null : activeView;
   const isSessionListView = activeView === "home";
+  // The session list starts blank (no chat auto-selected/auto-created - see
+  // useChatInboxState.loadMessagingInbox) until the account opens an existing chat or starts a
+  // new one, matching a fresh ChatGPT tab rather than always dropping back into old history.
+  const showBlankSessionState = isSessionListView && activeConversationId === null;
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === activeConversationId
   );
@@ -292,6 +303,7 @@ export function ChatSurface({
         setForwardingMessageId(null);
         setEditingMessageId(null);
         setDeletingMessageId(null);
+        setDeletingConversationId(null);
       }
     }
     document.addEventListener("keydown", closeMessageMenu);
@@ -336,7 +348,14 @@ export function ChatSurface({
     onInboxOpenChange,
     onConversationPreference,
     openSmsHandoff,
-    openPlatformHandoff
+    openPlatformHandoff,
+    onOpenRecycleBin: () => {
+      setIsRecycleBinOpen(true);
+      onLoadRecycleBin();
+    },
+    deletingConversationId,
+    setDeletingConversationId,
+    onDeleteConversation
   };
 
   return (
@@ -363,14 +382,20 @@ export function ChatSurface({
           </aside>
         )
       ) : null}
-      <section className="messenger-thread" aria-label={selectedConversation?.title ?? "Chat"}>
+      <section
+        className="messenger-thread"
+        aria-label={showBlankSessionState ? "New chat" : (selectedConversation?.title ?? "Chat")}
+      >
         {showMessageThread ? (
           <header className="messenger-thread-header">
             <span
               className={`thread-avatar ${mode === "seller" ? "sell" : "buy"}`}
               aria-hidden="true"
             >
-              {(selectedConversation?.title ?? agent.name).trim().slice(0, 1).toUpperCase()}
+              {(showBlankSessionState ? "New chat" : (selectedConversation?.title ?? agent.name))
+                .trim()
+                .slice(0, 1)
+                .toUpperCase()}
             </span>
             <div>
               {editingTopic !== null ? (
@@ -411,16 +436,35 @@ export function ChatSurface({
                 </button>
               )}
               <small>
-                {mode === "seller" ? "Sell session" : "Buy session"} ·{" "}
-                {isContactTyping ? "typing…" : securityLabel}
+                {showBlankSessionState
+                  ? "Not started yet"
+                  : `${mode === "seller" ? "Sell session" : "Buy session"} · ${
+                      isContactTyping ? "typing…" : securityLabel
+                    }`}
               </small>
             </div>
-            <button className="secondary" type="button" onClick={onRetryMessages}>
-              Retry failed
-            </button>
+            {!showBlankSessionState ? (
+              <button className="secondary" type="button" onClick={onRetryMessages}>
+                Retry failed
+              </button>
+            ) : null}
           </header>
         ) : null}
         <div className="message-list" aria-live="polite" ref={messageListRef}>
+          {showBlankSessionState ? (
+            <div className="blank-session-state" role="status">
+              <h3>Start a new chat</h3>
+              <p>Ask your Soko agent anything, or pick a chat from the list.</p>
+              <button
+                type="button"
+                onClick={() =>
+                  isAuthenticated ? onCreateAgentSession() : onRequireSignIn()
+                }
+              >
+                New chat
+              </button>
+            </div>
+          ) : null}
           {hiddenMessageCount > 0 ? (
             <button
               className="load-older-messages"
@@ -877,6 +921,65 @@ export function ChatSurface({
                 if (await onProductSave()) setWorkspaceCardView("catalogue");
               }}
             />
+          )}
+        </StackedModule>
+        <StackedModule
+          moduleId="recycle-bin"
+          className={mode === "seller" ? "sell-module" : "buy-module"}
+          open={isRecycleBinOpen}
+          title="Recycle bin"
+          onClose={() => setIsRecycleBinOpen(false)}
+        >
+          <p>
+            Deleted chats stay here for 14 days before they're permanently removed. Restoring or
+            emptying the bin requires admin privileges.
+          </p>
+          {recycleBin !== null ? (
+            <>
+              <p>
+                {formatFileSize(recycleBin.usedBytes)} of {formatFileSize(recycleBin.capacityBytes)}{" "}
+                used
+                {recycleBin.isFull ? " — full. Ask an admin to empty it." : ""}
+              </p>
+              {recycleBin.items.length === 0 ? (
+                <p>The recycle bin is empty.</p>
+              ) : (
+                <>
+                  <div className="conversation-list">
+                    {recycleBin.items.map((item) => (
+                      <article className="conversation-item" key={item.conversation.id}>
+                        <span className="conversation-copy">
+                          <span className="conversation-title-line">
+                            <strong>{item.title ?? "Soko agent"}</strong>
+                          </span>
+                          <small>
+                            Deleted {formatMessageTime(item.deletedAt)} · Permanently deleted{" "}
+                            {formatMessageTime(item.purgeAt)} · {formatFileSize(item.sizeBytes)}
+                          </small>
+                        </span>
+                        <div className="conversation-actions" aria-label="Recycle bin item actions">
+                          <button
+                            type="button"
+                            onClick={() => onRestoreConversation(item.conversation.id)}
+                          >
+                            Restore
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                  <button
+                    className="danger"
+                    type="button"
+                    onClick={() => onEmptyRecycleBin()}
+                  >
+                    Empty recycle bin
+                  </button>
+                </>
+              )}
+            </>
+          ) : (
+            <p>Loading…</p>
           )}
         </StackedModule>
         <ChatComposer

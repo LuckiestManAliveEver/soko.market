@@ -1222,6 +1222,82 @@ export function registerMessagingRoutes(
     }
   );
 
+  // Soft-deletes a conversation into the recycle bin. Admin-only (see MessagingDomain.
+  // requireConversationAdmin): the shop owner for a shop-scoped conversation, or an account that
+  // owns no business (or owns one) for a personal conversation. Refuses with 507/recycle_bin_full
+  // once the owning scope's bin is at capacity - the caller should point the user at emptying it.
+  app.delete(
+    "/v1/conversations/:conversationId",
+    async (request: FastifyRequest<{ Params: ConversationParams }>, reply) => {
+      try {
+        return store.deleteConversation({
+          sessionId: readSessionCookie(request.headers.cookie),
+          conversationId: parseString(request.params.conversationId, "conversationId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/conversations/:conversationId/restore",
+    async (request: FastifyRequest<{ Params: ConversationParams }>, reply) => {
+      try {
+        return store.restoreConversationFromRecycleBin({
+          sessionId: readSessionCookie(request.headers.cookie),
+          conversationId: parseString(request.params.conversationId, "conversationId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/conversations/recycle-bin",
+    async (request: FastifyRequest<{ Querystring: { businessId?: string } }>, reply) => {
+      try {
+        return store.listRecycleBin({
+          sessionId: readSessionCookie(request.headers.cookie),
+          ...(request.query.businessId === undefined ? {} : { businessId: request.query.businessId })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/conversations/recycle-bin/empty",
+    async (
+      request: FastifyRequest<{
+        Body: { businessId?: string | null; conversationIds?: string[] };
+      }>,
+      reply
+    ) => {
+      try {
+        return store.emptyRecycleBin({
+          sessionId: readSessionCookie(request.headers.cookie),
+          ...(request.body.businessId === undefined
+            ? {}
+            : { businessId: parseNullableString(request.body.businessId) }),
+          ...(request.body.conversationIds === undefined
+            ? {}
+            : {
+                conversationIds: parseStringArray(
+                  request.body.conversationIds,
+                  "conversationIds",
+                  200
+                )
+              })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.get(
     "/v1/conversations/:conversationId/messages/:messageId/delivery-attempts",
     async (request: FastifyRequest<{ Params: MessageParams }>, reply) => {

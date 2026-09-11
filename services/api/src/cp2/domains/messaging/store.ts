@@ -114,6 +114,8 @@ import type {
   ProviderUpdateReceiptSummary,
   PublicStorefrontMessageSummary,
   PushSubscriptionSummary,
+  RecycleBinItemSummary,
+  RecycleBinStatusSummary,
   RuntimeModelConversationMessage,
   RuntimeTurnResult,
   StoredSokoSessionContext,
@@ -196,6 +198,14 @@ import {
   type MessageNotificationDeliveryRunSummary,
   type PublicStorefrontSessionResult
 } from "./shared.js";
+
+/** How long a deleted conversation sits in the recycle bin before a background sweep purges it. */
+export const RECYCLE_BIN_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+/**
+ * Total serialized size (conversation + messages + participants, per scope) the recycle bin will
+ * hold before new deletions are refused with `recycle_bin_full` and an admin has to empty it.
+ */
+export const RECYCLE_BIN_CAPACITY_BYTES = 5 * 1024 * 1024;
 
 export interface MessagingDomainDeps {
   requireAuthorizedSession: (
@@ -2217,6 +2227,7 @@ export class MessagingDomain {
     const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
     return [...this.conversations.values()]
       .map((conversation) => {
+        if (conversation.deletedAt != null) return null;
         const participant = this.accountConversationParticipant(
           conversation.id,
           session.account.id
@@ -3184,6 +3195,331 @@ export class MessagingDomain {
     return this.conversationView(this.conversations.get(conversation.id) ?? conversation);
   }
 
+  /**
+   * Moves a conversation to the recycle bin instead of deleting it outright. Requires admin
+   * privileges (the shop's owner for a shop-scoped conversation, or - for a personal conversation
+   * with no shop - an account that either owns no business yet or owns at least one) and refuses
+   * once the owning scope's recycle bin is at capacity, so a flood of deletions can't grow without
+   * bound. A background sweep (`purgeExpiredRecycleBinConversations`) hard-deletes anything still
+   * here after `RECYCLE_BIN_RETENTION_MS`; an admin can also restore or empty it early.
+   */
+  deleteConversation(input: {
+    sessionId: string | null;
+    conversationId: string;
+    now?: Date;
+  }): ConversationSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
+    this.requireConversationAdmin(conversation, session);
+
+    const { scope, scopeId } = this.recycleBinScopeKey(conversation);
+    const projectedSize = this.conversationByteSize(conversation.id);
+    const usedBytes = this.recycleBinUsageBytes(scope, scopeId);
+    if (usedBytes + projectedSize > RECYCLE_BIN_CAPACITY_BYTES) {
+      throw new Cp2Error(
+        507,
+        "recycle_bin_full",
+        "The recycle bin is full. Ask an admin to empty it before deleting more chats."
+      );
+    }
+
+    const deleted: ConversationSummary = {
+      ...conversation,
+      deletedAt: now.toISOString(),
+      deletedByUserId: session.user.id,
+      updatedAt: now.toISOString()
+    };
+    this.conversations.set(conversation.id, deleted);
+    this.deps.recordAuditEvent({
+      type: "conversation.deleted",
+      aggregateType: "conversation",
+      aggregateId: conversation.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { activeShopId: conversation.activeShopId, kind: conversation.kind }
+    });
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversations",
+      conversation.id,
+      deleted,
+      now
+    );
+    return deleted;
+  }
+
+  /** Admin-only: pulls a conversation back out of the recycle bin before its retention expires. */
+  restoreConversationFromRecycleBin(input: {
+    sessionId: string | null;
+    conversationId: string;
+    now?: Date;
+  }): ConversationSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const conversation = this.conversations.get(input.conversationId);
+    if (
+      conversation === undefined ||
+      conversation.deletedAt == null ||
+      this.accountConversationParticipant(conversation.id, session.account.id) === null
+    ) {
+      throw new Cp2Error(404, "conversation_not_found", "This chat isn't in the recycle bin.");
+    }
+    this.requireConversationAdmin(conversation, session);
+
+    const restored: ConversationSummary = {
+      ...conversation,
+      deletedAt: null,
+      deletedByUserId: null,
+      updatedAt: now.toISOString()
+    };
+    this.conversations.set(conversation.id, restored);
+    this.deps.recordAuditEvent({
+      type: "conversation.restored",
+      aggregateType: "conversation",
+      aggregateId: conversation.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { activeShopId: conversation.activeShopId }
+    });
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversations",
+      conversation.id,
+      restored,
+      now
+    );
+    return restored;
+  }
+
+  /**
+   * Admin-only view of one scope's recycle bin (a shop's shared chats, or an account's own
+   * personal chats). Reports usage against `RECYCLE_BIN_CAPACITY_BYTES` so the UI can tell a
+   * non-admin exactly when to ask an admin to empty it.
+   */
+  listRecycleBin(input: {
+    sessionId: string | null;
+    businessId?: string | null;
+    now?: Date;
+  }): RecycleBinStatusSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const scope: "business" | "account" = input.businessId ? "business" : "account";
+    const scopeId = input.businessId ?? session.account.id;
+    this.requireRecycleBinAdmin(scope, scopeId, session);
+
+    const items: RecycleBinItemSummary[] = this.trashedConversationsForScope(scope, scopeId)
+      .sort((left, right) => Date.parse(right.deletedAt ?? "") - Date.parse(left.deletedAt ?? ""))
+      .map((conversation) => ({
+        conversation,
+        title: conversation.title ?? null,
+        deletedAt: conversation.deletedAt as string,
+        deletedByUserId: conversation.deletedByUserId as string,
+        purgeAt: new Date(
+          Date.parse(conversation.deletedAt as string) + RECYCLE_BIN_RETENTION_MS
+        ).toISOString(),
+        sizeBytes: this.conversationByteSize(conversation.id)
+      }));
+    const usedBytes = items.reduce((total, item) => total + item.sizeBytes, 0);
+
+    return {
+      scope,
+      scopeId,
+      items,
+      usedBytes,
+      capacityBytes: RECYCLE_BIN_CAPACITY_BYTES,
+      isFull: usedBytes >= RECYCLE_BIN_CAPACITY_BYTES
+    };
+  }
+
+  /**
+   * Admin-only: permanently purges some or all of a scope's recycle bin ahead of the 14-day
+   * retention window - the escape hatch a non-admin is told to ask for once the bin is full.
+   */
+  emptyRecycleBin(input: {
+    sessionId: string | null;
+    businessId?: string | null;
+    conversationIds?: string[];
+    now?: Date;
+  }): { purged: number } {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const scope: "business" | "account" = input.businessId ? "business" : "account";
+    const scopeId = input.businessId ?? session.account.id;
+    this.requireRecycleBinAdmin(scope, scopeId, session);
+
+    const candidates = this.trashedConversationsForScope(scope, scopeId).filter(
+      (conversation) =>
+        input.conversationIds === undefined || input.conversationIds.includes(conversation.id)
+    );
+    for (const conversation of candidates) {
+      this.deps.recordAuditEvent({
+        type: "conversation.purged",
+        aggregateType: "conversation",
+        aggregateId: conversation.id,
+        actorId: session.user.id,
+        occurredAt: now.toISOString(),
+        payload: { activeShopId: conversation.activeShopId, reason: "admin_emptied_recycle_bin" }
+      });
+      this.hardDeleteConversation(conversation.id, now);
+    }
+    return { purged: candidates.length };
+  }
+
+  /** Background-sweep entry point: hard-deletes anything past its 14-day recycle-bin retention. */
+  purgeExpiredRecycleBinConversations(now = new Date()): number {
+    let purged = 0;
+    for (const conversation of [...this.conversations.values()]) {
+      if (conversation.deletedAt == null) continue;
+      if (Date.parse(conversation.deletedAt) + RECYCLE_BIN_RETENTION_MS > now.getTime()) continue;
+      this.deps.recordAuditEvent({
+        type: "conversation.purged",
+        aggregateType: "conversation",
+        aggregateId: conversation.id,
+        actorId: conversation.deletedByUserId ?? "system",
+        occurredAt: now.toISOString(),
+        payload: { activeShopId: conversation.activeShopId, reason: "recycle_bin_retention_expired" }
+      });
+      this.hardDeleteConversation(conversation.id, now);
+      purged += 1;
+    }
+    return purged;
+  }
+
+  private recycleBinScopeKey(conversation: ConversationSummary): {
+    scope: "business" | "account";
+    scopeId: string;
+  } {
+    return conversation.activeShopId !== null
+      ? { scope: "business", scopeId: conversation.activeShopId }
+      : { scope: "account", scopeId: conversation.accountId };
+  }
+
+  private trashedConversationsForScope(
+    scope: "business" | "account",
+    scopeId: string
+  ): ConversationSummary[] {
+    return [...this.conversations.values()].filter((conversation) => {
+      if (conversation.deletedAt == null) return false;
+      const key = this.recycleBinScopeKey(conversation);
+      return key.scope === scope && key.scopeId === scopeId;
+    });
+  }
+
+  private recycleBinUsageBytes(scope: "business" | "account", scopeId: string): number {
+    return this.trashedConversationsForScope(scope, scopeId).reduce(
+      (total, conversation) => total + this.conversationByteSize(conversation.id),
+      0
+    );
+  }
+
+  private conversationByteSize(conversationId: string): number {
+    const conversation = this.conversations.get(conversationId);
+    if (conversation === undefined) return 0;
+    const messages = this.messagesForConversation(conversationId);
+    const participants = [...this.conversationParticipants.values()].filter(
+      (participant) => participant.conversationId === conversationId
+    );
+    return Buffer.byteLength(JSON.stringify({ conversation, messages, participants }), "utf8");
+  }
+
+  /**
+   * "Admin" for conversation deletion mirrors the codebase's existing highest-privilege gate
+   * (`requireOwnerMembership`, used for shop deletion): the shop's owner for a shop-scoped
+   * conversation. A personal conversation has no shop to check, so an account that hasn't created
+   * a business yet is trivially its own admin; one that has must own at least one business, so a
+   * non-owner staff account can't purge its own chat history unilaterally.
+   */
+  private requireConversationAdmin(conversation: ConversationSummary, session: AuthSessionView): void {
+    const { scope, scopeId } = this.recycleBinScopeKey(conversation);
+    this.requireRecycleBinAdmin(scope, scopeId, session);
+  }
+
+  private requireRecycleBinAdmin(
+    scope: "business" | "account",
+    scopeId: string,
+    session: AuthSessionView
+  ): void {
+    if (scope === "business") {
+      const membership = this.deps.requireMembership(scopeId, session.user.id);
+      if (membership.role !== "owner") {
+        throw new Cp2Error(
+          403,
+          "conversation_delete_requires_admin",
+          "Only a shop owner has admin access to this recycle bin."
+        );
+      }
+      return;
+    }
+    if (scopeId !== session.account.id) {
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    }
+    const memberships = [...this.deps.memberships.values()].filter(
+      (membership) => membership.userId === session.user.id
+    );
+    const ownsAnyBusiness = memberships.some((membership) => membership.role === "owner");
+    if (memberships.length > 0 && !ownsAnyBusiness) {
+      throw new Cp2Error(
+        403,
+        "conversation_delete_requires_admin",
+        "Only a shop owner has admin access to deleted chats. Ask an admin."
+      );
+    }
+  }
+
+  /** Hard-deletes a conversation and every row that hangs off it. Not reversible. */
+  private hardDeleteConversation(conversationId: string, now: Date): void {
+    const conversation = this.conversations.get(conversationId);
+    if (conversation === undefined) return;
+
+    const participantAccountIds = new Set(
+      [...this.conversationParticipants.values()]
+        .filter(
+          (participant) =>
+            participant.conversationId === conversationId && participant.accountId !== null
+        )
+        .map((participant) => participant.accountId as string)
+    );
+
+    for (const [id, participant] of this.conversationParticipants) {
+      if (participant.conversationId === conversationId) this.conversationParticipants.delete(id);
+    }
+    for (const [id, message] of this.conversationMessages) {
+      if (message.conversationId !== conversationId) continue;
+      this.conversationMessages.delete(id);
+      this.messageByClientId.delete(`${conversationId}:${message.clientMessageId}`);
+      this.messageByIdempotencyKey.delete(`${conversationId}:${message.idempotencyKey}`);
+    }
+    for (const [id, attempt] of this.messageDeliveryAttempts) {
+      if (attempt.conversationId === conversationId) this.messageDeliveryAttempts.delete(id);
+    }
+    for (const [id, delivery] of this.messageNotificationDeliveries) {
+      if (delivery.conversationId === conversationId) this.messageNotificationDeliveries.delete(id);
+    }
+    for (const [id, channel] of this.conversationChannels) {
+      if (channel.conversationId === conversationId) this.conversationChannels.delete(id);
+    }
+    for (const [key, typing] of this.conversationTyping) {
+      if (typing.conversationId === conversationId) this.conversationTyping.delete(key);
+    }
+    this.deleteConversationAttachmentsWhere(
+      (attachment) => attachment.conversationId === conversationId
+    );
+    this.conversations.delete(conversationId);
+
+    for (const accountId of participantAccountIds) {
+      this.deps.recordSyncChange({
+        accountId,
+        collection: "conversations",
+        entityId: conversationId,
+        operation: "delete",
+        shopId: conversation.activeShopId,
+        entity: null,
+        now
+      });
+    }
+  }
+
   updateConversationMessage(input: {
     sessionId: string | null;
     conversationId: string;
@@ -3858,6 +4194,7 @@ export class MessagingDomain {
         conversation.accountId === input.accountId &&
         conversation.kind === "personal" &&
         conversation.activeShopId === null &&
+        conversation.deletedAt == null &&
         this.accountConversationParticipant(conversation.id, input.accountId) !== null
     );
 
@@ -3988,6 +4325,7 @@ export class MessagingDomain {
 
     if (
       conversation === undefined ||
+      conversation.deletedAt != null ||
       this.accountConversationParticipant(conversationId, accountId) === null
     ) {
       throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");

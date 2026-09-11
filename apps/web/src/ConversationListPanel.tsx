@@ -38,6 +38,10 @@ export interface ConversationListPanelProps {
   ) => void;
   openSmsHandoff: (recipient: string, label: string) => void;
   openPlatformHandoff: (label: string) => Promise<void>;
+  onOpenRecycleBin: () => void;
+  deletingConversationId: string | null;
+  setDeletingConversationId: Dispatch<SetStateAction<string | null>>;
+  onDeleteConversation: (conversationId: string) => void;
 }
 
 export function ConversationListPanel({
@@ -67,12 +71,19 @@ export function ConversationListPanel({
   onInboxOpenChange,
   onConversationPreference,
   openSmsHandoff,
-  openPlatformHandoff
+  openPlatformHandoff,
+  onOpenRecycleBin,
+  deletingConversationId,
+  setDeletingConversationId,
+  onDeleteConversation
 }: ConversationListPanelProps) {
   return (
     <>
       <div className="messenger-inbox-heading">
         {showHeading ? <h2>{isSessionListView ? "Chats" : "Messages"}</h2> : null}
+        <button type="button" className="secondary" aria-label="Recycle bin" onClick={onOpenRecycleBin}>
+          Recycle bin
+        </button>
         <button
           type="button"
           className="inbox-icon-button"
@@ -258,7 +269,31 @@ export function ConversationListPanel({
               >
                 Archive
               </button>
+              <button type="button" onClick={() => setDeletingConversationId(conversation.id)}>
+                Delete
+              </button>
             </div>
+            {deletingConversationId === conversation.id ? (
+              <div className="message-inline-action" role="alertdialog" aria-label="Delete chat?">
+                <span>
+                  Move this chat to the recycle bin? Deleting requires admin privileges and keeps
+                  it recoverable for 14 days.
+                </span>
+                <button
+                  className="danger"
+                  type="button"
+                  onClick={() => {
+                    onDeleteConversation(conversation.id);
+                    setDeletingConversationId(null);
+                  }}
+                >
+                  Delete chat
+                </button>
+                <button type="button" onClick={() => setDeletingConversationId(null)}>
+                  Cancel
+                </button>
+              </div>
+            ) : null}
           </article>
         ))}
         {visibleConversations.length === 0 ? (
