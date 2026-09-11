@@ -1,0 +1,11 @@
+{
+  "engine": "webllm",
+  "engineVersion": "0.2.85",
+  "agentId": "soko-offline-assistant",
+  "agentVersion": "1",
+  "modelId": "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+  "modelVersion": "q4f16_1",
+  "modelOrigin": "https://huggingface.co/mlc-ai/",
+  "contextWindowTokens": 4096,
+  "note": "Descriptive only. The offline runtime hashes whatever bytes are actually served at this path to build the pinned RuntimeBinding artifact; it does not parse this file back. Keep this content in sync with apps/web/src/webllm-model-manifest.ts (tests/webllm-runtime.test.ts checks that)."
+}

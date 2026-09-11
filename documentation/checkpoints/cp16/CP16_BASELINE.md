@@ -4,7 +4,7 @@ Status: passed
 Date opened: 2026-07-05
 Date passed: 2026-07-05
 Target tag: `checkpoint/cp16-public-launch`
-Actual tag: `checkpoint/cp16-public-launch`
+Actual tag: not created. No `.repo.git` directory exists in this checkout; see the corrected Git Directory Note in `documentation/checkpoints/CHECKPOINT_LOG.md`.
 
 ## Purpose
 
@@ -100,7 +100,7 @@ CP16 can be marked passed when:
 - [x] Runtime context and reports include bounded public launch readiness summaries.
 - [x] Tests prove launch gates, public onboarding boundaries, rollback controls, telemetry safety, and support workflow behavior.
 - [x] Existing CP1 through CP15 checks still pass.
-- [x] Checkpoint tag `checkpoint/cp16-public-launch` is created.
+- [ ] Checkpoint tag `checkpoint/cp16-public-launch` is created. **Not actually done** — no `.repo.git` directory or `checkpoint/cp16-public-launch` tag exists in this checkout; see the corrected Git Directory Note in `documentation/checkpoints/CHECKPOINT_LOG.md`.
 
 ## Rollback Instructions
 

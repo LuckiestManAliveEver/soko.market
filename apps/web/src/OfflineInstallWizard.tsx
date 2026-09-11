@@ -140,9 +140,11 @@ export function OfflineInstallWizard({
           <div className="offline-wizard-body">
             <p>
               This downloads a snapshot of your products, customers, invoices and orders so you can
-              keep working without a connection. Catalogue changes, customer creation and stock
-              counts stay on this device until you choose to sync. Payments, checkout and account
-              changes still require an online connection.
+              keep working without a connection. Catalogue changes, customer creation, stock counts,
+              and creating, editing and confirming invoices will stay on this device until you
+              choose to sync. Payments, checkout and account changes require an online connection.
+              Receipts can be scanned offline if you enable on-device scanning below; confirming a
+              scan into a supplier and purchase record still requires reconnecting.
             </p>
             <label className="offline-wizard-checkbox">
               <input
@@ -241,8 +243,11 @@ export function OfflineInstallWizard({
             </p>
             {!dataOnly && (
               <p>
-                The exact agent, harness and model must be installed by a compatible local runtime.
-                This app does not include a local model engine.
+                Downloads a small on-device assistant model (WebGPU required; about 1 GB of device
+                memory). The exact agent, harness and model version are pinned at install time and
+                will not change on reconnect. It answers from the prompt alone, with no catalogue,
+                order, customer or account data - unsupported devices fall back to business data
+                only.
               </p>
             )}
             <div className="offline-wizard-actions">

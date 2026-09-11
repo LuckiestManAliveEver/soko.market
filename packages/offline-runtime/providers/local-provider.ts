@@ -4,10 +4,14 @@ import {
   normalizeContactRecordInput,
   validateContactRecordInput,
   validateStockAdjustmentInput,
+  validateInvoiceInput,
+  createInvoicePreview,
   type ProductInput,
   type ContactRecordInput,
-  type StockAdjustmentInput
+  type StockAdjustmentInput,
+  type InvoiceInput
 } from "@soko/business-core";
+import type { ProductSummary, CustomerSummary } from "@soko/shared-types";
 import type { LocalDatabase } from "../db/client.js";
 import { recordOperation } from "../sync/writer.js";
 import {
@@ -16,7 +20,9 @@ import {
   type Collection,
   type Entity,
   type RuntimePin,
-  type ReceiptOcrExtraction
+  type ReceiptOcrExtraction,
+  type LocalState,
+  type MirrorRow
 } from "../types.js";
 import { receiptOcrJobEntity } from "./receipt-ocr-entity.js";
 import type { SokoProvider } from "./types.js";
@@ -29,7 +35,15 @@ export const localReads: Record<string, Collection> = {
   "catalogue.fields": "productFields",
   "receipts.ocr.list": "receiptOcrJobs"
 };
-const writes = ["catalogue.create", "catalogue.update", "inventory.adjust", "customers.create"];
+const writes = [
+  "catalogue.create",
+  "catalogue.update",
+  "inventory.adjust",
+  "customers.create",
+  "orders.createInvoice",
+  "orders.updateInvoice",
+  "orders.confirmInvoice"
+];
 export type ReceiptOcrEngine = (input: {
   fileName: string;
   contentType: string;
@@ -119,6 +133,100 @@ export class LocalProvider implements SokoProvider {
           createdAt: operation.createdAtLocal,
           updatedAt: operation.createdAtLocal
         })
+      )) as T;
+    }
+    if (op === "orders.createInvoice" || op === "orders.updateInvoice") {
+      const invoiceInput = body as unknown as InvoiceInput;
+      validate(validateInvoiceInput(invoiceInput));
+      return (await recordOperation(
+        this.db,
+        this.scope,
+        { opType: op, collection: "invoices", entityLocalId: id, payload: body },
+        (current, operation) => {
+          const existing = current.rows.find((row) => row.local_id === operation.entityLocalId);
+          if (op === "orders.updateInvoice") {
+            if (!existing) throw new Error("This invoice is not in the downloaded snapshot.");
+            if (existing.payload.status !== "draft")
+              throw new Error("Confirmed invoices cannot be edited.");
+          }
+          for (const item of invoiceInput.items)
+            if (!findRow(current, "products", item.productId))
+              throw new Error("This product is not in the downloaded snapshot.");
+          const customer =
+            invoiceInput.customerId === undefined || invoiceInput.customerId === null
+              ? null
+              : (findRow(current, "customers", invoiceInput.customerId)?.payload ?? null);
+          if (invoiceInput.customerId && !customer)
+            throw new Error("This customer is not in the downloaded snapshot.");
+          const products = current.rows
+            .filter((row) => row.collection === "products")
+            .map((row) => row.payload as unknown as ProductSummary);
+          const preview = createInvoicePreview({
+            businessId: this.scope.storeId,
+            invoice: invoiceInput,
+            products,
+            customer: customer as unknown as CustomerSummary | null
+          });
+          const invoiceId = (existing?.payload.id as string | undefined) ?? id;
+          return {
+            id: invoiceId,
+            businessId: this.scope.storeId,
+            invoiceNumber: existing?.payload.invoiceNumber ?? "Pending sync",
+            status: "draft",
+            customerId: preview.customerId,
+            customerName: preview.customerName,
+            items: preview.items.map((item, index) => ({
+              ...item,
+              id: `${invoiceId}-item-${index}`,
+              invoiceId
+            })),
+            subtotal: preview.subtotal,
+            taxRate: preview.taxRate,
+            taxTotal: preview.taxTotal,
+            total: preview.total,
+            confirmedAt: null,
+            createdAt: existing?.payload.createdAt ?? operation.createdAtLocal,
+            updatedAt: operation.createdAtLocal
+          };
+        }
+      )) as T;
+    }
+    if (op === "orders.confirmInvoice") {
+      return (await recordOperation(
+        this.db,
+        this.scope,
+        { opType: op, collection: "invoices", entityLocalId: id, payload: {} },
+        (current, operation) => {
+          const existing = current.rows.find((row) => row.local_id === operation.entityLocalId);
+          if (!existing) throw new Error("This invoice is not in the downloaded snapshot.");
+          if (existing.payload.status !== "draft") throw new Error("Invoice is already confirmed.");
+          const items =
+            (existing.payload.items as Array<{ productId: string; quantity: number }>) ?? [];
+          const required = new Map<string, number>();
+          for (const item of items)
+            required.set(item.productId, (required.get(item.productId) ?? 0) + item.quantity);
+          for (const [productId, quantity] of required) {
+            const product = findRow(current, "products", productId);
+            if (product && Number(product.payload.quantity) < quantity)
+              throw new Error(
+                `${product.payload.name} has ${product.payload.quantity} ${product.payload.unit} available as of your last sync. Reconnect and sync to confirm against current stock.`
+              );
+          }
+          // The stock decrement itself is not applied here - it happens once, authoritatively,
+          // when this operation reaches confirmInvoice on the server (same reasoning as
+          // receipts.ocr.create: a locally optimistic decrement across N product rows would mark
+          // them dirty with no operation of their own to clear that flag on ack, permanently
+          // blocking future pulls for those products - see sync/client.ts's `if (row?.dirty)
+          // continue`). The invoice's own local status flips immediately for feedback; stock
+          // updates arrive on the next sync via the ordinary product pull, same as any other
+          // device's sale.
+          return {
+            ...existing.payload,
+            status: "confirmed",
+            confirmedAt: operation.createdAtLocal,
+            updatedAt: operation.createdAtLocal
+          };
+        }
       )) as T;
     }
     if (op === "receipts.ocr.create") {
@@ -215,4 +323,11 @@ export class LocalProvider implements SokoProvider {
 }
 function validate(result: { ok: boolean; errors: string[] }): void {
   if (!result.ok) throw new OfflineError("VALIDATION_FAILED", result.errors.join(" "));
+}
+/** A referenced id may be a local placeholder (not yet synced) or the real cloud id, exactly like
+ *  recordOperation's own existing-row lookup - so every cross-entity reference must check both. */
+function findRow(state: LocalState, collection: Collection, id: string): MirrorRow | undefined {
+  return state.rows.find(
+    (row) => row.collection === collection && (row.local_id === id || row.cloud_id === id)
+  );
 }

@@ -9,7 +9,8 @@ import {
 } from "@soko/offline-runtime";
 import {
   parseProductBody as parseOfflineProduct,
-  parseStockAdjustmentBody as parseOfflineStock
+  parseStockAdjustmentBody as parseOfflineStock,
+  parseInvoiceBody as parseOfflineInvoice
 } from "./domains/sales/routes.js";
 import { parseContactRecordBody as parseOfflineCustomer } from "./route-helpers.js";
 import { parseReceiptOCRBody as parseOfflineReceiptOcr } from "./domains/suppliers/routes.js";
@@ -5359,7 +5360,12 @@ export class Cp2Store {
           ? "inventory:adjust"
           : operation.opType === "receipts.ocr.create"
             ? "import:write"
-            : "product:write";
+            : operation.opType === "orders.confirmInvoice"
+              ? "invoice:confirm"
+              : operation.opType === "orders.createInvoice" ||
+                  operation.opType === "orders.updateInvoice"
+                ? "invoice:write"
+                : "product:write";
     const actor = this.requireAuthorizedSession(sessionId, businessId, permission);
     if (actor.account.id !== operation.accountId)
       throw new Cp2Error(
@@ -5437,6 +5443,27 @@ export class Cp2Store {
           case "customers.create":
             return {
               ...this.createCustomer({ ...input, customer: parseOfflineCustomer(payload) })
+            };
+          case "orders.createInvoice":
+            return { ...this.createInvoice({ ...input, invoice: parseOfflineInvoice(payload) }) };
+          case "orders.updateInvoice":
+            // Last-write-wins, same as an online PATCH race between two browser tabs would be -
+            // no product-style base/merge diffing for invoices in this pass.
+            return {
+              ...this.updateInvoice({
+                ...input,
+                invoiceId: operation.entityCloudId!,
+                invoice: parseOfflineInvoice(payload)
+              })
+            };
+          case "orders.confirmInvoice":
+            // confirmInvoice itself already rejects a non-draft invoice with 409
+            // invoice_already_confirmed and insufficient stock with 409 stock_insufficient; both
+            // fall through to this function's existing catch block below, which maps any 409 to a
+            // CONFLICT ack - so a double-confirm race or stock that changed since this device's
+            // last sync surfaces through the same conflict-review flow as everything else.
+            return {
+              ...this.confirmInvoice({ ...input, invoiceId: operation.entityCloudId! }).invoice
             };
           case "receipts.ocr.create": {
             const receipt = parseOfflineReceiptOcr(payload);

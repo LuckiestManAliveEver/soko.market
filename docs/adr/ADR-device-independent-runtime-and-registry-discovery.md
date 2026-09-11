@@ -148,3 +148,37 @@ untouched — this decision stops _new_ GGUF-chunk-into-Postgres writes going fo
 retroactively migrate or delete historical rows, which remain readable for any code that still
 depends on them until a dedicated artifact-storage migration follows up. Pi + SmolLM2 360M remain
 the repository default; nothing here changes `repositoryDefaultRuntimePolicy`.
+
+## Update: a narrow, disclosed exception for explicit offline mode
+
+The Soko Offline Runtime (`docs/offline/README.md`) reintroduces on-device model execution for one
+specific, narrow case: a device the merchant has _explicitly_ put into offline mode from Settings,
+where the alternative is not "route to the hosted default" but "the agent is unavailable at all."
+This is not a reversal of the decision above - the "keep on-device inference as an offline fallback"
+alternative rejected there was a _silent_ fallback on an ordinary connectivity blip, where the
+merchant has no way to know a different, privately-downloaded model just answered instead of the
+configured runtime. That specific hazard does not apply here, because:
+
+- The device only has an on-device model at all because the merchant explicitly opted into it,
+  through the same disclaimed "Go Offline" confirmation that installs the business-data snapshot -
+  there is no ambient "sometimes your browser just happens to answer instead" behavior for a user
+  who never asked for offline mode.
+- Every on-device reply is labeled with the exact pinned model, in the UI, every time
+  (`OfflineRuntimeSettings.tsx` renders "Answered offline by <model>") - never presented as
+  indistinguishable from a normal, data-connected agent turn.
+- It only ever runs while `offlineModeActive` is true, which - per the existing (pre-dated) resolver
+  design in `packages/offline-runtime/providers/resolver.ts` - is never entered or exited silently;
+  reconnecting shows a sync prompt, not an automatic switch back.
+
+`ModelExecutionTarget` (`"vercel" | "backend" | "remote-shop-device"`) is unchanged - this is not a
+fourth execution target for ordinary online chat. It is scoped entirely inside
+`packages/offline-runtime`'s pre-existing `InstalledRuntimeAdapter` interface, which this decision's
+own "Explicit limits" section already anticipated ("offline AI requires an executable
+`InstalledRuntimeAdapter`...but no browser model engine...is supplied") without ruling out ever
+supplying one for this specific, disclosed path.
+
+Scope, deliberately narrow: one model (`Qwen2.5-0.5B-Instruct-q4f16_1-MLC`), one engine
+(`@mlc-ai/web-llm`/WebGPU), answering from the prompt alone with no catalogue/order/customer/account
+data - not the full multi-engine, multi-model, GitHub/Hugging-Face-discoverable registry this ADR
+retired. Reintroducing that full surface would reopen exactly the maintenance and security burden
+this ADR argued against; this exception is scoped to stay well short of it.

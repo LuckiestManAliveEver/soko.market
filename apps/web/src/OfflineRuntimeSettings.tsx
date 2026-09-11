@@ -6,6 +6,7 @@ import { prepareOfflineShell } from "./offline-shell";
 import { readStableDeviceId } from "./lib/api";
 import { clearApiRequestCache } from "./api-request-cache";
 import { ensureOcrEngineCached, isOcrEngineCached } from "./offline-ocr";
+import type { OfflineAssistantReply } from "./webllm-runtime";
 import {
   offlineDatabase,
   getOfflineState,
@@ -19,6 +20,8 @@ import {
   currentStorageTarget,
   useStorageTarget,
   reconnectRemovableDevice,
+  ensureInstalledOfflineRuntime,
+  askOfflineAssistant,
   type StorageTarget
 } from "./offline-runtime";
 
@@ -44,6 +47,10 @@ export function OfflineRuntimeSettings({
   const [ocrCached, setOcrCached] = useState(false);
   const [ocrBusy, setOcrBusy] = useState(false);
   const [ocrProgress, setOcrProgress] = useState<{ done: number; total: number } | null>(null);
+  const [assistantPrompt, setAssistantPrompt] = useState("");
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantReply, setAssistantReply] = useState<OfflineAssistantReply | null>(null);
+  const [assistantError, setAssistantError] = useState("");
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
@@ -101,6 +108,7 @@ export function OfflineRuntimeSettings({
   }
   async function install(target: StorageTarget, handle: FileSystemDirectoryHandle | null) {
     await useStorageTarget(target, handle ?? undefined);
+    if (!dataOnly) await ensureInstalledOfflineRuntime();
     const runtime = installedOfflineRuntime();
     await installOfflineRuntime({
       db: await offlineDatabase(),
@@ -138,9 +146,66 @@ export function OfflineRuntimeSettings({
   }
   return (
     <SettingsGroup
-      title="Offline runtime"
-      description="Download your business and control when changes sync"
+      title="Go Offline"
+      description="Install business data, receipt scanning and an on-device assistant so you can keep working without a connection"
     >
+      <section aria-labelledby="go-offline-requirements-title">
+        <h4 id="go-offline-requirements-title">What you need to go fully offline</h4>
+        <p>
+          Everything below installs inside this browser - no separate app, OS package or admin
+          rights needed.
+        </p>
+        <ul>
+          <li>
+            <strong>Business data</strong> (always available): any device. Downloads a snapshot of
+            your products, customers, invoices and orders - at least 16 MiB, plus 256 MiB or 20% of
+            your browser's storage quota reserved as headroom. Creating, editing and confirming
+            invoices works offline too, decrementing stock once you sync.
+          </li>
+          <li>
+            <strong>Offline receipt scanning</strong> (optional): any modern browser. One-time ~14
+            MB download (tesseract.js, runs entirely on-device).
+          </li>
+          <li>
+            <strong>On-device AI assistant</strong> (optional): needs a WebGPU-capable browser and
+            device (recent Chrome or Edge on desktop or Android; not available on unsupported
+            browsers, including older Safari) and about 1 GB of free device storage/memory for the
+            pinned model. Unsupported devices automatically fall back to business data only.
+          </li>
+        </ul>
+      </section>
+      <section aria-labelledby="go-offline-disclaimers-title">
+        <h4 id="go-offline-disclaimers-title">What still needs a connection</h4>
+        <ul>
+          <li>
+            Checkout and payment settlement - taking a customer's payment always needs an online
+            connection, even when everything else here is installed.
+          </li>
+          <li>Account or authentication changes, such as passwords, PINs and security settings.</li>
+          <li>
+            Confirming a scanned receipt into a supplier and purchase record - text extraction
+            itself runs offline, but confirming needs supplier and sales-agent data this device
+            hasn't downloaded yet.
+          </li>
+          <li>
+            Confirming an invoice checks stock against this device's last sync, not live stock on
+            other devices - a confirmation that looked fine offline can still be rejected on sync if
+            stock ran out elsewhere first, the same as any two people editing the same invoice at
+            once.
+          </li>
+          <li>
+            Nearby device-to-device messaging - a research prototype, not available in this PWA.
+          </li>
+          <li>
+            The on-device assistant answers only from what you type - it has no catalogue, order,
+            customer or account data, and is told to say so rather than guess.
+          </li>
+          <li>
+            Whatever business snapshot and AI runtime you install are pinned at that moment and
+            won't silently change until you explicitly sync, reinstall or swap them.
+          </li>
+        </ul>
+      </section>
       <p>
         {modeActive ? "Offline mode is active." : "Online mode."} {pending} change
         {pending === 1 ? "" : "s"} waiting to sync.
@@ -243,6 +308,43 @@ export function OfflineRuntimeSettings({
           )}
         </div>
       )}
+      {modeActive && state?.pin?.active && (
+        <div>
+          <p>Ask the offline assistant something. It answers on-device from your message alone.</p>
+          <textarea
+            aria-label="Message the offline assistant"
+            value={assistantPrompt}
+            disabled={assistantBusy}
+            onChange={(event) => setAssistantPrompt(event.target.value)}
+          />
+          <button
+            type="button"
+            disabled={assistantBusy || !assistantPrompt.trim()}
+            onClick={() => {
+              setAssistantBusy(true);
+              setAssistantError("");
+              setAssistantReply(null);
+              void askOfflineAssistant(scope, { prompt: assistantPrompt })
+                .then((result) => setAssistantReply(result as OfflineAssistantReply))
+                .catch((error: unknown) => {
+                  setAssistantError(
+                    error instanceof Error ? error.message : "The offline assistant is unavailable."
+                  );
+                })
+                .finally(() => setAssistantBusy(false));
+            }}
+          >
+            Ask offline
+          </button>
+          {assistantBusy && <p role="status">Thinking on-device&hellip;</p>}
+          {assistantReply && (
+            <p role="status">
+              Answered offline by {assistantReply.modelId}: {assistantReply.reply}
+            </p>
+          )}
+          {assistantError && <p role="alert">{assistantError}</p>}
+        </div>
+      )}
       {state?.installed && (
         <div>
           <button
@@ -302,7 +404,6 @@ export function OfflineRuntimeSettings({
           </button>
         </section>
       ))}
-      <p>Nearby messaging is an experimental native transport and is unavailable in this PWA.</p>
       {message && <p role="status">{message}</p>}
     </SettingsGroup>
   );

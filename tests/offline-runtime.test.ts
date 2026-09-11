@@ -228,6 +228,112 @@ describe("Offline runtime API integration", () => {
       await fixture.app.close();
     }
   });
+  it("creates, edits and confirms an invoice offline, decrementing stock only once confirm syncs", async () => {
+    const fixture = await serverFixture();
+    try {
+      await fixture.request("POST", `/businesses/${fixture.scope.storeId}/products`, {
+        name: "Rice",
+        quantity: 10,
+        sellingPrice: 5
+      });
+      const snapshot = fixture.store.getOfflineRuntimeSnapshot(
+        fixture.sessionId,
+        fixture.scope.storeId
+      );
+      const db = await database();
+      await install(db, fixture.scope, snapshot.collections);
+      const productId = snapshot.collections.products[0]!.id;
+      const local = new LocalProvider(db, fixture.scope);
+      const invoice = await local.call<Entity>("orders.createInvoice", {
+        body: { items: [{ productId, quantity: 2, unitPrice: 5 }] }
+      });
+      expect(invoice).toMatchObject({ status: "draft", total: 10 });
+      await local.call("orders.updateInvoice", {
+        id: invoice.id,
+        body: { items: [{ productId, quantity: 3, unitPrice: 5 }] }
+      });
+      await expect(
+        local.call("orders.confirmInvoice", { id: invoice.id, body: {} })
+      ).resolves.toMatchObject({ status: "confirmed" });
+      // The stock decrement is deferred to the real server confirmInvoice call on sync, not
+      // applied optimistically here - see the comment in local-provider.ts's orders.confirmInvoice
+      // branch for why (a locally-dirty product row with no operation of its own would never be
+      // overwritable by a later pull).
+      expect(
+        (await local.call<Entity[]>("catalogue.list", {})).find((row) => row.id === productId)
+      ).toMatchObject({ quantity: 10 });
+      const sync = new SyncClient(db, fixture.scope, fixture.transport);
+      await sync.sync();
+      expect(
+        (await db.read(fixture.scope)).operations.every((op) => op.syncStatus === "ACKED")
+      ).toBe(true);
+      expect(
+        (await fixture.request("GET", `/businesses/${fixture.scope.storeId}/invoices`)).json()
+      ).toMatchObject([{ status: "confirmed", total: 15 }]);
+      expect(
+        (await fixture.request("GET", `/businesses/${fixture.scope.storeId}/products`)).json()
+      ).toMatchObject([{ quantity: 7 }]);
+      expect(
+        (await local.call<Entity[]>("catalogue.list", {})).find((row) => row.id === productId)
+      ).toMatchObject({ quantity: 7 });
+    } finally {
+      await fixture.app.close();
+    }
+  });
+  it("blocks editing or re-confirming a locally-confirmed invoice, and surfaces a real two-device double-confirm race as a conflict", async () => {
+    const fixture = await serverFixture();
+    try {
+      await fixture.request("POST", `/businesses/${fixture.scope.storeId}/products`, {
+        name: "Rice",
+        quantity: 10
+      });
+      const productId = (
+        await fixture.request("GET", `/businesses/${fixture.scope.storeId}/products`)
+      ).json()[0].id;
+      await fixture.request("POST", `/businesses/${fixture.scope.storeId}/invoices`, {
+        items: [{ productId, quantity: 1, unitPrice: 5 }]
+      });
+      // Both devices install from a snapshot that already contains this same draft invoice
+      // (already-synced cloud id, no local create/confirm rebase to reason about) - the setup a
+      // shop with two devices sharing one draft invoice would actually have.
+      const snapshot = fixture.store.getOfflineRuntimeSnapshot(
+        fixture.sessionId,
+        fixture.scope.storeId
+      );
+      const invoiceId = snapshot.collections.invoices[0]!.id;
+      const second = { ...fixture.scope, deviceId: "second-device" };
+      const firstDb = await database();
+      const secondDb = await database();
+      await install(firstDb, fixture.scope, snapshot.collections);
+      await install(secondDb, second, snapshot.collections);
+      const first = new LocalProvider(firstDb, fixture.scope);
+      await first.call("orders.confirmInvoice", { id: invoiceId, body: {} });
+      await expect(
+        first.call("orders.updateInvoice", {
+          id: invoiceId,
+          body: { items: [{ productId, quantity: 1, unitPrice: 5 }] }
+        })
+      ).rejects.toThrow("cannot be edited");
+      await expect(
+        first.call("orders.confirmInvoice", { id: invoiceId, body: {} })
+      ).rejects.toThrow("already confirmed");
+      // Both devices confirm this same invoice offline before either has synced.
+      await new LocalProvider(secondDb, second).call("orders.confirmInvoice", {
+        id: invoiceId,
+        body: {}
+      });
+      await new SyncClient(firstDb, fixture.scope, fixture.transport).sync();
+      await new SyncClient(secondDb, second, fixture.transportFor(second)).sync();
+      const secondState = await secondDb.read(second);
+      const confirmOp = secondState.operations.find((op) => op.opType === "orders.confirmInvoice");
+      expect(confirmOp?.syncStatus).toBe("CONFLICT");
+      expect(secondState.conflicts).toMatchObject([
+        { message: expect.stringContaining("confirmed") }
+      ]);
+    } finally {
+      await fixture.app.close();
+    }
+  });
   it("captures a receipt offline with an on-device OCR engine and syncs it into a full OCR job", async () => {
     const fixture = await serverFixture();
     try {

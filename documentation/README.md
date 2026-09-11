@@ -775,18 +775,48 @@ Goal:
 
 - Launch the core product without marketplace complexity.
 
-Deliverables:
+**Scope correction (added after implementation):** the deliverables and exit criteria originally
+planned below were not all built. `documentation/checkpoints/cp16/CP16_BASELINE.md` narrowed CP16's
+actual scope to a launch-readiness gate/report (public onboarding toggle, beta/support/telemetry
+health aggregation, production readiness _documentation_) without flagging the drop against this
+list, and `CHECKPOINT_LOG.md` still marked CP16 "passed" against the original list below. Status of
+each original deliverable, verified against code:
 
-- Performance hardening.
-- Accessibility pass.
-- Regional tax config.
-- SMS fallback.
-- USSD stub.
-- Production observability.
-- Backup and restore testing.
-- Incident response runbook.
+- Regional tax config — delivered (CP14/CP16 tax configuration exists).
+- Production readiness documentation for config/secrets/backup/monitoring/deploy — delivered as
+  documentation, per `CP16_BASELINE.md`.
+- Performance hardening — **not delivered**. No performance work or measurement against the exit
+  criteria below was found.
+- Accessibility pass — **not delivered**. No accessibility audit or fixes were found.
+- SMS fallback — **not delivered**. No SMS-fallback code exists anywhere in the repository.
+- USSD stub — **not delivered**. No USSD code exists anywhere in the repository.
+- Production observability (real monitoring, not readiness docs) — **not verified as delivered**
+  beyond the documented readiness checklist; no monitoring/alerting integration was found.
+- Backup and restore testing (an actual executed test, not a checklist item) — **not delivered**.
+- Incident response runbook — **not delivered**. No incident runbook exists under `docs/runbooks/`
+  or elsewhere.
 
-Exit criteria:
+These six items remain outstanding and should be tracked as explicit follow-up work before treating
+public launch as fully hardened, rather than being carried forward as silently "done."
+
+Deliverables (as actually implemented; see `CP16_BASELINE.md` for the authoritative scope):
+
+- Reversible public-onboarding launch gate, auditable.
+- Launch readiness report combining CP15 beta status, support state, telemetry health, sync health,
+  payment reconciliation, and rollback state.
+- Launch support process, incident severity, and escalation documentation.
+- Launch-safe telemetry contracts that avoid exposing raw sensitive data.
+- Production readiness checklist (documentation only — see scope correction above).
+- Regional tax configuration.
+
+Exit criteria (as actually implemented — the original numeric performance/accessibility/backup
+targets below were never measured and should not be treated as met):
+
+- Public launch gate exists, is reversible, and is covered by tests.
+- Launch readiness report and rollback controls are implemented and tested.
+- CP1 through CP15 checks continue to pass.
+
+Original, unverified exit criteria (kept for traceability; do not treat as satisfied):
 
 - App shell cold start under 3 seconds.
 - Local actions under 500 ms where applicable.
@@ -797,7 +827,8 @@ Exit criteria:
 
 Rollback point:
 
-- Tag: `checkpoint/cp16-public-launch`
+- Tag: `checkpoint/cp16-public-launch` — not actually created; see the Git Directory Note in
+  `documentation/checkpoints/CHECKPOINT_LOG.md`.
 - Backup: full production snapshot, object storage manifest, deployment artifact.
 - Rollback action: blue/green or previous-release rollback, database migration rollback only if tested and safe.
 
@@ -845,24 +876,35 @@ Goal:
 
 Source:
 
-- `documentation/Soko_Global_Shop_ID_Concept.docx`
+- `documentation/Soko_Global_Shop_ID_Concept.docx` — original concept only. Superseded on format; see below.
 - `documentation/CP18_GLOBAL_SHOP_ID.md`
+- `docs/architecture/soko-id-slug-system.md` — current authoritative spec for the implemented `sokoId` format and resolver.
 
-Core concept:
+Core concept (as originally proposed, not what shipped):
 
 ```text
 The BigFish soko: 254A12567835
 ```
 
-Where:
+Where the original concept defined:
 
-- `254` is the country namespace.
-- `A` is the Business Agent identifier prefix.
-- `12567835` is the unique global shop identifier.
+- `254` as the country namespace.
+- `A` as the Business Agent identifier prefix.
+- `12567835` as the unique global shop identifier.
+
+**Implemented format differs from the concept above.** `Cp2Store.createGlobalShopId`
+(`services/api/src/cp2/store.ts`) generates IDs as `soko.<handle>` (for example `soko.mama-mboga`,
+with numeric-suffix collision handling: `soko.mama-mboga-2`), where `<handle>` is a slugified
+business name, not a country-code/numeric identifier. `tests/sokoid-and-storefront.test.ts`
+explicitly asserts the original `254A########` shape is now invalid (`isSokoId("254A00000001")` is
+`false`). The country-namespace concept was dropped during implementation and never reconciled back
+into this document or `CP18_GLOBAL_SHOP_ID.md` until now. Treat `docs/architecture/soko-id-slug-system.md`
+as authoritative for the current format, collision/rename/cooldown rules, and resolver behavior.
 
 Deliverables:
 
-- Stable global shop ID generation using the compact `countryA########` format.
+- Stable global shop ID generation using the implemented `soko.<handle>` slug format (not the
+  originally proposed `countryA########` format — see note above).
 - Business Agent identity display in owner storefront/profile surfaces.
 - Public storefront display of the shop ID.
 - Customer conversation entry by Soko ID.
