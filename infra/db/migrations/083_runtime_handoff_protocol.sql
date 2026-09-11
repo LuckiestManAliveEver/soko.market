@@ -67,6 +67,7 @@ create table if not exists cp2_runtime_handoffs (
     and record #>> '{runtime,agentId}' is not null
     and record #>> '{runtime,modelId}' is not null
     and record #>> '{runtime,executionHostId}' is not null
+    and record ->> 'createdAt' is not null
     and (record ->> 'schemaVersion')::integer >= 1
   ),
   constraint cp2_runtime_handoffs_parent_fk
@@ -80,7 +81,7 @@ create table if not exists cp2_runtime_handoffs (
 );
 
 create index if not exists cp2_runtime_handoffs_task_created_idx
-  on cp2_runtime_handoffs (task_id, created_at desc);
+  on cp2_runtime_handoffs (task_id, (record ->> 'createdAt') desc);
 
 create index if not exists cp2_runtime_handoffs_parent_idx
   on cp2_runtime_handoffs (parent_handoff_id);
