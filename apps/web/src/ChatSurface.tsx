@@ -457,9 +457,7 @@ export function ChatSurface({
               <p>Ask your Soko agent anything, or pick a chat from the list.</p>
               <button
                 type="button"
-                onClick={() =>
-                  isAuthenticated ? onCreateAgentSession() : onRequireSignIn()
-                }
+                onClick={() => (isAuthenticated ? onCreateAgentSession() : onRequireSignIn())}
               >
                 New chat
               </button>
@@ -968,11 +966,7 @@ export function ChatSurface({
                       </article>
                     ))}
                   </div>
-                  <button
-                    className="danger"
-                    type="button"
-                    onClick={() => onEmptyRecycleBin()}
-                  >
+                  <button className="danger" type="button" onClick={() => onEmptyRecycleBin()}>
                     Empty recycle bin
                   </button>
                 </>

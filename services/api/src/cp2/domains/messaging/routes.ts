@@ -1260,7 +1260,9 @@ export function registerMessagingRoutes(
       try {
         return store.listRecycleBin({
           sessionId: readSessionCookie(request.headers.cookie),
-          ...(request.query.businessId === undefined ? {} : { businessId: request.query.businessId })
+          ...(request.query.businessId === undefined
+            ? {}
+            : { businessId: request.query.businessId })
         });
       } catch (error) {
         return sendCp2Error(reply, error);

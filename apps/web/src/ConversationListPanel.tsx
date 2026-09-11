@@ -81,7 +81,12 @@ export function ConversationListPanel({
     <>
       <div className="messenger-inbox-heading">
         {showHeading ? <h2>{isSessionListView ? "Chats" : "Messages"}</h2> : null}
-        <button type="button" className="secondary" aria-label="Recycle bin" onClick={onOpenRecycleBin}>
+        <button
+          type="button"
+          className="secondary"
+          aria-label="Recycle bin"
+          onClick={onOpenRecycleBin}
+        >
           Recycle bin
         </button>
         <button
@@ -276,8 +281,8 @@ export function ConversationListPanel({
             {deletingConversationId === conversation.id ? (
               <div className="message-inline-action" role="alertdialog" aria-label="Delete chat?">
                 <span>
-                  Move this chat to the recycle bin? Deleting requires admin privileges and keeps
-                  it recoverable for 14 days.
+                  Move this chat to the recycle bin? Deleting requires admin privileges and keeps it
+                  recoverable for 14 days.
                 </span>
                 <button
                   className="danger"

@@ -3378,7 +3378,10 @@ export class MessagingDomain {
         aggregateId: conversation.id,
         actorId: conversation.deletedByUserId ?? "system",
         occurredAt: now.toISOString(),
-        payload: { activeShopId: conversation.activeShopId, reason: "recycle_bin_retention_expired" }
+        payload: {
+          activeShopId: conversation.activeShopId,
+          reason: "recycle_bin_retention_expired"
+        }
       });
       this.hardDeleteConversation(conversation.id, now);
       purged += 1;
@@ -3430,7 +3433,10 @@ export class MessagingDomain {
    * a business yet is trivially its own admin; one that has must own at least one business, so a
    * non-owner staff account can't purge its own chat history unilaterally.
    */
-  private requireConversationAdmin(conversation: ConversationSummary, session: AuthSessionView): void {
+  private requireConversationAdmin(
+    conversation: ConversationSummary,
+    session: AuthSessionView
+  ): void {
     const { scope, scopeId } = this.recycleBinScopeKey(conversation);
     this.requireRecycleBinAdmin(scope, scopeId, session);
   }

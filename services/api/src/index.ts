@@ -238,7 +238,10 @@ if (process.env.ENABLE_CONVERSATION_RECYCLE_BIN_RUNNER !== "false") {
     store: cp2Store,
     onResult: (purged) => {
       if (purged > 0) {
-        app.log.info({ event: "conversation_recycle_bin_purged", purged }, "Recycle bin purge run completed.");
+        app.log.info(
+          { event: "conversation_recycle_bin_purged", purged },
+          "Recycle bin purge run completed."
+        );
       }
     },
     onError: (error) => app.log.error({ error }, "Recycle bin purge run failed.")

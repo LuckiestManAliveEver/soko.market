@@ -276,7 +276,9 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
     try {
       await deleteJson<ConversationSummary>(`/v1/conversations/${conversationId}`);
       setStatusMessage("Chat moved to the recycle bin. It will be deleted for good in 14 days.");
-      await loadMessagingInbox(activeConversationId === conversationId ? null : activeConversationId);
+      await loadMessagingInbox(
+        activeConversationId === conversationId ? null : activeConversationId
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -307,7 +309,9 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
         ...(conversationIds === undefined ? {} : { conversationIds })
       });
       setStatusMessage(
-        result.purged === 1 ? "Deleted 1 chat for good." : `Deleted ${result.purged} chats for good.`
+        result.purged === 1
+          ? "Deleted 1 chat for good."
+          : `Deleted ${result.purged} chats for good.`
       );
       await loadRecycleBin();
     } catch (error) {
