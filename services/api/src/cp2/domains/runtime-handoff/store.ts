@@ -23,6 +23,11 @@ import type {
   RuntimeContextReference,
   RuntimeDecision,
   RuntimeHandoff,
+  RuntimeMergeInput,
+  RuntimeMergeResult,
+  RuntimeOfflineCheckpointInput,
+  RuntimeOfflineSyncInput,
+  RuntimeOfflineSyncResult,
   RuntimeRejectedPath,
   RuntimeResumeInput,
   RuntimeResumeResult,
@@ -89,6 +94,12 @@ export interface RuntimeHandoffNativeRuntimeAccess {
     bindingId: string,
     conversationId: string
   ): RuntimeHandoffNativeBindingResolution;
+  /** Existence-only check (not availability/compatibility - see
+   *  `validateCandidateExecutionChain` for that) used when syncing an offline-created checkpoint:
+   *  its `runtime` triple was valid when the client created it, and DB foreign keys require the
+   *  referenced agent/model/host to still exist at sync time, but an offline record should not be
+   *  rejected just because a model happens to be temporarily unavailable by the time it syncs. */
+  runtimeRefExists(input: { agentId: string; modelId: string; executionHostId: string }): boolean;
 }
 
 export interface RuntimeHandoffDomainDeps {
@@ -413,6 +424,135 @@ export class RuntimeHandoffDomain {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // Offline sync and merge (protocol doc "Offline causal ancestry")
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Synchronizes a batch of checkpoints an offline client created locally, in causal order.
+   * Each one becomes a normal immutable handoff, keeping the client's own `id` (already used as
+   * another offline checkpoint's `parentHandoffId` before either synced) and `createdAt`, but
+   * receiving a server-assigned `checkpointVersion` through the same
+   * `allocateNextCheckpointVersion` primitive every other version-allocating path uses. Re-syncing
+   * a checkpoint whose `id` already exists is a no-op (returns the existing row) rather than an
+   * error, which is what makes retrying a partially-failed sync safe.
+   */
+  syncOfflineCheckpoints(
+    sessionId: string | null,
+    input: RuntimeOfflineSyncInput,
+    now: Date = new Date()
+  ): RuntimeOfflineSyncResult {
+    return this.withIdempotency("offline-sync", input.idempotencyKey, () => {
+      const resolved = this.resolveHandoff(sessionId, input.taskId, now);
+      const actorId = this.resolveActorId(sessionId, now);
+      if (input.promote === true) {
+        this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
+      } else if (input.expectedHandoffId !== undefined) {
+        this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, false);
+      }
+      const syncedHandoffs: RuntimeHandoff[] = [];
+      for (const offline of input.checkpoints) {
+        syncedHandoffs.push(this.syncOneOfflineCheckpoint(input.taskId, resolved.conversationId, offline, now));
+      }
+      let taskHead = this.taskHeads.get(input.taskId) as RuntimeTaskHead;
+      if (input.promote === true && syncedHandoffs.length > 0) {
+        const lastSynced = syncedHandoffs[syncedHandoffs.length - 1] as RuntimeHandoff;
+        const targetId = input.promoteToHandoffId ?? lastSynced.id;
+        if (!this.handoffs.has(targetId)) {
+          throw new Cp2Error(
+            404,
+            "RUNTIME_HANDOFF_NOT_FOUND",
+            "promoteToHandoffId was not found for this task."
+          );
+        }
+        taskHead = { ...taskHead, activeHandoffId: targetId, updatedAt: now.toISOString() };
+        this.taskHeads.set(input.taskId, taskHead);
+      }
+      this.deps.recordAuditEvent({
+        type: "runtime_handoff.offline_synced",
+        aggregateType: "task",
+        aggregateId: input.taskId,
+        actorId,
+        occurredAt: now.toISOString(),
+        payload: {
+          syncedCount: syncedHandoffs.length,
+          promoted: input.promote === true,
+          handoffIds: syncedHandoffs.map((handoff) => handoff.id).join(",")
+        }
+      });
+      return { syncedHandoffs, taskHead };
+    });
+  }
+
+  /**
+   * Unifies two or more branch tips into one new checkpoint (`branchHandoffIds[0]` becomes
+   * `parentHandoffId`, the rest become `mergedFromHandoffIds`) and promotes the task head to it.
+   * Goes through `allocateAndInsertCheckpoint` like every other checkpoint-creating path - a merge
+   * checkpoint is an ordinary immutable handoff, just with more than one parent recorded.
+   */
+  mergeCheckpoints(
+    sessionId: string | null,
+    input: RuntimeMergeInput,
+    now: Date = new Date()
+  ): RuntimeMergeResult {
+    return this.withIdempotency("merge", input.idempotencyKey, () => {
+      const resolved = this.resolveHandoff(sessionId, input.taskId, now);
+      const actorId = this.resolveActorId(sessionId, now);
+      this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
+      if (input.branchHandoffIds.length < 2) {
+        throw new Cp2Error(
+          400,
+          "RUNTIME_MERGE_REQUIRES_MULTIPLE_BRANCHES",
+          "A merge requires at least two branch checkpoints."
+        );
+      }
+      const branches = input.branchHandoffIds.map((handoffId) => {
+        const branch = this.handoffs.get(handoffId);
+        if (branch === undefined || branch.taskId !== input.taskId) {
+          throw new Cp2Error(
+            404,
+            "RUNTIME_HANDOFF_NOT_FOUND",
+            `Branch checkpoint ${handoffId} was not found for this task.`
+          );
+        }
+        return branch;
+      });
+      const base = branches[0] as RuntimeHandoff;
+      const { handoff, taskHead } = this.allocateAndInsertCheckpoint({
+        taskId: input.taskId,
+        conversationId: resolved.conversationId,
+        parentHandoffId: base.id,
+        mergedFromHandoffIds: branches.slice(1).map((branch) => branch.id),
+        goal: input.goal ?? base.goal,
+        currentState: input.currentState ?? base.currentState,
+        completedActions: input.completedActions ?? base.completedActions,
+        decisions: input.decisions ?? base.decisions,
+        rejectedPaths: input.rejectedPaths ?? base.rejectedPaths,
+        pendingActions: input.pendingActions ?? base.pendingActions,
+        nextAction: input.nextAction === undefined ? base.nextAction : input.nextAction,
+        relevantContext: input.relevantContext ?? base.relevantContext,
+        artifacts: input.artifacts ?? base.artifacts,
+        tests: {
+          passed: input.testsPassed ?? base.tests.passed,
+          failed: input.testsFailed ?? base.tests.failed,
+          pending: input.testsPending ?? base.tests.pending
+        },
+        runtime: base.runtime,
+        now,
+        promote: true
+      });
+      this.deps.recordAuditEvent({
+        type: "runtime_handoff.merged",
+        aggregateType: "task",
+        aggregateId: input.taskId,
+        actorId,
+        occurredAt: now.toISOString(),
+        payload: { handoffId: handoff.id, branchHandoffIds: input.branchHandoffIds.join(",") }
+      });
+      return { handoff, taskHead };
+    });
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------------------------
 
@@ -566,10 +706,106 @@ export class RuntimeHandoffDomain {
     };
   }
 
+  /** Syncs one offline checkpoint (see `syncOfflineCheckpoints`). Assumes the caller has already
+   *  resolved/bootstrapped the task, so `this.taskHeads.get(taskId)` is guaranteed to exist. */
+  private syncOneOfflineCheckpoint(
+    taskId: string,
+    conversationId: string,
+    offline: RuntimeOfflineCheckpointInput,
+    now: Date
+  ): RuntimeHandoff {
+    const existing = this.handoffs.get(offline.id);
+    if (existing !== undefined) {
+      this.requireMatchingOfflineCheckpoint(offline, existing);
+      return existing;
+    }
+    if (offline.parentHandoffId !== null && !this.handoffs.has(offline.parentHandoffId)) {
+      throw new Cp2Error(
+        409,
+        "RUNTIME_OFFLINE_PARENT_MISSING",
+        `Offline checkpoint ${offline.id}'s parent ${offline.parentHandoffId} was not found. ` +
+          "Submit checkpoints in causal order (ancestors before descendants).",
+        false,
+        { checkpointId: offline.id, parentHandoffId: offline.parentHandoffId }
+      );
+    }
+    if (!this.deps.nativeRuntimeBindings.runtimeRefExists(offline.runtime)) {
+      throw new Cp2Error(
+        409,
+        "RUNTIME_OFFLINE_RUNTIME_REF_MISSING",
+        `Offline checkpoint ${offline.id} references an agent/model/execution host that no ` +
+          "longer exists.",
+        false,
+        { checkpointId: offline.id }
+      );
+    }
+    const { version, existingHead } = this.allocateNextCheckpointVersion(taskId);
+    const handoff = this.insertHandoff({
+      id: offline.id,
+      taskId,
+      conversationId,
+      parentHandoffId: offline.parentHandoffId,
+      goal: offline.goal,
+      currentState: offline.currentState,
+      completedActions: offline.completedActions,
+      decisions: offline.decisions,
+      rejectedPaths: offline.rejectedPaths,
+      pendingActions: offline.pendingActions,
+      nextAction: offline.nextAction,
+      relevantContext: offline.relevantContext,
+      artifacts: offline.artifacts,
+      tests: offline.tests,
+      runtime: offline.runtime,
+      checkpointVersion: version,
+      schemaVersion: offline.schemaVersion,
+      createdAt: offline.createdAt,
+      now
+    });
+    // Advance the head's version counter without moving activeHandoffId - a sync's optional
+    // promotion happens exactly once, after the whole batch lands (syncOfflineCheckpoints).
+    this.moveTaskHead(taskId, version, existingHead, (existingHead as RuntimeTaskHead).activeHandoffId, now);
+    return handoff;
+  }
+
+  /** A re-synced offline checkpoint (same `id` already present) must carry identical content -
+   *  otherwise this is a real conflict (a client bug, or two different checkpoints colliding on
+   *  id), not a safe idempotent retry. */
+  private requireMatchingOfflineCheckpoint(
+    offline: RuntimeOfflineCheckpointInput,
+    existing: RuntimeHandoff
+  ): void {
+    const matches =
+      existing.parentHandoffId === offline.parentHandoffId &&
+      existing.goal === offline.goal &&
+      existing.currentState === offline.currentState &&
+      existing.nextAction === offline.nextAction &&
+      existing.schemaVersion === offline.schemaVersion &&
+      existing.createdAt === offline.createdAt &&
+      JSON.stringify(existing.completedActions) === JSON.stringify(offline.completedActions) &&
+      JSON.stringify(existing.decisions) === JSON.stringify(offline.decisions) &&
+      JSON.stringify(existing.rejectedPaths) === JSON.stringify(offline.rejectedPaths) &&
+      JSON.stringify(existing.pendingActions) === JSON.stringify(offline.pendingActions) &&
+      JSON.stringify(existing.relevantContext) === JSON.stringify(offline.relevantContext) &&
+      JSON.stringify(existing.artifacts) === JSON.stringify(offline.artifacts) &&
+      JSON.stringify(existing.tests) === JSON.stringify(offline.tests) &&
+      JSON.stringify(existing.runtime) === JSON.stringify(offline.runtime);
+    if (!matches) {
+      throw new Cp2Error(
+        409,
+        "RUNTIME_OFFLINE_CHECKPOINT_CONFLICT",
+        `Offline checkpoint ${offline.id} was already synced with different content.`,
+        false,
+        { checkpointId: offline.id }
+      );
+    }
+  }
+
   private insertHandoff(input: {
+    id?: string;
     taskId: string;
     conversationId: string;
     parentHandoffId: string | null;
+    mergedFromHandoffIds?: string[];
     goal: string;
     currentState: string;
     completedActions: RuntimeAction[];
@@ -583,13 +819,15 @@ export class RuntimeHandoffDomain {
     runtime: RuntimeRef;
     checkpointVersion: number | null;
     schemaVersion: number;
+    createdAt?: string;
     now: Date;
   }): RuntimeHandoff {
     const handoff: RuntimeHandoff = {
-      id: randomUUID(),
+      id: input.id ?? randomUUID(),
       taskId: input.taskId,
       conversationId: input.conversationId,
       parentHandoffId: input.parentHandoffId,
+      mergedFromHandoffIds: input.mergedFromHandoffIds ?? [],
       goal: input.goal,
       currentState: input.currentState,
       completedActions: input.completedActions,
@@ -603,22 +841,53 @@ export class RuntimeHandoffDomain {
       runtime: input.runtime,
       checkpointVersion: input.checkpointVersion,
       schemaVersion: input.schemaVersion,
-      createdAt: input.now.toISOString()
+      createdAt: input.createdAt ?? input.now.toISOString()
     };
     this.handoffs.set(handoff.id, handoff);
     return handoff;
   }
 
   /**
-   * The single shared version-allocation + task-head-move primitive (protocol doc section 6.1).
-   * Both checkpoint-creation-with-promotion and swap commit call this instead of each
-   * reimplementing their own locking - see the class docstring for why a synchronous read-then-
-   * write here is already atomic within one process.
+   * Allocates the next cloud-authoritative checkpoint version for a task (protocol doc section
+   * 6.1's "one shared locking implementation"). Every path that assigns a version -
+   * checkpoint-creation-with-promotion, swap commit, offline sync (one call per synced
+   * checkpoint), and merge - goes through this single method rather than each reimplementing its
+   * own counter logic. Safe without an explicit lock for the same reason documented on the class:
+   * this whole domain runs synchronously, so there is no window for two calls on one process to
+   * interleave between reading `nextCheckpointVersion` and writing the next one.
    */
+  private allocateNextCheckpointVersion(taskId: string): {
+    version: number;
+    existingHead: RuntimeTaskHead | undefined;
+  } {
+    const existingHead = this.taskHeads.get(taskId);
+    return { version: existingHead?.nextCheckpointVersion ?? 1, existingHead };
+  }
+
+  /** Moves (or, for `promote: false`, merely advances the version counter of) a task's head.
+   *  Shared by every version-allocating path - see `allocateNextCheckpointVersion` above. */
+  private moveTaskHead(
+    taskId: string,
+    version: number,
+    existingHead: RuntimeTaskHead | undefined,
+    activeHandoffId: string,
+    now: Date
+  ): RuntimeTaskHead {
+    const taskHead: RuntimeTaskHead = {
+      taskId,
+      activeHandoffId,
+      nextCheckpointVersion: version + 1,
+      updatedAt: now.toISOString()
+    };
+    this.taskHeads.set(taskId, taskHead);
+    return taskHead;
+  }
+
   private allocateAndInsertCheckpoint(input: {
     taskId: string;
     conversationId: string;
     parentHandoffId: string | null;
+    mergedFromHandoffIds?: string[];
     goal: string;
     currentState: string;
     completedActions: RuntimeAction[];
@@ -633,12 +902,14 @@ export class RuntimeHandoffDomain {
     now: Date;
     promote: boolean;
   }): { handoff: RuntimeHandoff; taskHead: RuntimeTaskHead } {
-    const existingHead = this.taskHeads.get(input.taskId);
-    const nextVersion = existingHead?.nextCheckpointVersion ?? 1;
+    const { version, existingHead } = this.allocateNextCheckpointVersion(input.taskId);
     const handoff = this.insertHandoff({
       taskId: input.taskId,
       conversationId: input.conversationId,
       parentHandoffId: input.parentHandoffId,
+      ...(input.mergedFromHandoffIds === undefined
+        ? {}
+        : { mergedFromHandoffIds: input.mergedFromHandoffIds }),
       goal: input.goal,
       currentState: input.currentState,
       completedActions: input.completedActions,
@@ -650,18 +921,13 @@ export class RuntimeHandoffDomain {
       artifacts: input.artifacts,
       tests: input.tests,
       runtime: input.runtime,
-      checkpointVersion: nextVersion,
+      checkpointVersion: version,
       schemaVersion: 1,
       now: input.now
     });
     const promoteHead = input.promote || existingHead === undefined;
-    const taskHead: RuntimeTaskHead = {
-      taskId: input.taskId,
-      activeHandoffId: promoteHead ? handoff.id : (existingHead as RuntimeTaskHead).activeHandoffId,
-      nextCheckpointVersion: nextVersion + 1,
-      updatedAt: input.now.toISOString()
-    };
-    this.taskHeads.set(input.taskId, taskHead);
+    const activeHandoffId = promoteHead ? handoff.id : (existingHead as RuntimeTaskHead).activeHandoffId;
+    const taskHead = this.moveTaskHead(input.taskId, version, existingHead, activeHandoffId, input.now);
     return { handoff, taskHead };
   }
 

@@ -278,6 +278,25 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         },
         annotations: { readOnlyHint: false, destructiveHint: true }
       },
+      {
+        name: "soko.runtime_merge",
+        description:
+          "Unify two or more diverged offline branch checkpoints into one new checkpoint and promote the task head to it. The first id in branchHandoffIds becomes the merge's primary parent; the rest are recorded as additional ancestors.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["taskId", "branchHandoffIds", "expectedHandoffId"],
+          properties: {
+            taskId: { type: "string" },
+            branchHandoffIds: { type: "array", items: { type: "string" }, minItems: 2 },
+            goal: { type: "string" },
+            currentState: { type: "string" },
+            nextAction: { type: ["string", "null"] },
+            expectedHandoffId: { type: "string" }
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true }
+      },
       ...(["agent", "model", "host"] as const).map((dimension) => ({
         name: `soko.${dimension === "host" ? "execution_host" : dimension}_swap`,
         description: `Swap a task's ${dimension} to a new compatible ${dimension}, checkpointing current state first (Prepare -> Commit -> Activate). Task and conversation identity never change.`,
@@ -366,6 +385,23 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
           ...(args.expectedHandoffId === undefined
             ? {}
             : { expectedHandoffId: stringValue(args.expectedHandoffId, "expectedHandoffId") })
+        }
+      });
+    } else if (name === "soko.runtime_merge") {
+      requireScope(principal, "mcp:act");
+      result = store.mergeRuntimeHandoffsForMcp({
+        principal,
+        merge: {
+          taskId: stringValue(args.taskId, "taskId"),
+          branchHandoffIds: stringArrayValue(args.branchHandoffIds, "branchHandoffIds"),
+          expectedHandoffId: stringValue(args.expectedHandoffId, "expectedHandoffId"),
+          ...(args.goal === undefined ? {} : { goal: stringValue(args.goal, "goal") }),
+          ...(args.currentState === undefined
+            ? {}
+            : { currentState: stringValue(args.currentState, "currentState") }),
+          ...(args.nextAction === undefined
+            ? {}
+            : { nextAction: args.nextAction === null ? null : stringValue(args.nextAction, "nextAction") })
         }
       });
     } else if (
@@ -541,6 +577,13 @@ function stringValue(value: unknown, field: string): string {
 
 function optionalStringValue(value: unknown, field: string): string | null {
   return value === undefined || value === null ? null : stringValue(value, field);
+}
+
+function stringArrayValue(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new Cp2Error(400, "mcp_input_invalid", `${field} must be an array of strings.`);
+  }
+  return value as string[];
 }
 
 function optionalIntegerValue(value: unknown, field: string): number | undefined {

@@ -86,6 +86,13 @@ export interface RuntimeHandoff {
   conversationId: string;
 
   parentHandoffId: string | null;
+  /** Additional ancestor checkpoints beyond `parentHandoffId`, populated only for a merge
+   *  checkpoint (created by `mergeCheckpoints`/`POST .../merge`) that unifies two or more offline
+   *  branches - see "Offline causal ancestry" in the protocol doc. Empty for every ordinary
+   *  (non-merge) checkpoint. `parentHandoffId` plus this array together are the checkpoint's full
+   *  causal ancestry; a merge's `parentHandoffId` is its first branch tip and this array holds the
+   *  rest, so `[parentHandoffId, ...mergedFromHandoffIds]` is the complete parent set. */
+  mergedFromHandoffIds: string[];
 
   goal: string;
   currentState: string;
@@ -104,10 +111,11 @@ export interface RuntimeHandoff {
 
   runtime: RuntimeHandoffRuntimeRef;
 
-  /** Cloud-authoritative ordering, assigned atomically by the task head's version counter. Null
-   *  only for a not-yet-synchronized offline checkpoint (see the protocol doc's offline-causal
-   *  ancestry section) - this repository does not yet create offline handoffs, but the schema
-   *  reserves the field so that future work does not need a migration. */
+  /** Cloud-authoritative ordering, assigned atomically by the task head's version counter when the
+   *  checkpoint is created online, or by `syncOfflineCheckpoints`/`POST .../checkpoints/sync` when
+   *  a checkpoint created offline is later synchronized (see "Offline causal ancestry" in the
+   *  protocol doc). A handoff is only ever null here between offline creation and sync - once
+   *  synced it is permanent, like every other field on an immutable handoff row. */
   checkpointVersion: number | null;
   schemaVersion: number;
 
@@ -236,4 +244,86 @@ export interface RuntimeResumeResult {
   /** True when this call had to synthesize the task's first handoff from legacy (pre-protocol)
    *  conversation/binding state because none existed yet (section 20). */
   bootstrapped: boolean;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Offline causal ancestry: a task can branch while offline (multiple checkpoints created locally
+// off the same parent, on different devices or during a network partition) and later merge back
+// into one canonical line. See "Offline causal ancestry" in the protocol doc.
+// ---------------------------------------------------------------------------------------------
+
+/** One checkpoint as created by an offline client: everything an online checkpoint has, minus
+ *  `taskId`/`conversationId` (supplied by the sync call's context) and `checkpointVersion` (never
+ *  client-assigned - see RuntimeHandoff.checkpointVersion). `id` and `createdAt` *are*
+ *  client-supplied here, unlike every other mutation in this protocol: the client already used
+ *  `id` as another offline checkpoint's `parentHandoffId` before syncing, and `createdAt` should
+ *  reflect when the checkpoint actually happened offline, not when it happened to reach the
+ *  server. Neither drives any authorization or ordering decision - `checkpointVersion` (assigned
+ *  at sync time) is what cloud-authoritative ordering actually uses. */
+export interface RuntimeOfflineCheckpointInput {
+  id: string;
+  parentHandoffId: string | null;
+  goal: string;
+  currentState: string;
+  completedActions: RuntimeAction[];
+  decisions: RuntimeDecision[];
+  rejectedPaths: RuntimeRejectedPath[];
+  pendingActions: RuntimeAction[];
+  nextAction: string | null;
+  relevantContext: RuntimeContextReference[];
+  artifacts: RuntimeArtifactReference[];
+  tests: RuntimeTestResults;
+  runtime: RuntimeHandoffRuntimeRef;
+  schemaVersion: number;
+  createdAt: string;
+}
+
+export interface RuntimeOfflineSyncInput {
+  taskId: string;
+  /** Must be in causal order: a checkpoint's `parentHandoffId`, if not null, must already exist
+   *  server-side (from a prior sync) or appear earlier in this same array. */
+  checkpoints: RuntimeOfflineCheckpointInput[];
+  /** When true, moves the task head to `promoteToHandoffId` (default: the last checkpoint in
+   *  `checkpoints`) once every checkpoint in the batch is synced. */
+  promote?: boolean;
+  promoteToHandoffId?: string;
+  expectedHandoffId?: string;
+  idempotencyKey?: string | null;
+}
+
+export interface RuntimeOfflineSyncResult {
+  /** One entry per input checkpoint, in the same order - each now carrying a server-assigned
+   *  `checkpointVersion`. A checkpoint whose `id` already existed (a retried sync) is returned
+   *  as-is rather than re-inserted. */
+  syncedHandoffs: RuntimeHandoff[];
+  taskHead: RuntimeTaskHead;
+}
+
+/** Unifies two or more branch tips (offline or online) into one new checkpoint.
+ *  `branchHandoffIds[0]` becomes the merge checkpoint's `parentHandoffId`; the rest become
+ *  `mergedFromHandoffIds`. The merged goal/state/actions/etc. are supplied explicitly by the
+ *  caller (arbitrary N-way conflict resolution across divergent action lists is out of scope for
+ *  this protocol) - omitted fields default to `branchHandoffIds[0]`'s. */
+export interface RuntimeMergeInput {
+  taskId: string;
+  branchHandoffIds: string[];
+  goal?: string;
+  currentState?: string;
+  completedActions?: RuntimeAction[];
+  decisions?: RuntimeDecision[];
+  rejectedPaths?: RuntimeRejectedPath[];
+  pendingActions?: RuntimeAction[];
+  nextAction?: string | null;
+  relevantContext?: RuntimeContextReference[];
+  artifacts?: RuntimeArtifactReference[];
+  testsPassed?: string[];
+  testsFailed?: string[];
+  testsPending?: string[];
+  expectedHandoffId: string;
+  idempotencyKey?: string | null;
+}
+
+export interface RuntimeMergeResult {
+  handoff: RuntimeHandoff;
+  taskHead: RuntimeTaskHead;
 }

@@ -340,7 +340,130 @@ describe("Runtime Handoff Protocol REST surface", () => {
 
     await app.close();
   });
+
+  it("syncs offline-created checkpoints and merges a diverged branch back into one line - all through HTTP (Offline causal ancestry)", async () => {
+    const modelId = "qwen2.5-0.5b-android";
+    const adapter = healthyAdapter(modelId);
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId: candidateId, executionTarget }) =>
+        candidateId === modelId && executionTarget === "backend" ? adapter : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700009006", "Offline Handoff Shop");
+    await activateModel(app, owner, modelId);
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/conversations",
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({ kind: "personal", activeShopId: owner.businessId })
+    });
+    const taskId = created.json<{ conversation: { id: string } }>().conversation.id;
+
+    const resolved = await app.inject({
+      method: "GET",
+      url: `/v1/runtime/${taskId}`,
+      headers: { cookie: owner.cookie }
+    });
+    const bootstrap = resolved.json<{
+      activeHandoff: { id: string; runtime: { agentId: string; modelId: string; executionHostId: string } };
+    }>();
+    const runtime = bootstrap.activeHandoff.runtime;
+
+    // A client went offline and created two divergent local checkpoints off the same parent.
+    // Built once and reused byte-for-byte below (including createdAt) - a real offline client
+    // retries the *same* local record, not a freshly re-timestamped one.
+    const checkpointsPayload = {
+      checkpoints: [
+        offlineCheckpoint("branch-a", bootstrap.activeHandoff.id, runtime, "Branch A: tried supplier 1"),
+        offlineCheckpoint("branch-b", bootstrap.activeHandoff.id, runtime, "Branch B: tried supplier 2")
+      ]
+    };
+    const sync = await app.inject({
+      method: "POST",
+      url: `/v1/runtime/${taskId}/checkpoints/sync`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify(checkpointsPayload)
+    });
+    expect(sync.statusCode).toBe(200);
+    const syncBody = sync.json<{
+      syncedHandoffs: { id: string; checkpointVersion: number }[];
+      taskHead: { activeHandoffId: string };
+    }>();
+    expect(syncBody.syncedHandoffs.map((handoff) => handoff.id)).toEqual(["branch-a", "branch-b"]);
+    expect(syncBody.syncedHandoffs[0]?.checkpointVersion).toBe(2);
+    expect(syncBody.syncedHandoffs[1]?.checkpointVersion).toBe(3);
+    // Sync alone never promotes the head.
+    expect(syncBody.taskHead.activeHandoffId).toBe(bootstrap.activeHandoff.id);
+
+    // Retrying the exact same sync is a safe no-op (idempotency for offline batches).
+    const retried = await app.inject({
+      method: "POST",
+      url: `/v1/runtime/${taskId}/checkpoints/sync`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify(checkpointsPayload)
+    });
+    expect(retried.statusCode).toBe(200);
+    expect(
+      retried.json<{ syncedHandoffs: { id: string }[] }>().syncedHandoffs.map((handoff) => handoff.id)
+    ).toEqual(["branch-a", "branch-b"]);
+
+    const merge = await app.inject({
+      method: "POST",
+      url: `/v1/runtime/${taskId}/merge`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({
+        branchHandoffIds: ["branch-a", "branch-b"],
+        currentState: "Compared both suppliers; going with supplier 1.",
+        expectedHandoffId: bootstrap.activeHandoff.id
+      })
+    });
+    expect(merge.statusCode).toBe(200);
+    const mergeBody = merge.json<{
+      handoff: { id: string; parentHandoffId: string; mergedFromHandoffIds: string[]; currentState: string };
+      taskHead: { activeHandoffId: string };
+    }>();
+    expect(mergeBody.handoff.parentHandoffId).toBe("branch-a");
+    expect(mergeBody.handoff.mergedFromHandoffIds).toEqual(["branch-b"]);
+    expect(mergeBody.handoff.currentState).toBe("Compared both suppliers; going with supplier 1.");
+    expect(mergeBody.taskHead.activeHandoffId).toBe(mergeBody.handoff.id);
+
+    const afterMerge = await app.inject({
+      method: "GET",
+      url: `/v1/runtime/${taskId}`,
+      headers: { cookie: owner.cookie }
+    });
+    expect(
+      afterMerge.json<{ taskHead: { activeHandoffId: string } }>().taskHead.activeHandoffId
+    ).toBe(mergeBody.handoff.id);
+
+    await app.close();
+  });
 });
+
+function offlineCheckpoint(
+  id: string,
+  parentHandoffId: string,
+  runtime: { agentId: string; modelId: string; executionHostId: string },
+  currentState: string
+) {
+  return {
+    id,
+    parentHandoffId,
+    goal: "Find a supplier",
+    currentState,
+    completedActions: [],
+    decisions: [],
+    rejectedPaths: [],
+    pendingActions: [],
+    nextAction: null,
+    relevantContext: [],
+    artifacts: [],
+    tests: { passed: [], failed: [], pending: [] },
+    runtime,
+    schemaVersion: 1,
+    createdAt: new Date().toISOString()
+  };
+}
 
 async function activateModel(
   app: ReturnType<typeof buildApi>,

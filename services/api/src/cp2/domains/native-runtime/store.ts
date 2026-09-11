@@ -986,6 +986,22 @@ export class NativeRuntimeBindingStore {
   }
 
   /**
+   * Existence-only check for an (agent, model, host) triple - no status/availability/capability
+   * checks, unlike `validateCandidateExecutionChain` above. Used by the Runtime Handoff Protocol's
+   * offline checkpoint sync (protocol doc "Offline causal ancestry"): an offline-created checkpoint
+   * was valid when the client created it, and Postgres foreign keys require the referenced rows to
+   * still exist at sync time, but a model that is merely temporarily unavailable by sync time
+   * should not block syncing a historical record of it.
+   */
+  runtimeRefExists(input: { agentId: string; modelId: string; executionHostId: string }): boolean {
+    return (
+      this.agents.has(input.agentId) &&
+      this.models.has(input.modelId) &&
+      this.hosts.has(input.executionHostId)
+    );
+  }
+
+  /**
    * Creates (or, for an identical triple, deterministically reuses) a runtime binding scoped to
    * one account/business pair with a single enabled primary role, and never mutates an existing
    * binding in place. Bindings can be shared/reused across many conversations (protocol doc

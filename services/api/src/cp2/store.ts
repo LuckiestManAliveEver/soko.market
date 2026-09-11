@@ -260,6 +260,10 @@ import type {
   RuntimeCheckpointCreateInput,
   RuntimeCheckpointResult,
   RuntimeHandoff,
+  RuntimeMergeInput,
+  RuntimeMergeResult,
+  RuntimeOfflineSyncInput,
+  RuntimeOfflineSyncResult,
   RuntimeResumeInput,
   RuntimeResumeResult,
   RuntimeRollbackInput,
@@ -3357,6 +3361,15 @@ export class Cp2Store {
   resumeRuntimeHandoff(sessionId: string | null, input: RuntimeResumeInput): RuntimeResumeResult {
     return this.runtimeHandoffDomain.resume(sessionId, input);
   }
+  syncOfflineRuntimeCheckpoints(
+    sessionId: string | null,
+    input: RuntimeOfflineSyncInput
+  ): RuntimeOfflineSyncResult {
+    return this.runtimeHandoffDomain.syncOfflineCheckpoints(sessionId, input);
+  }
+  mergeRuntimeHandoffs(sessionId: string | null, input: RuntimeMergeInput): RuntimeMergeResult {
+    return this.runtimeHandoffDomain.mergeCheckpoints(sessionId, input);
+  }
 
   // MCP wrappers for the Runtime Handoff Protocol (docs/architecture/runtime-handoff-protocol.md
   // section 17: runtime.status/checkpoint/resume/rollback, agent.swap/model.swap/
@@ -3423,6 +3436,28 @@ export class Cp2Store {
     return this.runtimeHandoffDomain.rollback(
       this.trustedMcpSessionId(input.principal, now),
       input.rollback
+    );
+  }
+  syncOfflineRuntimeCheckpointsForMcp(input: {
+    principal: McpPrincipal;
+    sync: RuntimeOfflineSyncInput;
+    now?: Date;
+  }): RuntimeOfflineSyncResult {
+    const now = input.now ?? new Date();
+    return this.runtimeHandoffDomain.syncOfflineCheckpoints(
+      this.trustedMcpSessionId(input.principal, now),
+      input.sync
+    );
+  }
+  mergeRuntimeHandoffsForMcp(input: {
+    principal: McpPrincipal;
+    merge: RuntimeMergeInput;
+    now?: Date;
+  }): RuntimeMergeResult {
+    const now = input.now ?? new Date();
+    return this.runtimeHandoffDomain.mergeCheckpoints(
+      this.trustedMcpSessionId(input.principal, now),
+      input.merge
     );
   }
 

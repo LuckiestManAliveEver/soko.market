@@ -91,6 +91,7 @@ interface RuntimeHandoff {
   taskId: string; // = conversation id, see above
   conversationId: string;
   parentHandoffId: string | null; // causal ancestry, see Offline causal ancestry below
+  mergedFromHandoffIds: string[]; // additional ancestors, populated only for a merge checkpoint
   goal: string;
   currentState: string;
   completedActions: RuntimeAction[];
@@ -326,17 +327,70 @@ These stay five separate concerns/tables. Nothing in this protocol collapses the
 
 ## Offline causal ancestry
 
-Full offline merge is out of scope for this implementation (non-goal, per the protocol's own
-scope), but the schema preserves what it needs for later:
+A task can branch while offline - a client creates checkpoints locally, off the same parent,
+without a server round trip (a network partition, or two devices working on the same task) - and
+later needs to bring those branches back into one canonical line. The schema was built for this
+from the start (`id` is a globally unique application-generated id, never reused;
+`parentHandoffId` carries causal ancestry independent of `checkpointVersion`; `checkpointVersion`
+is nullable and cloud-authoritative only) and this implementation now includes the sync and merge
+operations themselves.
 
-- `id` is a globally unique application-generated id (`node:crypto randomUUID`), never reused.
-- `parentHandoffId` carries causal ancestry independent of `checkpointVersion`.
-- `checkpointVersion` is nullable and cloud-authoritative only - assigned when a checkpoint
-  synchronizes with the server, not at creation time.
+### Sync
 
-This is enough to support a future offline branch-then-merge model (`H41 -> H42-A` and
-`H41 -> H42-B` concurrently while offline, later merged into `H43`) without a schema migration:
-only the merge logic itself is future work.
+`RuntimeHandoffDomain.syncOfflineCheckpoints` (`POST /v1/runtime/:taskId/checkpoints/sync`) takes a
+batch of client-created checkpoints, **in causal order** (a checkpoint's `parentHandoffId`, if not
+null, must already exist server-side or appear earlier in the same batch), and syncs each one:
+
+- The client's own `id` and `createdAt` are preserved - unlike every other mutation in this
+  protocol, they are not server-generated. The client already used `id` as another offline
+  checkpoint's `parentHandoffId` before either synced, and `createdAt` should reflect when the
+  checkpoint actually happened offline.
+- Each checkpoint receives a server-assigned `checkpointVersion` through the same
+  `allocateNextCheckpointVersion` primitive every other version-allocating path uses (checkpoint
+  promotion, swap commit, merge) - there is still exactly one version-allocation implementation.
+- Re-syncing a checkpoint whose `id` already exists is a safe no-op: the existing (immutable) row
+  is returned as-is, provided its content still matches (see below) - this is what makes retrying a
+  partially-failed sync safe, the same idempotency guarantee every other mutation in this protocol
+  gives.
+- A retry whose content has actually changed - a real conflict, not a retry - is rejected with
+  `409 RUNTIME_OFFLINE_CHECKPOINT_CONFLICT` rather than silently accepted or silently ignored.
+- An offline checkpoint's `runtime` (agent/model/host) triple is checked for **existence** only
+  (`NativeRuntimeBindingStore.runtimeRefExists`), not availability/compatibility - it was a valid
+  reference when the client created it offline, and Postgres foreign keys require the referenced
+  rows to still exist at sync time, but a model that happens to be temporarily unavailable by sync
+  time should not block syncing a historical record of it. A genuinely missing agent/model/host
+  (deleted, or from an environment the syncing account can't see) is rejected with
+  `409 RUNTIME_OFFLINE_RUNTIME_REF_MISSING`.
+- Sync never promotes the task head by itself unless the caller passes `promote: true` (with the
+  usual `expectedHandoffId` optimistic-concurrency guard), in which case the head moves to the last
+  checkpoint in the batch, or to an explicit `promoteToHandoffId`.
+
+### Merge
+
+`RuntimeHandoffDomain.mergeCheckpoints` (`POST /v1/runtime/:taskId/merge`) unifies two or more
+branch tips (`branchHandoffIds`, in the offline example: `H42-A` and `H42-B`) into one new
+checkpoint `H43`:
+
+- `branchHandoffIds[0]` becomes `H43`'s `parentHandoffId`; the rest become `mergedFromHandoffIds` -
+  so `[parentHandoffId, ...mergedFromHandoffIds]` is a checkpoint's complete causal ancestry, and
+  `mergedFromHandoffIds` is empty for every ordinary (non-merge) checkpoint.
+- The merged `goal`/`currentState`/action lists/etc. are supplied explicitly by the caller
+  (arbitrary N-way conflict resolution across divergent action lists is out of scope for this
+  protocol - a merge records *that* branches converged and what the resulting state is, not how to
+  auto-reconcile them); any field the caller omits defaults to the first branch's.
+- Goes through `allocateAndInsertCheckpoint` like every other checkpoint-creating path - a merge
+  checkpoint is an ordinary immutable handoff with more than one parent recorded, not a special
+  case in storage.
+- Always promotes the head to the new merge checkpoint (a merge that didn't become authoritative
+  would defeat its own purpose), and so always requires `expectedHandoffId`.
+
+```mermaid
+flowchart LR
+    H41["H41"] --> H42A["H42-A<br/>(offline, device 1)"]
+    H41 --> H42B["H42-B<br/>(offline, device 2)"]
+    H42A -->|"parentHandoffId"| H43["H43<br/>(merge)"]
+    H42B -.->|"mergedFromHandoffIds"| H43
+```
 
 ## REST API
 
@@ -347,6 +401,7 @@ GET  /v1/runtime/:taskId/handoff?version=42
 GET  /v1/runtime/:taskId/handoffs/:handoffId
 
 POST /v1/runtime/:taskId/checkpoints
+POST /v1/runtime/:taskId/checkpoints/sync
 
 POST /v1/runtime/:taskId/swaps/agent
 POST /v1/runtime/:taskId/swaps/model
@@ -354,6 +409,7 @@ POST /v1/runtime/:taskId/swaps/host
 
 POST /v1/runtime/:taskId/resume
 POST /v1/runtime/:taskId/rollback
+POST /v1/runtime/:taskId/merge
 ```
 
 Namespaced under `/v1/runtime/...` (the reference design's paths are bare `/runtime/...`) to match
@@ -365,10 +421,14 @@ Implemented in `services/api/src/cp2/domains/runtime-handoff/routes.ts`; registe
 ## MCP API
 
 `services/api/src/mcp/routes.ts` exposes `soko.runtime_status` (scope `mcp:read`), and
-`soko.runtime_checkpoint`, `soko.runtime_resume`, `soko.runtime_rollback`, `soko.agent_swap`,
-`soko.model_swap`, `soko.execution_host_swap` (scope `mcp:act`) - the repository's `soko.` naming
-convention applied to the protocol's `runtime.*`/`agent.swap`/`model.swap`/`execution_host.swap`
-tool names.
+`soko.runtime_checkpoint`, `soko.runtime_resume`, `soko.runtime_rollback`, `soko.runtime_merge`,
+`soko.agent_swap`, `soko.model_swap`, `soko.execution_host_swap` (scope `mcp:act`) - the
+repository's `soko.` naming convention applied to the protocol's
+`runtime.*`/`agent.swap`/`model.swap`/`execution_host.swap` tool names. Offline checkpoint sync is
+deliberately **not** exposed as an MCP tool: it is a device/mobile-client feature (a batch of
+richly-nested locally-created records), and MCP tool callers are server-side agents that are not
+meaningfully "offline" the way a mobile client is - `POST /v1/runtime/:taskId/checkpoints/sync`
+covers that case directly.
 
 MCP tools are authenticated by bearer token + scope, not a browser session cookie, so they cannot
 call `RuntimeHandoffDomain`'s session-shaped methods directly the way REST routes do. Rather than
@@ -399,10 +459,18 @@ handoffs; or use chat history as the handoff protocol.
   concurrency (missing and stale `expectedHandoffId`), model/agent swap end-to-end, shared-binding
   non-mutation, Prepare-phase failure leaving the old runtime authoritative, activation failure
   independent of task/checkpoint validity, drift detection, rollback without mutating history,
-  idempotent swap/checkpoint retries, and a "two concurrent conflicting swaps" scenario proving
-  exactly one winner and one `409`, with no lost update.
+  idempotent swap/checkpoint retries, a "two concurrent conflicting swaps" scenario proving exactly
+  one winner and one `409` with no lost update, and a dedicated "offline sync and merge" suite:
+  causally-ordered batch sync with correct version allocation, optional promotion (to the last
+  synced checkpoint or an explicit `promoteToHandoffId`), rejecting an out-of-causal-order batch,
+  idempotent re-sync vs. a genuine content conflict on the same offline id, rejecting a checkpoint
+  whose runtime triple no longer exists, merging two genuine offline branches into one checkpoint
+  with the correct `parentHandoffId`/`mergedFromHandoffIds` split, and rejecting a merge with too
+  few branches, an unknown branch id, or a stale `expectedHandoffId`.
 - `tests/runtime-handoff-protocol.test.ts` - the REST surface end-to-end through the real Fastify
   app (bootstrap -> checkpoint -> swap -> resume -> rollback -> handoff lookup by id/version),
   idempotent checkpoint retries via the `Idempotency-Key` header, cross-account authorization
-  (403/404), and one MCP round trip (`soko.runtime_status` + `soko.model_swap`) proving the MCP
-  tool changes the same conversation the REST surface reads back.
+  (403/404), one MCP round trip (`soko.runtime_status` + `soko.model_swap`) proving the MCP tool
+  changes the same conversation the REST surface reads back, and one offline scenario (two branch
+  checkpoints synced via `.../checkpoints/sync`, a retried sync proving idempotency, then
+  `.../merge` unifying them and promoting the head) through HTTP end-to-end.

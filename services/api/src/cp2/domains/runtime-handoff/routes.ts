@@ -16,6 +16,7 @@ import type {
   RuntimeContextReference,
   RuntimeContextReferenceKind,
   RuntimeDecision,
+  RuntimeOfflineCheckpointInput,
   RuntimeRejectedPath,
   RuntimeSwapDimension
 } from "@soko/shared-types";
@@ -115,6 +116,78 @@ function parseStringList(value: unknown, name: string): string[] | undefined {
     throw new Cp2Error(400, `${name}_invalid`, `${name} must be an array of strings.`);
   }
   return value as string[];
+}
+
+function parseRuntimeRef(value: unknown, name: string): { agentId: string; modelId: string; executionHostId: string } {
+  const entry = parseRequestBody(value);
+  return {
+    agentId: parseString(entry.agentId, `${name}.agentId`),
+    modelId: parseString(entry.modelId, `${name}.modelId`),
+    executionHostId: parseString(entry.executionHostId, `${name}.executionHostId`)
+  };
+}
+
+function parseTestResults(
+  value: unknown,
+  name: string
+): { passed: string[]; failed: string[]; pending: string[] } {
+  const entry = parseRequestBody(value);
+  return {
+    passed: parseStringList(entry.passed, `${name}.passed`) ?? [],
+    failed: parseStringList(entry.failed, `${name}.failed`) ?? [],
+    pending: parseStringList(entry.pending, `${name}.pending`) ?? []
+  };
+}
+
+/** One offline-created checkpoint, as submitted to `.../checkpoints/sync`. Every field here is
+ *  required - unlike an online checkpoint (which only carries the fields the caller wants to
+ *  change over the previous handoff), an offline checkpoint is a complete standalone record: the
+ *  client had no server-side previous handoff to diff against while offline. */
+function parseOfflineCheckpoint(value: unknown, index: number): RuntimeOfflineCheckpointInput {
+  const name = `checkpoints[${index}]`;
+  const entry = parseRequestBody(value);
+  return {
+    id: parseString(entry.id, `${name}.id`),
+    parentHandoffId: parseNullableString(entry.parentHandoffId ?? null),
+    goal: parseString(entry.goal, `${name}.goal`),
+    currentState: parseString(entry.currentState, `${name}.currentState`),
+    completedActions: parseActions(entry.completedActions, `${name}.completedActions`) ?? [],
+    decisions: parseDecisions(entry.decisions, `${name}.decisions`) ?? [],
+    rejectedPaths: parseRejectedPaths(entry.rejectedPaths, `${name}.rejectedPaths`) ?? [],
+    pendingActions: parseActions(entry.pendingActions, `${name}.pendingActions`) ?? [],
+    nextAction: parseNullableString(entry.nextAction ?? null),
+    relevantContext: parseContextRefs(entry.relevantContext, `${name}.relevantContext`) ?? [],
+    artifacts: parseArtifactRefs(entry.artifacts, `${name}.artifacts`) ?? [],
+    tests: parseTestResults(entry.tests ?? {}, `${name}.tests`),
+    runtime: parseRuntimeRef(entry.runtime, `${name}.runtime`),
+    schemaVersion:
+      entry.schemaVersion === undefined ? 1 : Number.parseInt(String(entry.schemaVersion), 10),
+    createdAt: parseString(entry.createdAt, `${name}.createdAt`)
+  };
+}
+
+interface OfflineSyncBody {
+  checkpoints?: unknown;
+  promote?: unknown;
+  promoteToHandoffId?: unknown;
+  expectedHandoffId?: unknown;
+}
+
+interface MergeBody {
+  branchHandoffIds?: unknown;
+  goal?: unknown;
+  currentState?: unknown;
+  completedActions?: unknown;
+  decisions?: unknown;
+  rejectedPaths?: unknown;
+  pendingActions?: unknown;
+  nextAction?: unknown;
+  relevantContext?: unknown;
+  artifacts?: unknown;
+  testsPassed?: unknown;
+  testsFailed?: unknown;
+  testsPending?: unknown;
+  expectedHandoffId?: unknown;
 }
 
 interface CheckpointBody {
@@ -284,6 +357,78 @@ export function registerRuntimeHandoffRoutes(app: FastifyInstance, store: Cp2Sto
           ...(body.expectedHandoffId === undefined
             ? {}
             : { expectedHandoffId: parseString(body.expectedHandoffId, "expectedHandoffId") })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/runtime/:taskId/checkpoints/sync",
+    async (request: FastifyRequest<{ Params: TaskParams; Body: OfflineSyncBody }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        if (!Array.isArray(body.checkpoints)) {
+          throw new Cp2Error(400, "checkpoints_invalid", "checkpoints must be an array.");
+        }
+        return store.syncOfflineRuntimeCheckpoints(readSessionCookie(request.headers.cookie), {
+          taskId: request.params.taskId,
+          checkpoints: body.checkpoints.map((entry, index) => parseOfflineCheckpoint(entry, index)),
+          idempotencyKey: readHeader(request, "idempotency-key"),
+          ...(body.promote === undefined ? {} : { promote: body.promote === true }),
+          ...(body.promoteToHandoffId === undefined
+            ? {}
+            : { promoteToHandoffId: parseString(body.promoteToHandoffId, "promoteToHandoffId") }),
+          ...(body.expectedHandoffId === undefined
+            ? {}
+            : { expectedHandoffId: parseString(body.expectedHandoffId, "expectedHandoffId") })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/runtime/:taskId/merge",
+    async (request: FastifyRequest<{ Params: TaskParams; Body: MergeBody }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        const branchHandoffIds = parseStringList(body.branchHandoffIds, "branchHandoffIds");
+        if (branchHandoffIds === undefined) {
+          throw new Cp2Error(400, "branchHandoffIds_required", "branchHandoffIds is required.");
+        }
+        const completedActions = parseActions(body.completedActions, "completedActions");
+        const decisions = parseDecisions(body.decisions, "decisions");
+        const rejectedPaths = parseRejectedPaths(body.rejectedPaths, "rejectedPaths");
+        const pendingActions = parseActions(body.pendingActions, "pendingActions");
+        const relevantContext = parseContextRefs(body.relevantContext, "relevantContext");
+        const artifacts = parseArtifactRefs(body.artifacts, "artifacts");
+        const testsPassed = parseStringList(body.testsPassed, "testsPassed");
+        const testsFailed = parseStringList(body.testsFailed, "testsFailed");
+        const testsPending = parseStringList(body.testsPending, "testsPending");
+        return store.mergeRuntimeHandoffs(readSessionCookie(request.headers.cookie), {
+          taskId: request.params.taskId,
+          branchHandoffIds,
+          expectedHandoffId: parseString(body.expectedHandoffId, "expectedHandoffId"),
+          idempotencyKey: readHeader(request, "idempotency-key"),
+          ...(body.goal === undefined ? {} : { goal: parseString(body.goal, "goal") }),
+          ...(body.currentState === undefined
+            ? {}
+            : { currentState: parseString(body.currentState, "currentState") }),
+          ...(completedActions === undefined ? {} : { completedActions }),
+          ...(decisions === undefined ? {} : { decisions }),
+          ...(rejectedPaths === undefined ? {} : { rejectedPaths }),
+          ...(pendingActions === undefined ? {} : { pendingActions }),
+          ...(body.nextAction === undefined
+            ? {}
+            : { nextAction: parseNullableString(body.nextAction) }),
+          ...(relevantContext === undefined ? {} : { relevantContext }),
+          ...(artifacts === undefined ? {} : { artifacts }),
+          ...(testsPassed === undefined ? {} : { testsPassed }),
+          ...(testsFailed === undefined ? {} : { testsFailed }),
+          ...(testsPending === undefined ? {} : { testsPending })
         });
       } catch (error) {
         return sendCp2Error(reply, error);

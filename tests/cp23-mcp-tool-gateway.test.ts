@@ -109,6 +109,7 @@ describe("CP23 MCP tool gateway", () => {
       "soko.runtime_checkpoint",
       "soko.runtime_resume",
       "soko.runtime_rollback",
+      "soko.runtime_merge",
       "soko.agent_swap",
       "soko.model_swap",
       "soko.execution_host_swap"
@@ -310,6 +311,7 @@ describe("CP23 MCP tool gateway", () => {
       "soko.runtime_checkpoint",
       "soko.runtime_resume",
       "soko.runtime_rollback",
+      "soko.runtime_merge",
       "soko.agent_swap",
       "soko.model_swap",
       "soko.execution_host_swap"

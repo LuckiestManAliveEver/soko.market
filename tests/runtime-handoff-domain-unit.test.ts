@@ -3,6 +3,7 @@ import type {
   AccountSummary,
   AiModelSummary,
   ConversationSummary,
+  RuntimeOfflineCheckpointInput,
   UserSummary
 } from "../packages/shared-types/src";
 import { Cp2Error } from "../services/api/src/cp2/cp2-error";
@@ -52,6 +53,30 @@ function buildConversation(id: string, accountId: string): ConversationSummary {
     runtimeBindingId: globalDefaultRuntimeBindingId,
     createdAt: now,
     updatedAt: now
+  };
+}
+
+function buildOfflineCheckpoint(
+  overrides: Partial<RuntimeOfflineCheckpointInput> & {
+    id: string;
+    parentHandoffId: string | null;
+    runtime: RuntimeOfflineCheckpointInput["runtime"];
+  }
+): RuntimeOfflineCheckpointInput {
+  return {
+    goal: "Offline goal",
+    currentState: "Offline current state",
+    completedActions: [],
+    decisions: [],
+    rejectedPaths: [],
+    pendingActions: [],
+    nextAction: null,
+    relevantContext: [],
+    artifacts: [],
+    tests: { passed: [], failed: [], pending: [] },
+    schemaVersion: 1,
+    createdAt: new Date().toISOString(),
+    ...overrides
   };
 }
 
@@ -694,5 +719,235 @@ describe("RuntimeHandoffDomain", () => {
 
     expect(new Set(versions).size).toBe(versions.length);
     expect(versions).toEqual([...versions].sort((a, b) => (a ?? 0) - (b ?? 0)));
+  });
+});
+
+describe("RuntimeHandoffDomain offline sync and merge", () => {
+  it("syncs a causally-ordered batch of offline checkpoints, assigning versions in order, without promoting by default", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "offline-a");
+    const sessionId = harness.sessionIdFor(accountId);
+    const bootstrap = harness.domain.resolveHandoff(sessionId, conversationId);
+    const runtime = bootstrap.activeHandoff.runtime;
+
+    const c1 = buildOfflineCheckpoint({
+      id: "offline-c1",
+      parentHandoffId: bootstrap.activeHandoff.id,
+      runtime,
+      currentState: "offline step 1"
+    });
+    const c2 = buildOfflineCheckpoint({
+      id: "offline-c2",
+      parentHandoffId: "offline-c1",
+      runtime,
+      currentState: "offline step 2"
+    });
+
+    const result = harness.domain.syncOfflineCheckpoints(sessionId, {
+      taskId: conversationId,
+      checkpoints: [c1, c2]
+    });
+
+    expect(result.syncedHandoffs).toHaveLength(2);
+    expect(result.syncedHandoffs[0]?.id).toBe("offline-c1");
+    expect(result.syncedHandoffs[0]?.checkpointVersion).toBe(2);
+    expect(result.syncedHandoffs[1]?.id).toBe("offline-c2");
+    expect(result.syncedHandoffs[1]?.checkpointVersion).toBe(3);
+    expect(result.syncedHandoffs[1]?.parentHandoffId).toBe("offline-c1");
+    // Not promoted by default - head is still at the online bootstrap checkpoint.
+    expect(result.taskHead.activeHandoffId).toBe(bootstrap.activeHandoff.id);
+    expect(
+      harness.domain.resolveHandoff(sessionId, conversationId).taskHead.nextCheckpointVersion
+    ).toBe(4);
+  });
+
+  it("promotes the head to the last synced checkpoint (or an explicit promoteToHandoffId) when promote:true", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "offline-b");
+    const sessionId = harness.sessionIdFor(accountId);
+    const bootstrap = harness.domain.resolveHandoff(sessionId, conversationId);
+    const runtime = bootstrap.activeHandoff.runtime;
+    const c1 = buildOfflineCheckpoint({
+      id: "offline-b-c1",
+      parentHandoffId: bootstrap.activeHandoff.id,
+      runtime
+    });
+
+    const result = harness.domain.syncOfflineCheckpoints(sessionId, {
+      taskId: conversationId,
+      checkpoints: [c1],
+      promote: true,
+      expectedHandoffId: bootstrap.activeHandoff.id
+    });
+
+    expect(result.taskHead.activeHandoffId).toBe("offline-b-c1");
+    expect(
+      harness.domain.resolveHandoff(sessionId, conversationId).taskHead.activeHandoffId
+    ).toBe("offline-b-c1");
+  });
+
+  it("rejects a batch submitted out of causal order", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "offline-c");
+    const sessionId = harness.sessionIdFor(accountId);
+    const bootstrap = harness.domain.resolveHandoff(sessionId, conversationId);
+    const runtime = bootstrap.activeHandoff.runtime;
+    const orphan = buildOfflineCheckpoint({
+      id: "offline-c-orphan",
+      parentHandoffId: "does-not-exist-yet",
+      runtime
+    });
+
+    expect(() =>
+      harness.domain.syncOfflineCheckpoints(sessionId, {
+        taskId: conversationId,
+        checkpoints: [orphan]
+      })
+    ).toThrow(Cp2Error);
+    try {
+      harness.domain.syncOfflineCheckpoints(sessionId, {
+        taskId: conversationId,
+        checkpoints: [orphan]
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(Cp2Error);
+      expect((error as Cp2Error).code).toBe("RUNTIME_OFFLINE_PARENT_MISSING");
+    }
+  });
+
+  it("is idempotent for a retried sync (same checkpoint id, same content) and rejects a retried sync with different content", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "offline-d");
+    const sessionId = harness.sessionIdFor(accountId);
+    const bootstrap = harness.domain.resolveHandoff(sessionId, conversationId);
+    const runtime = bootstrap.activeHandoff.runtime;
+    const c1 = buildOfflineCheckpoint({
+      id: "offline-d-c1",
+      parentHandoffId: bootstrap.activeHandoff.id,
+      runtime,
+      currentState: "step 1"
+    });
+
+    const first = harness.domain.syncOfflineCheckpoints(sessionId, {
+      taskId: conversationId,
+      checkpoints: [c1]
+    });
+    const second = harness.domain.syncOfflineCheckpoints(sessionId, {
+      taskId: conversationId,
+      checkpoints: [c1]
+    });
+    expect(second.syncedHandoffs[0]?.id).toBe(first.syncedHandoffs[0]?.id);
+    // No duplicate version was allocated for the retried sync.
+    expect(
+      harness.domain.resolveHandoff(sessionId, conversationId).taskHead.nextCheckpointVersion
+    ).toBe(bootstrap.taskHead.nextCheckpointVersion + 1);
+
+    const conflicting = buildOfflineCheckpoint({
+      id: "offline-d-c1",
+      parentHandoffId: bootstrap.activeHandoff.id,
+      runtime,
+      currentState: "a different step 1"
+    });
+    expect(() =>
+      harness.domain.syncOfflineCheckpoints(sessionId, {
+        taskId: conversationId,
+        checkpoints: [conflicting]
+      })
+    ).toThrow(Cp2Error);
+  });
+
+  it("rejects an offline checkpoint whose runtime triple no longer exists", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "offline-e");
+    const sessionId = harness.sessionIdFor(accountId);
+    const bootstrap = harness.domain.resolveHandoff(sessionId, conversationId);
+    const bogus = buildOfflineCheckpoint({
+      id: "offline-e-c1",
+      parentHandoffId: bootstrap.activeHandoff.id,
+      runtime: {
+        agentId: "does-not-exist",
+        modelId: "does-not-exist",
+        executionHostId: "does-not-exist"
+      }
+    });
+    expect(() =>
+      harness.domain.syncOfflineCheckpoints(sessionId, {
+        taskId: conversationId,
+        checkpoints: [bogus]
+      })
+    ).toThrow(Cp2Error);
+  });
+
+  it("merges two offline branches into one checkpoint carrying both as ancestors, and promotes the head to it", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "offline-f");
+    const sessionId = harness.sessionIdFor(accountId);
+    const bootstrap = harness.domain.resolveHandoff(sessionId, conversationId);
+    const runtime = bootstrap.activeHandoff.runtime;
+
+    // Two checkpoints forked from the same parent while offline - a genuine branch.
+    const branchA = buildOfflineCheckpoint({
+      id: "offline-f-a",
+      parentHandoffId: bootstrap.activeHandoff.id,
+      runtime,
+      currentState: "branch A"
+    });
+    const branchB = buildOfflineCheckpoint({
+      id: "offline-f-b",
+      parentHandoffId: bootstrap.activeHandoff.id,
+      runtime,
+      currentState: "branch B"
+    });
+    const synced = harness.domain.syncOfflineCheckpoints(sessionId, {
+      taskId: conversationId,
+      checkpoints: [branchA, branchB]
+    });
+    expect(synced.taskHead.activeHandoffId).toBe(bootstrap.activeHandoff.id);
+
+    const merge = harness.domain.mergeCheckpoints(sessionId, {
+      taskId: conversationId,
+      branchHandoffIds: ["offline-f-a", "offline-f-b"],
+      currentState: "merged branch A and B",
+      expectedHandoffId: bootstrap.activeHandoff.id
+    });
+
+    expect(merge.handoff.parentHandoffId).toBe("offline-f-a");
+    expect(merge.handoff.mergedFromHandoffIds).toEqual(["offline-f-b"]);
+    expect(merge.handoff.currentState).toBe("merged branch A and B");
+    expect(merge.taskHead.activeHandoffId).toBe(merge.handoff.id);
+    expect(
+      harness.domain.resolveHandoff(sessionId, conversationId).taskHead.activeHandoffId
+    ).toBe(merge.handoff.id);
+  });
+
+  it("rejects a merge with fewer than two branches, an unknown branch id, or a stale expectedHandoffId", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "offline-g");
+    const sessionId = harness.sessionIdFor(accountId);
+    const bootstrap = harness.domain.resolveHandoff(sessionId, conversationId);
+
+    expect(() =>
+      harness.domain.mergeCheckpoints(sessionId, {
+        taskId: conversationId,
+        branchHandoffIds: [bootstrap.activeHandoff.id],
+        expectedHandoffId: bootstrap.activeHandoff.id
+      })
+    ).toThrow(Cp2Error);
+
+    expect(() =>
+      harness.domain.mergeCheckpoints(sessionId, {
+        taskId: conversationId,
+        branchHandoffIds: [bootstrap.activeHandoff.id, "does-not-exist"],
+        expectedHandoffId: bootstrap.activeHandoff.id
+      })
+    ).toThrow(Cp2Error);
+
+    expect(() =>
+      harness.domain.mergeCheckpoints(sessionId, {
+        taskId: conversationId,
+        branchHandoffIds: [bootstrap.activeHandoff.id, bootstrap.activeHandoff.id],
+        expectedHandoffId: "stale-handoff-id"
+      })
+    ).toThrow(Cp2Error);
   });
 });
