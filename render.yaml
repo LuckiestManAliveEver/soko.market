@@ -153,7 +153,10 @@ services:
       - key: INFERENCE_JOB_SIGNING_SECRET
         generateValue: true
       - key: OCR_WORKER_URL
-        sync: false
+        fromService:
+          name: soko-market-ocr-worker
+          type: pserv
+          property: hostport
       - key: OCR_CONCURRENCY
         value: "1"
       - key: OCR_JOB_TIMEOUT_SECONDS
@@ -184,6 +187,52 @@ services:
     region: oregon
     ipAllowList: []
     maxmemoryPolicy: allkeys-lru
+
+  # Self-hosted PaddleOCR/Tesseract worker (docs/receipt-ocr.md, services/receipt-ocr-service/).
+  # Private, not public: only soko-market-api reaches it, over Render's private network at the
+  # "hostport" wired into OCR_WORKER_URL above. This is unrelated to the LLM inference boundary
+  # docs/deployment/render-inference.md describes - Render still never runs a chat model itself,
+  # it hosts an OCR worker, which is a bounded image/PDF-to-text tool, not a model runtime.
+  - type: pserv
+    name: soko-market-ocr-worker
+    runtime: docker
+    branch: main
+    autoDeployTrigger: commit
+    # starter matches every other service in this Blueprint; PaddleOCR's CPU inference is memory-
+    # hungry enough that this may need sizing up if the worker OOMs under real receipt/product-photo
+    # traffic - watch its Render metrics after the first real deploy. No persistent disk is mounted,
+    # so PaddleOCR re-downloads its model weights on every deploy/restart (a one-time, few-second hit
+    # per cold start, not per request); add a `disk` here (mirroring the retired inference service's
+    # pattern) if that cold-start cost becomes worth trading for the extra disk cost.
+    plan: starter
+    region: oregon
+    dockerfilePath: ./services/receipt-ocr-service/Dockerfile
+    dockerContext: ./services/receipt-ocr-service
+    buildFilter:
+      paths:
+        - render.yaml
+        - services/receipt-ocr-service/**
+    envVars:
+      - key: OCR_WORKER_PORT
+        value: "8090"
+      - key: OCR_ENGINE_PRIMARY
+        value: paddleocr
+      - key: OCR_ENGINE_FALLBACK
+        value: tesseract
+      - key: OCR_FALLBACK_ENABLED
+        value: "true"
+      - key: OCR_PROFILE
+        value: balanced
+      - key: OCR_LANGUAGE_HINTS
+        value: en,sw
+      - key: OCR_MAX_UPLOAD_MB
+        value: "10"
+      - key: OCR_MAX_IMAGE_EDGE
+        value: "3000"
+      - key: OCR_MAX_PDF_PAGES
+        value: "5"
+      - key: OCR_CONCURRENCY
+        value: "1"
 
   - type: web
     name: soko-market-web

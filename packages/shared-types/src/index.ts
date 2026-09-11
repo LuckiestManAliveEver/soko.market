@@ -1812,8 +1812,12 @@ export interface PurchaseReceiptSummary {
   lineItems: ReceiptLineItemSummary[];
 }
 
-export type ReceiptOCREngine = "paddleocr" | "tesseract";
-export type ReceiptOCRProfile = "mobile" | "balanced" | "accurate";
+/**
+ * Generic OCR capability shared by receipt parsing, chat document extraction, and camera product
+ * capture - not receipt-specific. See services/api/src/cp2/ocr-provider.ts.
+ */
+export type OcrEngine = "paddleocr" | "tesseract";
+export type OcrProfile = "mobile" | "balanced" | "accurate";
 
 export type ReceiptOCRJobStatus =
   | "UPLOADED"
@@ -1839,7 +1843,7 @@ export type ReceiptOCRJobStatus =
   | "failed"
   | "confirmed";
 
-export interface ReceiptOCRBlockSummary {
+export interface OcrBlockSummary {
   id: string;
   page: number;
   text: string;
@@ -1962,13 +1966,13 @@ export interface ReceiptOCRJobSummary {
   status: ReceiptOCRJobStatus;
   sourceFileName: string;
   contentType: string;
-  engine: ReceiptOCREngine;
+  engine: OcrEngine;
   engineVersion: string;
   modelVersion: string;
-  profile: ReceiptOCRProfile;
+  profile: OcrProfile;
   fallbackUsed: boolean;
   languageHints: string[];
-  blocks: ReceiptOCRBlockSummary[];
+  blocks: OcrBlockSummary[];
   fullText: string;
   averageConfidence: number;
   warnings: string[];

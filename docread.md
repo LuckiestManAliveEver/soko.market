@@ -19,6 +19,13 @@ three related capabilities:
 This document describes the implemented behavior, the intended architecture, the data contracts,
 and the gaps between accepted file types and formats that are genuinely decoded.
 
+A fourth OCR consumer, camera-based product capture (`POST
+/businesses/:businessId/product-captures`, see `services/api/src/cp2/domains/commerce/`), reuses
+the same underlying OCR extraction bridge as capability 2 but is out of this document's scope: it
+captures catalogue products from a photo rather than reading a structured document. See "A shared
+OCR capability, not a receipt-only one" in `docs/receipt-ocr.md` for how the OCR bridge itself is
+generalized across all of these consumers.
+
 ## 2. Executive summary
 
 | Capability                     | Current state                                 | What works                                                                               |
@@ -1014,7 +1021,10 @@ validation, retry behavior, and Python worker startup/health syntax.
 
 ### Integration dependencies
 
-1. Deployed image/PDF OCR requires the worker container and `OCR_WORKER_URL`.
+1. Image/PDF OCR requires the worker container and `OCR_WORKER_URL`; `render.yaml` now deploys
+   the worker as a private service (`soko-market-ocr-worker`) and wires `OCR_WORKER_URL`
+   automatically (see "Production deployment" in `docs/receipt-ocr.md`), but its `starter` plan and
+   lack of a persistent model-weights disk have not yet been load-tested against real traffic.
 2. Legacy binary DOC and ODT text extraction remain unsupported.
 3. Full native-engine OCR quality requires PaddleOCR/Tesseract models in the worker image.
 
@@ -1103,6 +1113,14 @@ Primary implementation files:
   - receipt parsing;
   - contact matching;
   - confirmation and record creation.
+- `services/api/src/cp2/ocr-provider.ts`
+  - generic OCR extraction bridge to the worker (`OcrExtractionProcessor`);
+  - shared by receipt parsing, chat document extraction, and camera product capture - see
+    "A shared OCR capability, not a receipt-only one" in `docs/receipt-ocr.md`.
+- `services/api/src/cp2/domains/commerce/routes.ts` and `domains/commerce/store.ts`
+  - camera product-capture jobs (`POST /businesses/:businessId/product-captures`), the
+    Camera → Catalogue consumer of the shared OCR capability; out of scope for the rest of this
+    document, which covers supplier/product imports and purchase-receipt OCR only.
 - `services/api/src/cp2/postgres-store.ts`
   - PostgreSQL load/save integration.
 - `services/receipt-ocr-service/worker.py`
@@ -1114,6 +1132,7 @@ Primary implementation files:
 - `docs/ocr-licensing.md`
 - `tests/cp9-document-import.test.ts`
 - `tests/receipt-ocr.test.ts`
+- `tests/ocr-provider.test.ts`
 
 ## 18. Definition of done for a fully operational DocRead
 

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createHttpReceiptOCRProcessor } from "../services/api/src/cp2/receipt-ocr-provider";
+import {
+  createHttpOcrExtractionProcessor,
+  createOcrExtractionProcessorFromEnvironment
+} from "../services/api/src/cp2/ocr-provider";
 
-describe("receipt OCR provider", () => {
+describe("OCR provider", () => {
   it("retries transient worker errors and validates the extraction response", async () => {
     const fetcher = vi
       .fn<typeof fetch>()
@@ -35,7 +38,7 @@ describe("receipt OCR provider", () => {
           { status: 200, headers: { "content-type": "application/json" } }
         )
       );
-    const processor = createHttpReceiptOCRProcessor({
+    const processor = createHttpOcrExtractionProcessor({
       endpoint: "http://ocr.internal/",
       fetcher,
       maxRetries: 1,
@@ -57,7 +60,7 @@ describe("receipt OCR provider", () => {
   });
 
   it("rejects malformed successful worker responses", async () => {
-    const processor = createHttpReceiptOCRProcessor({
+    const processor = createHttpOcrExtractionProcessor({
       endpoint: "http://ocr.internal",
       fetcher: vi.fn<typeof fetch>().mockResolvedValue(
         new Response(JSON.stringify({ ok: true }), {
@@ -75,8 +78,54 @@ describe("receipt OCR provider", () => {
         contentBase64: "iVBORw0KGgo="
       })
     ).rejects.toMatchObject({
-      code: "receipt_ocr_worker_response_invalid",
+      code: "ocr_worker_response_invalid",
       statusCode: 502
     });
+  });
+
+  it("builds from environment and returns undefined when OCR_WORKER_URL is unset", () => {
+    expect(createOcrExtractionProcessorFromEnvironment({})).toBeUndefined();
+    expect(createOcrExtractionProcessorFromEnvironment({ OCR_WORKER_URL: "" })).toBeUndefined();
+    expect(
+      createOcrExtractionProcessorFromEnvironment({ OCR_WORKER_URL: "http://ocr.internal" })
+    ).toBeDefined();
+  });
+
+  it("normalizes Render's bare host:port fromService value into an http:// endpoint", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          engine: "tesseract",
+          engineVersion: "tesseract-fallback",
+          modelVersion: "eng+swa",
+          profile: "balanced",
+          fallbackUsed: true,
+          blocks: [],
+          fullText: "",
+          averageConfidence: 0,
+          warnings: []
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetcher;
+    try {
+      const processor = createOcrExtractionProcessorFromEnvironment({
+        OCR_WORKER_URL: "soko-market-ocr-worker:8090"
+      });
+      await processor?.process({
+        fileName: "receipt.png",
+        contentType: "image/png",
+        contentBase64: "iVBORw0KGgo="
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://soko-market-ocr-worker:8090/scan",
+      expect.anything()
+    );
   });
 });
