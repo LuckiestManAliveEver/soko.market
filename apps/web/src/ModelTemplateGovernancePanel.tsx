@@ -12,13 +12,7 @@ import { getUserFacingErrorMessage } from "./user-facing-error";
 // this panel follows the same convention for consistency instead of introducing a second pattern.
 
 type TemplateVersionState =
-  | "DRAFT"
-  | "CANDIDATE"
-  | "EVALUATING"
-  | "PASSED"
-  | "FAILED"
-  | "PROMOTED"
-  | "RETIRED";
+  "DRAFT" | "CANDIDATE" | "EVALUATING" | "PASSED" | "FAILED" | "PROMOTED" | "RETIRED";
 
 type ObservationState = "OBSERVED" | "CANDIDATE_FAILURE" | "REVIEWED" | "CORRECTED" | "APPROVED";
 
@@ -295,8 +289,11 @@ export function ModelTemplateGovernancePanel({ businessId }: { businessId: strin
     };
   }, [modelTemplatesPath, selectedTemplateId, mutationRevision]);
 
-  const selectedTemplate = templates?.find((template) => template.id === selectedTemplateId) ?? null;
-  const templateObservations = observations.filter((item) => item.templateId === selectedTemplateId);
+  const selectedTemplate =
+    templates?.find((template) => template.id === selectedTemplateId) ?? null;
+  const templateObservations = observations.filter(
+    (item) => item.templateId === selectedTemplateId
+  );
   const templateCorrections = corrections.filter((item) => item.templateId === selectedTemplateId);
   const templateDatasets = datasets.filter((item) => item.templateId === selectedTemplateId);
   const templateImprovementRuns = improvementRuns.filter(
@@ -402,7 +399,9 @@ export function ModelTemplateGovernancePanel({ businessId }: { businessId: strin
     setDatasets((current) => [result.dataset, ...current]);
     setDatasetDraft(emptyDatasetDraft);
     setDatasetSelection({});
-    setMessage(`Dataset "${result.dataset.name}" built with ${result.dataset.exampleCount} example(s).`);
+    setMessage(
+      `Dataset "${result.dataset.name}" built with ${result.dataset.exampleCount} example(s).`
+    );
   }
 
   async function startImprovementRun() {
@@ -442,7 +441,9 @@ export function ModelTemplateGovernancePanel({ businessId }: { businessId: strin
     const updated = await getJson<ImprovementRunSummary>(
       `/businesses/${businessId}/improvement-runs/${encodeURIComponent(run.id)}`
     );
-    setImprovementRuns((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    setImprovementRuns((current) =>
+      current.map((item) => (item.id === updated.id ? updated : item))
+    );
   }
 
   async function promote() {
@@ -527,8 +528,15 @@ export function ModelTemplateGovernancePanel({ businessId }: { businessId: strin
 
   if (templates === null) {
     return (
-      <section className="record-form model-template-governance-panel" aria-label="Model governance">
-        {error.length > 0 ? <p className="security-warning">{error}</p> : <p>Loading model templates…</p>}
+      <section
+        className="record-form model-template-governance-panel"
+        aria-label="Model governance"
+      >
+        {error.length > 0 ? (
+          <p className="security-warning">{error}</p>
+        ) : (
+          <p>Loading model templates…</p>
+        )}
       </section>
     );
   }
@@ -1039,7 +1047,8 @@ export function ModelTemplateGovernancePanel({ businessId }: { businessId: strin
               <h3>Promote a version live</h3>
             </div>
             <p className="shell-note">
-              Currently live: {selectedTemplate.productionVersionId === null
+              Currently live:{" "}
+              {selectedTemplate.productionVersionId === null
                 ? "no promoted version"
                 : versionLabel(selectedTemplate.productionVersionId)}
             </p>
@@ -1068,7 +1077,10 @@ export function ModelTemplateGovernancePanel({ businessId }: { businessId: strin
               <input
                 value={promoteDraft.evaluationRunId}
                 onChange={(event) =>
-                  setPromoteDraft((current) => ({ ...current, evaluationRunId: event.target.value }))
+                  setPromoteDraft((current) => ({
+                    ...current,
+                    evaluationRunId: event.target.value
+                  }))
                 }
               />
             </label>

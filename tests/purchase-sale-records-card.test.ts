@@ -4,10 +4,7 @@ import { describe, expect, it } from "vitest";
 const card = readFileSync("apps/web/src/PurchaseSaleRecordsCard.tsx", "utf8");
 const supplierSurface = readFileSync("apps/web/src/SupplierSurface.tsx", "utf8");
 const ownerWorkspace = readFileSync("apps/web/src/OwnerWorkspace.tsx", "utf8");
-const routes = readFileSync(
-  "services/api/src/cp2/domains/commercial-records/routes.ts",
-  "utf8"
-);
+const routes = readFileSync("services/api/src/cp2/domains/commercial-records/routes.ts", "utf8");
 
 describe("purchase and sale records card (permanent surface, no chat wiring)", () => {
   it("is a self-contained card that fetches and mutates its own data from businessId alone", () => {
@@ -16,19 +13,19 @@ describe("purchase and sale records card (permanent surface, no chat wiring)", (
     );
     expect(card).toContain('import { getJson, postJson } from "./api-helpers"');
     expect(card).toContain('import { useAsyncActions } from "./hooks/useAsyncActions"');
-    expect(card).toContain('import { useApiMutationRevision } from "./hooks/useApiMutationRevision"');
+    expect(card).toContain(
+      'import { useApiMutationRevision } from "./hooks/useApiMutationRevision"'
+    );
     expect(card).toContain('import { getUserFacingErrorMessage } from "./user-facing-error"');
   });
 
   it("wires the exact purchase and sale endpoints the backend exposes", () => {
-    expect(card).toContain(
-      "const purchasesPath = `/businesses/${props.businessId}/purchases`"
-    );
+    expect(card).toContain("const purchasesPath = `/businesses/${props.businessId}/purchases`");
     expect(card).toContain("const salesPath = `/businesses/${props.businessId}/sales`");
     expect(card).toContain("postJson<PurchaseRecordSummary>(purchasesPath");
     expect(card).toContain("postJson<SaleRecordSummary>(salesPath");
-    expect(card).toContain('getJson<PurchaseRecordSummary[]>(`${purchasesPath}/history`)');
-    expect(card).toContain('getJson<SaleRecordSummary[]>(`${salesPath}/history`)');
+    expect(card).toContain("getJson<PurchaseRecordSummary[]>(`${purchasesPath}/history`)");
+    expect(card).toContain("getJson<SaleRecordSummary[]>(`${salesPath}/history`)");
 
     expect(routes).toContain('"/businesses/:businessId/purchases"');
     expect(routes).toContain('"/businesses/:businessId/purchases/history"');

@@ -53,9 +53,7 @@ export default function DeliveryRoutesCard(props: { businessId: string }) {
       .then((loaded) => {
         if (cancelled) return;
         setRoutes(loaded);
-        setStatusDrafts(
-          Object.fromEntries(loaded.map((route) => [route.id, route.status]))
-        );
+        setStatusDrafts(Object.fromEntries(loaded.map((route) => [route.id, route.status])));
       })
       .catch((error) => {
         if (!cancelled) setMessage(getUserFacingErrorMessage(error));
@@ -159,7 +157,9 @@ export default function DeliveryRoutesCard(props: { businessId: string }) {
         <input
           value={draft.provider}
           placeholder="Defaults to manual"
-          onChange={(event) => setDraft((current) => ({ ...current, provider: event.target.value }))}
+          onChange={(event) =>
+            setDraft((current) => ({ ...current, provider: event.target.value }))
+          }
         />
       </label>
       <div className="row-actions">

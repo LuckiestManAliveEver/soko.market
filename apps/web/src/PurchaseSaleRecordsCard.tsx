@@ -170,7 +170,10 @@ export default function PurchaseSaleRecordsCard(props: { businessId: string }) {
   }
 
   return (
-    <section className="record-form purchase-sale-records-card" aria-label="Purchase and sale records">
+    <section
+      className="record-form purchase-sale-records-card"
+      aria-label="Purchase and sale records"
+    >
       <div className="section-heading">
         <p className="eyebrow">Purchase &amp; sale records</p>
         <h3>Record a purchase or sale</h3>
@@ -400,7 +403,9 @@ export default function PurchaseSaleRecordsCard(props: { businessId: string }) {
               {record.currency} {record.buyingPrice} · total {record.currency} {record.totalCost}
             </span>
             <small>{new Date(record.effectiveAt).toLocaleDateString()}</small>
-            {record.notes !== null && record.notes.length > 0 ? <small>{record.notes}</small> : null}
+            {record.notes !== null && record.notes.length > 0 ? (
+              <small>{record.notes}</small>
+            ) : null}
           </article>
         ))
       )}

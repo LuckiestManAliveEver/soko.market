@@ -97,7 +97,13 @@ describe("mobile chat composer actions", () => {
 
     const dialog = document.body.querySelector('[role="dialog"]');
     expect(dialog?.getAttribute("aria-labelledby")).toBe("composer-message-actions-title");
-    for (const label of ["Take photo", "Photos or files", "Open command", "Send as SMS", "Share to apps"]) {
+    for (const label of [
+      "Take photo",
+      "Photos or files",
+      "Open command",
+      "Send as SMS",
+      "Share to apps"
+    ]) {
       expect(dialog?.querySelector(`[aria-label="${label}"]`)).not.toBeNull();
     }
     // Voice moved out of the action sheet into the always-visible mic button.

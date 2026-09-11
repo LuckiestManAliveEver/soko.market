@@ -21,13 +21,7 @@ import { getUserFacingErrorMessage } from "./user-facing-error";
 // QuickRuntimeSwitcher.tsx), so it is imported and reused rather than redefined.
 
 type TemplateVersionState =
-  | "DRAFT"
-  | "CANDIDATE"
-  | "EVALUATING"
-  | "PASSED"
-  | "FAILED"
-  | "PROMOTED"
-  | "RETIRED";
+  "DRAFT" | "CANDIDATE" | "EVALUATING" | "PASSED" | "FAILED" | "PROMOTED" | "RETIRED";
 
 interface ModelTemplateSummary {
   id: string;
@@ -171,9 +165,9 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
   const [versionsByTemplate, setVersionsByTemplate] = useState<
     Record<string, ModelTemplateVersionSummary[]>
   >({});
-  const [suitesByTemplate, setSuitesByTemplate] = useState<Record<string, EvaluationSuiteSummary[]>>(
-    {}
-  );
+  const [suitesByTemplate, setSuitesByTemplate] = useState<
+    Record<string, EvaluationSuiteSummary[]>
+  >({});
   const [casesBySuite, setCasesBySuite] = useState<Record<string, EvaluationCaseSummary[]>>({});
 
   const [isCreatingSuite, setIsCreatingSuite] = useState(false);
@@ -329,10 +323,14 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
       setMessage("Enter an evaluation suite name.");
       return;
     }
-    const created = await postJson<{ suite: EvaluationSuiteSummary; cases: EvaluationCaseSummary[] }>(
-      `${templatesPath}/${encodeURIComponent(selectedTemplateId)}/evaluation-suites`,
-      { name, description: suiteDescription.trim(), cases: [] }
-    );
+    const created = await postJson<{
+      suite: EvaluationSuiteSummary;
+      cases: EvaluationCaseSummary[];
+    }>(`${templatesPath}/${encodeURIComponent(selectedTemplateId)}/evaluation-suites`, {
+      name,
+      description: suiteDescription.trim(),
+      cases: []
+    });
     setSuitesByTemplate((current) => ({
       ...current,
       [selectedTemplateId]: [...(current[selectedTemplateId] ?? []), created.suite]
@@ -415,7 +413,8 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
     );
   }
 
-  const versions = selectedTemplateId === null ? [] : (versionsByTemplate[selectedTemplateId] ?? []);
+  const versions =
+    selectedTemplateId === null ? [] : (versionsByTemplate[selectedTemplateId] ?? []);
   const suites = selectedTemplateId === null ? [] : (suitesByTemplate[selectedTemplateId] ?? []);
   const cases = selectedSuiteId === null ? [] : (casesBySuite[selectedSuiteId] ?? []);
   const selectedTemplate =
@@ -867,8 +866,8 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
                   )}
                   {lastRun.results.map((result) => (
                     <p key={result.id}>
-                      {result.candidatePassed ? "Passed" : "Failed"} · {result.evaluatorType} · score{" "}
-                      {result.score}
+                      {result.candidatePassed ? "Passed" : "Failed"} · {result.evaluatorType} ·
+                      score {result.score}
                     </p>
                   ))}
                 </div>

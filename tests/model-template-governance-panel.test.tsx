@@ -12,9 +12,8 @@ vi.mock("../apps/web/src/api-helpers", () => ({
   postJson: (...args: unknown[]) => postJson(...args)
 }));
 
-const { ModelTemplateGovernancePanel } = await import(
-  "../apps/web/src/ModelTemplateGovernancePanel"
-);
+const { ModelTemplateGovernancePanel } =
+  await import("../apps/web/src/ModelTemplateGovernancePanel");
 
 /**
  * React tracks a controlled input's previous value via a hidden property setter, so assigning

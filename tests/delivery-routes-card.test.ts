@@ -4,17 +4,18 @@ import { describe, expect, it } from "vitest";
 const card = readFileSync("apps/web/src/DeliveryRoutesCard.tsx", "utf8");
 const logisticsSurface = readFileSync("apps/web/src/LogisticsSurface.tsx", "utf8");
 const ownerWorkspace = readFileSync("apps/web/src/OwnerWorkspace.tsx", "utf8");
-const routes = readFileSync(
-  "services/api/src/cp2/domains/commercial-records/routes.ts",
-  "utf8"
-);
+const routes = readFileSync("services/api/src/cp2/domains/commercial-records/routes.ts", "utf8");
 
 describe("delivery routes card (permanent surface, no chat wiring)", () => {
   it("is a self-contained card that fetches and mutates its own data from businessId alone", () => {
-    expect(card).toContain("export default function DeliveryRoutesCard(props: { businessId: string })");
+    expect(card).toContain(
+      "export default function DeliveryRoutesCard(props: { businessId: string })"
+    );
     expect(card).toContain('import { getJson, patchJson, postJson } from "./api-helpers"');
     expect(card).toContain('import { useAsyncActions } from "./hooks/useAsyncActions"');
-    expect(card).toContain('import { useApiMutationRevision } from "./hooks/useApiMutationRevision"');
+    expect(card).toContain(
+      'import { useApiMutationRevision } from "./hooks/useApiMutationRevision"'
+    );
     expect(card).toContain('import { getUserFacingErrorMessage } from "./user-facing-error"');
   });
 
@@ -22,7 +23,7 @@ describe("delivery routes card (permanent surface, no chat wiring)", () => {
     expect(card).toContain("const routesPath = `/businesses/${props.businessId}/routes`");
     expect(card).toContain("postJson<DeliveryRouteSummary>(routesPath");
     expect(card).toContain("patchJson<DeliveryRouteSummary>(`${routesPath}/${route.id}`");
-    expect(card).toContain('getJson<DeliveryRouteSummary[]>(`${routesPath}/history`)');
+    expect(card).toContain("getJson<DeliveryRouteSummary[]>(`${routesPath}/history`)");
 
     expect(routes).toContain('"/businesses/:businessId/routes"');
     expect(routes).toContain('"/businesses/:businessId/routes/:routeId"');
