@@ -1,4 +1,4 @@
-import { useState, type Dispatch, type SetStateAction } from "react";
+import { useState } from "react";
 
 import type {
   ProductFieldDefinition,
@@ -16,12 +16,10 @@ import {
 } from "../owner-app-bootstrap";
 import {
   emptyProductForm,
-  emptySupplierForm,
   type ProductFieldDraft,
   type ProductFormState,
   type ProductSummary,
-  type StockAdjustmentResponse,
-  type SupplierFormState
+  type StockAdjustmentResponse
 } from "../soko-application-shared";
 
 interface UseProductsStateDeps {
@@ -32,14 +30,6 @@ interface UseProductsStateDeps {
     mutationType: SyncMutationType,
     payload: SyncMutationPayload
   ) => Promise<boolean>;
-  // adjustStock's catch block queues a "supplier.create" retry using the Suppliers domain's form
-  // state - a pre-existing bug (adjustStock's own errors should queue an "inventory.adjust" retry
-  // using its own stockProductId/stockQuantityAfter/stockReason, not a supplier creation), carried
-  // over unchanged rather than silently redesigned. See the Phase 8 extraction commit for the full
-  // note - flagged, not fixed, since the correct retry shape is a product judgment call, not a
-  // mechanical one.
-  supplierForm: SupplierFormState;
-  setSupplierForm: Dispatch<SetStateAction<SupplierFormState>>;
   // routedProductId/setRoutedProductId/navigateToView all live in Navigation's own hook (Phase 19),
   // called after Products (Navigation needs Products' populateProductForm as an eager dep) -
   // deferred behind a getter so deleteProduct reads Navigation's current values at click time
@@ -193,18 +183,9 @@ export function useProductsState(deps: UseProductsStateDeps) {
       }
       deps.setStatusMessage("Product removed");
     } catch (error) {
-      // Pre-existing bug, carried over unchanged: this catch queues an "inventory.adjust" retry
-      // (adjustStock's mutation type/payload shape) instead of anything delete-shaped. Flagged in
-      // the Phase 8 extraction commit rather than silently redesigned.
-      if (
-        await deps.queueMutationAfterNetworkFailure(error, "inventory.adjust", {
-          productId: stockProductId,
-          quantityAfter: Number(stockQuantityAfter),
-          reason: stockReason
-        })
-      ) {
-        return;
-      }
+      // The sync-queue protocol (SyncMutationType) has no delete mutation type, so a failed delete
+      // cannot be queued for offline retry - surface the error instead of queuing an unrelated
+      // mutation.
       deps.setStatusMessage(getErrorMessage(error));
     }
   }
@@ -226,19 +207,13 @@ export function useProductsState(deps: UseProductsStateDeps) {
       setStockQuantityAfter(String(response.product.quantity));
       deps.setStatusMessage("Stock adjusted");
     } catch (error) {
-      // Pre-existing bug, carried over unchanged: this catch queues a "supplier.create" retry
-      // using the Suppliers domain's form state, not anything stock-adjustment-shaped. Flagged in
-      // the Phase 8 extraction commit rather than silently redesigned.
       if (
-        deps.supplierForm.id === null &&
-        (await deps.queueMutationAfterNetworkFailure(error, "supplier.create", {
-          name: deps.supplierForm.name,
-          phone: deps.supplierForm.phone,
-          email: deps.supplierForm.email,
-          notes: deps.supplierForm.notes
-        }))
+        await deps.queueMutationAfterNetworkFailure(error, "inventory.adjust", {
+          productId: stockProductId,
+          quantityAfter: Number(stockQuantityAfter),
+          reason: stockReason
+        })
       ) {
-        deps.setSupplierForm(emptySupplierForm);
         return;
       }
       deps.setStatusMessage(getErrorMessage(error));

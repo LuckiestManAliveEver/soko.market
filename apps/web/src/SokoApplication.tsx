@@ -312,6 +312,7 @@ export function OwnerApp() {
   const {
     suppliers,
     purchaseReceipts,
+    receiptOcrJobs,
     supplierForm,
     setSupplierForm,
     loadSuppliers,
@@ -370,8 +371,6 @@ export function OwnerApp() {
     businessId: business?.id ?? null,
     setStatusMessage,
     queueMutationAfterNetworkFailure,
-    supplierForm,
-    setSupplierForm,
     getNavigationHelpers: () => ({ routedProductId, setRoutedProductId, navigateToView }),
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
@@ -1350,6 +1349,7 @@ export function OwnerApp() {
     suppliersState: {
       suppliers,
       purchaseReceipts,
+      receiptOcrJobs,
       supplierForm,
       setSupplierForm,
       saveSupplier,
