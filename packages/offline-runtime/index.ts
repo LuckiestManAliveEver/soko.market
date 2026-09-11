@@ -1,5 +1,6 @@
 export * from "./types.js";
 export * from "./db/client.js";
+export * from "./db/fsa-client.js";
 export * from "./db/sqlite-client.js";
 export * from "./db/migrations/index.js";
 export * from "./providers/types.js";

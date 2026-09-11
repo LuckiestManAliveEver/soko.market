@@ -1,8 +1,12 @@
 import {
   openLocalDatabase,
+  openRemovableDatabase,
+  supportsRemovableDevice,
+  pickRemovableDevice,
   LocalProvider,
   executeProviderCall,
   SyncClient,
+  OfflineError,
   type LocalDatabase,
   type Scope,
   type LocalState,
@@ -12,9 +16,11 @@ import {
 } from "@soko/offline-runtime";
 import { readCachedAuthSession } from "./auth-bootstrap";
 import { activateOfflineShell } from "./offline-shell";
+import { loadRemovableDeviceHandle, saveRemovableDeviceHandle } from "./offline-device-handle";
 import { createWebLLMRuntimeAdapter, resolveWebLLMRuntimeBinding } from "./webllm-runtime";
 
 const modeKey = "soko.offline-runtime.active.v1";
+const storageTargetKey = "soko.offline-runtime.storage-target.v1";
 let database: Promise<LocalDatabase> | null = null;
 let adapter: InstalledRuntimeAdapter | undefined;
 let binding: RuntimeBinding | null = null;
@@ -38,9 +44,41 @@ export function ensureInstalledOfflineRuntime(): Promise<void> {
 }
 export const offlineRuntimeEnabled = import.meta.env.VITE_OFFLINE_RUNTIME_ENABLED === "true";
 export const offlineModeEvent = "soko:offline-mode-changed";
+export type StorageTarget = "local" | "removable";
+export { supportsRemovableDevice, pickRemovableDevice };
+
+export function currentStorageTarget(): StorageTarget {
+  return localStorage.getItem(storageTargetKey) === "removable" ? "removable" : "local";
+}
+
+/** Switches which backend offlineDatabase() opens next. Called before installing (or when
+ *  reconnecting a removable device); closes whatever is currently open first so the two
+ *  backends are never touched concurrently. */
+export async function useStorageTarget(
+  target: StorageTarget,
+  handle?: FileSystemDirectoryHandle
+): Promise<void> {
+  if (database) (await database).close();
+  database = null;
+  if (target === "removable" && handle) await saveRemovableDeviceHandle(handle);
+  localStorage.setItem(storageTargetKey, target);
+}
+
+async function openDatabaseForCurrentTarget(): Promise<LocalDatabase> {
+  if (currentStorageTarget() === "removable") {
+    const handle = await loadRemovableDeviceHandle();
+    if (!handle)
+      throw new OfflineError(
+        "DEVICE_NOT_FOUND",
+        "Reconnect your removable device in Offline runtime settings to continue."
+      );
+    return openRemovableDatabase(handle);
+  }
+  return openLocalDatabase();
+}
 
 export function offlineDatabase(): Promise<LocalDatabase> {
-  return (database ??= openLocalDatabase().catch((error) => {
+  return (database ??= openDatabaseForCurrentTarget().catch((error) => {
     database = null;
     throw error;
   }));
@@ -169,6 +207,17 @@ export async function createOfflineSyncClient(scope: Scope): Promise<SyncClient>
 export async function fetchOfflineSnapshot(scope: Scope): Promise<InstallSnapshot> {
   const { apiCloudFetch } = await import("./lib/api");
   return apiCloudFetch(`/businesses/${encodeURIComponent(scope.storeId)}/offline-runtime/snapshot`);
+}
+/** Re-requests permission on the previously picked removable device (browsers drop write
+ *  permission on a stored FileSystemDirectoryHandle between sessions) and reopens it. Must be
+ *  called from a user gesture, since requestPermission requires one. */
+export async function reconnectRemovableDevice(): Promise<void> {
+  const handle = await loadRemovableDeviceHandle();
+  if (!handle) throw new Error("No removable device is on record. Choose one again to reconnect.");
+  if (database) (await database).close();
+  database = null;
+  await openRemovableDatabase(handle);
+  database = null;
 }
 /**
  * Calls the pinned on-device model through the same LocalProvider/resolver path business-data

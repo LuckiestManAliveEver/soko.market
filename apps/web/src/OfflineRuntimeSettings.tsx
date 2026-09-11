@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { installOfflineRuntime, type InstallStep, type LocalState } from "@soko/offline-runtime";
 import { SettingsGroup } from "./SettingsGroup";
+import { OfflineInstallWizard } from "./OfflineInstallWizard";
 import { prepareOfflineShell } from "./offline-shell";
 import { readStableDeviceId } from "./lib/api";
 import { clearApiRequestCache } from "./api-request-cache";
@@ -16,8 +17,12 @@ import {
   setOfflineMode,
   offlineModeEvent,
   currentOfflineScope,
+  currentStorageTarget,
+  useStorageTarget,
+  reconnectRemovableDevice,
   ensureInstalledOfflineRuntime,
-  askOfflineAssistant
+  askOfflineAssistant,
+  type StorageTarget
 } from "./offline-runtime";
 
 export function OfflineRuntimeSettings({
@@ -101,7 +106,8 @@ export function OfflineRuntimeSettings({
       setBusy(false);
     }
   }
-  async function install() {
+  async function install(target: StorageTarget, handle: FileSystemDirectoryHandle | null) {
+    await useStorageTarget(target, handle ?? undefined);
     if (!dataOnly) await ensureInstalledOfflineRuntime();
     const runtime = installedOfflineRuntime();
     await installOfflineRuntime({
@@ -116,7 +122,6 @@ export function OfflineRuntimeSettings({
       progress: (step, done, total) => setProgress({ step, done, total })
     });
     await setOfflineMode(scope, true);
-    setConfirming(false);
     setMessage(
       dataOnly
         ? "Offline business data is ready. AI, checkout and payments require an online connection."
@@ -126,6 +131,7 @@ export function OfflineRuntimeSettings({
   async function sync(goOnline: boolean) {
     const client = await createOfflineSyncClient(scope);
     await client.sync();
+    window.dispatchEvent(new Event(offlineModeEvent));
     const next = await getOfflineState(scope);
     if (next.operations.some((operation) => operation.syncStatus !== "ACKED")) {
       setMessage("Some changes need review or another sync attempt. Offline mode is still active.");
@@ -234,73 +240,28 @@ export function OfflineRuntimeSettings({
           Go Offline
         </button>
       )}
-      {confirming && (
-        <section role="dialog" aria-modal="false" aria-labelledby="offline-confirm-title">
-          <h3 id="offline-confirm-title">Prepare this device for offline use</h3>
-          <p>
-            Download a snapshot of products, customers, invoices and orders. Catalogue changes,
-            customer creation, stock counts, and creating, editing and confirming invoices will stay
-            on this device until you choose to sync. Payments, checkout and account changes require
-            an online connection. Receipts can be scanned offline if you enable on-device scanning
-            below; confirming a scan into a supplier and purchase record still requires
-            reconnecting.
-          </p>
-          <p>
-            Allow at least 16 MiB for business data. Installation reserves at least 256 MiB or 20%
-            of the browser storage quota, whichever is larger. Browser estimates cannot guarantee
-            free space for other apps.
-          </p>
-          <label>
-            <input
-              type="checkbox"
-              checked={dataOnly}
-              disabled={busy}
-              onChange={(event) => setDataOnly(event.target.checked)}
-            />
-            Install business data only (AI remains unavailable offline)
-          </label>
-          {!dataOnly && (
-            <p>
-              Downloads a small on-device assistant model (WebGPU required; about 1 GB of device
-              memory). The exact agent, harness and model version are pinned at install time and
-              will not change on reconnect. It answers from the prompt alone, with no catalogue,
-              order, customer or account data - unsupported devices fall back to business data only.
-            </p>
-          )}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              void run(install);
-            }}
-          >
-            Confirm and install
-          </button>
-          <button type="button" disabled={busy} onClick={() => setConfirming(false)}>
-            Cancel
-          </button>
-        </section>
-      )}
-      {busy && progress && (
-        <div role="status">
-          <span>
-            {
-              {
-                storage: "Checking storage",
-                database: "Preparing local storage",
-                snapshot: "Downloading business data",
-                shell: "Downloading the offline application",
-                runtime: "Installing pinned runtime",
-                complete: "Installation complete"
-              }[progress.step]
-            }
-          </span>
-          <progress
-            aria-label="Offline installation progress"
-            value={progress.done}
-            max={Math.max(1, progress.total)}
-          />
-        </div>
+      <OfflineInstallWizard
+        open={confirming}
+        busy={busy}
+        dataOnly={dataOnly}
+        onDataOnlyChange={setDataOnly}
+        progress={progress}
+        result={message}
+        onInstall={(target, handle) => {
+          void run(() => install(target, handle));
+        }}
+        onClose={() => setConfirming(false)}
+      />
+      {state?.installed && currentStorageTarget() === "removable" && (
+        <button
+          type="button"
+          disabled={busy || !online}
+          onClick={() => {
+            void run(reconnectRemovableDevice);
+          }}
+        >
+          Reconnect removable device
+        </button>
       )}
       {state?.installed && (
         <div>
