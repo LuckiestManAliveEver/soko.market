@@ -312,7 +312,6 @@ export function OwnerApp() {
   const {
     suppliers,
     purchaseReceipts,
-    receiptOcrJobs,
     supplierForm,
     setSupplierForm,
     loadSuppliers,
@@ -1349,7 +1348,6 @@ export function OwnerApp() {
     suppliersState: {
       suppliers,
       purchaseReceipts,
-      receiptOcrJobs,
       supplierForm,
       setSupplierForm,
       saveSupplier,
