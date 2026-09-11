@@ -10,15 +10,14 @@ import {
   type InvoiceSummary,
   chatAttachmentAccept
 } from "./soko-application-shared";
-import { formatAttachmentCategory, formatFileSize } from "./formatters";
 import { chatModuleCommands } from "./chat-module-commands";
-import { isExtractableChatAttachment, startVoiceInput } from "./chat-message-plumbing";
+import { startVoiceInput } from "./chat-message-plumbing";
 import type { ChatComposerState } from "./hooks/useChatComposerState";
 import { ChatChannelPicker } from "./ChatChannelPicker";
 import { ChatComposerActions } from "./ChatComposerActions";
 import { ChatHashtagCapabilityPicker } from "./ChatHashtagCapabilityPicker";
-import { QuickRuntimeSwitcher } from "./QuickRuntimeSwitcher";
-import { StackedModule } from "./StackedModule";
+import { ComposerAttachmentWorkbench } from "./ComposerAttachmentWorkbench";
+import { ComposerModelSwitcher } from "./ComposerModelSwitcher";
 
 interface ChatComposerProps {
   agent: AgentSettings | null;
@@ -88,7 +87,6 @@ export function ChatComposer({
   } = composer;
   const [messageActionsOpen, setMessageActionsOpen] = useState(false);
   const [channelPickerOpen, setChannelPickerOpen] = useState(false);
-  const [modelPanelOpen, setModelPanelOpen] = useState(false);
   const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const hashtagQuery = mode === "seller" ? runtimeHashtagQuery(liveDraft) : null;
   const sellerHashtagCapabilities = [...chatModuleCommands, ...runtimeHashtagCapabilities];
@@ -103,16 +101,6 @@ export function ChatComposer({
   function openMessageActions() {
     messageInputRef.current?.blur();
     setMessageActionsOpen(true);
-  }
-
-  function openModelPanel() {
-    messageInputRef.current?.blur();
-    setModelPanelOpen(true);
-  }
-
-  function openModelLibrary() {
-    messageInputRef.current?.blur();
-    onOpenAgentProfile();
   }
 
   // Grows the composer to fit typed content (CSS caps it at max-height and scrolls beyond that)
@@ -191,52 +179,11 @@ export function ChatComposer({
               }}
             />
           ) : null}
-          {pendingAttachments.length > 0 ? (
-            <div className="attachment-workbench">
-              <div className="attachment-tray" aria-label="Selected attachments">
-                {pendingAttachments.map((attachment) => (
-                  <span className="attachment-chip" key={attachment.id}>
-                    <span>
-                      <strong>{attachment.name}</strong>
-                      <small>
-                        {formatAttachmentCategory(attachment.category)} ·{" "}
-                        {formatFileSize(attachment.size)}
-                      </small>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${attachment.name}`}
-                      onClick={() => onRemoveAttachment(attachment.id)}
-                    >
-                      x
-                    </button>
-                  </span>
-                ))}
-              </div>
-              {pendingAttachments.some(isExtractableChatAttachment) ? (
-                <div className="document-instructions" aria-label="Document instructions">
-                  <span>OCR ready for scans and images</span>
-                  <button type="button" onClick={() => commitDraft("Extract all readable text")}>
-                    Extract text
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => commitDraft("Summarize this document in simple bullet points")}
-                  >
-                    Summarize
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      commitDraft("Extract names, dates, totals, and line items into a table")
-                    }
-                  >
-                    Extract fields
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
+          <ComposerAttachmentWorkbench
+            pendingAttachments={pendingAttachments}
+            onRemoveAttachment={onRemoveAttachment}
+            onCommitDraft={commitDraft}
+          />
           {selectedProvider === "email" ? (
             <>
               <label className="composer-input">
@@ -306,34 +253,13 @@ export function ChatComposer({
               <span className="attach-icon" aria-hidden="true" />
               <span className="visually-hidden">More</span>
             </button>
-            {business !== null && agent !== null ? (
-              <button
-                className="composer-pill"
-                type="button"
-                aria-label="Switch model or runtime"
-                aria-haspopup="dialog"
-                aria-expanded={modelPanelOpen}
-                onClick={openModelPanel}
-              >
-                <span className="composer-pill-icon" aria-hidden="true">
-                  ⚙
-                </span>
-                <span className="composer-pill-label">{agent.model || "Model"}</span>
-              </button>
-            ) : null}
-            {business !== null ? (
-              <button
-                className="composer-pill"
-                type="button"
-                aria-label="Open model library"
-                onClick={openModelLibrary}
-              >
-                <span className="composer-pill-icon" aria-hidden="true">
-                  ▤
-                </span>
-                <span className="composer-pill-label">Library</span>
-              </button>
-            ) : null}
+            <ComposerModelSwitcher
+              agent={agent}
+              business={business}
+              onAgentChange={onAgentChange}
+              onOpenAgentProfile={onOpenAgentProfile}
+              onBeforeOpen={() => messageInputRef.current?.blur()}
+            />
             <div className="composer-bottom-row-trailing">
               {isBrowserGenerating ? (
                 <button
@@ -407,25 +333,6 @@ export function ChatComposer({
             onClose={() => setChannelPickerOpen(false)}
             onSelect={setSelectedProvider}
           />
-          {business !== null && agent !== null ? (
-            <StackedModule
-              className="composer-model-module"
-              moduleId="composer-model-panel"
-              open={modelPanelOpen}
-              title="Model and runtime"
-              onClose={() => setModelPanelOpen(false)}
-            >
-              <QuickRuntimeSwitcher
-                business={business}
-                agent={agent}
-                updateAgent={(patch) => onAgentChange({ ...agent, ...patch })}
-                onAgentChange={onAgentChange}
-              />
-              <button type="button" className="secondary" onClick={openModelLibrary}>
-                Open full model library
-              </button>
-            </StackedModule>
-          ) : null}
         </div>
       )}
     </>
