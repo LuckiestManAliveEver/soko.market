@@ -153,7 +153,7 @@ describe("Receipt OCR", () => {
     const app = buildApi({
       cp2: {
         store,
-        receiptOCRProcessor: { process }
+        ocrProcessor: { process }
       }
     });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);

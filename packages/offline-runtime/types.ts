@@ -49,12 +49,12 @@ export interface Artifact {
 }
 /** What the on-device OCR engine produces for one captured receipt image. */
 export interface ReceiptOcrExtraction {
-  engine: ReceiptOCREngine;
+  engine: OcrEngine;
   engineVersion: string;
   modelVersion: string;
-  profile: ReceiptOCRProfile;
+  profile: OcrProfile;
   fallbackUsed: boolean;
-  blocks: ReceiptOCRBlockSummary[];
+  blocks: OcrBlockSummary[];
   fullText: string;
   averageConfidence: number;
   warnings: string[];
@@ -149,7 +149,7 @@ export class OfflineError extends Error {
 }
 import type {
   ConversationMessageSummary,
-  ReceiptOCREngine,
-  ReceiptOCRProfile,
-  ReceiptOCRBlockSummary
+  OcrEngine,
+  OcrProfile,
+  OcrBlockSummary
 } from "@soko/shared-types";

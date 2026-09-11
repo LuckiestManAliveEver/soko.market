@@ -21,6 +21,36 @@ The API connects through `OCR_WORKER_URL` (locally `http://127.0.0.1:8090`). Bin
 bytes are sent only after the API authenticates the business and the signed malware scanner returns
 `clean`. Worker responses are schema-validated before entering parsing and contact matching.
 
+## Production deployment
+
+`render.yaml` declares `soko-market-ocr-worker` as a `type: pserv` (private, not internet-facing)
+Docker service built from `services/receipt-ocr-service/Dockerfile`. `soko-market-api`'s
+`OCR_WORKER_URL` is wired to it automatically via Render's `fromService`/`hostport` linking rather
+than a manually pasted value - `createOcrExtractionProcessorFromEnvironment`
+(`services/api/src/cp2/ocr-provider.ts`) normalizes the bare `host:port` Render provides into an
+`http://` endpoint. No persistent disk is mounted, so PaddleOCR re-downloads its model weights on
+each deploy/restart (a one-time cold-start cost, not a per-request one); see the comment on that
+service block in `render.yaml` if that cost needs to be traded for a disk later. The `starter` plan
+may need sizing up under real PaddleOCR memory pressure - watch the worker's Render metrics after
+the first production deploy.
+
+## A shared OCR capability, not a receipt-only one
+
+The bridge to the worker (`services/api/src/cp2/ocr-provider.ts`, exporting
+`OcrExtractionProcessor`) is generic: it takes an image or PDF and returns raw OCR blocks, full
+text, engine metadata, and confidence, with no receipt-specific parsing. `registerCp2Routes` builds
+one processor instance from `OCR_WORKER_URL` and passes it into every domain that needs OCR, so
+receipt parsing is a consumer on top of the same capability, not a separate integration:
+
+| Consumer                                              | Route                                           | What it adds on top of raw OCR                                 |
+| ----------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------- |
+| Receipt parsing (`domains/suppliers`)                 | `POST /businesses/:businessId/receipt-ocr/jobs` | Supplier/receipt/line-item field parsing, contact matching     |
+| Chat document extraction (`domains/document-imports`) | `POST /businesses/:businessId/documents/ocr`    | Returns extracted text for chat attachments, no field parsing  |
+| Camera product capture (`domains/commerce`)           | `POST /businesses/:businessId/product-captures` | Product title/price extraction for the Camera → Catalogue flow |
+
+A future extractor (identity documents, invoices, and so on) should be a new consumer of this same
+`OcrExtractionProcessor`, not a new OCR worker integration.
+
 ## Supported inputs
 
 The API validates the declared MIME type, file size, and file signature where the browser can provide one.

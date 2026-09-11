@@ -3,7 +3,7 @@
  * docs/architecture/routes-modularization-roadmap.md). This is the storefront/social-commerce
  * surface (product-capture jobs, status broadcasts, buy feed, unified checkouts) - the same
  * `CommerceDomain` the store.ts side already extracted first, as its own reference
- * implementation. Needs `binaryUploadPipeline`/`receiptOCRProcessor` passed in, and imports
+ * implementation. Needs `binaryUploadPipeline`/`ocrProcessor` passed in, and imports
  * `parseDocumentImportBody`/`assertDocumentOcrSignature`/`ProductCatalogueImportBody` (row 6) and
  * `decodeReceiptBase64` (row 5) back from the two domains that own them - a genuine cross-domain
  * reference (product-capture upload handling reuses the exact same file-decoding/signature-check
@@ -15,7 +15,7 @@ import type { BuyCheckoutItemInput, BuyResultSourceKind } from "@soko/shared-typ
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
 import type { BinaryUploadPipeline } from "../../binary-upload-pipeline.js";
-import type { ReceiptOCRProcessor } from "../../receipt-ocr-provider.js";
+import type { OcrExtractionProcessor } from "../../ocr-provider.js";
 import { decodeReceiptBase64 } from "../suppliers/routes.js";
 import {
   assertDocumentOcrSignature,
@@ -113,7 +113,7 @@ export function registerCommerceRoutes(
   app: FastifyInstance,
   store: Cp2Store,
   binaryUploadPipeline: BinaryUploadPipeline | undefined,
-  receiptOCRProcessor: ReceiptOCRProcessor | undefined
+  ocrProcessor: OcrExtractionProcessor | undefined
 ): void {
   app.post(
     "/businesses/:businessId/product-captures",
@@ -160,8 +160,8 @@ export function registerCommerceRoutes(
         let extractedText =
           typeof request.body.extractedText === "string" ? request.body.extractedText : "";
         let averageConfidence: number | null = null;
-        if (extractedText.trim().length === 0 && receiptOCRProcessor !== undefined) {
-          const extraction = await receiptOCRProcessor.process({
+        if (extractedText.trim().length === 0 && ocrProcessor !== undefined) {
+          const extraction = await ocrProcessor.process({
             fileName: upload.fileName,
             contentType,
             contentBase64: binary.toString("base64")

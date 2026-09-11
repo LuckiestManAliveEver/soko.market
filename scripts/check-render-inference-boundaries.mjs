@@ -113,10 +113,17 @@ const nextService = blueprint.indexOf("\n  - type:", apiStart);
 const apiService = blueprint.slice(apiStart, nextService === -1 ? undefined : nextService);
 
 // The API service must resolve inference through Vercel, never a local model engine.
-for (const forbidden of ["LOCAL_MODEL_", "llama.cpp", ".gguf", "OLLAMA_BASE_URL", "type: pserv"]) {
+for (const forbidden of ["LOCAL_MODEL_", "llama.cpp", ".gguf", "OLLAMA_BASE_URL"]) {
   if (apiService.toLowerCase().includes(forbidden.toLowerCase())) {
     violations.push(`Render API service contains forbidden local-inference marker ${forbidden}`);
   }
+}
+// The API service itself must stay `type: web`, not a private service - checked as an adjacency,
+// not a bare `apiService.includes("type: pserv")`, because the API's envVars legitimately contain
+// that substring inside a `fromService: { type: pserv }` reference to another private service (the
+// OCR worker, docs/receipt-ocr.md), which is not this boundary's concern.
+if (!/-\s+type:\s*web\s*\n\s*name:\s*soko-market-api/u.test(blueprint)) {
+  violations.push("Render API service must declare `type: web`, not a private service (pserv).");
 }
 for (const required of ["key: VERCEL_INFERENCE_URL", "key: SOKO_INFERENCE_SERVICE_TOKEN"]) {
   if (!apiService.includes(required)) {

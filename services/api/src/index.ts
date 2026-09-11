@@ -21,7 +21,7 @@ import { readBuildManifest } from "./build-manifest.js";
 import { createCp2Store } from "./cp2/store.js";
 import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
 import { createEmailProviderFromEnvironment } from "./cp2/email-provider.js";
-import { createReceiptOCRProcessorFromEnvironment } from "./cp2/receipt-ocr-provider.js";
+import { createOcrExtractionProcessorFromEnvironment } from "./cp2/ocr-provider.js";
 import { createNetworkInviteSenderFromEnvironment } from "./cp2/network-invite-provider.js";
 import {
   startNotificationDeliveryRunner,
@@ -78,7 +78,7 @@ const pushNotificationSender =
 const emailProvider = createEmailProviderFromEnvironment();
 const messageWebBaseUrl = (process.env.WEB_PUBLIC_URL ?? "https://soko.market").trim();
 const accountDeletionProcessors = readAccountDeletionProcessors();
-const receiptOCRProcessor = createReceiptOCRProcessorFromEnvironment();
+const ocrProcessor = createOcrExtractionProcessorFromEnvironment();
 const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
 const channelGateway = createChannelGatewayFromEnvironment();
@@ -139,7 +139,7 @@ const apiOptions = {
     telegramBotUsername: (process.env.TELEGRAM_BOT_USERNAME?.trim() ?? "").replace(/^@/u, ""),
     ...(ownerNodeBroker === undefined ? {} : { ownerNodeBroker }),
     ...(binaryUploadPipeline === undefined ? {} : { binaryUploadPipeline }),
-    ...(receiptOCRProcessor === undefined ? {} : { receiptOCRProcessor }),
+    ...(ocrProcessor === undefined ? {} : { ocrProcessor }),
     ...(webPushConfiguration === null ? {} : { vapidPublicKey: webPushConfiguration.publicKey })
   }
 };

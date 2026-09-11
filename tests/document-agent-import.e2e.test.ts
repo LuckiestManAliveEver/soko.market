@@ -249,7 +249,7 @@ describe("binary document upload to agent-persisted records", () => {
     const app = buildApi({
       cp2: {
         store: createCp2Store(),
-        receiptOCRProcessor: {
+        ocrProcessor: {
           async process() {
             return {
               engine: "tesseract",

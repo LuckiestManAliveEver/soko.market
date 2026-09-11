@@ -14,7 +14,7 @@ import {
 } from "./domains/sales/routes.js";
 import { parseContactRecordBody as parseOfflineCustomer } from "./route-helpers.js";
 import { parseReceiptOCRBody as parseOfflineReceiptOcr } from "./domains/suppliers/routes.js";
-import { parseExtractionResult as parseOfflineReceiptOcrExtraction } from "./receipt-ocr-provider.js";
+import { parseExtractionResult as parseOfflineReceiptOcrExtraction } from "./ocr-provider.js";
 import {
   createHash,
   createHmac,
