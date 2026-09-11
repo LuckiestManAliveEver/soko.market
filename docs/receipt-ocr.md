@@ -42,11 +42,11 @@ text, engine metadata, and confidence, with no receipt-specific parsing. `regist
 one processor instance from `OCR_WORKER_URL` and passes it into every domain that needs OCR, so
 receipt parsing is a consumer on top of the same capability, not a separate integration:
 
-| Consumer                                       | Route                                          | What it adds on top of raw OCR                                |
-| ----------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------- |
-| Receipt parsing (`domains/suppliers`)          | `POST /businesses/:businessId/receipt-ocr/jobs` | Supplier/receipt/line-item field parsing, contact matching     |
+| Consumer                                              | Route                                           | What it adds on top of raw OCR                                 |
+| ----------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------- |
+| Receipt parsing (`domains/suppliers`)                 | `POST /businesses/:businessId/receipt-ocr/jobs` | Supplier/receipt/line-item field parsing, contact matching     |
 | Chat document extraction (`domains/document-imports`) | `POST /businesses/:businessId/documents/ocr`    | Returns extracted text for chat attachments, no field parsing  |
-| Camera product capture (`domains/commerce`)    | `POST /businesses/:businessId/product-captures` | Product title/price extraction for the Camera → Catalogue flow |
+| Camera product capture (`domains/commerce`)           | `POST /businesses/:businessId/product-captures` | Product title/price extraction for the Camera → Catalogue flow |
 
 A future extractor (identity documents, invoices, and so on) should be a new consumer of this same
 `OcrExtractionProcessor`, not a new OCR worker integration.
