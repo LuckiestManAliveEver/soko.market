@@ -21,7 +21,7 @@ const migrationSql = readFileSync("infra/db/migrations/083_runtime_handoff_proto
 describe("083 runtime handoff protocol migration", () => {
   it(
     "indexes the createdAt JSON field directly rather than a non-existent created_at column " +
-      "(regression for Postgres error 42703: column \"created_at\" does not exist - the table " +
+      '(regression for Postgres error 42703: column "created_at" does not exist - the table ' +
       "definition only ever generated task_id/updated_at, never a plain created_at column, so " +
       "the original index definition failed at deploy time)",
     () => {
@@ -53,7 +53,7 @@ describe("083 runtime handoff protocol migration", () => {
   describePostgres("against a live Postgres instance", () => {
     it(
       "applies cleanly and builds the task/created_at index (regression for the Render deploy " +
-        "crash: error: column \"created_at\" does not exist, code 42703)",
+        'crash: error: column "created_at" does not exist, code 42703)',
       async () => {
         const connectionString = databaseUrl ?? "";
         const pool = new Pool({ connectionString });
