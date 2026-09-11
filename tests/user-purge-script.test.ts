@@ -37,8 +37,15 @@ describe("registered-user purge script", () => {
     // cp2_offline_changes and cp2_offline_metadata, each classified DELETE: they hold a device's
     // pending mutation receipts and the business change log used to serve /sync/pull, all of it
     // scoped to a purged account or business.
-    expect(plan.size).toBe(188);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(181);
+    // The Runtime Handoff Protocol (infra/db/migrations/083_runtime_handoff_protocol.sql,
+    // docs/architecture/runtime-handoff-protocol.md) added cp2_runtime_handoffs,
+    // cp2_runtime_task_heads, cp2_runtime_task_instances, and cp2_runtime_operation_dedup, each
+    // classified DELETE and ordered so cp2_runtime_task_heads/cp2_runtime_task_instances (which
+    // reference a handoff) delete before cp2_runtime_handoffs (which they reference), and
+    // cp2_runtime_handoffs deletes before the cp2_native_runtime_agents/models/execution_hosts
+    // rows it references.
+    expect(plan.size).toBe(192);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(185);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

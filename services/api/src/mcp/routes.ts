@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { McpAccessScope, McpPrincipal } from "@soko/shared-types";
+import type { McpAccessScope, McpPrincipal, RuntimeSwapDimension } from "@soko/shared-types";
 import { Cp2Error, readSessionCookie, type Cp2Store } from "../cp2/store.js";
 
 const protocolVersion = "2025-11-25";
@@ -183,6 +183,18 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
           }
         },
         annotations: { readOnlyHint: true, destructiveHint: false }
+      },
+      {
+        name: "soko.runtime_status",
+        description:
+          "Resolve a task's Runtime Handoff Protocol state: its current immutable checkpoint, task head, runtime instance health, and whether the runtime has drifted from the task head.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["taskId"],
+          properties: { taskId: { type: "string" } }
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false }
       }
     );
   }
@@ -218,7 +230,88 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
           }
         },
         annotations: { readOnlyHint: false, destructiveHint: true }
-      }
+      },
+      {
+        name: "soko.runtime_checkpoint",
+        description:
+          "Record a Runtime Handoff Protocol checkpoint for a task - its goal, current state, completed/pending actions, and next action. Immutable once written; pass promote:true with expectedHandoffId to also move the task head.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["taskId"],
+          properties: {
+            taskId: { type: "string" },
+            goal: { type: "string" },
+            currentState: { type: "string" },
+            nextAction: { type: ["string", "null"] },
+            promote: { type: "boolean" },
+            expectedHandoffId: { type: "string" }
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false }
+      },
+      {
+        name: "soko.runtime_resume",
+        description:
+          "Resume a task from its Runtime Handoff Protocol state (the authoritative checkpoint), never from conversation transcript replay.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["taskId"],
+          properties: { taskId: { type: "string" } }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false }
+      },
+      {
+        name: "soko.runtime_rollback",
+        description:
+          "Move a task's runtime head back to an earlier immutable checkpoint. Never mutates checkpoint history or the runtime binding.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["taskId", "targetHandoffId"],
+          properties: {
+            taskId: { type: "string" },
+            targetHandoffId: { type: "string" },
+            expectedHandoffId: { type: "string" }
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true }
+      },
+      {
+        name: "soko.runtime_merge",
+        description:
+          "Unify two or more diverged offline branch checkpoints into one new checkpoint and promote the task head to it. The first id in branchHandoffIds becomes the merge's primary parent; the rest are recorded as additional ancestors.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["taskId", "branchHandoffIds", "expectedHandoffId"],
+          properties: {
+            taskId: { type: "string" },
+            branchHandoffIds: { type: "array", items: { type: "string" }, minItems: 2 },
+            goal: { type: "string" },
+            currentState: { type: "string" },
+            nextAction: { type: ["string", "null"] },
+            expectedHandoffId: { type: "string" }
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true }
+      },
+      ...(["agent", "model", "host"] as const).map((dimension) => ({
+        name: `soko.${dimension === "host" ? "execution_host" : dimension}_swap`,
+        description: `Swap a task's ${dimension} to a new compatible ${dimension}, checkpointing current state first (Prepare -> Commit -> Activate). Task and conversation identity never change.`,
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["taskId", "targetId"],
+          properties: {
+            taskId: { type: "string" },
+            targetId: { type: "string" },
+            expectedHandoffId: { type: "string" }
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false }
+      }))
     );
   }
   return tools;
@@ -250,6 +343,91 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
         businessId: shopId,
         query: stringValue(args.query, "query"),
         ...(limit === undefined ? {} : { limit })
+      });
+    } else if (name === "soko.runtime_status") {
+      requireScope(principal, "mcp:read");
+      result = store.resolveRuntimeHandoffForMcp({
+        principal,
+        taskId: stringValue(args.taskId, "taskId")
+      });
+    } else if (name === "soko.runtime_checkpoint") {
+      requireScope(principal, "mcp:act");
+      result = store.createRuntimeCheckpointForMcp({
+        principal,
+        checkpoint: {
+          taskId: stringValue(args.taskId, "taskId"),
+          ...(args.goal === undefined ? {} : { goal: stringValue(args.goal, "goal") }),
+          ...(args.currentState === undefined
+            ? {}
+            : { currentState: stringValue(args.currentState, "currentState") }),
+          ...(args.nextAction === undefined
+            ? {}
+            : {
+                nextAction:
+                  args.nextAction === null ? null : stringValue(args.nextAction, "nextAction")
+              }),
+          ...(args.promote === undefined ? {} : { promote: args.promote === true }),
+          ...(args.expectedHandoffId === undefined
+            ? {}
+            : { expectedHandoffId: stringValue(args.expectedHandoffId, "expectedHandoffId") })
+        }
+      });
+    } else if (name === "soko.runtime_resume") {
+      requireScope(principal, "mcp:act");
+      result = store.resumeRuntimeHandoffForMcp({
+        principal,
+        taskId: stringValue(args.taskId, "taskId")
+      });
+    } else if (name === "soko.runtime_rollback") {
+      requireScope(principal, "mcp:act");
+      result = store.rollbackRuntimeHandoffForMcp({
+        principal,
+        rollback: {
+          taskId: stringValue(args.taskId, "taskId"),
+          targetHandoffId: stringValue(args.targetHandoffId, "targetHandoffId"),
+          ...(args.expectedHandoffId === undefined
+            ? {}
+            : { expectedHandoffId: stringValue(args.expectedHandoffId, "expectedHandoffId") })
+        }
+      });
+    } else if (name === "soko.runtime_merge") {
+      requireScope(principal, "mcp:act");
+      result = store.mergeRuntimeHandoffsForMcp({
+        principal,
+        merge: {
+          taskId: stringValue(args.taskId, "taskId"),
+          branchHandoffIds: stringArrayValue(args.branchHandoffIds, "branchHandoffIds"),
+          expectedHandoffId: stringValue(args.expectedHandoffId, "expectedHandoffId"),
+          ...(args.goal === undefined ? {} : { goal: stringValue(args.goal, "goal") }),
+          ...(args.currentState === undefined
+            ? {}
+            : { currentState: stringValue(args.currentState, "currentState") }),
+          ...(args.nextAction === undefined
+            ? {}
+            : {
+                nextAction:
+                  args.nextAction === null ? null : stringValue(args.nextAction, "nextAction")
+              })
+        }
+      });
+    } else if (
+      name === "soko.agent_swap" ||
+      name === "soko.model_swap" ||
+      name === "soko.execution_host_swap"
+    ) {
+      requireScope(principal, "mcp:act");
+      const dimension: RuntimeSwapDimension =
+        name === "soko.agent_swap" ? "agent" : name === "soko.model_swap" ? "model" : "host";
+      result = store.performRuntimeSwapForMcp({
+        principal,
+        swap: {
+          taskId: stringValue(args.taskId, "taskId"),
+          dimension,
+          targetId: stringValue(args.targetId, "targetId"),
+          ...(args.expectedHandoffId === undefined
+            ? {}
+            : { expectedHandoffId: stringValue(args.expectedHandoffId, "expectedHandoffId") })
+        }
       });
     } else if (name === "soko.runtime_turn") {
       requireScope(principal, "mcp:act");
@@ -405,6 +583,13 @@ function stringValue(value: unknown, field: string): string {
 
 function optionalStringValue(value: unknown, field: string): string | null {
   return value === undefined || value === null ? null : stringValue(value, field);
+}
+
+function stringArrayValue(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new Cp2Error(400, "mcp_input_invalid", `${field} must be an array of strings.`);
+  }
+  return value as string[];
 }
 
 function optionalIntegerValue(value: unknown, field: string): number | undefined {
