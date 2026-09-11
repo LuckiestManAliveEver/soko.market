@@ -3425,7 +3425,7 @@ details.nested-form-section summary {
   background: #ffffff;
   border-top: 1px solid #dde4dc;
   gap: 8px;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   min-width: 0;
   padding: 10px;
   position: sticky;
@@ -5444,7 +5444,7 @@ details.nested-form-section summary {
 
   .composer {
     align-items: center;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
   }
 
   .composer-input span {
@@ -7510,7 +7510,7 @@ body {
   }
 
   .composer {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
   }
 
   .composer-send-actions {
