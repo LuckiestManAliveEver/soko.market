@@ -937,6 +937,100 @@ export class NativeRuntimeBindingStore {
     });
   }
 
+  /**
+   * Validates a candidate (agent, model, host) triple can actually execute together, reusing the
+   * same compatibility rules turn-time resolution enforces (contract version match, capability
+   * match, installation/host availability) - see docs/architecture/native-runtime-bindings.md
+   * "Availability and compatibility". The Runtime Handoff Protocol's swap Prepare phase (protocol
+   * doc section 10/11.1) calls this instead of re-implementing agent/model/host compatibility
+   * checks.
+   */
+  validateCandidateExecutionChain(input: {
+    agentId: string;
+    modelId: string;
+    executionHostId: string;
+  }): {
+    agent: NativeRuntimeAgentSummary;
+    model: NativeRuntimeModelSummary;
+    host: NativeExecutionHostSummary;
+    installation: NativeModelInstallationSummary;
+  } {
+    const agent = this.agents.get(input.agentId);
+    if (agent === undefined || agent.status !== "active") {
+      throw new Cp2Error(409, "RUNTIME_AGENT_UNAVAILABLE", "Candidate agent is unavailable.");
+    }
+    const model = this.models.get(input.modelId);
+    if (model === undefined || model.status !== "active") {
+      throw new Cp2Error(409, "RUNTIME_MODEL_UNAVAILABLE", "Candidate model is unavailable.");
+    }
+    this.validateCompatibility(agent, model);
+    const host = this.hosts.get(input.executionHostId);
+    if (host === undefined || !availabilityStatusUsable(host.status)) {
+      throw new Cp2Error(
+        409,
+        "RUNTIME_EXECUTION_HOST_UNAVAILABLE",
+        "Candidate execution host is unavailable."
+      );
+    }
+    const installation = [...this.installations.values()].find(
+      (candidate) => candidate.modelId === model.id && candidate.executionHostId === host.id
+    );
+    if (installation === undefined || !availabilityStatusUsable(installation.status)) {
+      throw new Cp2Error(
+        409,
+        "RUNTIME_INSTALLATION_UNAVAILABLE",
+        "Candidate model is not installed on this execution host."
+      );
+    }
+    return { agent, model, host, installation };
+  }
+
+  /**
+   * Creates (or, for an identical triple, deterministically reuses) a runtime binding scoped to
+   * one account/business pair with a single enabled primary role, and never mutates an existing
+   * binding in place. Bindings can be shared/reused across many conversations (protocol doc
+   * section 9), so a per-task runtime swap must not risk silently changing another task that
+   * happens to reference the same binding - the deterministic id (hashed from the exact
+   * account/business/agent/model/host tuple) makes repeated identical swaps idempotent without a
+   * separate lookup-then-create step, the same technique `roleRecord`/`stableUuid` already use
+   * for value-like binding roles elsewhere in this file.
+   */
+  materializeConversationBinding(input: {
+    accountId: string;
+    businessId: string | null;
+    agentId: string;
+    modelId: string;
+    executionHostId: string;
+    updatedBy: string;
+    now: Date;
+  }): NativeRuntimeBindingSummary {
+    const { agent } = this.validateCandidateExecutionChain(input);
+    const timestamp = input.now.toISOString();
+    const bindingId = stableUuid(
+      `runtime-handoff-binding:${input.accountId}:${input.businessId ?? "none"}:${input.agentId}:${input.modelId}:${input.executionHostId}`
+    );
+    const existingBinding = this.bindings.get(bindingId);
+    const binding: NativeRuntimeBindingSummary = {
+      id: bindingId,
+      businessId: input.businessId,
+      accountId: input.accountId,
+      agentId: input.agentId,
+      name: `${agent.name} + ${input.modelId}`,
+      status: "active",
+      isDefault: false,
+      configuration: { source: "runtime-handoff-swap" },
+      runtimeContractVersion: agent.runtimeContractVersion,
+      createdAt: existingBinding?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+      updatedBy: input.updatedBy
+    };
+    this.bindings.set(binding.id, binding);
+    const role = roleRecord(binding.id, input.modelId, "primary", 0, input.executionHostId, timestamp);
+    const existingRole = this.bindingModels.get(role.id);
+    this.bindingModels.set(role.id, { ...role, createdAt: existingRole?.createdAt ?? timestamp });
+    return binding;
+  }
+
   clear(): void {
     this.agents.clear();
     this.models.clear();

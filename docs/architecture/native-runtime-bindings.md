@@ -136,3 +136,14 @@ replay, but it can no longer satisfy the production database gate.
 Runtime turn telemetry records the conversation, native binding, agent, configured primary,
 actually selected model, fallback reason, host, and installation IDs. It does not record prompts,
 credentials, or host secrets.
+
+## Runtime Handoff Protocol
+
+This document covers *which* agent/model/host a conversation resolves to. It does not represent
+the task's in-flight execution state (goal, progress, next action) independently of that
+resolution - swapping the agent, model, or host has nothing to hand the new runtime beyond "start
+fresh." [runtime-handoff-protocol.md](./runtime-handoff-protocol.md) adds that: an immutable,
+portable checkpoint per task, a task-head pointer, and a Prepare/Commit/Activate swap lifecycle
+built on top of `NativeRuntimeBindingStore.validateCandidateExecutionChain`/
+`materializeConversationBinding`, reusing this document's compatibility rules and binding-value
+semantics rather than duplicating them.

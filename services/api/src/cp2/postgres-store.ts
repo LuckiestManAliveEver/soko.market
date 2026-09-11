@@ -53,6 +53,13 @@ export const normalizedCollections: NormalizedCollection[] = [
   { key: "nativeModelInstallations", tableName: "cp2_native_model_installations" },
   { key: "nativeRuntimeBindings", tableName: "cp2_native_runtime_bindings" },
   { key: "nativeRuntimeBindingModels", tableName: "cp2_native_runtime_binding_models" },
+  // Runtime Handoff Protocol tables (083_runtime_handoff_protocol.sql, docs/architecture/
+  // runtime-handoff-protocol.md). Handoffs must persist before task heads/instances: both
+  // generated `active_handoff_id` columns carry a foreign key into cp2_runtime_handoffs.
+  { key: "runtimeHandoffs", tableName: "cp2_runtime_handoffs" },
+  { key: "runtimeTaskHeads", tableName: "cp2_runtime_task_heads" },
+  { key: "runtimeTaskInstances", tableName: "cp2_runtime_task_instances" },
+  { key: "runtimeOperationDedup", tableName: "cp2_runtime_operation_dedup" },
   { key: "modelCatalog", tableName: "cp2_model_catalog" },
   { key: "agentCatalog", tableName: "cp2_agent_catalog" },
   { key: "platformOperators", tableName: "cp2_platform_operators" },
@@ -4184,6 +4191,10 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
     // Composite so each conversation's context persists as its own row instead of overwriting
     // its account's other conversations' rows on upsert. See docs/frontend/frontend.md Phase 2.
     return conversationId === null ? accountId : `${accountId}:${conversationId}`;
+  }
+
+  if (key === "runtimeTaskHeads" || key === "runtimeTaskInstances") {
+    return requiredText(record, "taskId");
   }
 
   if (key === "accountPinHashes") {

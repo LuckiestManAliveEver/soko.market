@@ -103,8 +103,15 @@ describe("CP23 MCP tool gateway", () => {
       "soko.list_shops",
       "soko.get_sync_changes",
       "soko.query_catalogue",
+      "soko.runtime_status",
       "soko.runtime_turn",
-      "soko.confirm_runtime_action"
+      "soko.confirm_runtime_action",
+      "soko.runtime_checkpoint",
+      "soko.runtime_resume",
+      "soko.runtime_rollback",
+      "soko.agent_swap",
+      "soko.model_swap",
+      "soko.execution_host_swap"
     ]);
 
     // product.create is auto-accepted (no confirmation gate), so it can't prove the confirmation
@@ -223,7 +230,8 @@ describe("CP23 MCP tool gateway", () => {
     expect(readListed.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual([
       "soko.list_shops",
       "soko.get_sync_changes",
-      "soko.query_catalogue"
+      "soko.query_catalogue",
+      "soko.runtime_status"
     ]);
     const readOnlyAction = await mcpPost(
       app,
@@ -296,8 +304,15 @@ describe("CP23 MCP tool gateway", () => {
       "soko.list_shops",
       "soko.get_sync_changes",
       "soko.query_catalogue",
+      "soko.runtime_status",
       "soko.runtime_turn",
-      "soko.confirm_runtime_action"
+      "soko.confirm_runtime_action",
+      "soko.runtime_checkpoint",
+      "soko.runtime_resume",
+      "soko.runtime_rollback",
+      "soko.agent_swap",
+      "soko.model_swap",
+      "soko.execution_host_swap"
     ]);
     const forbidden = await mcpPost(
       app,

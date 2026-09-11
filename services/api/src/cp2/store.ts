@@ -255,10 +255,29 @@ import type {
   NativeRuntimeModelSummary,
   ResolvedNativeRuntimeBinding,
   SokoIdHistorySummary,
-  SokoIdResolution
+  SokoIdResolution,
+  ResolvedRuntimeHandoff,
+  RuntimeCheckpointCreateInput,
+  RuntimeCheckpointResult,
+  RuntimeHandoff,
+  RuntimeResumeInput,
+  RuntimeResumeResult,
+  RuntimeRollbackInput,
+  RuntimeRollbackResult,
+  RuntimeSwapInput,
+  RuntimeSwapResult,
+  RuntimeTaskHead,
+  RuntimeTaskInstance
 } from "@soko/shared-types";
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
-import { NativeRuntimeBindingStore } from "./domains/native-runtime/store.js";
+import {
+  globalDefaultRuntimeBindingId,
+  NativeRuntimeBindingStore
+} from "./domains/native-runtime/store.js";
+import {
+  RuntimeHandoffDomain,
+  type RuntimeOperationDedupRecord
+} from "./domains/runtime-handoff/store.js";
 import {
   ModelTemplatesDomain,
   type ModelTemplatesSnapshot
@@ -596,6 +615,10 @@ export interface Cp2Snapshot extends ModelTemplatesSnapshot {
   nativeModelInstallations?: NativeModelInstallationSummary[];
   nativeRuntimeBindings?: NativeRuntimeBindingSummary[];
   nativeRuntimeBindingModels?: NativeRuntimeBindingModelSummary[];
+  runtimeHandoffs?: RuntimeHandoff[];
+  runtimeTaskHeads?: RuntimeTaskHead[];
+  runtimeTaskInstances?: RuntimeTaskInstance[];
+  runtimeOperationDedup?: RuntimeOperationDedupRecord[];
   modelCatalog?: AiModelSummary[];
   agentCatalog?: AgentDefinition[];
   platformOperators?: PlatformOperatorGrant[];
@@ -804,6 +827,11 @@ export interface MessageEmailNotificationInput {
 export type MessageEmailNotificationSender = (
   input: MessageEmailNotificationInput
 ) => Promise<"sent" | "failed">;
+
+// See the runtimeHandoffDomain requireAnySession closure in the constructor below: this prefix
+// marks a sessionId string as "already authorized by an MCP bearer token for this account", never
+// a real cookie session id (those are opaque random tokens and could never collide with it).
+const mcpTrustedSessionIdPrefix = "mcp-trusted-account:";
 
 export class Cp2Store {
   private readonly channelGateway: ChannelGateway;
@@ -1324,6 +1352,41 @@ export class Cp2Store {
         ? {}
         : { runtimeModelProvider: this.options.runtimeModelProvider })
     });
+    this.runtimeHandoffDomain = new RuntimeHandoffDomain({
+      conversations: this.messagingDomain.conversationsMap,
+      // MCP tools (runtimeHandoffForMcp below) are authenticated by bearer token + scope, not a
+      // browser session cookie - requireAnySession has no sessionId to look up for them. Rather
+      // than widening RuntimeHandoffDomain's public methods to accept two different actor shapes
+      // (session vs. trusted account), this closure privately recognizes one reserved sessionId
+      // shape carrying an already-authorized account id, entirely within this wiring - the domain
+      // itself still only ever sees an opaque sessionId string and trusts this callback's verdict,
+      // exactly as it does for a real cookie session.
+      requireAnySession: (sessionId, now) => {
+        if (sessionId !== null && sessionId.startsWith(mcpTrustedSessionIdPrefix)) {
+          const accountId = sessionId.slice(mcpTrustedSessionIdPrefix.length);
+          const account = this.requireAccount(accountId);
+          const user = this.requireUser(this.userByAccount.get(accountId));
+          return {
+            account,
+            user,
+            session: { id: sessionId, expiresAt: new Date(now.getTime() + 60_000).toISOString() }
+          };
+        }
+        return this.requireAnySession(sessionId, now);
+      },
+      nativeRuntimeBindings: this.nativeRuntimeBindings,
+      defaultRuntimeBindingId: globalDefaultRuntimeBindingId,
+      setConversationRuntimeBinding: (conversationId, runtimeBindingId, now) => {
+        const conversation = this.messagingDomain.conversationsMap.get(conversationId);
+        if (conversation === undefined) return;
+        this.messagingDomain.conversationsMap.set(conversationId, {
+          ...conversation,
+          runtimeBindingId,
+          updatedAt: now.toISOString()
+        });
+      },
+      recordAuditEvent: (input) => this.recordAuditEvent(input)
+    });
     this.seedCatalogDefaultsIfEmpty();
   }
 
@@ -1369,6 +1432,11 @@ export class Cp2Store {
   private readonly agentRuntimeDomain: AgentRuntimeDomain;
   private readonly modelTemplatesDomain: ModelTemplatesDomain;
   private readonly nativeRuntimeBindings: NativeRuntimeBindingStore;
+  // Runtime Handoff Protocol state (see docs/architecture/runtime-handoff-protocol.md) - lives in
+  // its own domain rather than folded into `nativeRuntimeBindings` (which resolves/configures the
+  // agent+model+host a task uses) or `messagingDomain` (transcript), matching invariant 1.4:
+  // runtime state, runtime binding, and conversation are independent concerns.
+  private readonly runtimeHandoffDomain: RuntimeHandoffDomain;
   // DB-hosted model/agent catalog (see infra/db/migrations/071_platform_catalog.sql) and the
   // platform-operator grants that authorize editing it - see requirePlatformOperator,
   // listModelCatalog/upsertModelCatalogEntry/removeModelCatalogEntry, and the agent-catalog
@@ -3252,6 +3320,110 @@ export class Cp2Store {
       payload: { businessId: completed.businessId }
     });
     return completed;
+  }
+
+  // Runtime Handoff Protocol (docs/architecture/runtime-handoff-protocol.md) - thin delegations to
+  // runtimeHandoffDomain, matching every other domain's pass-through wrapper shape in this file.
+  resolveRuntimeHandoff(
+    ...args: Parameters<RuntimeHandoffDomain["resolveHandoff"]>
+  ): ResolvedRuntimeHandoff {
+    return this.runtimeHandoffDomain.resolveHandoff(...args);
+  }
+  getRuntimeHandoffById(
+    ...args: Parameters<RuntimeHandoffDomain["getHandoffById"]>
+  ): RuntimeHandoff {
+    return this.runtimeHandoffDomain.getHandoffById(...args);
+  }
+  getRuntimeHandoffByVersion(
+    ...args: Parameters<RuntimeHandoffDomain["getHandoffByVersion"]>
+  ): RuntimeHandoff {
+    return this.runtimeHandoffDomain.getHandoffByVersion(...args);
+  }
+  createRuntimeCheckpoint(
+    sessionId: string | null,
+    input: RuntimeCheckpointCreateInput
+  ): RuntimeCheckpointResult {
+    return this.runtimeHandoffDomain.createCheckpoint(sessionId, input);
+  }
+  performRuntimeSwap(sessionId: string | null, input: RuntimeSwapInput): RuntimeSwapResult {
+    return this.runtimeHandoffDomain.performSwap(sessionId, input);
+  }
+  rollbackRuntimeHandoff(
+    sessionId: string | null,
+    input: RuntimeRollbackInput
+  ): RuntimeRollbackResult {
+    return this.runtimeHandoffDomain.rollback(sessionId, input);
+  }
+  resumeRuntimeHandoff(sessionId: string | null, input: RuntimeResumeInput): RuntimeResumeResult {
+    return this.runtimeHandoffDomain.resume(sessionId, input);
+  }
+
+  // MCP wrappers for the Runtime Handoff Protocol (docs/architecture/runtime-handoff-protocol.md
+  // section 17: runtime.status/checkpoint/resume/rollback, agent.swap/model.swap/
+  // execution_host.swap). Each authenticates the bearer principal exactly like every other
+  // `*ForMcp` method in this class, then calls the *same* runtimeHandoffDomain methods the REST
+  // routes call - see the mcpTrustedSessionIdPrefix closure above for how a principal's
+  // already-verified account id reaches those session-shaped methods without a cookie. Nothing
+  // about swap orchestration, transaction/version-allocation, or compatibility validation is
+  // reimplemented here.
+  private trustedMcpSessionId(principal: McpPrincipal, now: Date): string {
+    this.requireIntegrationPrincipal({ ...principal, now });
+    return `${mcpTrustedSessionIdPrefix}${principal.accountId}`;
+  }
+  resolveRuntimeHandoffForMcp(input: {
+    principal: McpPrincipal;
+    taskId: string;
+    now?: Date;
+  }): ResolvedRuntimeHandoff {
+    const now = input.now ?? new Date();
+    return this.runtimeHandoffDomain.resolveHandoff(
+      this.trustedMcpSessionId(input.principal, now),
+      input.taskId,
+      now
+    );
+  }
+  createRuntimeCheckpointForMcp(input: {
+    principal: McpPrincipal;
+    checkpoint: RuntimeCheckpointCreateInput;
+    now?: Date;
+  }): RuntimeCheckpointResult {
+    const now = input.now ?? new Date();
+    return this.runtimeHandoffDomain.createCheckpoint(
+      this.trustedMcpSessionId(input.principal, now),
+      input.checkpoint
+    );
+  }
+  performRuntimeSwapForMcp(input: {
+    principal: McpPrincipal;
+    swap: RuntimeSwapInput;
+    now?: Date;
+  }): RuntimeSwapResult {
+    const now = input.now ?? new Date();
+    return this.runtimeHandoffDomain.performSwap(
+      this.trustedMcpSessionId(input.principal, now),
+      input.swap
+    );
+  }
+  resumeRuntimeHandoffForMcp(input: {
+    principal: McpPrincipal;
+    taskId: string;
+    now?: Date;
+  }): RuntimeResumeResult {
+    const now = input.now ?? new Date();
+    return this.runtimeHandoffDomain.resume(this.trustedMcpSessionId(input.principal, now), {
+      taskId: input.taskId
+    });
+  }
+  rollbackRuntimeHandoffForMcp(input: {
+    principal: McpPrincipal;
+    rollback: RuntimeRollbackInput;
+    now?: Date;
+  }): RuntimeRollbackResult {
+    const now = input.now ?? new Date();
+    return this.runtimeHandoffDomain.rollback(
+      this.trustedMcpSessionId(input.principal, now),
+      input.rollback
+    );
   }
 
   listAiModels(
@@ -6054,6 +6226,10 @@ export class Cp2Store {
       nativeModelInstallations: [...this.nativeRuntimeBindings.installationsMap.values()],
       nativeRuntimeBindings: [...this.nativeRuntimeBindings.bindingsMap.values()],
       nativeRuntimeBindingModels: [...this.nativeRuntimeBindings.bindingModelsMap.values()],
+      runtimeHandoffs: [...this.runtimeHandoffDomain.handoffsMap.values()],
+      runtimeTaskHeads: [...this.runtimeHandoffDomain.taskHeadsMap.values()],
+      runtimeTaskInstances: [...this.runtimeHandoffDomain.taskInstancesMap.values()],
+      runtimeOperationDedup: [...this.runtimeHandoffDomain.operationDedupMap.values()],
       modelCatalog: [...this.modelCatalog.values()].map(cloneModelCatalogEntry),
       agentCatalog: [...this.agentCatalog.values()].map(cloneAgentCatalogEntry),
       platformOperators: [...this.platformOperators.values()],
@@ -6162,6 +6338,7 @@ export class Cp2Store {
     this.agentRuntimeDomain.clear();
     this.modelTemplatesDomain.clear();
     this.nativeRuntimeBindings.clear();
+    this.runtimeHandoffDomain.clear();
     this.modelCatalog.clear();
     this.agentCatalog.clear();
     this.platformOperators.clear();
@@ -6256,6 +6433,7 @@ export class Cp2Store {
     this.agentRuntimeDomain.restore(snapshot);
     this.modelTemplatesDomain.restore(snapshot);
     this.nativeRuntimeBindings.restore(snapshot);
+    this.runtimeHandoffDomain.restore(snapshot);
     this.salesDomain.restore(snapshot);
 
     for (const state of snapshot.marketplaceIntroStates ?? []) {
