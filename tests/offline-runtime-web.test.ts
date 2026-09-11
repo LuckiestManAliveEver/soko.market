@@ -49,7 +49,7 @@ describe("Chat API offline adapter", () => {
     document.body.append(host);
     const root = createRoot(host);
     const button = (text: string) =>
-      [...host.querySelectorAll("button")].find((entry) => entry.textContent === text)!;
+      [...document.querySelectorAll("button")].find((entry) => entry.textContent === text)!;
     try {
       await act(async () => {
         root.render(
@@ -62,13 +62,24 @@ describe("Chat API offline adapter", () => {
       await act(async () => {
         button("Go Offline").click();
       });
-      expect(host.textContent).toContain("Confirm and install");
+      expect(document.body.textContent).toContain("Set up offline mode");
+      await act(async () => {
+        button("Continue").click();
+      });
+      expect(document.body.textContent).toContain("Choose a destination");
+      await act(async () => {
+        button("Continue").click();
+      });
+      expect(document.body.textContent).toContain("Ready to install");
       expect(network).not.toHaveBeenCalled();
       await act(async () => {
-        button("Confirm and install").click();
+        button("Install").click();
         await new Promise((resolve) => setTimeout(resolve, 60));
       });
       expect(host.textContent).toContain("Offline business data is ready");
+      await act(async () => {
+        button("Done").click();
+      });
       expect(network).toHaveBeenCalledTimes(1);
       expect(String(network.mock.calls[0]?.[0])).toContain("offline-runtime/snapshot");
       await act(async () => {
