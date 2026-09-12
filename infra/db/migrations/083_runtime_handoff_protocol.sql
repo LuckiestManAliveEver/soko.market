@@ -79,9 +79,6 @@ create table if not exists cp2_runtime_handoffs (
     foreign key (execution_host_id) references cp2_native_execution_hosts (entity_id)
 );
 
-create index if not exists cp2_runtime_handoffs_task_created_idx
-  on cp2_runtime_handoffs (task_id, created_at desc);
-
 create index if not exists cp2_runtime_handoffs_parent_idx
   on cp2_runtime_handoffs (parent_handoff_id);
 
