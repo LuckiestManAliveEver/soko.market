@@ -1130,7 +1130,14 @@ describe("acknowledged hosted/local transfers", () => {
     const op = f.begin();
     const cp = f.h.domain.handoffsMap.get(op.checkpointId!)!;
     const late = new Date(Date.parse(op.expiresAt) + 1);
-    f.h.domain.heartbeatHost(f.owner.accountId, f.owner.conversationId, f.local.id, "device", true, late);
+    f.h.domain.heartbeatHost(
+      f.owner.accountId,
+      f.owner.conversationId,
+      f.local.id,
+      "device",
+      true,
+      late
+    );
     const result = f.h.domain.completeTransfer(
       f.owner.accountId,
       f.owner.conversationId,

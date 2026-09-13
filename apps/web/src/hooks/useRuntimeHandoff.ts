@@ -47,10 +47,9 @@ export function useRuntimeHandoff(
         if (next.runtimeHandoffSession && next.runtimeHandoffSession.status !== "hosted") return;
         let caps: RuntimeCapabilities | undefined;
         if (navigator.onLine && conversationId) {
-          const fetched = await (await runtimeHandoffController()).capabilities(
-            scope,
-            conversationId
-          );
+          const fetched = await (
+            await runtimeHandoffController()
+          ).capabilities(scope, conversationId);
           if (disposed || current !== revision) return;
           caps = fetched;
           setCanonicalStatus(
