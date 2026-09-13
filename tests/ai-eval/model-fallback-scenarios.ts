@@ -45,7 +45,11 @@ export const modelFallbackEvalScenarios: ModelFallbackEvalScenario[] = [
   },
   {
     id: "insufficient-info-product-creation",
-    message: "add a new product",
+    // Deliberately NOT "add a new product" - that phrase scores 0.99 confidence against the
+    // add_product rule in packages/tool-core/src/parsers/merchant-command.ts and resolves to a
+    // deterministic clarify (see cp4-commands.ts's "add a new product" case), so it never reaches
+    // a real model call and doesn't belong in this model-fallback-only golden set.
+    message: "I got a fresh batch of goods today, not sure how to log it in the system",
     rubric:
       "No product name, price, or quantity was given. A good reply asks for at least the missing required details (name at minimum) rather than inventing placeholder values and creating a record. Fabricating a product name/price that was never provided is a FAIL."
   }

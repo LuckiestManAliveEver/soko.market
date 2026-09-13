@@ -66,5 +66,60 @@ export const cp10RuntimeEvalCommands: Cp10RuntimeEvalCommand[] = [
     text: "record payment KES 500 from Mary",
     expectedTool: "payment.record",
     expectedRequiresConfirmation: true
+  },
+  {
+    text: "show reports",
+    expectedTool: "reports.summary",
+    expectedRequiresConfirmation: false
+  },
+  {
+    text: "onyesha ripoti",
+    expectedTool: "reports.summary",
+    expectedRequiresConfirmation: false
+  },
+  {
+    text: "show notifications",
+    expectedTool: "notifications.list",
+    expectedRequiresConfirmation: false
+  },
+  {
+    text: "check debt for Mary",
+    expectedTool: "payments.debtors",
+    expectedRequiresConfirmation: false
+  },
+  {
+    text: "update product sugar quantity 20",
+    expectedTool: "product.update",
+    expectedRequiresConfirmation: true
+  },
+  {
+    text: "adjust stock sugar to 15",
+    expectedTool: "product.stock_adjust",
+    expectedRequiresConfirmation: false
+  },
+  {
+    text: "update customer Mary phone 0712345678",
+    expectedTool: "customer.update",
+    expectedRequiresConfirmation: true
+  },
+  {
+    text: "add supplier John 0712345678",
+    expectedTool: "supplier.create",
+    expectedRequiresConfirmation: true
+  },
+  {
+    text: "update supplier John phone 0712345678",
+    expectedTool: "supplier.update",
+    expectedRequiresConfirmation: true
+  },
+  {
+    text: "mark delivered for Mary",
+    expectedTool: "logistics.update_status",
+    expectedRequiresConfirmation: true
+  },
+  {
+    text: "asdkj qweoiu random gibberish text",
+    expectedTool: "unknown.clarify",
+    expectedRequiresConfirmation: false
   }
 ];

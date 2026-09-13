@@ -108,5 +108,83 @@ export const cp4EvalCommands: Cp4EvalCommand[] = [
   { text: "open invoices", expectedIntent: "show_invoices", expectedNextAction: "navigate" },
   { text: "show sales", expectedIntent: "show_invoices", expectedNextAction: "navigate" },
   { text: "onyesha ankara", expectedIntent: "show_invoices", expectedNextAction: "navigate" },
-  { text: "invoice list", expectedIntent: "show_invoices", expectedNextAction: "navigate" }
+  { text: "invoice list", expectedIntent: "show_invoices", expectedNextAction: "navigate" },
+  { text: "show reports", expectedIntent: "show_reports", expectedNextAction: "navigate" },
+  { text: "onyesha ripoti", expectedIntent: "show_reports", expectedNextAction: "navigate" },
+  {
+    text: "show notifications",
+    expectedIntent: "show_notifications",
+    expectedNextAction: "navigate"
+  },
+  { text: "list alerts", expectedIntent: "show_notifications", expectedNextAction: "navigate" },
+  {
+    text: "update product sugar quantity 20",
+    expectedIntent: "update_product",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "hariri bidhaa sugar quantity 20",
+    expectedIntent: "update_product",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "adjust stock sugar to 15",
+    expectedIntent: "adjust_stock",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "rekebisha stock sugar to 15",
+    expectedIntent: "adjust_stock",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "update customer Mary phone 0712345678",
+    expectedIntent: "update_customer",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "badilisha mteja Mary phone 0712345678",
+    expectedIntent: "update_customer",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "add supplier John 0712345678",
+    expectedIntent: "add_supplier",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "ongeza msambazaji John 0712345678",
+    expectedIntent: "add_supplier",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "update supplier John phone 0712345678",
+    expectedIntent: "update_supplier",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "badilisha msambazaji John phone 0712345678",
+    expectedIntent: "update_supplier",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "mark delivered for Mary",
+    expectedIntent: "update_logistics",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "imefika for Mary",
+    expectedIntent: "update_logistics",
+    expectedNextAction: "draft"
+  },
+  {
+    text: "add a new product",
+    expectedIntent: "add_product",
+    expectedNextAction: "clarify"
+  },
+  {
+    text: "add customer",
+    expectedIntent: "add_customer",
+    expectedNextAction: "clarify"
+  }
 ];
