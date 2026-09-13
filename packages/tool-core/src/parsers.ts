@@ -12,6 +12,7 @@ export { validateRuntimeToolInput } from "./validation/runtime.js";
 export {
   createRuntimeToolProposal,
   mcpSchemaForRuntimeTool,
+  renderRuntimeModelFewShotExamples,
   renderRuntimeModelOutputInstructions
 } from "./parsers/runtime-proposals.js";
 export { parseMerchantCommand, shouldUseStructuredFallback } from "./parsers/merchant-command.js";

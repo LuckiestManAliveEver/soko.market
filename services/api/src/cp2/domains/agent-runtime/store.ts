@@ -183,6 +183,7 @@ import {
   resolveDefaultDeviceModelId,
   runtimeAgentProfileFromStored,
   runtimeEvaluationSampled,
+  runtimeExecutionFailureResponse,
   runtimeStatusFromPlan,
   validateAgentModelBindingConfiguration,
   type BusinessAgentProfileInput,
@@ -1620,6 +1621,10 @@ export class AgentRuntimeDomain {
     const scores = events
       .map((event) => event.score)
       .filter((score): score is number => score !== null);
+    const clarifyingEvents = events.filter((event) => event.metadata.status === "clarifying");
+    const clarifyingTurnCounts = clarifyingEvents
+      .map((event) => event.metadata.turnCount)
+      .filter((value): value is number => typeof value === "number");
     return {
       tenantId: input.businessId,
       shopId: input.businessId,
@@ -1631,6 +1636,12 @@ export class AgentRuntimeDomain {
       blocked: events.filter((event) => event.outcome === "blocked").length,
       averageScore:
         scores.length === 0 ? null : scores.reduce((sum, score) => sum + score, 0) / scores.length,
+      clarifying: clarifyingEvents.length,
+      averageSessionTurnCountAtClarify:
+        clarifyingTurnCounts.length === 0
+          ? null
+          : clarifyingTurnCounts.reduce((sum, turnCount) => sum + turnCount, 0) /
+            clarifyingTurnCounts.length,
       recentEvents: events.slice(0, 20).map((event) => ({ ...event }))
     };
   }
@@ -2369,6 +2380,14 @@ export class AgentRuntimeDomain {
       });
     }
 
+    // Deliberately NOT wrapped in try/catch, unlike confirmRuntimeAction below: this auto-execute
+    // branch is also reached by hashtag-invoked, confirmation-free tools (e.g. workspace.deliver)
+    // through the messaging domain's own createRuntimeTurn call
+    // (services/api/src/cp2/domains/messaging/store.ts), which relies on execution failures
+    // propagating as real thrown errors - its own try/catch there (isRecoverableAgentModelChatError)
+    // deliberately re-throws anything that isn't a model/runtime-availability error, exactly so a
+    // hashtag command's file-not-found/storage-failed surfaces loudly rather than being silently
+    // absorbed into a soft chat reply. See tests/workspace-conversation-delivery.test.ts.
     const canExecute = plan.status === "safe_to_execute" && verification.ok;
     const toolResult = canExecute
       ? await executeRuntimeCapability(this.deps, {
@@ -2527,24 +2546,51 @@ export class AgentRuntimeDomain {
       roleAllowed: verification.roleAllowed
     });
 
-    const toolResult = verification.ok
-      ? await executeRuntimeCapability(this.deps, {
+    let toolResult: unknown = null;
+    let executionError: Cp2Error | null = null;
+    if (verification.ok) {
+      try {
+        toolResult = await executeRuntimeCapability(this.deps, {
           sessionId: this.requireSessionIdForUser(input.authUserId),
           businessId: input.businessId,
           action,
           now: input.now
-        })
-      : null;
+        });
+      } catch (error) {
+        executionError =
+          error instanceof Cp2Error
+            ? error
+            : new Cp2Error(
+                500,
+                "runtime_tool_execution_failed",
+                "That action could not be completed."
+              );
+      }
+    }
 
-    if (verification.ok) {
+    const executed = verification.ok && executionError === null;
+    if (executed) {
       action.executedAt = input.now.toISOString();
-      this.pendingRuntimeActions.delete(input.token);
       appendTelemetry("tool.executed", "completed", {
         actionId: action.id
       });
+    } else if (executionError !== null) {
+      appendTelemetry("tool.executed", "blocked", {
+        actionId: action.id,
+        errorCode: executionError.code,
+        retryable: executionError.retryable ?? false
+      });
     }
 
-    appendTelemetry("response.generated", verification.ok ? "completed" : "blocked", {
+    // A retryable execution failure keeps the confirmation token alive so a plain follow-up
+    // "confirm" retries the SAME already-approved action, instead of forcing the merchant to
+    // redraft it from scratch - a non-retryable failure (or a success, which no longer needs the
+    // token) consumes it, since retrying identical input would only fail identically again.
+    if (executed || (executionError !== null && executionError.retryable !== true)) {
+      this.pendingRuntimeActions.delete(input.token);
+    }
+
+    appendTelemetry("response.generated", executed ? "completed" : "blocked", {
       actionId: action.id
     });
 
@@ -2560,14 +2606,17 @@ export class AgentRuntimeDomain {
         parserIntent:
           action.toolName === "document_import.confirm" ? "confirm_document_import" : "unknown",
         parserConfidence: 1,
-        status: verification.ok ? "completed" : "blocked",
+        status: executed ? "completed" : "blocked",
         context: input.context,
         plan: action,
         verification,
         model: null,
-        response: verification.ok
-          ? `Confirmed and executed ${action.toolName}.`
-          : "I could not execute the confirmed action.",
+        response:
+          executionError !== null
+            ? runtimeExecutionFailureResponse(executionError)
+            : executed
+              ? `Confirmed and executed ${action.toolName}.`
+              : "I could not execute the confirmed action.",
         toolResult,
         telemetry: input.telemetry,
         runtimeVersion: input.runtimeVersion,
@@ -3181,7 +3230,12 @@ export class AgentRuntimeDomain {
         metadata: {
           intent: input.turn.parserIntent,
           toolName: input.turn.plan.toolName,
-          status: input.turn.status
+          status: input.turn.status,
+          // Session turn count at the moment of this event - the raw signal
+          // getAgentEvaluationSummary's averageSessionTurnCountAtClarify aggregates, so a real
+          // increase in clarifies-happening-late-in-long-sessions is a traceable number, not an
+          // impression (METR's finding: models degrade on long, under-specified interactions).
+          turnCount: updatedSession.turnCount
         },
         sessionId: input.turn.sessionId,
         messageId: null,

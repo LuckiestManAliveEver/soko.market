@@ -115,3 +115,42 @@ patterns) — and given that the two papers closest to that frontier (Continual 
 both report their own systems discovering and persisting exploits when granted that kind of
 autonomy, staying with a closed tool registry and human confirmation gate is the right call for a
 system that touches real money, not a gap to close.
+
+## Update: second batch shipped
+
+Three more standards-derived improvements landed after this audit, each scoped down from the
+paper's literal mechanism to what's actually safe and appropriate for this system:
+
+- **Few-shot examples in the model prompt** (GPT-3, Chain-of-Thought) —
+  `renderRuntimeModelFewShotExamples` (`packages/tool-core/src/parsers/runtime-proposals.ts`) adds
+  5 fixed worked `<merchant message, JSON output>` examples to the model-fallback prompt, filtered
+  to the tools actually allowed for the request. Deliberately small and hand-written, not learned
+  or optimized — this is a cheap correctness aid, not a DSPy/GEPA-style pipeline.
+- **Bounded retry on genuine execution failures** (InterCode, Reflexion) — scoped down from literal
+  "auto-retry" after discovering that blindly re-invoking a mutating tool call risks double
+  execution for writes with no verified idempotency guarantee. What shipped instead:
+  `confirmRuntimeAction` (`services/api/src/cp2/domains/agent-runtime/store.ts`) now catches an
+  execution-time `Cp2Error`, surfaces its specific message via `runtimeExecutionFailureResponse`
+  instead of crashing the request, and — only when the codebase's own existing `Cp2Error.retryable`
+  flag says so — keeps the confirmation token alive so a plain follow-up "confirm" retries the same
+  already-approved action. Deliberately scoped to the explicit-confirmation path only: the
+  auto-execute path (hashtag-invoked, confirmation-free tools like `workspace.deliver`) still
+  throws through unchanged, because the messaging domain's own `createRuntimeTurn` caller
+  (`services/api/src/cp2/domains/messaging/store.ts`) deliberately depends on that for its own
+  `isRecoverableAgentModelChatError` classification — confirmed by a real regression
+  (`tests/workspace-conversation-delivery.test.ts`) the first, too-broad version of this change
+  caused and then fixed by narrowing scope, not by weakening the new behavior.
+- **Clarify-rate / turn-length telemetry** (METR) — `AgentEvaluationSummary` gained `clarifying`
+  (a distinct count, no longer folded into the broader `partial` bucket) and
+  `averageSessionTurnCountAtClarify`, sourced from a `turnCount` field added to the existing
+  sampled evaluation-event metadata. Surfaced in the owner-facing settings UI
+  (`apps/web/src/AgentRetentionPanel.tsx`). A rising average is the concrete, traceable signal for
+  METR's finding that models degrade on long, under-specified interactions — not an impression.
+
+All three shipped with tests (`tests/runtime-model-few-shot-examples.test.ts`,
+`tests/runtime-execution-failure-response.test.ts`,
+`tests/runtime-execution-failure-graceful-degradation.test.ts`,
+`tests/agent-evaluation-clarify-rate.test.ts`), verified against the full 1196-test suite, and the
+two behavior-changing ones (execution-failure handling, clarify-rate metadata) were bug-fix-critic
+checked by reverting the change and confirming the new tests fail with the exact pre-fix symptom
+before restoring it.

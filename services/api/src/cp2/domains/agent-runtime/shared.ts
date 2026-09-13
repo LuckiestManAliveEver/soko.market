@@ -327,6 +327,18 @@ export function runtimeStatusFromPlan(
   return verification.errors.length > 0 ? "blocked" : "completed";
 }
 
+/**
+ * Turns a thrown execution-time Cp2Error into merchant-facing text instead of the raw HTTP error
+ * the request would otherwise crash out with (InterCode/Reflexion's shared standard: surface the
+ * specific failure reason, don't just fail silently or generically). Cp2Error.retryable is this
+ * codebase's own existing classification of which errors are safe to retry - reused here rather
+ * than guessing at a new one - so only a retryable failure invites a retry; the messages in this
+ * codebase (e.g. "The customer was not found.") are already written as plain, merchant-safe text.
+ */
+export function runtimeExecutionFailureResponse(error: Cp2Error): string {
+  return error.retryable === true ? `${error.message} You can try that again.` : error.message;
+}
+
 export function createRuntimeResponse(input: {
   plan: RuntimePlannedAction;
   proposalReason: string;

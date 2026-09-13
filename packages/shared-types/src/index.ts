@@ -4015,6 +4015,21 @@ export interface AgentEvaluationSummary {
   failure: number;
   blocked: number;
   averageScore: number | null;
+  /**
+   * Turns where the parser/model asked the merchant to clarify, as a distinct count from the
+   * broader "partial" bucket (which also includes healthy needs_confirmation turns) - METR's
+   * "Measuring AI Ability to Complete Long Software Tasks" finding that models degrade on long,
+   * under-specified interactions is only checkable if clarify requests are counted on their own.
+   */
+  clarifying: number;
+  /**
+   * Average RuntimeSessionSummary.turnCount at the moment a clarifying turn happened, across the
+   * same sampled events "clarifying" is counted from. A rising value over time is the concrete,
+   * traceable signal for the degradation METR's paper describes - clarifies clustering late in
+   * long sessions rather than at a session's first turn or two. Null when no clarifying turns have
+   * been recorded yet.
+   */
+  averageSessionTurnCountAtClarify: number | null;
   recentEvents: AgentEvaluationEvent[];
 }
 

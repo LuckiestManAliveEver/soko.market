@@ -102,6 +102,7 @@ export function AgentRetentionPanel({
         <span>{evaluationSummary?.success ?? 0} successful</span>
         <span>{evaluationSummary?.blocked ?? 0} policy-blocked</span>
         <span>{evaluationSummary?.failure ?? 0} failed</span>
+        <span>{evaluationSummary?.clarifying ?? 0} needed clarification</span>
       </div>
       <div className="runtime-context-list" role="list" aria-label="Recent agent issues">
         {evaluationSummary?.recentEvents

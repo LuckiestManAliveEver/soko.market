@@ -7,7 +7,10 @@ import type {
   RuntimeModelPrompt,
   RuntimeModelProvider
 } from "@soko/shared-types";
-import { renderRuntimeModelOutputInstructions } from "@soko/tool-core";
+import {
+  renderRuntimeModelFewShotExamples,
+  renderRuntimeModelOutputInstructions
+} from "@soko/tool-core";
 
 import type { ModelArtifactStore } from "./model-artifact-store.js";
 
@@ -346,13 +349,15 @@ export function asModelRuntimeError(error: unknown): ModelRuntimeError {
       );
 }
 
-function buildInferencePrompt(prompt: RuntimeModelPrompt): string {
+export function buildInferencePrompt(prompt: RuntimeModelPrompt): string {
   const history = (prompt.conversationHistory ?? [])
     .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.content}`)
     .join("\n");
+  const fewShotExamples = renderRuntimeModelFewShotExamples(prompt.allowedTools);
   return [
     "You are the model behind the Soko agent runtime.",
     renderRuntimeModelOutputInstructions(prompt.allowedTools),
+    ...(fewShotExamples === "" ? [] : [fewShotExamples]),
     ...(history === "" ? [] : [`Recent conversation (oldest first):\n${history}`]),
     prompt.message
   ].join("\n");
