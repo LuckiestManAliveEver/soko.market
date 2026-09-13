@@ -1,3 +1,4 @@
+import type { RuntimeHandoff, RuntimeTurnSummary } from "@soko/shared-types";
 import type {
   ActiveNativeAgentBinding,
   AgentDefinition,
@@ -28,6 +29,9 @@ import type { SessionRecord } from "../../store.js";
 import type { AgentRuntimeCommerceDeps } from "./domain-deps-commerce.js";
 
 export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
+  acquireRuntimeTurn?: (taskId: string, accountId: string, businessId: string) => () => void;
+  checkpointRuntimeTurn?: (taskId: string, turn: RuntimeTurnSummary) => void;
+  activeRuntimeCheckpoint?: (taskId: string) => RuntimeHandoff | undefined;
   platformDefaultRuntime: PlatformDefaultRuntimePolicy;
   // DB-hosted model catalog (see infra/db/migrations/071_platform_catalog.sql,
   // Cp2Store.modelCatalog) - the source of truth every aiModelRegistry.find()/.filter() call in

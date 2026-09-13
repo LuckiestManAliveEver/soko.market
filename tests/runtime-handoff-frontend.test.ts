@@ -3,7 +3,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { openLocalDatabase } from "../packages/offline-runtime/db/client";
 import { LocalProvider } from "../packages/offline-runtime/providers/local-provider";
 import { executeProviderCall } from "../packages/offline-runtime/providers/resolver";
-import type { RuntimeHandoff } from "@soko/shared-types";
+import type { RuntimeHandoff, RuntimeTransfer } from "@soko/shared-types";
 import type { LocalRuntimeMessage, Scope } from "@soko/offline-runtime";
 import {
   RuntimeHandoffController,
@@ -56,6 +56,8 @@ async function fixture() {
   const db = await openLocalDatabase(new IDBFactory());
   let head = structuredClone(initial);
   let seq = 1;
+  const transfers = new Map<string, RuntimeTransfer>();
+  const checkpoints = new Map<string, RuntimeHandoff>();
   const order: string[] = [];
   const host: LocalHandoffHost = {
     id: "installed-harness",
@@ -95,6 +97,54 @@ async function fixture() {
   const cloud = vi.fn(async (path: string, body?: unknown) => {
     const input = body as
       { targetId?: string; expectedHandoffId?: string; checkpoints?: RuntimeHandoff[] } | undefined;
+    if (path.endsWith("/capabilities") || path.endsWith("/heartbeat"))
+      return {
+        handoff: { available: true, supported: true, reason: null },
+        local: [{ executionHostId: "this-device", available: true }],
+        hosted: [{ executionHostId: "hosted", available: true }]
+      };
+    if (path.endsWith("/handoffs")) {
+      const target = (body as { targetExecutionHostId: string }).targetExecutionHostId;
+      if (input?.expectedHandoffId !== head.id) throw new Error("RuntimeHandoff conflict");
+      if (target === head.runtime.executionHostId) throw new Error("The target is already active");
+      order.push("checkpoint");
+      const checkpoint = {
+        ...head,
+        id: `cloud-${++seq}`,
+        parentHandoffId: head.id,
+        checkpointVersion: seq,
+        runtime: { ...head.runtime, executionHostId: target }
+      };
+      checkpoints.set(checkpoint.id, checkpoint);
+      const transfer = {
+        id: `transfer-${seq}`,
+        taskId: "conversation",
+        sourceHandoffId: head.id,
+        checkpointId: checkpoint.id,
+        sourceHostId: head.runtime.executionHostId,
+        targetHostId: target,
+        status: "TARGET_ACTIVATING",
+        failureCode: null,
+        message: null
+      } as RuntimeTransfer;
+      transfers.set(transfer.id, transfer);
+      return transfer;
+    }
+    if (path.includes("/handoffs/")) return checkpoints.get(path.split("/").at(-1)!);
+    if (path.includes("/transfers/")) {
+      const id = path.split("/transfers/")[1]!.split("/")[0]!;
+      const op = transfers.get(id)!;
+      if (path.endsWith("/complete") && op.status !== "COMPLETED") {
+        order.push(`swap:${op.targetHostId}`);
+        head = checkpoints.get(op.checkpointId!)!;
+        op.status = "COMPLETED";
+      }
+      if (path.endsWith("/fail") && op.status !== "COMPLETED") {
+        op.status = "FAILED";
+        op.message = "Target activation failed";
+      }
+      return op;
+    }
     if (path.endsWith("/checkpoints/sync")) {
       if (input?.expectedHandoffId !== head.id) throw new Error("RuntimeHandoff conflict");
       order.push("checkpoints-synced");
@@ -182,12 +232,12 @@ describe("frontend RuntimeHandoff lifecycle", () => {
     const f = await fixture();
     f.deps.hosts = () => [];
     expect((await f.controller.availability(scope, "conversation")).available).toBe(false);
-    expect(f.cloud).not.toHaveBeenCalled();
+    expect(f.cloud).toHaveBeenCalledWith("/v1/runtime/conversation/capabilities");
     f.deps.hosts = () => [f.host];
     vi.mocked(f.host.supports).mockResolvedValue(false);
     expect((await f.controller.availability(scope, "conversation")).available).toBe(false);
     await expect(f.controller.goOffline(scope, "conversation", [])).rejects.toThrow(
-      "No local host"
+      "No compatible local runtime"
     );
     expect(f.deps.activate).not.toHaveBeenCalled();
   });
@@ -199,8 +249,8 @@ describe("frontend RuntimeHandoff lifecycle", () => {
       "checkpoint",
       "business-prepared",
       "local-ready",
-      "swap:this-device",
       "local-resumed",
+      "swap:this-device",
       "route:local"
     ]);
     const session = (await f.db.read(scope)).runtimeHandoffSession!;
@@ -247,7 +297,7 @@ describe("frontend RuntimeHandoff lifecycle", () => {
     expect((await f.db.read(scope)).runtimeHandoffSession?.status).toBe("prepared");
     expect(f.deps.activate).not.toHaveBeenCalled();
     await f.controller.goOnline(scope);
-    expect(f.order).toContain("hosted-resumed");
+    expect(f.order).toContain("route:hosted");
   });
 
   it("continues the same chat with local catalogue tools and syncs before hosted resume", async () => {
@@ -255,12 +305,13 @@ describe("frontend RuntimeHandoff lifecycle", () => {
     await f.controller.goOffline(scope, "conversation", []);
     const localReply = await f.controller.turn(scope, "conversation", message);
     expect(localReply.content).toContain("Rice");
-    expect(f.cloud).toHaveBeenCalledTimes(3);
+    expect(f.order).toContain("local-resumed");
     await f.controller.goOnline(scope);
-    expect(f.order.slice(-6)).toEqual([
+    expect(f.order.slice(-7)).toEqual([
       "business-synced",
       "messages-synced",
       "checkpoints-synced",
+      "checkpoint",
       "swap:hosted",
       "hosted-resumed",
       "route:hosted"
@@ -370,7 +421,7 @@ describe("frontend RuntimeHandoff lifecycle", () => {
     let dropped = false;
     f.cloud.mockImplementation(async (path, body) => {
       const result = await original(path, body);
-      if (path.endsWith("/swaps/host") && !dropped) {
+      if (path.endsWith("/complete") && !dropped) {
         dropped = true;
         throw new Error("Response lost");
       }
@@ -394,7 +445,7 @@ describe("frontend RuntimeHandoff lifecycle", () => {
     let dropped = false;
     f.cloud.mockImplementation(async (path, body) => {
       const result = await original(path, body);
-      if (path.endsWith("/swaps/host") && !dropped) {
+      if (path.endsWith("/complete") && !dropped) {
         dropped = true;
         throw new Error("Response lost");
       }
@@ -408,4 +459,61 @@ describe("frontend RuntimeHandoff lifecycle", () => {
     expect(state.runtimeHandoffSession?.handoff.runtime).toEqual(initial.runtime);
     expect(state.offlineModeActive).toBe(false);
   });
+});
+
+it("resumes a committed local handoff after a browser reload and lost completion response", async () => {
+  const f = await fixture();
+  const original = f.cloud.getMockImplementation()!;
+  let lost = false;
+  f.cloud.mockImplementation(async (path, body) => {
+    const result = await original(path, body);
+    if (path.endsWith("/complete") && !lost) {
+      lost = true;
+      throw new Error("Response lost");
+    }
+    return result;
+  });
+  await expect(f.controller.goOffline(scope, "conversation", [message])).rejects.toThrow(
+    "Response lost"
+  );
+  await new RuntimeHandoffController(f.deps).recover(scope);
+  const state = await f.db.read(scope);
+  expect(state.offlineModeActive).toBe(true);
+  expect(state.runtimeHandoffSession?.messages).toEqual([message]);
+  expect(f.order.filter((item) => item === "swap:this-device")).toHaveLength(1);
+});
+
+it("uses the backend capability reason without attempting checkpoint or activation", async () => {
+  const f = await fixture();
+  f.deps.hosts = () => [];
+  f.cloud.mockResolvedValue({
+    handoff: { available: false, supported: false, reason: "LOCAL_RUNTIME_NOT_REGISTERED" },
+    local: [],
+    hosted: []
+  });
+  await expect(f.controller.goOffline(scope, "conversation", [])).rejects.toThrow(
+    "No compatible local runtime is currently connected"
+  );
+  expect(f.cloud.mock.calls.map((call) => call[0])).toEqual([
+    "/v1/runtime/conversation/capabilities"
+  ]);
+  expect(f.deps.activate).not.toHaveBeenCalled();
+});
+
+it("allows local execution and a new attempt after hosted activation fails", async () => {
+  const f = await fixture();
+  await f.controller.goOffline(scope, "conversation", [message]);
+  const original = f.cloud.getMockImplementation()!;
+  let failed = false;
+  f.cloud.mockImplementation(async (path, body) => {
+    if (path.endsWith("/complete") && !failed) {
+      failed = true;
+      return { status: "FAILED", message: "Hosted executor offline" };
+    }
+    return original(path, body);
+  });
+  await expect(f.controller.goOnline(scope)).rejects.toThrow("Hosted executor offline");
+  expect((await f.db.read(scope)).runtimeHandoffSession?.status).toBe("offline");
+  await f.controller.goOnline(scope);
+  expect((await f.db.read(scope)).offlineModeActive).toBe(false);
 });

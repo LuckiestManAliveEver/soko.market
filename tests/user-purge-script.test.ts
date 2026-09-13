@@ -44,8 +44,8 @@ describe("registered-user purge script", () => {
     // reference a handoff) delete before cp2_runtime_handoffs (which they reference), and
     // cp2_runtime_handoffs deletes before the cp2_native_runtime_agents/models/execution_hosts
     // rows it references.
-    expect(plan.size).toBe(192);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(185);
+    expect(plan.size).toBe(193);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(186);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

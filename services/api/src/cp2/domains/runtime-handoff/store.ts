@@ -1,3 +1,13 @@
+import type { RuntimeTurnSummary } from "@soko/shared-types";
+import { isLocalRuntimeHost } from "@soko/shared-types";
+import type {
+  NativeExecutionHostSummary,
+  RuntimeCapabilities,
+  RuntimeHostCapability,
+  RuntimeTransfer,
+  RuntimeTransferStatus,
+  RuntimeRestoreReceipt
+} from "@soko/shared-types";
 /**
  * Runtime Handoff Protocol domain (see docs/architecture/runtime-handoff-protocol.md).
  *
@@ -5,11 +15,9 @@
  * mutated store: Cp2Store methods never `await` between reading and writing these Maps, so a
  * single process can never interleave two calls against them. That is what makes
  * `allocateAndInsertCheckpoint` (the one shared version-allocation/task-head-move primitive
- * section 6.1 requires) safe without an explicit lock - see that method's docstring. Cross-process
- * safety (multiple API instances) is the same story as every other CP2 table: the
- * `cp2_runtime_handoffs_task_version_idx` unique index in migration 083 is the last-resort
- * arbiter, exactly like this repository's existing Postgres snapshot/LISTEN-NOTIFY sync model for
- * every other domain (see cp2/postgres-store.ts).
+ * section 6.1 requires) safe without an explicit lock. This requires one authoritative API
+ * writer. The database unique index and snapshot advisory lock are additional integrity guards;
+ * LISTEN/NOTIFY does not synchronize independently mutated in-memory domain stores.
  */
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -51,6 +59,7 @@ export interface RuntimeOperationDedupRecord {
 }
 
 export interface RuntimeHandoffSnapshot {
+  runtimeTransfers?: RuntimeTransfer[];
   runtimeHandoffs?: RuntimeHandoff[];
   runtimeTaskHeads?: RuntimeTaskHead[];
   runtimeTaskInstances?: RuntimeTaskInstance[];
@@ -76,6 +85,24 @@ export interface RuntimeHandoffNativeBindingResolution {
  *  RuntimeHandoffNativeBindingResolution above for why this is a local interface rather than an
  *  import of the concrete class. */
 export interface RuntimeHandoffNativeRuntimeAccess {
+  bindingScope(bindingId: string): { accountId: string | null; businessId: string | null } | null;
+  handoffHosts(input: {
+    accountId: string;
+    businessId: string | null;
+  }): NativeExecutionHostSummary[];
+  handoffHost(input: {
+    accountId: string;
+    businessId: string | null;
+    executionHostId: string;
+  }): NativeExecutionHostSummary;
+  heartbeatHandoffHost(input: {
+    executionHostId: string;
+    accountId: string;
+    businessId: string | null;
+    deviceId: string;
+    connected: boolean;
+    now: Date;
+  }): void;
   validateCandidateExecutionChain(input: {
     agentId: string;
     modelId: string;
@@ -103,6 +130,7 @@ export interface RuntimeHandoffNativeRuntimeAccess {
 }
 
 export interface RuntimeHandoffDomainDeps {
+  requireHandoffOwner?: (businessId: string, userId: string) => void;
   conversations: ReadonlyMap<string, ConversationSummary>;
   requireAnySession: (sessionId: string | null, now: Date) => AuthSessionView;
   nativeRuntimeBindings: RuntimeHandoffNativeRuntimeAccess;
@@ -128,12 +156,585 @@ export interface RuntimeHandoffDomainDeps {
 type RuntimeRef = { agentId: string; modelId: string; executionHostId: string };
 
 export class RuntimeHandoffDomain {
+  private readonly executingTasks = new Set<string>();
+  private readonly transfers = new Map<string, RuntimeTransfer>();
   private readonly handoffs = new Map<string, RuntimeHandoff>();
   private readonly taskHeads = new Map<string, RuntimeTaskHead>();
   private readonly taskInstances = new Map<string, RuntimeTaskInstance>();
   private readonly operationDedup = new Map<string, RuntimeOperationDedupRecord>();
 
   constructor(private readonly deps: RuntimeHandoffDomainDeps) {}
+
+  acquireTurn(taskId: string, accountId: string, businessId: string): () => void {
+    const conversation = this.requireConversationRecord(taskId);
+    if (
+      conversation.accountId !== accountId ||
+      (conversation.activeShopId !== null && conversation.activeShopId !== businessId)
+    )
+      throw new Cp2Error(
+        403,
+        "RUNTIME_BINDING_FORBIDDEN",
+        "The conversation belongs to another account or business."
+      );
+    if (this.executingTasks.has(taskId) || this.activeTransfer(taskId, new Date()))
+      throw new Cp2Error(
+        409,
+        "HANDOFF_IN_PROGRESS",
+        "Wait for the current runtime turn or handoff to finish."
+      );
+    const head = this.taskHeads.get(taskId);
+    const checkpoint = head ? this.handoffs.get(head.activeHandoffId) : undefined;
+    if (checkpoint) {
+      const host = this.deps.nativeRuntimeBindings.handoffHost({
+        ...checkpoint.runtime,
+        accountId,
+        businessId
+      });
+      if (isLocalRuntimeHost(host.type))
+        throw new Cp2Error(
+          409,
+          "LOCAL_RUNTIME_ACTIVE",
+          "Continue this conversation on its local runtime or move it to hosted execution first."
+        );
+    }
+    this.executingTasks.add(taskId);
+    return () => {
+      this.executingTasks.delete(taskId);
+    };
+  }
+
+  checkpointAfterTurn(taskId: string, turn: RuntimeTurnSummary, now = new Date()) {
+    const conversation = this.requireConversationRecord(taskId);
+    let head = this.taskHeads.get(taskId);
+    if (!head) {
+      try {
+        head = this.bootstrapLegacyHandoff(conversation, conversation.accountId, now).taskHead;
+      } catch {
+        return;
+      } // Legacy/non-model turns can exist without a native runtime binding.
+    }
+    const source = this.handoffs.get(head.activeHandoffId)!;
+    const action = {
+      id: turn.plan.id,
+      description: turn.plan.toolName,
+      metadata: { runtimeTurnId: turn.id }
+    };
+    this.allocateAndInsertCheckpoint({
+      ...source,
+      taskId,
+      parentHandoffId: source.id,
+      now,
+      promote: true,
+      runtime: this.currentRuntimeRefForConversation(conversation),
+      currentState: `Runtime turn ${turn.id}: ${turn.status}.`,
+      completedActions: turn.plan.executedAt
+        ? [...source.completedActions, { ...action, status: "completed" }]
+        : source.completedActions,
+      pendingActions:
+        turn.plan.requiresConfirmation && !turn.plan.executedAt
+          ? [{ ...action, status: "pending" }]
+          : [],
+      nextAction:
+        turn.plan.requiresConfirmation && !turn.plan.executedAt
+          ? "Reauthorize the pending tool action before execution."
+          : null,
+      relevantContext: [
+        ...source.relevantContext,
+        { kind: "external", refId: `runtime-turn:${turn.id}` }
+      ]
+    });
+  }
+
+  activeCheckpoint(taskId: string) {
+    const head = this.taskHeads.get(taskId);
+    return head ? this.handoffs.get(head.activeHandoffId) : undefined;
+  }
+
+  capabilities(
+    sessionId: string | null,
+    taskId: string,
+    deviceId: string,
+    now = new Date()
+  ): RuntimeCapabilities {
+    const { conversation } = this.requireConversation(sessionId, taskId, now);
+    const activeTransfer = this.activeTransfer(taskId, now);
+    const { local, hosted, runtime } = this.hostAvailability(taskId, conversation, deviceId, now);
+    return this.assembleCapabilities(local, hosted, runtime, activeTransfer);
+  }
+
+  private assembleCapabilities(
+    local: RuntimeHostCapability[],
+    hosted: RuntimeHostCapability[],
+    runtime: RuntimeRef | undefined,
+    activeTransfer: RuntimeTransfer | null
+  ): RuntimeCapabilities {
+    const targets = [...local, ...hosted].filter((host) => !host.active);
+    return {
+      local,
+      hosted,
+      activeExecutionHostId: runtime?.executionHostId ?? null,
+      activeTransfer,
+      handoff: {
+        supported: local.some((host) => host.supported),
+        available: !activeTransfer && targets.some((host) => host.available),
+        reason: activeTransfer
+          ? "HANDOFF_IN_PROGRESS"
+          : targets.some((host) => host.available)
+            ? null
+            : local.length === 0
+              ? "LOCAL_RUNTIME_NOT_REGISTERED"
+              : (local[0]?.reason ?? "NO_EXECUTION_HOST")
+      }
+    };
+  }
+
+  // Split out of capabilities() so completeTransfer's live target-availability check can read
+  // host reachability without also running activeTransfer()'s expiry sweep - completing this
+  // exact transfer must not race its own soft deadline out from under a valid, in-hand receipt.
+  private hostAvailability(
+    taskId: string,
+    conversation: ConversationSummary,
+    deviceId: string,
+    now: Date
+  ): {
+    local: RuntimeHostCapability[];
+    hosted: RuntimeHostCapability[];
+    runtime: RuntimeRef | undefined;
+  } {
+    const active = this.taskHeads.get(taskId);
+    let runtime = active ? this.handoffs.get(active.activeHandoffId)?.runtime : undefined;
+    if (!runtime) {
+      try {
+        runtime = this.currentRuntimeRefForConversation(conversation);
+      } catch {
+        /* No runnable binding. */
+      }
+    }
+    const hosts = this.deps.nativeRuntimeBindings.handoffHosts({
+      accountId: conversation.accountId,
+      businessId: conversation.activeShopId
+    });
+    const capabilities = hosts.map((host) => {
+      const local = isLocalRuntimeHost(host.type);
+      const supported = !local || host.capabilities.includes("runtime-handoff-v1");
+      const configured = !local || typeof host.configuration.deviceId === "string";
+      const healthy = ["healthy", "online", "available"].includes(host.status);
+      const reachable = !local
+        ? healthy
+        : healthy &&
+          host.configuration.deviceId === deviceId &&
+          Date.parse(String(host.configuration.handoffLeaseExpiresAt)) > now.getTime();
+      let reason = !supported
+        ? "LOCAL_RUNTIME_UNSUPPORTED"
+        : !configured
+          ? "LOCAL_RUNTIME_NOT_REGISTERED"
+          : !healthy
+            ? "LOCAL_RUNTIME_UNHEALTHY"
+            : !reachable
+              ? "LOCAL_RUNTIME_OFFLINE"
+              : null;
+      if (!reason && runtime) {
+        try {
+          this.deps.nativeRuntimeBindings.validateCandidateExecutionChain({
+            ...runtime,
+            executionHostId: host.id
+          });
+        } catch (error) {
+          reason = error instanceof Cp2Error ? error.code : "NO_EXECUTION_HOST";
+        }
+      }
+      if (!runtime) reason = "NO_EXECUTION_HOST";
+      return {
+        executionHostId: host.id,
+        type: host.type,
+        supported,
+        configured,
+        healthy,
+        reachable,
+        available: reason === null,
+        active: runtime?.executionHostId === host.id,
+        reason
+      };
+    });
+    return {
+      local: capabilities.filter((host) => isLocalRuntimeHost(host.type)),
+      hosted: capabilities.filter((host) => !isLocalRuntimeHost(host.type)),
+      runtime
+    };
+  }
+
+  heartbeatHost(
+    sessionId: string | null,
+    taskId: string,
+    hostId: string,
+    deviceId: string,
+    connected: boolean,
+    now = new Date()
+  ) {
+    const { conversation } = this.requireConversation(sessionId, taskId, now);
+    this.deps.nativeRuntimeBindings.heartbeatHandoffHost({
+      executionHostId: hostId,
+      accountId: conversation.accountId,
+      businessId: conversation.activeShopId,
+      deviceId,
+      connected,
+      now
+    });
+    // Deliberately not this.capabilities(): a heartbeat is routine host-liveness upkeep (and the
+    // frontend never reads this response), not an authoritative status read, so it must not be
+    // able to expire an in-flight transfer for this task as a side effect of its own return value.
+    const { local, hosted, runtime } = this.hostAvailability(taskId, conversation, deviceId, now);
+    return this.assembleCapabilities(local, hosted, runtime, this.peekActiveTransfer(taskId, now));
+  }
+
+  /** Non-mutating: reports whether a transfer would currently be treated as blocking, without
+   * committing the FAILED transition if it has expired. Only a genuine status read (capabilities(),
+   * getTransfer()) or a new operation actually superseding it (activeTransfer()) may commit that. */
+  private peekActiveTransfer(taskId: string, now: Date): RuntimeTransfer | null {
+    const op = [...this.transfers.values()].find(
+      (item) => item.taskId === taskId && !["COMPLETED", "FAILED"].includes(item.status)
+    );
+    if (op && Date.parse(op.expiresAt) <= now.getTime()) return null;
+    return op ?? null;
+  }
+
+  beginTransfer(
+    sessionId: string | null,
+    input: {
+      taskId: string;
+      targetExecutionHostId: string;
+      expectedHandoffId: string;
+      idempotencyKey: string;
+      deviceId: string;
+    },
+    now = new Date()
+  ): RuntimeTransfer {
+    const { conversation } = this.requireConversation(sessionId, input.taskId, now);
+    if (!input.idempotencyKey.trim() || input.idempotencyKey.length > 200)
+      throw new Cp2Error(400, "IDEMPOTENCY_KEY_REQUIRED", "A bounded idempotency key is required.");
+    const existing = [...this.transfers.values()].find(
+      (op) =>
+        op.taskId === input.taskId &&
+        op.accountId === conversation.accountId &&
+        op.idempotencyKey === input.idempotencyKey
+    );
+    if (existing) {
+      if (
+        existing.targetHostId !== input.targetExecutionHostId ||
+        existing.sourceHandoffId !== input.expectedHandoffId ||
+        existing.deviceId !== input.deviceId
+      )
+        throw new Cp2Error(
+          409,
+          "HANDOFF_CONFLICT",
+          "The idempotency key was already used for another transfer."
+        );
+      this.activeTransfer(input.taskId, now);
+      return this.transfers.get(existing.id)!;
+    }
+    if (this.executingTasks.has(input.taskId))
+      throw new Cp2Error(
+        409,
+        "HANDOFF_IN_PROGRESS",
+        "The current turn is still executing. Retry once its checkpoint is saved."
+      );
+    const capabilities = this.capabilities(sessionId, input.taskId, input.deviceId, now);
+    if (capabilities.activeTransfer)
+      throw new Cp2Error(409, "HANDOFF_IN_PROGRESS", "A runtime handoff is already in progress.");
+    this.deps.nativeRuntimeBindings.handoffHost({
+      executionHostId: input.targetExecutionHostId,
+      accountId: conversation.accountId,
+      businessId: conversation.activeShopId
+    });
+    const target = [...capabilities.hosted, ...capabilities.local].find(
+      (host) => host.executionHostId === input.targetExecutionHostId
+    );
+    if (!target?.available) {
+      this.deps.recordAuditEvent({
+        type: "runtime.handoff_rejected",
+        aggregateType: "task",
+        aggregateId: input.taskId,
+        actorId: conversation.accountId,
+        occurredAt: now.toISOString(),
+        payload: {
+          targetHostId: input.targetExecutionHostId,
+          failureCode: target?.reason ?? "NO_EXECUTION_HOST"
+        }
+      });
+      throw new Cp2Error(
+        409,
+        target?.reason ?? "NO_EXECUTION_HOST",
+        "No compatible execution host is currently connected. The current runtime is still active."
+      );
+    }
+    const resolved = this.resolveHandoff(sessionId, input.taskId, now);
+    this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
+    const sourceHost = this.deps.nativeRuntimeBindings.handoffHost({
+      executionHostId: resolved.activeHandoff.runtime.executionHostId,
+      accountId: conversation.accountId,
+      businessId: conversation.activeShopId
+    });
+    if (isLocalRuntimeHost(sourceHost.type) && sourceHost.configuration.deviceId !== input.deviceId)
+      throw new Cp2Error(
+        403,
+        "RUNTIME_HOST_FORBIDDEN",
+        "Return from the device that owns the active local runtime so its execution state can synchronize."
+      );
+    if (target.executionHostId === sourceHost.id)
+      throw new Cp2Error(
+        409,
+        "HANDOFF_CONFLICT",
+        "The requested execution host is already active."
+      );
+    const op: RuntimeTransfer = {
+      id: randomUUID(),
+      taskId: input.taskId,
+      accountId: conversation.accountId,
+      businessId: conversation.activeShopId,
+      deviceId: input.deviceId,
+      idempotencyKey: input.idempotencyKey,
+      sourceHandoffId: resolved.activeHandoff.id,
+      checkpointId: null,
+      sourceHostId: resolved.activeHandoff.runtime.executionHostId,
+      targetHostId: target.executionHostId,
+      status: "PENDING",
+      failureCode: null,
+      message: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 120_000).toISOString()
+    };
+    this.transfers.set(op.id, op);
+    this.transferEvent(op, "runtime.handoff_requested", now);
+    try {
+      this.transitionTransfer(op, "CHECKPOINTING", now);
+      const source = resolved.activeHandoff;
+      const { handoff } = this.allocateAndInsertCheckpoint({
+        ...source,
+        taskId: input.taskId,
+        parentHandoffId: source.id,
+        runtime: { ...source.runtime, executionHostId: target.executionHostId },
+        now,
+        promote: false
+      });
+      op.checkpointId = handoff.id;
+      this.transitionTransfer(op, "CHECKPOINTED", now);
+      this.transitionTransfer(op, "TARGET_ACTIVATING", now);
+    } catch {
+      this.failTransferRecord(
+        op,
+        "CHECKPOINT_FAILED",
+        "Could not create the portable checkpoint. The current runtime is still active.",
+        now
+      );
+    }
+    return op;
+  }
+
+  getTransfer(
+    sessionId: string | null,
+    taskId: string,
+    id: string,
+    now = new Date()
+  ): RuntimeTransfer {
+    this.requireConversation(sessionId, taskId, now);
+    this.activeTransfer(taskId, now);
+    const op = this.transfers.get(id);
+    if (!op || op.taskId !== taskId)
+      throw new Cp2Error(404, "HANDOFF_NOT_FOUND", "Runtime handoff was not found.");
+    return op;
+  }
+
+  completeTransfer(
+    sessionId: string | null,
+    taskId: string,
+    id: string,
+    deviceId: string,
+    receipt?: RuntimeRestoreReceipt,
+    now = new Date()
+  ): RuntimeTransfer {
+    // Fetched directly rather than via getTransfer: that call sweeps and expires a stale active
+    // transfer as a side effect, which would race a legitimate late-but-valid completion (real
+    // local prepare/resume work can plausibly outrun the soft expiresAt deadline) and discard a
+    // successful receipt. The live availability check below still rejects a target that is
+    // actually gone, so skipping the sweep here does not let a truly stuck transfer complete.
+    const { conversation } = this.requireConversation(sessionId, taskId, now);
+    const op = this.transfers.get(id);
+    if (!op || op.taskId !== taskId)
+      throw new Cp2Error(404, "HANDOFF_NOT_FOUND", "Runtime handoff was not found.");
+    if (op.deviceId !== deviceId)
+      throw new Cp2Error(
+        403,
+        "RUNTIME_HOST_FORBIDDEN",
+        "Resume this handoff on its initiating device."
+      );
+    if (op.status === "COMPLETED" || op.status === "FAILED") return op;
+    const checkpoint = this.handoffs.get(op.checkpointId!);
+    try {
+      if (!checkpoint)
+        throw new Cp2Error(409, "CHECKPOINT_FAILED", "The portable checkpoint is missing.");
+      if (this.requireTaskHead(taskId).activeHandoffId !== op.sourceHandoffId)
+        throw new Cp2Error(
+          409,
+          "HANDOFF_CONFLICT",
+          "The conversation advanced while the target was preparing."
+        );
+      const availability = this.hostAvailability(taskId, conversation, deviceId, now);
+      const target = [...availability.local, ...availability.hosted].find(
+        (host) => host.executionHostId === op.targetHostId
+      );
+      if (!target?.available)
+        throw new Cp2Error(
+          409,
+          target?.reason ?? "NO_EXECUTION_HOST",
+          "The execution host stopped responding."
+        );
+      this.transitionTransfer(op, "RESTORING", now);
+      if (
+        isLocalRuntimeHost(target.type) &&
+        (!receipt ||
+          receipt.handoffId !== checkpoint.id ||
+          receipt.agentId !== checkpoint.runtime.agentId ||
+          receipt.modelId !== checkpoint.runtime.modelId ||
+          !receipt.harness ||
+          !receipt.artifacts ||
+          !receipt.protectedContext ||
+          !receipt.businessState)
+      ) {
+        throw new Cp2Error(
+          409,
+          "RESTORE_FAILED",
+          "The local host did not confirm restoration of the exact checkpoint."
+        );
+      }
+      const binding = this.deps.nativeRuntimeBindings.materializeConversationBinding({
+        accountId: op.accountId,
+        businessId: op.businessId,
+        ...checkpoint.runtime,
+        updatedBy: op.accountId,
+        now
+      });
+      this.deps.nativeRuntimeBindings.resolveBindingForConversation(binding.id, taskId);
+      this.transitionTransfer(op, "VERIFYING", now);
+      // One synchronous commit in the canonical single-writer CP2 store. No awaits between the
+      // compare-and-swap and binding/instance update. The response must cross the DB barrier.
+      const head = this.requireTaskHead(taskId);
+      this.taskHeads.set(taskId, {
+        ...head,
+        activeHandoffId: checkpoint.id,
+        updatedAt: now.toISOString()
+      });
+      this.deps.setConversationRuntimeBinding(taskId, binding.id, now);
+      this.setTaskInstanceHandoff(taskId, checkpoint.id, "READY", checkpoint.runtime, now, null);
+      this.transitionTransfer(op, "COMPLETED", now);
+    } catch (error) {
+      this.failTransferRecord(
+        op,
+        error instanceof Cp2Error ? error.code : "TARGET_ACTIVATION_FAILED",
+        error instanceof Cp2Error
+          ? error.message
+          : "Target activation failed. The current runtime is still active.",
+        now
+      );
+    }
+    return op;
+  }
+
+  failTransfer(
+    sessionId: string | null,
+    taskId: string,
+    id: string,
+    deviceId: string,
+    now = new Date(),
+    failureCode = "TARGET_ACTIVATION_FAILED"
+  ) {
+    const op = this.getTransfer(sessionId, taskId, id, now);
+    if (op.deviceId !== deviceId)
+      throw new Cp2Error(403, "RUNTIME_HOST_FORBIDDEN", "This handoff belongs to another device.");
+    if (op.status !== "COMPLETED" && op.status !== "FAILED")
+      this.failTransferRecord(
+        op,
+        failureCode,
+        "The target could not restore the checkpoint. The current runtime is still active.",
+        now
+      );
+    return op;
+  }
+
+  private activeTransfer(taskId: string, now: Date) {
+    const op = [...this.transfers.values()].find(
+      (item) => item.taskId === taskId && !["COMPLETED", "FAILED"].includes(item.status)
+    );
+    if (op && Date.parse(op.expiresAt) <= now.getTime()) {
+      this.failTransferRecord(
+        op,
+        "TARGET_ACTIVATION_TIMEOUT",
+        "The target did not become ready before the handoff deadline. The current runtime is still active.",
+        now
+      );
+      return null;
+    }
+    return op ?? null;
+  }
+
+  private transitionTransfer(op: RuntimeTransfer, status: RuntimeTransferStatus, now: Date) {
+    const next: Partial<Record<RuntimeTransferStatus, RuntimeTransferStatus>> = {
+      PENDING: "CHECKPOINTING",
+      CHECKPOINTING: "CHECKPOINTED",
+      CHECKPOINTED: "TARGET_ACTIVATING",
+      TARGET_ACTIVATING: "RESTORING",
+      RESTORING: "VERIFYING",
+      VERIFYING: "COMPLETED"
+    };
+    if (
+      next[op.status] !== status &&
+      !(status === "FAILED" && !["COMPLETED", "FAILED"].includes(op.status))
+    )
+      throw new Cp2Error(
+        409,
+        "HANDOFF_CONFLICT",
+        `Invalid runtime handoff transition: ${op.status} to ${status}.`
+      );
+    op.status = status;
+    op.updatedAt = now.toISOString();
+    this.transfers.set(op.id, op);
+    const events: Record<RuntimeTransferStatus, string> = {
+      PENDING: "runtime.handoff_requested",
+      CHECKPOINTING: "runtime.checkpoint_started",
+      CHECKPOINTED: "runtime.checkpoint_created",
+      TARGET_ACTIVATING: "runtime.target_activation_started",
+      RESTORING: "runtime.restore_started",
+      VERIFYING: "runtime.restore_completed",
+      COMPLETED: "runtime.handoff_completed",
+      FAILED: "runtime.handoff_failed"
+    };
+    this.transferEvent(op, events[status], now);
+  }
+
+  private failTransferRecord(op: RuntimeTransfer, code: string, message: string, now: Date) {
+    op.failureCode = code;
+    op.message = message;
+    this.transitionTransfer(op, "FAILED", now);
+  }
+
+  private transferEvent(op: RuntimeTransfer, type: string, now: Date) {
+    this.deps.recordAuditEvent({
+      type,
+      aggregateType: "task",
+      aggregateId: op.taskId,
+      actorId: op.accountId,
+      occurredAt: now.toISOString(),
+      payload: {
+        handoffId: op.id,
+        runtimeInstanceId: op.taskId,
+        sourceHostId: op.sourceHostId,
+        targetHostId: op.targetHostId,
+        businessId: op.businessId,
+        durationMs: now.getTime() - Date.parse(op.createdAt),
+        failureCode: op.failureCode
+      }
+    });
+  }
 
   // ---------------------------------------------------------------------------------------------
   // Resolution (section 5) and legacy bootstrap (section 20)
@@ -290,6 +891,24 @@ export class RuntimeHandoffDomain {
           modelId: input.dimension === "model" ? input.targetId : current.modelId,
           executionHostId: input.dimension === "host" ? input.targetId : current.executionHostId
         };
+        const owner = this.requireConversationRecord(input.taskId);
+        this.deps.nativeRuntimeBindings.handoffHost({
+          executionHostId: candidate.executionHostId,
+          accountId: owner.accountId,
+          businessId: owner.activeShopId
+        });
+        if (input.dimension === "host")
+          throw new Cp2Error(
+            409,
+            "HANDOFF_RESTORE_REQUIRED",
+            "Execution host changes require an acknowledged runtime handoff. Use the handoffs API."
+          );
+        if (this.activeTransfer(input.taskId, now))
+          throw new Cp2Error(
+            409,
+            "HANDOFF_IN_PROGRESS",
+            "A runtime handoff is already in progress."
+          );
         // Reuses the same agent/model/host compatibility rules turn-time resolution enforces
         // (section 10) rather than re-implementing them. Throws (leaving the old runtime fully
         // authoritative - nothing below has run yet) if the candidate chain is not viable.
@@ -307,6 +926,8 @@ export class RuntimeHandoffDomain {
           updatedBy: actorId,
           now
         });
+        // Validate the materialized binding before promoting any checkpoint or replacing source.
+        this.deps.nativeRuntimeBindings.resolveBindingForConversation(binding.id, conversation.id);
         const previous = resolved.activeHandoff;
         const { handoff, taskHead } = this.allocateAndInsertCheckpoint({
           taskId: input.taskId,
@@ -327,40 +948,16 @@ export class RuntimeHandoffDomain {
           promote: true
         });
         this.deps.setConversationRuntimeBinding(conversation.id, binding.id, now);
-        this.setTaskInstanceHandoff(input.taskId, handoff.id, "STARTING", candidate, now, null);
-
-        // ---- Activate (11.3): confirm the new chain actually resolves. A failure here never
-        // undoes the commit above - the checkpoint and task head stay authoritative regardless
-        // (section 12) - it only changes the runtime instance's own lifecycle status. ----
-        let activationFailed = false;
-        let activationError: string | null = null;
-        let runtimeInstance: RuntimeTaskInstance;
-        try {
-          this.deps.nativeRuntimeBindings.resolveBindingForConversation(
-            binding.id,
-            conversation.id
-          );
-          runtimeInstance = this.setTaskInstanceHandoff(
-            input.taskId,
-            handoff.id,
-            "READY",
-            candidate,
-            now,
-            null
-          );
-        } catch (error) {
-          activationFailed = true;
-          activationError =
-            error instanceof Cp2Error ? error.message : "Runtime activation failed.";
-          runtimeInstance = this.setTaskInstanceHandoff(
-            input.taskId,
-            handoff.id,
-            "FAILED",
-            candidate,
-            now,
-            activationError
-          );
-        }
+        const activationFailed = false;
+        const activationError = null;
+        const runtimeInstance = this.setTaskInstanceHandoff(
+          input.taskId,
+          handoff.id,
+          "READY",
+          candidate,
+          now,
+          null
+        );
 
         this.deps.recordAuditEvent({
           type: `runtime_handoff.swap_${input.dimension}`,
@@ -614,13 +1211,15 @@ export class RuntimeHandoffDomain {
     now: Date
   ): { conversation: ConversationSummary; session: AuthSessionView } {
     const session = this.deps.requireAnySession(sessionId, now);
-    const conversation = this.deps.conversations.get(taskId);
+    const conversation = this.requireConversationRecord(taskId);
     if (conversation === undefined) {
       throw new Cp2Error(404, "RUNTIME_TASK_NOT_FOUND", "Task was not found.");
     }
     if (conversation.accountId !== session.account.id) {
       throw new Cp2Error(403, "RUNTIME_TASK_FORBIDDEN", "This task belongs to another account.");
     }
+    if (conversation.activeShopId)
+      this.deps.requireHandoffOwner?.(conversation.activeShopId, session.user.id);
     return { conversation, session };
   }
 
@@ -637,7 +1236,18 @@ export class RuntimeHandoffDomain {
     if (conversation === undefined) {
       throw new Cp2Error(404, "RUNTIME_TASK_NOT_FOUND", "Task was not found.");
     }
-    return conversation;
+    const scope = conversation.runtimeBindingId
+      ? this.deps.nativeRuntimeBindings.bindingScope(conversation.runtimeBindingId)
+      : null;
+    if (scope?.accountId && scope.accountId !== conversation.accountId)
+      throw new Cp2Error(
+        403,
+        "RUNTIME_BINDING_FORBIDDEN",
+        "The runtime binding belongs to another account."
+      );
+    return conversation.activeShopId === null && scope?.businessId
+      ? { ...conversation, activeShopId: scope.businessId }
+      : conversation;
   }
 
   private requireTaskHead(taskId: string): RuntimeTaskHead {
@@ -656,6 +1266,8 @@ export class RuntimeHandoffDomain {
     taskHead: RuntimeTaskHead,
     required: boolean
   ): void {
+    if (this.activeTransfer(taskHead.taskId, new Date()))
+      throw new Cp2Error(409, "HANDOFF_IN_PROGRESS", "A runtime handoff is already in progress.");
     if (expectedHandoffId === undefined) {
       if (required) {
         throw new Cp2Error(
@@ -766,6 +1378,12 @@ export class RuntimeHandoffDomain {
     offline: RuntimeOfflineCheckpointInput,
     now: Date
   ): RuntimeHandoff {
+    const owner = this.requireConversationRecord(taskId);
+    this.deps.nativeRuntimeBindings.handoffHost({
+      executionHostId: offline.runtime.executionHostId,
+      accountId: owner.accountId,
+      businessId: owner.activeShopId
+    });
     const existing = this.handoffs.get(offline.id);
     if (existing !== undefined) {
       this.requireMatchingOfflineCheckpoint(offline, existing);
@@ -1058,6 +1676,7 @@ export class RuntimeHandoffDomain {
   // ---------------------------------------------------------------------------------------------
 
   clear(): void {
+    this.transfers.clear();
     this.handoffs.clear();
     this.taskHeads.clear();
     this.taskInstances.clear();
@@ -1066,6 +1685,7 @@ export class RuntimeHandoffDomain {
 
   restore(snapshot: RuntimeHandoffSnapshot): void {
     this.clear();
+    for (const record of snapshot.runtimeTransfers ?? []) this.transfers.set(record.id, record);
     for (const record of snapshot.runtimeHandoffs ?? []) this.handoffs.set(record.id, record);
     for (const record of snapshot.runtimeTaskHeads ?? []) this.taskHeads.set(record.taskId, record);
     for (const record of snapshot.runtimeTaskInstances ?? []) {
@@ -1074,6 +1694,10 @@ export class RuntimeHandoffDomain {
     for (const record of snapshot.runtimeOperationDedup ?? []) {
       this.operationDedup.set(`${record.operationType}:${record.idempotencyKey}`, record);
     }
+  }
+
+  get transfersMap() {
+    return this.transfers;
   }
 
   get handoffsMap(): Map<string, RuntimeHandoff> {

@@ -334,7 +334,7 @@ export function AgentProfileSurface({
           <p className="eyebrow">{business.name}</p>
           <h2>{draftAgent.name}</h2>
           <p aria-live="polite">AI business attendant · {runtimeHandoff.status}</p>
-          <p className="shell-note">Runtime can move between hosted and local execution</p>
+          <p className="shell-note">{runtimeHandoff.reason}</p>
         </div>
         <div className="agent-profile-actions">
           <button
@@ -347,6 +347,24 @@ export function AgentProfileSurface({
             onClick={() => void runtimeHandoff.toggle(chatMessages)}
           >
             {runtimeHandoff.label}
+          </button>
+          {runtimeHandoff.needsRecovery && (
+            <button
+              className="secondary"
+              type="button"
+              disabled={runtimeHandoff.busy}
+              onClick={() => void runtimeHandoff.recover()}
+            >
+              Resume handoff
+            </button>
+          )}
+          <button
+            className="secondary"
+            type="button"
+            disabled={runtimeHandoff.busy}
+            onClick={runtimeHandoff.refresh}
+          >
+            Refresh runtime
           </button>
           {isEditing ? (
             <>

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   AccountSummary,
   AiModelSummary,
@@ -432,7 +432,7 @@ describe("RuntimeHandoffDomain", () => {
     expect(after.activeHandoff.runtime).toEqual(before.activeHandoff.runtime);
   });
 
-  it("represents runtime activation failure independently of task/checkpoint state (section 12) without rolling back the commit", () => {
+  it("preserves the active checkpoint and binding when activation validation fails", () => {
     const auditEvents: Harness["auditEvents"] = [];
     const conversations = new Map<string, ConversationSummary>();
     const native = new NativeRuntimeBindingStore();
@@ -511,24 +511,18 @@ describe("RuntimeHandoffDomain", () => {
     const sessionId = accountId;
     const before = domain.resolveHandoff(sessionId, conversationId);
 
-    const result = domain.performSwap(sessionId, {
-      taskId: conversationId,
-      dimension: "agent",
-      targetId: "activation-fail-agent",
-      expectedHandoffId: before.activeHandoff.id
-    });
-
-    expect(result.activationFailed).toBe(true);
-    expect(result.activationError).toContain("Simulated activation failure");
-    expect(result.runtimeInstance.status).toBe("FAILED");
-    // The checkpoint and task head are still authoritative - a runtime start failure never
-    // invalidates them.
+    const bindingBefore = conversations.get(conversationId)?.runtimeBindingId;
+    expect(() =>
+      domain.performSwap(sessionId, {
+        taskId: conversationId,
+        dimension: "agent",
+        targetId: "activation-fail-agent",
+        expectedHandoffId: before.activeHandoff.id
+      })
+    ).toThrow("Simulated activation failure");
     const after = domain.resolveHandoff(sessionId, conversationId);
-    expect(after.taskHead.activeHandoffId).toBe(result.handoff.id);
-    expect(after.activeHandoff.id).toBe(result.handoff.id);
-    // But the runtime instance now disagrees with the (still valid) head about health, which is
-    // exactly what drift detection means to catch downstream.
-    expect(after.runtimeInstance?.status).toBe("FAILED");
+    expect(after.taskHead.activeHandoffId).toBe(before.activeHandoff.id);
+    expect(conversations.get(conversationId)?.runtimeBindingId).toBe(bindingBefore);
   });
 
   it("detects runtime drift when the runtime instance's checkpoint lags the task head", () => {
@@ -997,5 +991,305 @@ describe("RuntimeHandoffDomain offline sync and merge", () => {
         expectedHandoffId: "stale-handoff-id"
       })
     ).toThrow(Cp2Error);
+  });
+});
+
+describe("acknowledged hosted/local transfers", () => {
+  function setup() {
+    const h = buildHarness();
+    const owner = seedConversation(h, "portable-model");
+    const source = h.domain.resolveHandoff(owner.accountId, owner.conversationId).activeHandoff;
+    const hosted = h.native.hostsMap.get(source.runtime.executionHostId)!;
+    const local = {
+      ...hosted,
+      id: "local-host",
+      type: "installed-app",
+      accountId: owner.accountId,
+      capabilities: [...hosted.capabilities, "runtime-handoff-v1"],
+      configuration: { deviceId: "device" }
+    };
+    h.native.hostsMap.set(local.id, local);
+    const installation = [...h.native.installationsMap.values()].find(
+      (item) => item.executionHostId === hosted.id
+    )!;
+    h.native.installationsMap.set("local-installation", {
+      ...installation,
+      id: "local-installation",
+      executionHostId: local.id
+    });
+    const input = {
+      taskId: owner.conversationId,
+      deviceId: "device",
+      targetExecutionHostId: local.id,
+      expectedHandoffId: source.id,
+      idempotencyKey: "transfer-key"
+    };
+    const heartbeat = () =>
+      h.domain.heartbeatHost(owner.accountId, owner.conversationId, local.id, "device", true);
+    const begin = () => h.domain.beginTransfer(owner.accountId, input);
+    const complete = (id: string) => {
+      const op = h.domain.getTransfer(owner.accountId, owner.conversationId, id);
+      const cp = h.domain.handoffsMap.get(op.checkpointId!)!;
+      return h.domain.completeTransfer(owner.accountId, owner.conversationId, id, "device", {
+        handoffId: cp.id,
+        agentId: cp.runtime.agentId,
+        modelId: cp.runtime.modelId,
+        harness: true,
+        artifacts: true,
+        protectedContext: true,
+        businessState: true
+      });
+    };
+    return { h, owner, source, hosted, local, input, heartbeat, begin, complete };
+  }
+
+  it("fails immediately without a registered target and never changes the active runtime", () => {
+    const f = setup();
+    f.h.native.hostsMap.delete(f.local.id);
+    const cap = f.h.domain.capabilities(f.owner.accountId, f.owner.conversationId, "device");
+    expect(cap.handoff).toMatchObject({
+      available: false,
+      supported: false,
+      reason: "LOCAL_RUNTIME_NOT_REGISTERED"
+    });
+    expect(() => f.begin()).toThrow("not registered");
+    expect(f.h.domain.transfersMap.size).toBe(0);
+    expect(
+      f.h.domain.resolveHandoff(f.owner.accountId, f.owner.conversationId).activeHandoff.id
+    ).toBe(f.source.id);
+  });
+
+  it("requires a live bridge on its provisioned device, independently of model installation", () => {
+    const f = setup();
+    expect(
+      f.h.domain.capabilities(f.owner.accountId, f.owner.conversationId, "device").local[0]
+    ).toMatchObject({ supported: true, configured: true, available: false, reachable: false });
+    expect(() => f.begin()).toThrow("currently connected");
+    f.heartbeat();
+    expect(
+      f.h.domain.capabilities(f.owner.accountId, f.owner.conversationId, "device").local[0]
+        ?.available
+    ).toBe(true);
+    expect(
+      f.h.domain.capabilities(f.owner.accountId, f.owner.conversationId, "another-device").local[0]
+        ?.available
+    ).toBe(false);
+    expect(() =>
+      f.h.domain.heartbeatHost(
+        f.owner.accountId,
+        f.owner.conversationId,
+        f.local.id,
+        "another-device",
+        true
+      )
+    ).toThrow("no provisioned");
+  });
+
+  it("preserves portable execution state in both directions and commits only after exact restore", () => {
+    const f = setup();
+    f.heartbeat();
+    const checkpoint = f.h.domain.createCheckpoint(f.owner.accountId, {
+      taskId: f.owner.conversationId,
+      expectedHandoffId: f.source.id,
+      promote: true,
+      nextAction: "Receive tool result",
+      pendingActions: [{ id: "tool-1", description: "Await stock lookup", status: "pending" }],
+      relevantContext: [{ kind: "document", refId: "protected-reference" }]
+    });
+    f.input.expectedHandoffId = checkpoint.handoff.id;
+    const op = f.begin();
+    expect(op.status).toBe("TARGET_ACTIVATING");
+    expect(
+      f.h.domain.resolveHandoff(f.owner.accountId, f.owner.conversationId).activeHandoff.id
+    ).toBe(checkpoint.handoff.id);
+    const target = f.h.domain.handoffsMap.get(op.checkpointId!)!;
+    expect(target.pendingActions).toEqual(checkpoint.handoff.pendingActions);
+    expect(target.relevantContext).toEqual(checkpoint.handoff.relevantContext);
+    expect(target.runtime).toEqual({ ...f.source.runtime, executionHostId: f.local.id });
+    expect(f.complete(op.id).status).toBe("COMPLETED");
+    const back = f.h.domain.beginTransfer(f.owner.accountId, {
+      ...f.input,
+      idempotencyKey: "back",
+      expectedHandoffId: target.id,
+      targetExecutionHostId: f.hosted.id
+    });
+    expect(f.complete(back.id).status).toBe("COMPLETED");
+    const restored = f.h.domain.resolveHandoff(f.owner.accountId, f.owner.conversationId);
+    expect(restored.activeHandoff.runtime).toEqual(f.source.runtime);
+    expect(restored.activeHandoff.nextAction).toBe("Receive tool result");
+    expect(f.h.auditEvents.map((item) => item.type)).toContain("runtime.restore_completed");
+  });
+
+  it("completes a transfer whose soft deadline has already passed when a valid receipt arrives, instead of losing it to its own expiry check", () => {
+    // Real prepare/resume work can plausibly outrun the 120s soft expiresAt deadline even when it
+    // fully succeeds. completeTransfer must not be the first thing to observe that lateness and
+    // force-fail its own operation before ever looking at the receipt - regression for a bug where
+    // an otherwise-successful local handoff was reported as failed and could not be retried.
+    const f = setup();
+    f.heartbeat();
+    const op = f.begin();
+    const cp = f.h.domain.handoffsMap.get(op.checkpointId!)!;
+    const late = new Date(Date.parse(op.expiresAt) + 1);
+    f.h.domain.heartbeatHost(
+      f.owner.accountId,
+      f.owner.conversationId,
+      f.local.id,
+      "device",
+      true,
+      late
+    );
+    const result = f.h.domain.completeTransfer(
+      f.owner.accountId,
+      f.owner.conversationId,
+      op.id,
+      "device",
+      {
+        handoffId: cp.id,
+        agentId: cp.runtime.agentId,
+        modelId: cp.runtime.modelId,
+        harness: true,
+        artifacts: true,
+        protectedContext: true,
+        businessState: true
+      },
+      late
+    );
+    expect(result.status).toBe("COMPLETED");
+    expect(
+      f.h.domain.resolveHandoff(f.owner.accountId, f.owner.conversationId).activeHandoff.id
+    ).toBe(cp.id);
+  });
+
+  it("still expires a transfer that was already observed as stale before a late completion arrives", () => {
+    // Contrast with the test above: once expiry has been externally recorded (e.g. a status poll
+    // already ran past the deadline), a subsequent completion for that same operation must not
+    // resurrect it - only completeTransfer's own internal checks are deadline-exempt.
+    const f = setup();
+    f.heartbeat();
+    const op = f.begin();
+    const late = new Date(Date.parse(op.expiresAt) + 1);
+    f.h.domain.getTransfer(f.owner.accountId, f.owner.conversationId, op.id, late);
+    expect(f.complete(op.id).status).toBe("FAILED");
+  });
+
+  it("deduplicates retries, rejects changed payloads and crossing transfers, and restores operation progress", () => {
+    const f = setup();
+    f.heartbeat();
+    const op = f.begin();
+    expect(f.begin().id).toBe(op.id);
+    expect(() =>
+      f.h.domain.beginTransfer(f.owner.accountId, { ...f.input, idempotencyKey: "other" })
+    ).toThrow("already in progress");
+    expect(() =>
+      f.h.domain.beginTransfer(f.owner.accountId, {
+        ...f.input,
+        targetExecutionHostId: f.hosted.id
+      })
+    ).toThrow("already used");
+    f.h.domain.restore({
+      runtimeTransfers: [...f.h.domain.transfersMap.values()],
+      runtimeHandoffs: [...f.h.domain.handoffsMap.values()],
+      runtimeTaskHeads: [...f.h.domain.taskHeadsMap.values()]
+    });
+    expect(
+      f.h.domain.capabilities(f.owner.accountId, f.owner.conversationId, "device").activeTransfer
+        ?.id
+    ).toBe(op.id);
+    expect(f.complete(op.id).status).toBe("COMPLETED");
+    expect(f.complete(op.id).status).toBe("COMPLETED");
+    expect(f.h.domain.transfersMap.size).toBe(1);
+  });
+
+  it.each(["host lost", "bad receipt", "expired", "stale head"])(
+    "preserves hosted execution when %s",
+    (reason) => {
+      const f = setup();
+      f.heartbeat();
+      const op = f.begin();
+      if (reason === "host lost")
+        f.h.domain.heartbeatHost(
+          f.owner.accountId,
+          f.owner.conversationId,
+          f.local.id,
+          "device",
+          false
+        );
+      if (reason === "expired")
+        f.h.domain.getTransfer(
+          f.owner.accountId,
+          f.owner.conversationId,
+          op.id,
+          new Date(Date.parse(op.expiresAt) + 1)
+        );
+      if (reason === "stale head")
+        f.h.domain.taskHeadsMap.set(f.owner.conversationId, {
+          ...f.h.domain.taskHeadsMap.get(f.owner.conversationId)!,
+          activeHandoffId: "advanced"
+        });
+      const result =
+        reason === "bad receipt"
+          ? f.h.domain.completeTransfer(f.owner.accountId, f.owner.conversationId, op.id, "device")
+          : f.complete(op.id);
+      expect(result.status).toBe("FAILED");
+      expect(result.failureCode).toBeTruthy();
+      expect(f.h.domain.taskHeadsMap.get(f.owner.conversationId)?.activeHandoffId).toBe(
+        reason === "stale head" ? "advanced" : f.source.id
+      );
+    }
+  );
+
+  it("rejects cross-account, cross-business, and cross-device operations including retries", () => {
+    const f = setup();
+    f.heartbeat();
+    const op = f.begin();
+    expect(() => f.h.domain.getTransfer("attacker", f.owner.conversationId, op.id)).toThrow(
+      "another account"
+    );
+    expect(() =>
+      f.h.domain.completeTransfer(f.owner.accountId, f.owner.conversationId, op.id, "other")
+    ).toThrow("initiating device");
+    f.h.domain.failTransfer(f.owner.accountId, f.owner.conversationId, op.id, "device");
+    f.h.native.hostsMap.set(f.local.id, { ...f.local, businessId: "foreign-business" });
+    expect(() =>
+      f.h.domain.beginTransfer(f.owner.accountId, { ...f.input, idempotencyKey: "new" })
+    ).toThrow("another account or business");
+  });
+  it("records checkpoint failure without replacing the source", () => {
+    const f = setup();
+    f.heartbeat();
+    const write = vi.spyOn(f.h.domain.handoffsMap, "set").mockImplementation(() => {
+      throw new Error("Checkpoint store failed");
+    });
+    try {
+      expect(f.begin()).toMatchObject({ status: "FAILED", failureCode: "CHECKPOINT_FAILED" });
+      expect(f.h.domain.taskHeadsMap.get(f.owner.conversationId)?.activeHandoffId).toBe(
+        f.source.id
+      );
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("excludes executing turns, head writes during transfer, and hosted execution after local commit", () => {
+    const f = setup();
+    f.heartbeat();
+    const release = f.h.domain.acquireTurn(f.owner.conversationId, f.owner.accountId, "shop");
+    expect(() => f.begin()).toThrow("current turn is still executing");
+    release();
+    const op = f.begin();
+    expect(() => f.h.domain.acquireTurn(f.owner.conversationId, f.owner.accountId, "shop")).toThrow(
+      "turn or handoff"
+    );
+    expect(() =>
+      f.h.domain.createCheckpoint(f.owner.accountId, {
+        taskId: f.owner.conversationId,
+        promote: true,
+        expectedHandoffId: f.source.id
+      })
+    ).toThrow("already in progress");
+    f.complete(op.id);
+    expect(() => f.h.domain.acquireTurn(f.owner.conversationId, f.owner.accountId, "shop")).toThrow(
+      "local runtime"
+    );
   });
 });

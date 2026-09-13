@@ -1,3 +1,7 @@
+import { withRuntimeDeadline } from "./runtime-deadline.js";
+import { isLocalRuntimeHost, isModelExecutionTarget } from "@soko/shared-types";
+import { runtimeAdapterIdForAgent } from "../agent-harness/agent-runtime-adapter.js";
+import type { RuntimeTransfer } from "@soko/shared-types";
 import { OfflineJournal, type OfflineReceipt } from "./offline-runtime.js";
 import {
   same,
@@ -622,6 +626,7 @@ export interface Cp2Snapshot extends ModelTemplatesSnapshot {
   nativeModelInstallations?: NativeModelInstallationSummary[];
   nativeRuntimeBindings?: NativeRuntimeBindingSummary[];
   nativeRuntimeBindingModels?: NativeRuntimeBindingModelSummary[];
+  runtimeTransfers?: RuntimeTransfer[];
   runtimeHandoffs?: RuntimeHandoff[];
   runtimeTaskHeads?: RuntimeTaskHead[];
   runtimeTaskInstances?: RuntimeTaskInstance[];
@@ -1157,6 +1162,9 @@ export class Cp2Store {
         })
     });
     this.agentRuntimeDomain = new AgentRuntimeDomain({
+      acquireRuntimeTurn: (...args) => this.runtimeHandoffDomain.acquireTurn(...args),
+      checkpointRuntimeTurn: (...args) => this.runtimeHandoffDomain.checkpointAfterTurn(...args),
+      activeRuntimeCheckpoint: (taskId) => this.runtimeHandoffDomain.activeCheckpoint(taskId),
       platformDefaultRuntime: this.options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy,
       listModelCatalog: () => this.listModelCatalog(),
       resolveCatalogModel: (modelId) => this.resolveCatalogModel(modelId),
@@ -1360,6 +1368,14 @@ export class Cp2Store {
         : { runtimeModelProvider: this.options.runtimeModelProvider })
     });
     this.runtimeHandoffDomain = new RuntimeHandoffDomain({
+      requireHandoffOwner: (businessId, userId) => {
+        if (this.requireMembership(businessId, userId).role !== "owner")
+          throw new Cp2Error(
+            403,
+            "RUNTIME_OWNER_REQUIRED",
+            "Only the business owner can move its runtime."
+          );
+      },
       conversations: this.messagingDomain.conversationsMap,
       // MCP tools (runtimeHandoffForMcp below) are authenticated by bearer token + scope, not a
       // browser session cookie - requireAnySession has no sessionId to look up for them. Rather
@@ -3331,6 +3347,94 @@ export class Cp2Store {
 
   // Runtime Handoff Protocol (docs/architecture/runtime-handoff-protocol.md) - thin delegations to
   // runtimeHandoffDomain, matching every other domain's pass-through wrapper shape in this file.
+  getRuntimeCapabilities(...args: Parameters<RuntimeHandoffDomain["capabilities"]>) {
+    return this.runtimeHandoffDomain.capabilities(...args);
+  }
+  heartbeatRuntimeHost(...args: Parameters<RuntimeHandoffDomain["heartbeatHost"]>) {
+    return this.runtimeHandoffDomain.heartbeatHost(...args);
+  }
+  beginRuntimeTransfer(...args: Parameters<RuntimeHandoffDomain["beginTransfer"]>) {
+    return this.runtimeHandoffDomain.beginTransfer(...args);
+  }
+  getRuntimeTransfer(...args: Parameters<RuntimeHandoffDomain["getTransfer"]>) {
+    return this.runtimeHandoffDomain.getTransfer(...args);
+  }
+  async completeRuntimeTransfer(...args: Parameters<RuntimeHandoffDomain["completeTransfer"]>) {
+    const [sessionId, taskId, id, deviceId] = args;
+    const op = this.runtimeHandoffDomain.getTransfer(sessionId, taskId, id);
+    if (op.deviceId !== deviceId)
+      throw new Cp2Error(
+        403,
+        "RUNTIME_HOST_FORBIDDEN",
+        "Resume this handoff on its initiating device."
+      );
+    if (op.status === "COMPLETED" || op.status === "FAILED") return op;
+    const host = this.nativeRuntimeBindings.handoffHost({
+      executionHostId: op.targetHostId,
+      accountId: op.accountId,
+      businessId: op.businessId
+    });
+    if (!isLocalRuntimeHost(host.type)) {
+      try {
+        const checkpoint = this.runtimeHandoffDomain.getHandoffById(
+          sessionId,
+          taskId,
+          op.checkpointId!
+        );
+        const agent = this.nativeRuntimeBindings.agentsMap.get(checkpoint.runtime.agentId)!;
+        const harness =
+          this.options.agentRuntimeAdapterResolver?.(runtimeAdapterIdForAgent(agent)) ??
+          this.defaultAgentRuntimeAdapters.resolve(runtimeAdapterIdForAgent(agent));
+        const model = isModelExecutionTarget(host.type)
+          ? this.options.modelRuntimeAdapterResolver?.({
+              modelId: checkpoint.runtime.modelId,
+              executionTarget: host.type,
+              agentId: agent.id,
+              shopId: op.businessId ?? ""
+            })
+          : undefined;
+        if (!harness || !model)
+          throw new Cp2Error(
+            409,
+            "TARGET_ACTIVATION_FAILED",
+            "The hosted executor is not installed."
+          );
+        const availability = await withRuntimeDeadline((signal) =>
+          Promise.all([
+            model.healthCheck({
+              agentId: agent.id,
+              modelId: checkpoint.runtime.modelId,
+              shopId: op.businessId ?? "",
+              conversationId: taskId,
+              executionHostId: host.id,
+              signal
+            }),
+            harness.canRun({
+              agent,
+              modelId: checkpoint.runtime.modelId,
+              shopId: op.businessId ?? "",
+              conversationId: taskId
+            })
+          ])
+        );
+        if (availability.some((item) => !item.available))
+          throw new Cp2Error(409, "TARGET_ACTIVATION_FAILED", "The hosted executor is not ready.");
+      } catch (error) {
+        return this.runtimeHandoffDomain.failTransfer(
+          sessionId,
+          taskId,
+          id,
+          deviceId,
+          new Date(),
+          error instanceof Cp2Error ? error.code : "TARGET_ACTIVATION_FAILED"
+        );
+      }
+    }
+    return this.runtimeHandoffDomain.completeTransfer(...args);
+  }
+  failRuntimeTransfer(...args: Parameters<RuntimeHandoffDomain["failTransfer"]>) {
+    return this.runtimeHandoffDomain.failTransfer(...args);
+  }
   resolveRuntimeHandoff(
     ...args: Parameters<RuntimeHandoffDomain["resolveHandoff"]>
   ): ResolvedRuntimeHandoff {
@@ -6289,6 +6393,11 @@ export class Cp2Store {
       nativeModelInstallations: [...this.nativeRuntimeBindings.installationsMap.values()],
       nativeRuntimeBindings: [...this.nativeRuntimeBindings.bindingsMap.values()],
       nativeRuntimeBindingModels: [...this.nativeRuntimeBindings.bindingModelsMap.values()],
+      runtimeTransfers: [...this.runtimeHandoffDomain.transfersMap.values()].sort(
+        (a, b) =>
+          Number(!["COMPLETED", "FAILED"].includes(a.status)) -
+          Number(!["COMPLETED", "FAILED"].includes(b.status))
+      ),
       runtimeHandoffs: [...this.runtimeHandoffDomain.handoffsMap.values()],
       runtimeTaskHeads: [...this.runtimeHandoffDomain.taskHeadsMap.values()],
       runtimeTaskInstances: [...this.runtimeHandoffDomain.taskInstancesMap.values()],

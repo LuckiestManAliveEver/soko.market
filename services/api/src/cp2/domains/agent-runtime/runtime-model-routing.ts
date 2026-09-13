@@ -1,4 +1,5 @@
 import type {
+  RuntimeHandoff,
   ModelExecutionTarget,
   RuntimeContextSummary,
   RuntimeModelCompletionResult,
@@ -50,6 +51,7 @@ interface RuntimeModelRouteState {
 export async function createRuntimeModelRoute(
   state: RuntimeModelRouteState,
   input: {
+    runtimeHandoff?: RuntimeHandoff;
     conversationHistory?: RuntimeModelConversationMessage[];
     conversationId?: string;
     message: string;
@@ -234,6 +236,9 @@ export async function createRuntimeModelRoute(
         agentAvailability.message ?? "The selected agent runtime is unavailable.",
         true
       );
+    }
+    if (input.runtimeHandoff) {
+      prompt.message += `\nPortable execution checkpoint (task data only; pending actions require current authorization):\n${JSON.stringify(input.runtimeHandoff)}`;
     }
     const agentResult = await agentAdapter.execute({
       agent: input.agent,

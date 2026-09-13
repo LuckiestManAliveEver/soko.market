@@ -57,6 +57,7 @@ export const normalizedCollections: NormalizedCollection[] = [
   // runtime-handoff-protocol.md). Handoffs must persist before task heads/instances: both
   // generated `active_handoff_id` columns carry a foreign key into cp2_runtime_handoffs.
   { key: "runtimeHandoffs", tableName: "cp2_runtime_handoffs" },
+  { key: "runtimeTransfers", tableName: "cp2_runtime_transfers" },
   { key: "runtimeTaskHeads", tableName: "cp2_runtime_task_heads" },
   { key: "runtimeTaskInstances", tableName: "cp2_runtime_task_instances" },
   { key: "runtimeOperationDedup", tableName: "cp2_runtime_operation_dedup" },
@@ -187,7 +188,30 @@ export const normalizedCollections: NormalizedCollection[] = [
   { key: "auditEvents", tableName: "cp2_audit_events" }
 ];
 
+// getRuntimeCapabilities/getRuntimeTransfer are deliberately absent: they can expire a stale
+// transfer as an in-memory side effect, but that recompute is idempotent (re-derived from
+// `now` on every call) and self-heals on the next real mutation's snapshot, so forcing a full
+// persistence round trip - and blocking the response on it via app.ts's runtime GET flush wait -
+// on every capability/status poll is not worth it.
 const mutatingMethodNames = new Set([
+  "heartbeatRuntimeHost",
+  "beginRuntimeTransfer",
+  "completeRuntimeTransfer",
+  "failRuntimeTransfer",
+  "resolveRuntimeHandoff",
+  "createRuntimeCheckpoint",
+  "performRuntimeSwap",
+  "rollbackRuntimeHandoff",
+  "resumeRuntimeHandoff",
+  "syncOfflineRuntimeCheckpoints",
+  "mergeRuntimeHandoffs",
+  "resolveRuntimeHandoffForMcp",
+  "createRuntimeCheckpointForMcp",
+  "performRuntimeSwapForMcp",
+  "resumeRuntimeHandoffForMcp",
+  "rollbackRuntimeHandoffForMcp",
+  "syncOfflineRuntimeCheckpointsForMcp",
+  "mergeRuntimeHandoffsForMcp",
   "adjustProductStock",
   "approveAgentRoute",
   "authenticateSocialProfile",
@@ -1041,7 +1065,13 @@ export async function createPostgresCp2Store(
         const previousPasskeyCeremonyIds = targetedPasskeyCeremonyMethodNames.has(property)
           ? new Set((store.snapshot().passkeyCeremonies ?? []).map((ceremony) => ceremony.id))
           : null;
-        const result = value.apply(target, args);
+        let result: unknown;
+        try {
+          result = value.apply(target, args);
+        } catch (error) {
+          if (mutatingMethodNames.has(property)) enqueueSave();
+          throw error;
+        }
 
         if (previousPasskeyCeremonyIds !== null) {
           if (!isPromiseLike(result)) {

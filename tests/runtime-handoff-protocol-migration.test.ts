@@ -13,7 +13,7 @@ interface TestPool {
 
 const requireApiDependency = createRequire(resolve(process.cwd(), "services/api/package.json"));
 const { Pool } = requireApiDependency("pg") as {
-  Pool: new (options: { connectionString: string }) => TestPool;
+  Pool: new (options: { connectionString: string; max?: number }) => TestPool;
 };
 
 const protocolMigrationSql = readFileSync(
@@ -73,8 +73,10 @@ describe("084 runtime handoff created-at index migration", () => {
         'Render deploy crash: error: column "created_at" does not exist, code 42703)',
       async () => {
         const connectionString = databaseUrl ?? "";
-        const pool = new Pool({ connectionString });
+        const pool = new Pool({ connectionString, max: 1 });
+        const schema = `handoff_legacy_${Date.now()}`;
         try {
+          await prepareIsolatedSchema(pool, schema);
           await pool.query(protocolMigrationSql);
           // If this migration still referenced a non-existent created_at column in its index,
           // this call would reject with Postgres error 42703 - exactly the deploy crash this
@@ -84,7 +86,7 @@ describe("084 runtime handoff created-at index migration", () => {
           const indexes = await pool.query<{ indexname: string }>(
             `
               select indexname from pg_indexes
-              where schemaname = 'public'
+              where schemaname = current_schema()
                 and tablename = 'cp2_runtime_handoffs'
                 and indexname = 'cp2_runtime_handoffs_task_created_idx'
             `
@@ -93,6 +95,7 @@ describe("084 runtime handoff created-at index migration", () => {
             "cp2_runtime_handoffs_task_created_idx"
           ]);
         } finally {
+          await pool.query(`drop schema if exists ${schema} cascade`);
           await pool.end();
         }
       }
@@ -100,8 +103,10 @@ describe("084 runtime handoff created-at index migration", () => {
 
     it("rejects a handoff record with no createdAt", async () => {
       const connectionString = databaseUrl ?? "";
-      const pool = new Pool({ connectionString });
+      const pool = new Pool({ connectionString, max: 1 });
+      const schema = `handoff_legacy_${Date.now()}`;
       try {
+        await prepareIsolatedSchema(pool, schema);
         await pool.query(protocolMigrationSql);
         await pool.query(createdAtIndexMigrationSql);
 
@@ -128,8 +133,20 @@ describe("084 runtime handoff created-at index migration", () => {
           )
         ).rejects.toThrow(/cp2_runtime_handoffs_created_at_check/);
       } finally {
+        await pool.query(`drop schema if exists ${schema} cascade`);
         await pool.end();
       }
     });
   });
 });
+
+async function prepareIsolatedSchema(pool: TestPool, schema: string) {
+  await pool.query(`create schema ${schema}`);
+  await pool.query(`set search_path to ${schema}`);
+  for (const table of [
+    "cp2_native_runtime_agents",
+    "cp2_native_runtime_models",
+    "cp2_native_execution_hosts"
+  ])
+    await pool.query(`create table ${table}(entity_id text primary key)`);
+}

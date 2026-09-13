@@ -104,6 +104,10 @@ export interface LocalRuntimeMessage {
   createdAt: string;
 }
 export interface LocalRuntimeHandoffSession {
+  transferId?: string;
+  targetExecutionHostId?: string;
+  transferKey?: string;
+  returnTransferKey?: string;
   adapterId: string;
   hostedExecutionHostId: string;
   cloudHandoffId: string;
