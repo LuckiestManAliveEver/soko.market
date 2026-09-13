@@ -3837,6 +3837,11 @@ export class Cp2Store {
   ): ReturnType<AgentRuntimeDomain["disableAgentOwnerCorrection"]> {
     return this.agentRuntimeDomain.disableAgentOwnerCorrection(...args);
   }
+  purgeExpiredAgentOwnerCorrections(
+    ...args: Parameters<AgentRuntimeDomain["purgeExpiredAgentOwnerCorrections"]>
+  ): ReturnType<AgentRuntimeDomain["purgeExpiredAgentOwnerCorrections"]> {
+    return this.agentRuntimeDomain.purgeExpiredAgentOwnerCorrections(...args);
+  }
   submitAgentFeedback(
     ...args: Parameters<AgentRuntimeDomain["submitAgentFeedback"]>
   ): ReturnType<AgentRuntimeDomain["submitAgentFeedback"]> {

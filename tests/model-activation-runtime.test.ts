@@ -291,6 +291,19 @@ describe("agent model activation runtime", () => {
       }
     });
 
+    // The runtime's unknown-entity-reference check (services/api/src/cp2/domains/agent-runtime/
+    // capabilities.ts's findRuntimeUnknownEntityReferenceError) now clarifies rather than
+    // confirming a delete/update for a product name that doesn't exist yet - create the product
+    // this test deletes below so the hashtag mutation still reaches needs_confirmation.
+    const productSetup = await restoredApp.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({ message: "add product Sugar" })
+    });
+    expect(productSetup.statusCode).toBe(200);
+    expect(productSetup.json()).toMatchObject({ turn: { plan: { toolName: "product.create" } } });
+
     const hashtagMutation = await restoredApp.inject({
       method: "POST",
       url: `/businesses/${owner.businessId}/runtime/turns`,

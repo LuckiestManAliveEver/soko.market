@@ -143,7 +143,10 @@ import {
   type ExecutionTargetResolutionSource
 } from "./native-runtime-routing.js";
 import { projectActiveNativeBinding, projectNativeBinding } from "./native-binding-projection.js";
-import { executeRuntimeCapability } from "./capabilities.js";
+import {
+  executeRuntimeCapability,
+  findRuntimeUnknownEntityReferenceError
+} from "./capabilities.js";
 import {
   createRuntimeDocumentImportProposal,
   createRuntimeCommerceProposal,
@@ -1501,18 +1504,79 @@ export class AgentRuntimeDomain {
     if (existing === undefined || existing.shopId !== input.businessId) {
       throw new Cp2Error(404, "agent_correction_not_found", "Owner correction was not found.");
     }
-    const updated = { ...existing, status: "disabled" as const, disabledAt: now.toISOString() };
+    const updated = this.disableOwnerCorrectionRecord(existing, now);
+    this.bumpAgentRuntimeVersionForCorrectionChange(
+      input.businessId,
+      session.user.id,
+      now,
+      "Owner correction memory disabled"
+    );
+    return { ...updated };
+  }
+
+  /**
+   * Automatic counterpart to disableAgentOwnerCorrection, run by a background sweep rather than an
+   * owner action. Disables (never hard-deletes, matching disableAgentOwnerCorrection's own
+   * audit-preserving contract) every active correction older than its business's own configured
+   * memoryPolicy.retentionDays. Closes the gap docs/agent-evaluation-feedback-loop.md names
+   * explicitly: "automatic retention cleanup ... [is] not yet a background job."
+   */
+  purgeExpiredAgentOwnerCorrections(now = new Date()): number {
+    const disabledCountByBusiness = new Map<string, number>();
+    for (const correction of this.agentOwnerCorrections.values()) {
+      if (correction.status !== "active") continue;
+      const stored = this.agentProfiles.get(correction.shopId);
+      // No stored profile to consult a retention policy from (e.g. the business's runtime was
+      // never otherwise touched, or has since been removed) - skip rather than fabricate one, a
+      // background sweep should never have the side effect of creating a fresh default profile.
+      if (stored === undefined) continue;
+      const retentionMs =
+        hydrateBusinessAgentProfile(stored).memoryPolicy.retentionDays * 24 * 60 * 60 * 1000;
+      const ageMs = now.getTime() - Date.parse(correction.createdAt);
+      if (ageMs <= retentionMs) continue;
+      this.disableOwnerCorrectionRecord(correction, now);
+      disabledCountByBusiness.set(
+        correction.shopId,
+        (disabledCountByBusiness.get(correction.shopId) ?? 0) + 1
+      );
+    }
+    let totalDisabled = 0;
+    for (const [businessId, count] of disabledCountByBusiness) {
+      totalDisabled += count;
+      this.bumpAgentRuntimeVersionForCorrectionChange(
+        businessId,
+        "system",
+        now,
+        `Retention sweep disabled ${count} expired owner correction${count === 1 ? "" : "s"}.`
+      );
+    }
+    return totalDisabled;
+  }
+
+  private disableOwnerCorrectionRecord(
+    correction: AgentOwnerCorrection,
+    now: Date
+  ): AgentOwnerCorrection {
+    const updated = { ...correction, status: "disabled" as const, disabledAt: now.toISOString() };
     this.agentOwnerCorrections.set(updated.id, updated);
-    const profile = this.currentAgentProfile(input.businessId, now);
+    return updated;
+  }
+
+  private bumpAgentRuntimeVersionForCorrectionChange(
+    businessId: string,
+    actorId: string,
+    now: Date,
+    reason: string
+  ): void {
+    const profile = this.currentAgentProfile(businessId, now);
     const revised = {
       ...profile,
       runtimeVersion: profile.runtimeVersion + 1,
       updatedAt: now.toISOString(),
-      updatedBy: session.user.id
+      updatedBy: actorId
     };
-    this.agentProfiles.set(input.businessId, revised);
-    this.recordAgentRuntimeVersion(revised, session.user.id, "Owner correction memory disabled");
-    return { ...updated };
+    this.agentProfiles.set(businessId, revised);
+    this.recordAgentRuntimeVersion(revised, actorId, reason);
   }
 
   submitAgentFeedback(input: {
@@ -2237,12 +2301,21 @@ export class AgentRuntimeDomain {
           : createRuntimeToolProposalFromProductContextScript(contextScriptMatch!));
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
-    const policyErrors = enforceAgentPolicy({
-      runtime: shopRuntime,
-      toolName: proposal.toolName,
-      toolInput: proposal.input,
-      intent: parserResult.intent
-    });
+    const entityReferenceError = findRuntimeUnknownEntityReferenceError(
+      this.deps,
+      input.businessId,
+      proposal.toolName,
+      proposal.input
+    );
+    const policyErrors = [
+      ...(entityReferenceError === null ? [] : [entityReferenceError]),
+      ...enforceAgentPolicy({
+        runtime: shopRuntime,
+        toolName: proposal.toolName,
+        toolInput: proposal.input,
+        intent: parserResult.intent
+      })
+    ];
     const skillBinding = shopRuntime.skills.find(
       (binding) => binding.skillId === proposal.toolName
     );

@@ -37,5 +37,9 @@ The evaluation and memory policies include enablement, sampling, retention days,
 requirements, and per-scope limits. Customer conversation memory is off by default. Evaluation
 summaries are owner-only and are not rendered in customer storefronts.
 
-Automatic retention cleanup and reusable-workflow promotion are not yet background jobs. The
-policies and durable event structures are in place for those lifecycle workers.
+Automatic retention cleanup for owner corrections runs as a daily background sweep
+(`services/api/src/cp2/agent-owner-correction-retention-runner.ts`, wired into the API process in
+`services/api/src/index.ts`): any active correction older than its business's configured
+`memoryPolicy.retentionDays` is disabled (never hard-deleted, so its audit history survives) via
+`Cp2Store.purgeExpiredAgentOwnerCorrections`. Reusable-workflow promotion is not yet a background
+job. The policies and durable event structures are in place for that lifecycle worker.

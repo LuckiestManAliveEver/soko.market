@@ -223,6 +223,16 @@ export function buildRuntimeModelPrompt(
   };
 }
 
+/** Matches agent-business-runtime.ts's maxUntrustedContextLength - same order-of-magnitude budget
+ *  for a text field carried on every turn record, applied here to the model's own output rather
+ *  than untrusted input context. */
+export const runtimeModelTraceTextLimit = 4_000;
+
+function truncateForTrace(text: string): string {
+  if (text.length <= runtimeModelTraceTextLimit) return text;
+  return `${text.slice(0, runtimeModelTraceTextLimit)}\n[truncated]`;
+}
+
 export function modelTraceFromCompletion(
   completion: RuntimeModelCompletionResult,
   outputKind: RuntimeModelTrace["outputKind"]
@@ -233,6 +243,9 @@ export function modelTraceFromCompletion(
     durationMs: completion.durationMs,
     outputKind,
     errorCode: completion.errorCode,
+    ...(completion.outputText === null
+      ? {}
+      : { rawOutputText: truncateForTrace(completion.outputText) }),
     ...(typeof completion.metadata.providerModelId === "string"
       ? { providerModelId: completion.metadata.providerModelId }
       : {}),

@@ -3576,6 +3576,14 @@ export interface RuntimeModelTrace {
   durationMs: number | null;
   outputKind: "tool" | "clarification" | "response" | null;
   errorCode: string | null;
+  /**
+   * The model's raw completion text, verbatim (truncated past runtimeModelTraceTextLimit chars).
+   * Kept for audit - so a disputed mutating action (a drafted invoice, a payment record) has a
+   * traceable rationale behind it - even when the parsed proposal is what actually executed.
+   * Present only on the merchant-owner runtime turn path; the public storefront reply path never
+   * calls createRuntimeModelRoute and never gets a RuntimeModelTrace at all.
+   */
+  rawOutputText?: string;
   bindingId?: string;
   modelId?: string;
   providerModelId?: string;

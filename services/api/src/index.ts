@@ -17,6 +17,10 @@ import {
   startConversationRecycleBinRunner,
   type ConversationRecycleBinRunner
 } from "./cp2/conversation-recycle-bin-runner.js";
+import {
+  startAgentOwnerCorrectionRetentionRunner,
+  type AgentOwnerCorrectionRetentionRunner
+} from "./cp2/agent-owner-correction-retention-runner.js";
 import { readAccountDeletionProcessors } from "./cp2/account-deletion-processors.js";
 import { createPostgresCp2Store } from "./cp2/postgres-store.js";
 import { RETIRED_EXECUTION_FABRIC_TABLES } from "./cp2/retired-execution-fabric-tables.js";
@@ -186,6 +190,7 @@ let notificationDeliveryRunner: NotificationDeliveryRunner | null = null;
 let connectedMailboxSyncRunner: ConnectedMailboxSyncRunner | null = null;
 let sokoIdCooldownRunner: SokoIdCooldownRunner | null = null;
 let conversationRecycleBinRunner: ConversationRecycleBinRunner | null = null;
+let agentOwnerCorrectionRetentionRunner: AgentOwnerCorrectionRetentionRunner | null = null;
 const connectedMailboxSyncIntervalMs = readOptionalPositiveInteger(
   process.env.CONNECTED_MAILBOX_SYNC_INTERVAL_MS
 );
@@ -199,6 +204,7 @@ app.addHook("onClose", async () => {
   await notificationDeliveryRunner?.stop();
   await accountDeletionRunner?.stop();
   await conversationRecycleBinRunner?.stop();
+  await agentOwnerCorrectionRetentionRunner?.stop();
   rateLimitRedisClient.disconnect();
   await artifactPool?.end();
   if (isClosableStore(cp2Store)) {
@@ -245,6 +251,21 @@ if (process.env.ENABLE_CONVERSATION_RECYCLE_BIN_RUNNER !== "false") {
       }
     },
     onError: (error) => app.log.error({ error }, "Recycle bin purge run failed.")
+  });
+}
+
+if (process.env.ENABLE_AGENT_OWNER_CORRECTION_RETENTION_RUNNER !== "false") {
+  agentOwnerCorrectionRetentionRunner = startAgentOwnerCorrectionRetentionRunner({
+    store: cp2Store,
+    onResult: (disabled) => {
+      if (disabled > 0) {
+        app.log.info(
+          { event: "agent_owner_correction_retention_swept", disabled },
+          "Owner correction retention sweep completed."
+        );
+      }
+    },
+    onError: (error) => app.log.error({ error }, "Owner correction retention sweep failed.")
   });
 }
 
