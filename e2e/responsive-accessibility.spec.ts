@@ -40,7 +40,7 @@ for (const width of [360, 1280]) {
     page
   }) => {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto("/");
+    await page.goto("/sell/conversations/responsive-conversation");
     await page.getByRole("button", { name: "Account and agent settings" }).click();
     const dialog = page.getByRole("dialog", { name: "Account and agent settings" });
     const header = dialog.locator(".agent-profile-header");
@@ -48,11 +48,14 @@ for (const width of [360, 1280]) {
     await expect(header.getByRole("button", { name: "Go offline", exact: true })).toBeDisabled();
     await expect(header.locator(".agent-profile-actions button")).toHaveText([
       "Go offline",
+      "Refresh runtime",
       "Edit",
       "Sign out"
     ]);
     await expect(header.getByText("AI business attendant · Hosted", { exact: true })).toBeVisible();
-    await expect(dialog.locator("#runtime-handoff-guidance")).not.toBeEmpty();
+    await expect(dialog.locator("#runtime-handoff-guidance")).toHaveText(
+      "No compatible local runtime is currently connected."
+    );
     await expect
       .poll(() => header.evaluate((element) => element.scrollWidth <= element.clientWidth))
       .toBe(true);
@@ -227,7 +230,7 @@ test("prompts to link an email, then offers Gmail contacts as the first network 
       emailAddress: "jane.owner@gmail.com",
       emailVerificationStatus: "verified"
     },
-    session: { expiresAt: "2099-01-01T00:00:00.000Z" }
+    session: { id: "responsive-session", expiresAt: "2099-01-01T00:00:00.000Z" }
   };
   await page.route("**/session", (route) =>
     route.fulfill({
@@ -931,7 +934,7 @@ async function installApiMocks(page: Page): Promise<void> {
       return json({
         account: { id: "responsive-account" },
         user: { id: "responsive-user", displayName: "Jane Owner", language: "en" },
-        session: { expiresAt: "2099-01-01T00:00:00.000Z" }
+        session: { id: "responsive-session", expiresAt: "2099-01-01T00:00:00.000Z" }
       });
     }
     if (path === "/v1/marketplace-intro") {
@@ -952,6 +955,29 @@ async function installApiMocks(page: Page): Promise<void> {
     }
     if (path === "/v1/e2ee/devices" && method === "POST") {
       return json({ id: "responsive-device", accountId: "responsive-account" });
+    }
+    if (path === "/v1/runtime/responsive-conversation/capabilities") {
+      return route.fulfill({
+        json: {
+          hosted: [
+            {
+              executionHostId: "hosted",
+              type: "backend",
+              supported: true,
+              configured: true,
+              available: true,
+              healthy: true,
+              reachable: true,
+              active: true,
+              reason: null
+            }
+          ],
+          local: [],
+          activeExecutionHostId: "hosted",
+          activeTransfer: null,
+          handoff: { supported: false, available: false, reason: "LOCAL_RUNTIME_NOT_REGISTERED" }
+        }
+      });
     }
     if (path === "/v1/conversations" && method === "GET") {
       return json({ conversations: [mockConversationInbox] });

@@ -10,6 +10,7 @@
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type {
+  RuntimeRestoreReceipt,
   RuntimeAction,
   RuntimeActionStatus,
   RuntimeArtifactReference,
@@ -219,6 +220,115 @@ interface RollbackBody {
 }
 
 export function registerRuntimeHandoffRoutes(app: FastifyInstance, store: Cp2Store): void {
+  app.get(
+    "/v1/runtime/:taskId/capabilities",
+    async (request: FastifyRequest<{ Params: TaskParams }>, reply) => {
+      try {
+        reply.header("cache-control", "no-store");
+        return store.getRuntimeCapabilities(
+          readSessionCookie(request.headers.cookie),
+          request.params.taskId,
+          readHeader(request, "x-soko-device-id") ?? ""
+        );
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+  app.post(
+    "/v1/runtime/:taskId/hosts/:hostId/heartbeat",
+    async (request: FastifyRequest<{ Params: TaskParams & { hostId: string } }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return store.heartbeatRuntimeHost(
+          readSessionCookie(request.headers.cookie),
+          request.params.taskId,
+          request.params.hostId,
+          parseString(readHeader(request, "x-soko-device-id"), "deviceId"),
+          body.connected === true
+        );
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+  app.post(
+    "/v1/runtime/:taskId/handoffs",
+    async (request: FastifyRequest<{ Params: TaskParams }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        const result = store.beginRuntimeTransfer(readSessionCookie(request.headers.cookie), {
+          taskId: request.params.taskId,
+          targetExecutionHostId: parseString(body.targetExecutionHostId, "targetExecutionHostId"),
+          expectedHandoffId: parseString(body.expectedHandoffId, "expectedHandoffId"),
+          idempotencyKey: parseString(readHeader(request, "idempotency-key"), "idempotencyKey"),
+          deviceId: parseString(readHeader(request, "x-soko-device-id"), "deviceId")
+        });
+        return reply
+          .code(result.status === "COMPLETED" || result.status === "FAILED" ? 200 : 202)
+          .send(result);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+  // Operation IDs and immutable checkpoint IDs have distinct URLs.
+  app.get(
+    "/v1/runtime/:taskId/transfers/:transferId",
+    async (request: FastifyRequest<{ Params: TaskParams & { transferId: string } }>, reply) => {
+      try {
+        reply.header("cache-control", "no-store");
+        return store.getRuntimeTransfer(
+          readSessionCookie(request.headers.cookie),
+          request.params.taskId,
+          request.params.transferId
+        );
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+  for (const action of ["complete", "fail"] as const) {
+    app.post(
+      `/v1/runtime/:taskId/transfers/:transferId/${action}`,
+      async (request: FastifyRequest<{ Params: TaskParams & { transferId: string } }>, reply) => {
+        try {
+          const session = readSessionCookie(request.headers.cookie);
+          const device = parseString(readHeader(request, "x-soko-device-id"), "deviceId");
+          if (action === "fail")
+            return store.failRuntimeTransfer(
+              session,
+              request.params.taskId,
+              request.params.transferId,
+              device
+            );
+          const body = parseRequestBody(request.body);
+          let receipt: RuntimeRestoreReceipt | undefined;
+          if (body.receipt !== undefined) {
+            const value = parseRequestBody(body.receipt);
+            receipt = {
+              handoffId: parseString(value.handoffId, "handoffId"),
+              agentId: parseString(value.agentId, "agentId"),
+              modelId: parseString(value.modelId, "modelId"),
+              harness: value.harness === true,
+              artifacts: value.artifacts === true,
+              protectedContext: value.protectedContext === true,
+              businessState: value.businessState === true
+            };
+          }
+          return await store.completeRuntimeTransfer(
+            session,
+            request.params.taskId,
+            request.params.transferId,
+            device,
+            receipt
+          );
+        } catch (error) {
+          return sendCp2Error(reply, error);
+        }
+      }
+    );
+  }
   app.get("/v1/runtime/:taskId", async (request: FastifyRequest<{ Params: TaskParams }>, reply) => {
     try {
       return store.resolveRuntimeHandoff(

@@ -1,3 +1,4 @@
+import { withRuntimeDeadline } from "../../runtime-deadline.js";
 /**
  * Ninth slice of in-process domain modularization for the Cp2Store monolith (see
  * docs/architecture/domain-modularization-roadmap.md). The largest slice by method count and by
@@ -555,12 +556,14 @@ export class AgentRuntimeDomain {
     this.requireBusinessAgent(input.businessId, input.agentId, now);
     this.requireCanonicalAiModel(input.modelId);
     const adapter = this.requireModelRuntimeAdapter(input);
-    const health = await adapter.healthCheck({
-      agentId: input.agentId,
-      shopId: input.businessId,
-      modelId: input.modelId,
-      ...(input.signal === undefined ? {} : { signal: input.signal })
-    });
+    const health = await withRuntimeDeadline((signal) =>
+      adapter.healthCheck({
+        agentId: input.agentId,
+        shopId: input.businessId,
+        modelId: input.modelId,
+        signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal
+      })
+    );
     const summary = healthSummary(health, now);
     if (!summary.ok) {
       throw modelHealthError(summary);
@@ -621,12 +624,14 @@ export class AgentRuntimeDomain {
     ) {
       input.onStage?.("runtime_probe_started", Date.now() - startedAt);
       const health = healthSummary(
-        await this.requireModelRuntimeAdapter(input).healthCheck({
-          agentId: input.agentId,
-          shopId: input.businessId,
-          modelId: input.modelId,
-          ...(input.signal === undefined ? {} : { signal: input.signal })
-        }),
+        await withRuntimeDeadline((signal) =>
+          this.requireModelRuntimeAdapter(input).healthCheck({
+            agentId: input.agentId,
+            shopId: input.businessId,
+            modelId: input.modelId,
+            signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal
+          })
+        ),
         now
       );
       input.onStage?.("runtime_probe_completed", Date.now() - startedAt);
@@ -664,12 +669,14 @@ export class AgentRuntimeDomain {
       const adapter = this.requireModelRuntimeAdapter(input);
       input.onStage?.("runtime_probe_started", Date.now() - startedAt);
       const health = healthSummary(
-        await adapter.healthCheck({
-          agentId: input.agentId,
-          shopId: input.businessId,
-          modelId: input.modelId,
-          ...(input.signal === undefined ? {} : { signal: input.signal })
-        }),
+        await withRuntimeDeadline((signal) =>
+          adapter.healthCheck({
+            agentId: input.agentId,
+            shopId: input.businessId,
+            modelId: input.modelId,
+            signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal
+          })
+        ),
         now
       );
       input.onStage?.("runtime_probe_completed", Date.now() - startedAt);
@@ -1181,19 +1188,22 @@ export class AgentRuntimeDomain {
     let ready = resolution.selected.available && adapter !== undefined && harness !== undefined;
     if (ready && adapter !== undefined && harness !== undefined) {
       try {
-        const [modelAvailability, harnessAvailability] = await Promise.all([
-          adapter.canRun({
-            modelId: resolution.selected.model.id,
-            agentId: resolution.agent.id,
-            shopId: input.businessId
-          }),
-          harness.canRun({
-            agent: resolution.agent,
-            modelId: resolution.selected.model.id,
-            conversationId: input.conversationId ?? "runtime-unbound",
-            shopId: input.businessId
-          })
-        ]);
+        const [modelAvailability, harnessAvailability] = await withRuntimeDeadline((signal) =>
+          Promise.all([
+            adapter.canRun({
+              modelId: resolution.selected.model.id,
+              agentId: resolution.agent.id,
+              shopId: input.businessId,
+              signal
+            }),
+            harness.canRun({
+              agent: resolution.agent,
+              modelId: resolution.selected.model.id,
+              conversationId: input.conversationId ?? "runtime-unbound",
+              shopId: input.businessId
+            })
+          ])
+        );
         ready = modelAvailability.available && harnessAvailability.available;
       } catch {
         ready = false;
@@ -1852,7 +1862,29 @@ export class AgentRuntimeDomain {
     };
   }
 
-  async createRuntimeTurn(input: {
+  async createRuntimeTurn(
+    input: Parameters<AgentRuntimeDomain["executeRuntimeTurn"]>[0]
+  ): Promise<RuntimeTurnResult> {
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    const release = input.conversationId
+      ? this.deps.acquireRuntimeTurn?.(input.conversationId, auth.account.id, input.businessId)
+      : undefined;
+    try {
+      const result = await this.executeRuntimeTurn(input);
+      if (input.conversationId)
+        this.deps.checkpointRuntimeTurn?.(input.conversationId, result.turn);
+      return result;
+    } finally {
+      release?.();
+    }
+  }
+
+  private async executeRuntimeTurn(input: {
     sessionId: string | null;
     businessId: string;
     conversationId?: string;
@@ -2982,7 +3014,13 @@ export class AgentRuntimeDomain {
           ),
         resolveAgentRuntimeAdapter: (adapterId) => this.deps.agentRuntimeAdapterResolver(adapterId)
       },
-      { ...input, agent }
+      {
+        ...input,
+        agent,
+        ...(input.conversationId && this.deps.activeRuntimeCheckpoint?.(input.conversationId)
+          ? { runtimeHandoff: this.deps.activeRuntimeCheckpoint(input.conversationId)! }
+          : {})
+      }
     );
   }
   private requireRuntimeSession(

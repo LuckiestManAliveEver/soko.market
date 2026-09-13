@@ -210,9 +210,9 @@ export interface RuntimeSwapResult {
   handoff: RuntimeHandoff;
   taskHead: RuntimeTaskHead;
   runtimeInstance: RuntimeTaskInstance;
-  /** True when the DB commit (checkpoint + task head move) succeeded but the Activate phase
-   *  (section 11.3) could not confirm the new runtime chain is actually usable. The handoff and
-   *  task head remain valid either way - see section 12. */
+  /** Always false: activation is now validated before any commit, so a failure throws instead of
+   *  landing here as a soft, post-commit degraded state. Kept for API/type compatibility with
+   *  existing clients rather than as a branch any current caller needs to handle. */
   activationFailed: boolean;
   activationError: string | null;
 }
@@ -322,4 +322,65 @@ export interface RuntimeMergeInput {
 export interface RuntimeMergeResult {
   handoff: RuntimeHandoff;
   taskHead: RuntimeTaskHead;
+}
+
+/** Mutable transfer progress; RuntimeHandoff itself remains an immutable checkpoint. */
+export type RuntimeTransferStatus =
+  | "PENDING"
+  | "CHECKPOINTING"
+  | "CHECKPOINTED"
+  | "TARGET_ACTIVATING"
+  | "RESTORING"
+  | "VERIFYING"
+  | "COMPLETED"
+  | "FAILED";
+export interface RuntimeTransfer {
+  id: string;
+  taskId: string;
+  accountId: string;
+  businessId: string | null;
+  deviceId: string;
+  idempotencyKey: string;
+  sourceHandoffId: string;
+  checkpointId: string | null;
+  sourceHostId: string;
+  targetHostId: string;
+  status: RuntimeTransferStatus;
+  failureCode: string | null;
+  message: string | null;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
+export interface RuntimeHostCapability {
+  executionHostId: string;
+  type: string;
+  supported: boolean;
+  configured: boolean;
+  available: boolean;
+  healthy: boolean;
+  reachable: boolean;
+  active: boolean;
+  reason: string | null;
+}
+export interface RuntimeCapabilities {
+  hosted: RuntimeHostCapability[];
+  local: RuntimeHostCapability[];
+  handoff: { supported: boolean; available: boolean; reason: string | null };
+  activeExecutionHostId: string | null;
+  activeTransfer: RuntimeTransfer | null;
+}
+export interface RuntimeRestoreReceipt {
+  handoffId: string;
+  agentId: string;
+  modelId: string;
+  harness: boolean;
+  artifacts: boolean;
+  protectedContext: boolean;
+  businessState: boolean;
+}
+
+/** Location remains independent of agent/model identity and inference provider. */
+export function isLocalRuntimeHost(type: string): boolean {
+  return ["browser", "browser-local", "installed-app", "remote-shop-device"].includes(type);
 }

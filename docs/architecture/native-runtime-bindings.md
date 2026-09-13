@@ -143,7 +143,14 @@ This document covers _which_ agent/model/host a conversation resolves to. It doe
 the task's in-flight execution state (goal, progress, next action) independently of that
 resolution - swapping the agent, model, or host has nothing to hand the new runtime beyond "start
 fresh." [runtime-handoff-protocol.md](./runtime-handoff-protocol.md) adds that: an immutable,
-portable checkpoint per task, a task-head pointer, and a Prepare/Commit/Activate swap lifecycle
+portable checkpoint per task, a task-head pointer, and a Prepare/Restore/Verify/Commit transfer lifecycle
 built on top of `NativeRuntimeBindingStore.validateCandidateExecutionChain`/
 `materializeConversationBinding`, reusing this document's compatibility rules and binding-value
 semantics rather than duplicating them.
+
+## Hosted/local transfer
+
+Execution location changes use the existing native binding graph and immutable RuntimeHandoff.
+See [the canonical runtime handoff contract](../runtime/runtime-handoff.md) for capabilities,
+device leases, target restore receipts, source preservation, durability and recovery. A healthy
+model installation alone does not prove that its agent harness can execute on a local device.

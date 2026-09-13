@@ -1,3 +1,4 @@
+import { isLocalRuntimeHost } from "@soko/shared-types";
 import { createHash } from "node:crypto";
 
 import type {
@@ -985,6 +986,79 @@ export class NativeRuntimeBindingStore {
     return { agent, model, host, installation };
   }
 
+  bindingScope(bindingId: string) {
+    const binding = this.bindings.get(bindingId);
+    return binding ? { accountId: binding.accountId, businessId: binding.businessId } : null;
+  }
+
+  /** Host ownership is independent of model/agent compatibility. Never infer it from an ID. */
+  handoffHost(input: { executionHostId: string; accountId: string; businessId: string | null }) {
+    const host = this.hosts.get(input.executionHostId);
+    if (!host)
+      throw new Cp2Error(409, "NO_EXECUTION_HOST", "The execution host is not registered.");
+    if (
+      (host.accountId !== null && host.accountId !== input.accountId) ||
+      (host.businessId !== null && host.businessId !== input.businessId) ||
+      (isLocalRuntimeHost(host.type) && host.accountId !== input.accountId)
+    ) {
+      throw new Cp2Error(
+        403,
+        "RUNTIME_HOST_FORBIDDEN",
+        "This execution host belongs to another account or business."
+      );
+    }
+    return host;
+  }
+
+  handoffHosts(input: { accountId: string; businessId: string | null }) {
+    return [...this.hosts.values()].filter((host) => {
+      try {
+        this.handoffHost({ ...input, executionHostId: host.id });
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  /** An authenticated device may refresh only an already provisioned host assigned to it.
+   * This does not install a model, create a host, or grant executor capabilities. */
+  heartbeatHandoffHost(input: {
+    executionHostId: string;
+    accountId: string;
+    businessId: string | null;
+    deviceId: string;
+    connected: boolean;
+    now: Date;
+  }) {
+    const host = this.handoffHost(input);
+    if (
+      !isLocalRuntimeHost(host.type) ||
+      host.configuration.deviceId !== input.deviceId ||
+      ["disabled", "incompatible"].includes(host.status) ||
+      !host.capabilities.includes("runtime-handoff-v1")
+    ) {
+      throw new Cp2Error(
+        409,
+        "LOCAL_RUNTIME_UNSUPPORTED",
+        "This device has no provisioned portable runtime bridge."
+      );
+    }
+    const timestamp = input.now.toISOString();
+    this.hosts.set(host.id, {
+      ...host,
+      status: input.connected ? "available" : "unavailable",
+      lastKnownHealthyAt: input.connected ? timestamp : host.lastKnownHealthyAt,
+      updatedAt: timestamp,
+      configuration: {
+        ...host.configuration,
+        handoffLeaseExpiresAt: new Date(
+          input.now.getTime() + (input.connected ? 45_000 : 0)
+        ).toISOString()
+      }
+    });
+  }
+
   /**
    * Existence-only check for an (agent, model, host) triple - no status/availability/capability
    * checks, unlike `validateCandidateExecutionChain` above. Used by the Runtime Handoff Protocol's
@@ -1021,6 +1095,16 @@ export class NativeRuntimeBindingStore {
     now: Date;
   }): NativeRuntimeBindingSummary {
     const { agent } = this.validateCandidateExecutionChain(input);
+    if (
+      (agent.accountId !== null && agent.accountId !== input.accountId) ||
+      (agent.businessId !== null && agent.businessId !== input.businessId)
+    )
+      throw new Cp2Error(
+        403,
+        "RUNTIME_AGENT_FORBIDDEN",
+        "The selected agent belongs to another account or business."
+      );
+    this.handoffHost(input);
     const timestamp = input.now.toISOString();
     const bindingId = stableUuid(
       `runtime-handoff-binding:${input.accountId}:${input.businessId ?? "none"}:${input.agentId}:${input.modelId}:${input.executionHostId}`

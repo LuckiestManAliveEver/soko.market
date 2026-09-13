@@ -159,7 +159,7 @@ export function buildApi(options: BuildApiOptions = {}) {
 
     if (
       options.mutationPersistenceFlush === undefined ||
-      request.method === "GET" ||
+      (request.method === "GET" && !request.url.startsWith("/v1/runtime/")) ||
       request.method === "HEAD" ||
       request.method === "OPTIONS" ||
       reply.statusCode >= 400 ||
@@ -186,6 +186,15 @@ export function buildApi(options: BuildApiOptions = {}) {
       if (error instanceof PersistenceFlushDeadlineExceeded) {
         // An offline ACK must prove durability before the device clears its pending mutation.
         if (request.routeOptions.url === "/sync/push") throw error;
+        if (request.url.startsWith("/v1/runtime/")) {
+          reply.code(503);
+          return JSON.stringify({
+            code: "RUNTIME_PERSISTENCE_PENDING",
+            message:
+              "Runtime durability is not confirmed yet. Refresh the handoff status before retrying.",
+            retryable: true
+          });
+        }
         // The write is still queued and will complete/retry in the background (see
         // Cp2Store.flush()) - holding this response open until then would leave the caller's
         // "Working..." state spinning for as long as the queue is backed up, with no bound. A

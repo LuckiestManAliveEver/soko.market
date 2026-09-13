@@ -1,10 +1,10 @@
 import type {
   ResolvedRuntimeHandoff,
-  RuntimeCheckpointResult,
   RuntimeHandoff,
   RuntimeOfflineSyncResult,
   RuntimeResumeResult,
-  RuntimeSwapResult
+  RuntimeCapabilities,
+  RuntimeTransfer
 } from "@soko/shared-types";
 import type {
   LocalDatabase,
@@ -81,82 +81,170 @@ export class RuntimeHandoffController {
 
   async availability(
     scope: Scope,
-    conversationId: string | null
+    conversationId: string | null,
+    prefetchedCapabilities?: RuntimeCapabilities
   ): Promise<{ available: boolean; reason: string }> {
     if (!conversationId) return { available: false, reason: "Open an agent conversation first." };
-    if (!this.deps.hosts().length)
-      return {
-        available: false,
-        reason: "This agent has no compatible local execution host on this device."
-      };
-    this.deps.assertAuthorized(scope);
+    const capabilities = prefetchedCapabilities ?? (await this.capabilities(scope, conversationId));
+    if (!capabilities.handoff.available)
+      return { available: false, reason: capabilityReason(capabilities.handoff.reason) };
     const resolved = await this.resolve(conversationId);
     const host = await this.findHost(scope, resolved.activeHandoff);
-    return host
-      ? { available: true, reason: "Move this conversation to this device." }
-      : {
-          available: false,
-          reason: "The current agent and model cannot resume on an available local host."
-        };
+    const available =
+      !!host &&
+      capabilities.local.some(
+        (item) => item.executionHostId === host.executionHostId && item.available
+      );
+    return {
+      available,
+      reason: available
+        ? "Move this conversation to the connected local runtime. Synchronization resumes when connected."
+        : "No compatible local runtime is currently connected."
+    };
+  }
+
+  async capabilities(scope: Scope, conversationId: string): Promise<RuntimeCapabilities> {
+    await this.heartbeatHosts(scope, conversationId);
+    return this.deps.cloud<RuntimeCapabilities>(this.path(conversationId, "/capabilities"));
+  }
+
+  /** Only adapters already provisioned for this device may advertise a live bridge. Split out of
+   * capabilities() for callers (moveToLocal's pre/post-restore pings) that only need the target
+   * host's lease kept fresh and never read the response - fetching and discarding a capabilities
+   * snapshot there is wasted work, and its GET /capabilities call can expire an in-flight transfer
+   * as a side effect moments before this same request tries to complete it. */
+  private async heartbeatHosts(scope: Scope, conversationId: string): Promise<void> {
+    if (this.deps.hosts().length) this.deps.assertAuthorized(scope);
+    for (const host of this.deps.hosts()) {
+      await this.deps.cloud(
+        this.path(conversationId, `/hosts/${encodeURIComponent(host.executionHostId)}/heartbeat`),
+        { connected: true }
+      );
+    }
   }
 
   goOffline(scope: Scope, conversationId: string, messages: LocalRuntimeMessage[]): Promise<void> {
     return this.deps.lock(scope, async () => {
       this.deps.assertAuthorized(scope);
       const previous = await this.deps.db.read(scope);
-      if (previous.offlineModeActive)
-        throw new Error(
-          "An offline session is already active. Return online before starting another handoff."
-        );
+      if (previous.offlineModeActive) return;
       if (previous.runtimeHandoffSession && previous.runtimeHandoffSession.status !== "hosted")
         throw new Error(
-          "A saved handoff needs recovery. Use Go online to resume its hosted runtime first."
+          "A saved handoff needs recovery. Resume it before starting another handoff."
         );
+      const capability = await this.capabilities(scope, conversationId);
+      if (!capability.handoff.available)
+        throw new Error(capabilityReason(capability.handoff.reason));
       const resolved = await this.resolve(conversationId);
-      const source = resolved.activeHandoff;
-      const host = await this.findHost(scope, source);
-      if (!host) throw new Error("No local host can resume this agent and model.");
-      const checkpoint = await this.deps.cloud<RuntimeCheckpointResult>(
-        this.path(conversationId, "/checkpoints"),
-        { promote: true, expectedHandoffId: source.id },
-        crypto.randomUUID()
-      );
-      // Preparation must finish before changing the authoritative execution host.
-      await this.deps.prepareBusiness(scope);
-      assertReceipt(await host.prepare(scope, checkpoint.handoff), checkpoint.handoff);
-      this.deps.assertAuthorized(scope);
+      const host = await this.findHost(scope, resolved.activeHandoff);
+      if (
+        !host ||
+        !capability.local.some(
+          (item) => item.executionHostId === host.executionHostId && item.available
+        )
+      )
+        throw new Error(
+          "No compatible local runtime is currently connected. Hosted execution is still active."
+        );
       const session: LocalRuntimeHandoffSession = {
         adapterId: host.id,
-        hostedExecutionHostId: checkpoint.handoff.runtime.executionHostId,
-        cloudHandoffId: checkpoint.handoff.id,
-        handoff: checkpoint.handoff,
+        hostedExecutionHostId: resolved.activeHandoff.runtime.executionHostId,
+        cloudHandoffId: resolved.activeHandoff.id,
+        handoff: resolved.activeHandoff,
         checkpoints: [],
         messages,
         pendingMessages: [],
-        status: "prepared"
+        status: "prepared",
+        transferKey: crypto.randomUUID(),
+        targetExecutionHostId: host.executionHostId
       };
       await this.save(scope, session);
-      // A lost swap response is recoverable from the durable prepared session and task head.
-      const swapped = await this.deps.cloud<RuntimeSwapResult>(
-        this.path(conversationId, "/swaps/host"),
-        { targetId: host.executionHostId, expectedHandoffId: checkpoint.handoff.id },
-        `offline:${checkpoint.handoff.id}`
-      );
-      session.handoff = swapped.handoff;
-      session.cloudHandoffId = swapped.handoff.id;
-      await this.save(scope, session);
-      if (swapped.activationFailed)
-        throw new Error(
-          swapped.activationError ??
-            "Local host activation failed. Use Go online to recover the saved handoff."
-        );
-      assertReceipt(await host.resume(scope, swapped.handoff), swapped.handoff);
+      await this.moveToLocal(scope, session, host);
+    });
+  }
+
+  /** A saved operation is reloaded on refresh; retries reuse the same key and exact checkpoint. */
+  recover(scope: Scope): Promise<void> {
+    return this.deps.lock(scope, async () => {
       this.deps.assertAuthorized(scope);
+      const session = (await this.deps.db.read(scope)).runtimeHandoffSession;
+      if (!session || session.status !== "prepared" || !session.transferKey) return;
+      const host = this.deps.hosts().find((item) => item.id === session.adapterId);
+      if (!host)
+        throw new Error(
+          "Reconnect the local runtime to recover the saved handoff, or return to hosted execution."
+        );
+      await this.moveToLocal(scope, session, host);
+    });
+  }
+
+  private async moveToLocal(
+    scope: Scope,
+    session: LocalRuntimeHandoffSession,
+    host: LocalHandoffHost
+  ) {
+    const conversationId = session.handoff.conversationId;
+    let transfer: RuntimeTransfer | undefined;
+    try {
+      await this.heartbeatHosts(scope, conversationId);
+      transfer = session.transferId
+        ? await this.deps.cloud<RuntimeTransfer>(
+            this.path(conversationId, `/transfers/${session.transferId}`)
+          )
+        : await this.deps.cloud<RuntimeTransfer>(
+            this.path(conversationId, "/handoffs"),
+            {
+              targetExecutionHostId: host.executionHostId,
+              expectedHandoffId: session.cloudHandoffId
+            },
+            session.transferKey
+          );
+      session.transferId = transfer.id;
+      await this.save(scope, session);
+      if (transfer.status === "FAILED")
+        throw new Error(
+          transfer.message ?? "The handoff failed. Hosted execution is still active."
+        );
+      const checkpoint = await this.deps.cloud<RuntimeHandoff>(
+        this.path(conversationId, `/handoffs/${transfer.checkpointId}`)
+      );
+      await bounded(this.deps.prepareBusiness(scope), "Business snapshot preparation");
+      assertReceipt(
+        await bounded(host.prepare(scope, checkpoint), "Local runtime preparation"),
+        checkpoint
+      );
+      const receipt = await bounded(host.resume(scope, checkpoint), "Local checkpoint restore");
+      assertReceipt(receipt, checkpoint);
+      this.deps.assertAuthorized(scope);
+      if (!this.deps.hosts().includes(host))
+        throw new Error(
+          "The local runtime disconnected during restore. Hosted execution is still active."
+        );
+      await this.heartbeatHosts(scope, conversationId);
+      if (transfer.status !== "COMPLETED") {
+        transfer = await this.deps.cloud<RuntimeTransfer>(
+          this.path(conversationId, `/transfers/${transfer.id}/complete`),
+          { receipt }
+        );
+        if (transfer.status !== "COMPLETED")
+          throw new Error(
+            transfer.message ?? "The handoff failed. Hosted execution is still active."
+          );
+      }
+      session.handoff = checkpoint;
+      session.cloudHandoffId = checkpoint.id;
       session.status = "offline";
       await this.save(scope, session);
       await this.deps.activate(scope, true);
       this.deps.changed();
-    });
+    } catch (error) {
+      // A response can be lost after a durable commit. The server never rolls back COMPLETED.
+      if (transfer && transfer.status !== "COMPLETED")
+        await this.deps
+          .cloud(this.path(conversationId, `/transfers/${transfer.id}/fail`), {})
+          .catch(() => undefined);
+      throw error;
+    }
   }
 
   goOnline(scope: Scope): Promise<void> {
@@ -168,6 +256,37 @@ export class RuntimeHandoffController {
           "This saved business-data session has no RuntimeHandoff. Sync it in offline settings."
         );
       const conversationId = session.handoff.conversationId;
+      if (session.status === "prepared" && !session.transferId && session.transferKey) {
+        const capability = await this.capabilities(scope, conversationId);
+        if (capability.activeTransfer?.idempotencyKey === session.transferKey)
+          session.transferId = capability.activeTransfer.id;
+        else {
+          const current = await this.resolve(conversationId);
+          if (current.activeHandoff.id === session.cloudHandoffId) {
+            session.status = "hosted";
+            await this.save(scope, session);
+            await this.deps.activate(scope, false);
+            return;
+          }
+        }
+      }
+      if (session.status === "prepared" && session.transferId) {
+        const transfer = await this.deps.cloud<RuntimeTransfer>(
+          this.path(conversationId, `/transfers/${session.transferId}/fail`),
+          {}
+        );
+        if (transfer.status === "FAILED") {
+          session.status = "hosted";
+          await this.save(scope, session);
+          await this.deps.activate(scope, false);
+          return;
+        }
+        session.handoff = await this.deps.cloud<RuntimeHandoff>(
+          this.path(conversationId, `/handoffs/${transfer.checkpointId}`)
+        );
+        session.cloudHandoffId = session.handoff.id;
+      }
+
       await this.deps.syncBusiness(scope);
       const state = await this.deps.db.read(scope);
       if (state.conflicts.length || state.operations.some((op) => op.syncStatus !== "ACKED"))
@@ -209,7 +328,8 @@ export class RuntimeHandoffController {
       const recoveringSwap =
         session.status === "prepared" &&
         resolved.activeHandoff.parentHandoffId === session.cloudHandoffId &&
-        resolved.activeHandoff.runtime.executionHostId === host?.executionHostId;
+        resolved.activeHandoff.runtime.executionHostId ===
+          (session.targetExecutionHostId ?? host?.executionHostId);
       const recoveringReturn =
         session.status === "returning" &&
         resolved.activeHandoff.parentHandoffId === session.cloudHandoffId &&
@@ -222,34 +342,68 @@ export class RuntimeHandoffController {
         throw new Error(
           "This conversation changed on another device. Resolve its RuntimeHandoff conflict before going online; local state is saved."
         );
+      if (recoveringReturn) {
+        const resumed = await this.deps.cloud<RuntimeResumeResult>(
+          this.path(conversationId, "/resume"),
+          {}
+        );
+        if (
+          resumed.activeHandoff.id !== resolved.activeHandoff.id ||
+          !["READY", "RUNNING"].includes(resumed.runtimeInstance.status)
+        )
+          throw new Error(
+            "The hosted runtime has not confirmed resume. Your local state is saved."
+          );
+        session.handoff = resumed.activeHandoff;
+        session.cloudHandoffId = resumed.activeHandoff.id;
+        session.status = "hosted";
+        delete session.returnTransferKey;
+        await this.save(scope, session);
+        await this.deps.activate(scope, false);
+        return;
+      }
       session.status = "returning";
+      session.returnTransferKey ??= crypto.randomUUID();
       session.cloudHandoffId = resolved.activeHandoff.id;
       await this.save(scope, session);
-      const swapped = await this.deps.cloud<RuntimeSwapResult>(
-        this.path(conversationId, "/swaps/host"),
-        { targetId: session.hostedExecutionHostId, expectedHandoffId: session.cloudHandoffId },
-        `online:${session.cloudHandoffId}`
+      const transfer = await this.deps.cloud<RuntimeTransfer>(
+        this.path(conversationId, "/handoffs"),
+        {
+          targetExecutionHostId: session.hostedExecutionHostId,
+          expectedHandoffId: session.cloudHandoffId
+        },
+        session.returnTransferKey
       );
-      session.cloudHandoffId = swapped.handoff.id;
-      session.handoff = swapped.handoff;
-      await this.save(scope, session);
-      if (swapped.activationFailed)
+      const completed =
+        transfer.status === "COMPLETED"
+          ? transfer
+          : await this.deps.cloud<RuntimeTransfer>(
+              this.path(conversationId, `/transfers/${transfer.id}/complete`),
+              {}
+            );
+      if (completed.status !== "COMPLETED") {
+        session.status = "offline";
+        delete session.returnTransferKey;
+        await this.save(scope, session);
         throw new Error(
-          swapped.activationError ?? "The hosted runtime is not ready. Your local state is saved."
+          completed.message ?? "Hosted restore failed. Local execution is still active."
         );
+      }
       const resumed = await this.deps.cloud<RuntimeResumeResult>(
         this.path(conversationId, "/resume"),
         {}
       );
       if (
-        resumed.activeHandoff.id !== swapped.handoff.id ||
-        resumed.runtimeInstance.activeHandoffId !== swapped.handoff.id ||
+        resumed.activeHandoff.id !== completed.checkpointId ||
         !["READY", "RUNNING"].includes(resumed.runtimeInstance.status)
       )
         throw new Error("The hosted runtime has not confirmed resume. Your local state is saved.");
+      session.handoff = resumed.activeHandoff;
+      session.cloudHandoffId = resumed.activeHandoff.id;
       this.deps.assertAuthorized(scope);
       await this.deps.activate(scope, false);
       session.status = "hosted";
+      delete session.returnTransferKey;
       await this.save(scope, session);
       // Retain the local checkpoint and transcript even after acknowledgement; no destructive
       // cleanup is required to change routing, and retaining them makes interrupted returns safe.
@@ -319,7 +473,8 @@ export class RuntimeHandoffController {
 
   private async findHost(scope: Scope, handoff: RuntimeHandoff) {
     for (const host of this.deps.hosts()) {
-      if (await host.supports(scope, handoff)) return host;
+      if (await bounded(host.supports(scope, handoff), "Local runtime compatibility check"))
+        return host;
     }
     return null;
   }
@@ -335,5 +490,42 @@ export class RuntimeHandoffController {
       state.runtimeHandoffSession = structuredClone(session);
     });
     this.deps.changed();
+  }
+}
+
+export function capabilityReason(code: string | null): string {
+  const reasons: Record<string, string> = {
+    LOCAL_RUNTIME_UNSUPPORTED: "Local execution is not supported by the connected runtime.",
+    LOCAL_RUNTIME_NOT_REGISTERED: "No compatible local runtime is currently connected.",
+    LOCAL_RUNTIME_OFFLINE: "The local runtime is offline. Reconnect it and refresh availability.",
+    LOCAL_RUNTIME_UNHEALTHY:
+      "The local runtime is unhealthy. Reconnect it and refresh availability.",
+    HANDOFF_IN_PROGRESS: "A runtime handoff is in progress. Resume the saved handoff.",
+    NO_EXECUTION_HOST: "No compatible execution host is currently available."
+  };
+  return (
+    reasons[code ?? ""] ?? "The current agent and model cannot resume on a connected local runtime."
+  );
+}
+
+async function bounded<T>(operation: Promise<T>, stage: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `${stage} did not finish in time. The source runtime remains active; check handoff status before retrying.`
+              )
+            ),
+          15_000
+        );
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }

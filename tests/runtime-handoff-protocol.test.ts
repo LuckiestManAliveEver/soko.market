@@ -630,3 +630,198 @@ async function mcpPost(
     payload: JSON.stringify(payload)
   });
 }
+
+describe("runtime capability and transfer API", () => {
+  async function setup() {
+    const modelId = "qwen2.5-0.5b-android";
+    const adapter = healthyAdapter(modelId);
+    const store = createCp2Store({ modelRuntimeAdapterResolver: () => adapter });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700009777", "Portable runtime");
+    await activateModel(app, owner, modelId);
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/conversations",
+      headers: jsonHeaders(owner.cookie),
+      payload: { kind: "personal", activeShopId: owner.businessId }
+    });
+    const taskId = response.json().conversation.id as string;
+    const initial = (
+      await app.inject({
+        method: "GET",
+        url: `/v1/runtime/${taskId}`,
+        headers: { cookie: owner.cookie }
+      })
+    ).json();
+    return { app, store, owner, taskId, initial, adapter };
+  }
+
+  it("returns a specific capability rejection immediately even when the persistence queue is stalled", async () => {
+    const f = await setup();
+    try {
+      const caps = await f.app.inject({
+        method: "GET",
+        url: `/v1/runtime/${f.taskId}/capabilities`,
+        headers: { cookie: f.owner.cookie, "x-soko-device-id": "device" }
+      });
+      expect(caps.json().handoff).toMatchObject({
+        available: false,
+        supported: false,
+        reason: "LOCAL_RUNTIME_NOT_REGISTERED"
+      });
+      const blocked = buildApi({
+        cp2: { store: f.store },
+        mutationPersistenceFlush: () => new Promise<void>(() => undefined)
+      });
+      try {
+        const response = await blocked.inject({
+          method: "POST",
+          url: `/v1/runtime/${f.taskId}/handoffs`,
+          headers: {
+            ...jsonHeaders(f.owner.cookie),
+            "x-soko-device-id": "device",
+            "idempotency-key": "missing-host"
+          },
+          payload: {
+            targetExecutionHostId: "absent",
+            expectedHandoffId: f.initial.activeHandoff.id
+          }
+        });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe("NO_EXECUTION_HOST");
+        expect(response.body).not.toContain("request took too long");
+      } finally {
+        await blocked.close();
+      }
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("restores a local checkpoint before committing and probes hosted execution before the return", async () => {
+    const f = await setup();
+    try {
+      const snapshot = f.store.snapshot();
+      const sourceId = f.initial.activeHandoff.runtime.executionHostId as string;
+      const sourceHost = snapshot.nativeExecutionHosts!.find((host) => host.id === sourceId)!;
+      const accountId = snapshot.conversations.find((item) => item.id === f.taskId)!.accountId;
+      snapshot.nativeExecutionHosts!.push({
+        ...sourceHost,
+        id: "registered-local",
+        type: "remote-shop-device",
+        accountId,
+        businessId: f.owner.businessId,
+        capabilities: [...sourceHost.capabilities, "runtime-handoff-v1"],
+        configuration: { deviceId: "device" }
+      });
+      const installation = snapshot.nativeModelInstallations!.find(
+        (item) => item.executionHostId === sourceId
+      )!;
+      snapshot.nativeModelInstallations!.push({
+        ...installation,
+        id: "registered-local-model",
+        executionHostId: "registered-local"
+      });
+      f.store.hydrateSnapshot(snapshot);
+      const headers = { ...jsonHeaders(f.owner.cookie), "x-soko-device-id": "device" };
+      expect(
+        (
+          await f.app.inject({
+            method: "POST",
+            url: `/v1/runtime/${f.taskId}/hosts/registered-local/heartbeat`,
+            headers,
+            payload: { connected: true }
+          })
+        ).statusCode
+      ).toBe(200);
+      const begin = await f.app.inject({
+        method: "POST",
+        url: `/v1/runtime/${f.taskId}/handoffs`,
+        headers: { ...headers, "idempotency-key": "offline" },
+        payload: {
+          targetExecutionHostId: "registered-local",
+          expectedHandoffId: f.initial.activeHandoff.id
+        }
+      });
+      expect(begin.statusCode).toBe(202);
+      const op = begin.json();
+      const checkpoint = (
+        await f.app.inject({
+          method: "GET",
+          url: `/v1/runtime/${f.taskId}/handoffs/${op.checkpointId}`,
+          headers
+        })
+      ).json();
+      expect(
+        (await f.app.inject({ method: "GET", url: `/v1/runtime/${f.taskId}`, headers })).json()
+          .activeHandoff.id
+      ).toBe(f.initial.activeHandoff.id);
+      const completed = await f.app.inject({
+        method: "POST",
+        url: `/v1/runtime/${f.taskId}/transfers/${op.id}/complete`,
+        headers,
+        payload: {
+          receipt: {
+            handoffId: checkpoint.id,
+            agentId: checkpoint.runtime.agentId,
+            modelId: checkpoint.runtime.modelId,
+            harness: true,
+            artifacts: true,
+            protectedContext: true,
+            businessState: true
+          }
+        }
+      });
+      expect(completed.json().status).toBe("COMPLETED");
+      const back = (
+        await f.app.inject({
+          method: "POST",
+          url: `/v1/runtime/${f.taskId}/handoffs`,
+          headers: { ...headers, "idempotency-key": "hosted" },
+          payload: { targetExecutionHostId: sourceId, expectedHandoffId: checkpoint.id }
+        })
+      ).json();
+      const healthy = f.adapter.healthCheck;
+      f.adapter.healthCheck = async (context) => ({
+        ...(await healthy(context)),
+        available: false
+      });
+      const failed = await f.app.inject({
+        method: "POST",
+        url: `/v1/runtime/${f.taskId}/transfers/${back.id}/complete`,
+        headers,
+        payload: {}
+      });
+      expect(failed.json()).toMatchObject({
+        status: "FAILED",
+        failureCode: "TARGET_ACTIVATION_FAILED"
+      });
+      expect(
+        (await f.app.inject({ method: "GET", url: `/v1/runtime/${f.taskId}`, headers })).json()
+          .activeHandoff.id
+      ).toBe(checkpoint.id);
+      f.adapter.healthCheck = healthy;
+      const retry = (
+        await f.app.inject({
+          method: "POST",
+          url: `/v1/runtime/${f.taskId}/handoffs`,
+          headers: { ...headers, "idempotency-key": "hosted-retry" },
+          payload: { targetExecutionHostId: sourceId, expectedHandoffId: checkpoint.id }
+        })
+      ).json();
+      const returned = await f.app.inject({
+        method: "POST",
+        url: `/v1/runtime/${f.taskId}/transfers/${retry.id}/complete`,
+        headers,
+        payload: {}
+      });
+      expect(returned.json().status).toBe("COMPLETED");
+      expect(
+        (await f.app.inject({ method: "GET", url: `/v1/runtime/${f.taskId}`, headers })).json()
+          .activeHandoff.runtime
+      ).toEqual(f.initial.activeHandoff.runtime);
+    } finally {
+      await f.app.close();
+    }
+  });
+});

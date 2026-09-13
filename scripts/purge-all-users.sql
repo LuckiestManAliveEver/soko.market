@@ -193,6 +193,7 @@ INSERT INTO purge_table_plan (table_name, classification, delete_order, reason) 
   ('cp2_runtime_task_heads', 'DELETE', 44, 'Runtime Handoff Protocol task-head pointers (runtime-handoff-protocol)'),
   ('cp2_runtime_task_instances', 'DELETE', 44, 'Runtime Handoff Protocol per-task runtime instance pointers (runtime-handoff-protocol)'),
   ('cp2_runtime_operation_dedup', 'DELETE', 44, 'Runtime Handoff Protocol idempotency dedup records (runtime-handoff-protocol)'),
+  ('cp2_runtime_transfers', 'DELETE', 42, 'Runtime transfer operations must be deleted before their checkpoints and hosts'),
   ('cp2_runtime_handoffs', 'DELETE', 45, 'Runtime Handoff Protocol immutable task checkpoints (runtime-handoff-protocol) - must delete after cp2_runtime_task_heads/cp2_runtime_task_instances (which reference it) and before cp2_native_runtime_agents/models/execution_hosts (which it references)'),
   ('cp2_native_runtime_binding_models', 'DELETE', 45, 'Native runtime binding model-role assignments (native-runtime-bindings)'),
   ('cp2_native_runtime_bindings', 'DELETE', 45, 'Native runtime bindings joining an agent to its model roles (native-runtime-bindings)'),
