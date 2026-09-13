@@ -53,6 +53,10 @@ describe("Android native SMS channel", () => {
   });
 
   it("normalizes and deduplicates inbound SMS in the canonical customer conversation and agent history", async () => {
+    // Relative to the test run, not hardcoded: normalizeNativeSmsOccurredAt rejects anything
+    // more than 30 days old, so a fixed calendar date eventually falls outside that window.
+    const smsOccurredAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const secondSmsOccurredAt = new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString();
     const prompts: RuntimeModelPrompt[] = [];
     const provider: RuntimeModelProvider = {
       name: "native-sms-agent-contract",
@@ -104,7 +108,7 @@ describe("Android native SMS channel", () => {
         externalMessageId: "android-sms-901",
         sender: "+254712345678",
         text: "Do you have maize?",
-        occurredAt: "2026-08-13T14:00:00.000Z"
+        occurredAt: smsOccurredAt
       },
       owner.cookie,
       androidHeaders
@@ -117,7 +121,7 @@ describe("Android native SMS channel", () => {
         externalMessageId: "android-sms-901",
         sender: "+254712345678",
         text: "Do you have maize?",
-        occurredAt: "2026-08-13T14:00:00.000Z"
+        occurredAt: smsOccurredAt
       },
       owner.cookie,
       androidHeaders
@@ -158,7 +162,7 @@ describe("Android native SMS channel", () => {
         externalMessageId: "android-sms-902",
         sender: "+254733445566",
         text: "Hello",
-        occurredAt: "2026-08-13T14:05:00.000Z"
+        occurredAt: secondSmsOccurredAt
       },
       owner.cookie,
       androidHeaders
