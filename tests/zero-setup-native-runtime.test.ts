@@ -372,6 +372,76 @@ describe("zero-setup native runtime", () => {
       await app.close();
     }
   });
+
+  // Regression coverage for the production incident where a business without a materialized
+  // hosted runtime candidate (a legacy account, or any account hitting this path while the real
+  // inference host is degraded) turned a routine chat send into an unbounded hang: the zero-setup
+  // repair step's own model-availability probe had no control-plane deadline, so it could block
+  // for the full inference timeout (VERCEL_INFERENCE_TIMEOUT_MS, 5 minutes by default) - far
+  // longer than the frontend's 20-second request timeout - surfacing as the generic
+  // "The request took too long and was cancelled." instead of a fast, typed failure.
+  it("fails a first turn fast when the model host never answers, instead of hanging for the inference timeout", async () => {
+    const hangingAdapter = adapter(primaryModelId, async () => generation(primaryModelId, "Ready."));
+    hangingAdapter.canRun = () => new Promise(() => undefined);
+    const store = createCp2Store({ modelRuntimeAdapterResolver: () => hangingAdapter });
+    const app = buildApi({ cp2: { store } });
+    try {
+      const actor = await createActorAndShop(app, "+254700008109", "Hung Host Shop");
+      vi.useFakeTimers();
+      try {
+        const pending = app.inject({
+          method: "POST",
+          url: `/businesses/${actor.businessId}/runtime/turns`,
+          headers: jsonHeaders(actor.cookie),
+          payload: JSON.stringify({ message: "Hello" })
+        });
+        // The control-plane deadline (withRuntimeDeadline's default) bounds the probe at 5s.
+        // Before the fix, nothing here ever timed out - this advance would do nothing and the
+        // awaited response below would hang until vitest's own test timeout failed the test.
+        await vi.advanceTimersByTimeAsync(5_000);
+        const response = await pending;
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toMatchObject({ code: "AGENT_MODEL_NOT_CONFIGURED" });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(tenantDefaultBindings(store, actor.businessId)).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // Regression coverage for Account/Agent Settings stalling in sympathy with chat: Settings reads
+  // this same endpoint to show the shop's runtime as ready without requiring a chat message first,
+  // so it legitimately runs the same zero-setup repair attempt. That must still resolve within the
+  // control-plane deadline bound and report UNAVAILABLE, rather than blocking the settings page for
+  // the full inference timeout budget while the model host never answers.
+  it("bounds the settings-facing effective-runtime endpoint even when the model host never answers", async () => {
+    const hangingAdapter = adapter(primaryModelId, async () => generation(primaryModelId, "Ready."));
+    hangingAdapter.canRun = () => new Promise(() => undefined);
+    const store = createCp2Store({ modelRuntimeAdapterResolver: () => hangingAdapter });
+    const app = buildApi({ cp2: { store } });
+    try {
+      const actor = await createActorAndShop(app, "+254700008110", "Settings Only Shop");
+      vi.useFakeTimers();
+      try {
+        const pending = app.inject({
+          method: "GET",
+          url: `/businesses/${actor.businessId}/runtime/effective`,
+          headers: { cookie: actor.cookie }
+        });
+        await vi.advanceTimersByTimeAsync(5_000);
+        const response = await pending;
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ source: "default", status: "UNAVAILABLE", ready: false });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(tenantDefaultBindings(store, actor.businessId)).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 function adapter(
