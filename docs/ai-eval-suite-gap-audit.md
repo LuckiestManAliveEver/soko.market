@@ -9,14 +9,14 @@ nightly). This audit checked every fixture against the current source of truth i
 mirror and fixed every gap found. All fixes landed in the same commit as this report, with new or
 updated tests proving them (CLAUDE.md: no fix without a regression test).
 
-| Fixture | Consumed by | Source of truth |
-|---|---|---|
-| `cp4-commands.ts` | `tests/cp4-rule-parser.test.ts` | `RuleIntent`/`ParserNextAction` in `packages/tool-core/src/contracts/runtime.ts`, rules in `packages/tool-core/src/parsers/merchant-command.ts` |
-| `cp10-runtime-commands.ts` | `tests/cp10-sokoclaw-runtime.test.ts` | `RuntimeToolName` in `packages/shared-types/src`, `createRuntimeToolProposal` in `packages/tool-core/src/parsers/runtime-proposals.ts`, `runtimeToolRegistry` in `packages/tool-core/src/registry` |
-| `backend-runtime-status-scenarios.ts` | `tests/backend-model-runtime-status.test.ts` | `apps/web/src/backend-model-runtime-status.ts` |
-| `agent-session-auth-scenarios.ts` | `tests/native-session-integration.test.ts` | `AuthBootstrapState` in `packages/shared-types/src`, `hasServerAuthenticatedSession`/`isAuthBootstrapPending` in `apps/web/src/auth-bootstrap.ts` |
-| `postgres-persistence-queue-scenarios.ts` | `tests/cp2-postgres-store.test.ts` | persistence-queue behavior under `services/api/src/cp2` |
-| `model-fallback-scenarios.ts` | `services/api/scripts/run-ai-eval.ts` (paid LLM-judged eval) | same rule parser as above - a scenario only belongs here if it provably misses every rule |
+| Fixture                                   | Consumed by                                                  | Source of truth                                                                                                                                                                                    |
+| ----------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cp4-commands.ts`                         | `tests/cp4-rule-parser.test.ts`                              | `RuleIntent`/`ParserNextAction` in `packages/tool-core/src/contracts/runtime.ts`, rules in `packages/tool-core/src/parsers/merchant-command.ts`                                                    |
+| `cp10-runtime-commands.ts`                | `tests/cp10-sokoclaw-runtime.test.ts`                        | `RuntimeToolName` in `packages/shared-types/src`, `createRuntimeToolProposal` in `packages/tool-core/src/parsers/runtime-proposals.ts`, `runtimeToolRegistry` in `packages/tool-core/src/registry` |
+| `backend-runtime-status-scenarios.ts`     | `tests/backend-model-runtime-status.test.ts`                 | `apps/web/src/backend-model-runtime-status.ts`                                                                                                                                                     |
+| `agent-session-auth-scenarios.ts`         | `tests/native-session-integration.test.ts`                   | `AuthBootstrapState` in `packages/shared-types/src`, `hasServerAuthenticatedSession`/`isAuthBootstrapPending` in `apps/web/src/auth-bootstrap.ts`                                                  |
+| `postgres-persistence-queue-scenarios.ts` | `tests/cp2-postgres-store.test.ts`                           | persistence-queue behavior under `services/api/src/cp2`                                                                                                                                            |
+| `model-fallback-scenarios.ts`             | `services/api/scripts/run-ai-eval.ts` (paid LLM-judged eval) | same rule parser as above - a scenario only belongs here if it provably misses every rule                                                                                                          |
 
 ## Gaps found and fixed
 
@@ -102,5 +102,5 @@ domains: purchases, sales, routes, receipts, commerce, messaging, workspace deli
 network, product custom fields) have no eval coverage anywhere in `tests/ai-eval/` because they are
 invoked through the model's structured tool-call output or context scripts, not this rule-based
 parser. If those domains need golden-set coverage, it belongs in a new fixture exercising the model
-tool-call/context-script path directly (out of scope for this audit, which was fixing the *existing*
+tool-call/context-script path directly (out of scope for this audit, which was fixing the _existing_
 eval suite against what it already claims to cover).
