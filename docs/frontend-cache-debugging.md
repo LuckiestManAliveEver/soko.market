@@ -1,5 +1,12 @@
 # Frontend Cache and Refresh Debugging
 
+For how the production app recovers automatically when a deployment replaces the assets an
+already-open tab is still running against - build identity, the service worker's cache lifecycle,
+stale-build detection, chunk recovery, the reload-loop guard, and state preservation across a
+recovery reload - see
+[Frontend deployment recovery](architecture/frontend-deployment-recovery.md). This document covers
+local development cache debugging only.
+
 ## Frontend and local URL
 
 This repository serves a React frontend with Vite from `apps/web`. The root development command

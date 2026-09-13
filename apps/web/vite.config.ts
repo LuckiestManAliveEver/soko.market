@@ -101,6 +101,7 @@ export default defineConfig(({ mode }) => {
     process.env.VITE_DEPLOYMENT_ENV ??
     env.VITE_DEPLOYMENT_ENV ??
     (process.env.RENDER === "true" ? "render" : mode);
+  const buildTimestamp = new Date().toISOString();
   const stagingSecurityHeaders =
     deploymentEnvironment === "staging"
       ? {
@@ -138,7 +139,7 @@ export default defineConfig(({ mode }) => {
     define: {
       __APP_NAME__: JSON.stringify("Soko.market"),
       __APP_VERSION__: JSON.stringify(appVersion),
-      __BUILD_TIMESTAMP__: JSON.stringify(new Date().toISOString()),
+      __BUILD_TIMESTAMP__: JSON.stringify(buildTimestamp),
       __DEPLOYMENT_ENV__: JSON.stringify(deploymentEnvironment),
       __DEBUG_UI__: JSON.stringify(debugUi),
       __GIT_COMMIT_SHA__: JSON.stringify(gitCommitSha)
@@ -147,6 +148,26 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tesseractOfflineAssets(),
+      {
+        // A lightweight, server-fetchable build identity (docs/architecture/
+        // frontend-deployment-recovery.md). apps/web/src/lazy-module-recovery.ts fetches this
+        // with `cache: "no-store"` - bypassing the service worker and HTTP caching - to tell
+        // whether an already-open tab's compiled-in build id (__GIT_COMMIT_SHA__) still matches
+        // what is actually deployed.
+        name: "build-identity-manifest",
+        generateBundle() {
+          this.emitFile({
+            type: "asset",
+            fileName: "build-meta.json",
+            source: JSON.stringify({
+              buildId: gitCommitSha,
+              version: appVersion,
+              builtAt: buildTimestamp,
+              environment: deploymentEnvironment
+            })
+          });
+        }
+      },
       {
         name: "offline-shell-manifest",
         generateBundle(_options, bundle) {

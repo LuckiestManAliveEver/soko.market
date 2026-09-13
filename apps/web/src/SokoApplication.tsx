@@ -28,7 +28,8 @@ import {
 import {
   clearOwnerNavigationSession,
   readOwnerNavigationSession,
-  scheduleOwnerNavigationSessionWrite
+  scheduleOwnerNavigationSessionWrite,
+  writeOwnerNavigationSession
 } from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useAuthState } from "./hooks/useAuthState";
@@ -134,7 +135,8 @@ import { OwnerCoreProvider, type OwnerCoreState } from "./hooks/OwnerCoreContext
 import {
   agentProfileModuleKeys,
   hasPendingLazyModuleRecovery,
-  loadLazyModuleWithRecovery
+  loadLazyModuleWithRecovery,
+  registerPreReloadFlush
 } from "./lazy-module-recovery";
 export { PublicStorefrontChat } from "./PublicStorefrontChat";
 
@@ -930,14 +932,39 @@ export function OwnerApp() {
     };
   }, []);
 
+  const navigationSessionSnapshotRef = useRef({
+    activeConversationId,
+    runtimeSessionId,
+    chatDraft,
+    chatMessages
+  });
   useEffect(() => {
-    scheduleOwnerNavigationSessionWrite(session?.account.id ?? null, {
+    navigationSessionSnapshotRef.current = {
       activeConversationId,
       runtimeSessionId,
       chatDraft,
       chatMessages
-    });
+    };
+    scheduleOwnerNavigationSessionWrite(
+      session?.account.id ?? null,
+      navigationSessionSnapshotRef.current
+    );
   }, [activeConversationId, chatDraft, chatMessages, runtimeSessionId, session?.account.id]);
+
+  // Deployment recovery (apps/web/src/lazy-module-recovery.ts) reloads the page on a confirmed
+  // stale chunk before the debounced navigation-session write above may have flushed - register a
+  // synchronous flush so the active conversation and any unsent composer draft never lose the
+  // latest keystroke to that reload.
+  useEffect(
+    () =>
+      registerPreReloadFlush(() => {
+        writeOwnerNavigationSession(
+          session?.account.id ?? null,
+          navigationSessionSnapshotRef.current
+        );
+      }),
+    [session?.account.id]
+  );
 
   useEffect(() => {
     if (routedProductId === null || products.length === 0) return;

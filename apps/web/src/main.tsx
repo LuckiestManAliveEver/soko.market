@@ -2,6 +2,7 @@ import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { AppRouter } from "./AppRouter";
 import { ConnectivityIndicator } from "./ConnectivityIndicator";
+import { runDeploymentRecoveryStartupChecks } from "./lazy-module-recovery";
 import { PerformancePanel } from "./PerformancePanel";
 import { recordReadiness, startPerformanceMonitoring } from "./performance";
 import { registerAppServiceWorker } from "./service-worker";
@@ -12,6 +13,7 @@ function App() {
     startPerformanceMonitoring();
     recordReadiness("app-shell");
     registerAppServiceWorker();
+    runDeploymentRecoveryStartupChecks();
   }, []);
 
   return (
