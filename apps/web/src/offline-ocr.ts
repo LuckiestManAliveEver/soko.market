@@ -1,9 +1,17 @@
 import { createWorker, OEM, type Worker } from "tesseract.js";
 import {
   cacheArtifactsByUrl,
+  assertStorage,
   type Artifact,
   type ReceiptOcrExtraction
 } from "@soko/offline-runtime";
+
+import {
+  ocrAssetFiles,
+  ocrEngineVersion as engineVersion,
+  ocrModelVersion as modelVersion,
+  ocrManifestVersion
+} from "./offline-ocr-assets";
 
 /**
  * On-device receipt OCR (packages/offline-runtime's LocalProvider calls into this as its injected
@@ -15,11 +23,38 @@ import {
 const cacheName = "soko-ocr-engine-v1";
 const enginePath = "/tesseract";
 const manifestUrl = `${enginePath}/manifest.json`;
-// Tracks the pinned tesseract.js/tesseract.js-core/@tesseract.js-data version in package.json.
-const engineVersion = "7.0.0";
-const modelVersion = "eng-4.0.0_best_int";
 
 let workerPromise: Promise<Worker> | null = null;
+let scanQueue: Promise<unknown> = Promise.resolve();
+let installation: Promise<void> | null = null;
+
+function parseManifest(value: unknown): Artifact[] {
+  const manifest = value as { version?: unknown; artifacts?: unknown } | null;
+  const artifacts = manifest?.artifacts;
+  if (
+    manifest?.version !== ocrManifestVersion ||
+    !Array.isArray(artifacts) ||
+    artifacts.length !== ocrAssetFiles.length ||
+    ocrAssetFiles.some(
+      (file) => artifacts.filter((item) => item?.url === `${enginePath}/${file}`).length !== 1
+    ) ||
+    artifacts.some(
+      (item) =>
+        !Number.isSafeInteger(item.bytes) ||
+        item.bytes <= 0 ||
+        typeof item.sha256 !== "string" ||
+        !/^[a-f0-9]{64}$/i.test(item.sha256)
+    )
+  )
+    throw new Error(
+      "Invalid or outdated offline receipt scanner manifest. Enable scanning again from Settings."
+    );
+  return artifacts as Artifact[];
+}
+function requireServiceWorker(): void {
+  if (!navigator.serviceWorker?.controller)
+    throw new Error("Reload Soko once to activate offline support, then try again.");
+}
 
 /** Reads the manifest already saved locally by ensureOcrEngineCached - never touches the network,
  * so checking whether offline OCR is ready never counts as the "silent network activity" that
@@ -28,31 +63,61 @@ async function readCachedManifest(): Promise<Artifact[] | null> {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(manifestUrl);
   if (!cached) return null;
-  const manifest = (await cached.json()) as { artifacts?: unknown };
-  return Array.isArray(manifest.artifacts) ? (manifest.artifacts as Artifact[]) : null;
+  return parseManifest(await cached.json());
 }
 
-export async function ensureOcrEngineCached(
+export function ensureOcrEngineCached(
   progress: (done: number, total: number) => void
 ): Promise<void> {
+  installation ??= installEngine(progress).finally(() => {
+    installation = null;
+  });
+  return installation;
+}
+async function installEngine(progress: (done: number, total: number) => void): Promise<void> {
+  requireServiceWorker();
   const response = await fetch(manifestUrl, { cache: "no-store" });
   if (!response.ok) throw new Error("The offline receipt scanner manifest is unavailable.");
   const bytes = await response.arrayBuffer();
-  const manifest = JSON.parse(new TextDecoder().decode(bytes)) as { artifacts?: unknown };
-  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0)
-    throw new Error("Invalid offline receipt scanner manifest.");
-  const artifacts = manifest.artifacts as Artifact[];
+  const artifacts = parseManifest(JSON.parse(new TextDecoder().decode(bytes)));
+  assertStorage(
+    await navigator.storage.estimate(),
+    artifacts.reduce((sum, item) => sum + item.bytes, 0) * 2
+  );
   const cache = await caches.open(cacheName);
-  await cacheArtifactsByUrl(artifacts, cache, progress);
-  await cache.put(manifestUrl, new Response(bytes));
+  // An interrupted upgrade must never appear ready with a partially replaced engine.
+  await cache.delete(manifestUrl);
+  await cacheArtifactsByUrl(artifacts, cache, progress, (url, init) =>
+    fetch(url, { ...init, cache: "no-store" })
+  );
+  await cache.put(
+    manifestUrl,
+    new Response(bytes, { headers: { "content-type": "application/json" } })
+  );
 }
 
 export async function isOcrEngineCached(): Promise<boolean> {
   try {
+    requireServiceWorker();
     const artifacts = await readCachedManifest();
     if (!artifacts) return false;
     const cache = await caches.open(cacheName);
-    for (const artifact of artifacts) if (!(await cache.match(artifact.url))) return false;
+    for (const artifact of artifacts) {
+      const response = await cache.match(artifact.url);
+      if (!response) return false;
+      if (
+        artifact.url.endsWith(".js") &&
+        !response.headers.get("content-type")?.includes("javascript")
+      )
+        return false;
+      const bytes = await response.arrayBuffer();
+      if (bytes.byteLength !== artifact.bytes) return false;
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      const hash = [...new Uint8Array(digest)]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+      if (hash !== artifact.sha256.toLowerCase()) return false;
+    }
     return true;
   } catch {
     return false;
@@ -60,12 +125,37 @@ export async function isOcrEngineCached(): Promise<boolean> {
 }
 
 async function getOcrWorker(): Promise<Worker> {
-  workerPromise ??= createWorker("eng", OEM.LSTM_ONLY, {
-    workerPath: new URL(`${enginePath}/worker.min.js`, location.origin).href,
-    corePath: new URL(`${enginePath}/`, location.origin).href,
-    langPath: new URL(`${enginePath}/lang/`, location.origin).href,
-    gzip: true,
-    cacheMethod: "none"
+  workerPromise ??= new Promise<Worker>((resolve, reject) => {
+    let settled = false;
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(error instanceof Error ? error.message : String(error)));
+    };
+    const timer = setTimeout(
+      () => fail("The receipt scanner took too long to start. Try again."),
+      60_000
+    );
+    void createWorker("eng", OEM.LSTM_ONLY, {
+      workerPath: new URL(`${enginePath}/worker.min.js`, location.origin).href,
+      corePath: new URL(`${enginePath}/`, location.origin).href,
+      langPath: new URL(`${enginePath}/lang/`, location.origin).href,
+      workerBlobURL: false,
+      // Tesseract reports language-initialization failures here even when its
+      // createWorker promise remains pending. Reject so the UI can recover.
+      errorHandler: fail,
+      gzip: true,
+      cacheMethod: "none"
+    }).then((worker) => {
+      if (settled) {
+        void worker.terminate();
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(worker);
+    }, fail);
   }).catch((error: unknown) => {
     workerPromise = null;
     throw error;
@@ -73,21 +163,54 @@ async function getOcrWorker(): Promise<Worker> {
   return workerPromise;
 }
 
-export async function runLocalOcr(input: {
+type OcrInput = {
   fileName: string;
   contentType: string;
   contentBase64: string;
-}): Promise<ReceiptOcrExtraction> {
+};
+export function runLocalOcr(input: OcrInput): Promise<ReceiptOcrExtraction> {
+  // Tesseract shares mutable engine state; overlapping scans must run in order.
+  const result = scanQueue.then(() => recognizeReceipt(input));
+  scanQueue = result.catch(() => undefined);
+  return result;
+}
+async function recognizeReceipt(input: OcrInput): Promise<ReceiptOcrExtraction> {
   if (!(await isOcrEngineCached()))
     throw new Error(
       "The on-device receipt scanner is not installed on this device. Enable it from Settings."
     );
   const worker = await getOcrWorker();
-  const { data } = await worker.recognize(
-    `data:${input.contentType};base64,${input.contentBase64}`,
-    { rotateAuto: true },
-    { blocks: true }
-  );
+  let result: Awaited<ReturnType<Worker["recognize"]>>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    result = await Promise.race([
+      worker.recognize(
+        `data:${input.contentType};base64,${input.contentBase64}`,
+        { rotateAuto: true },
+        { text: true, blocks: true }
+      ),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(new Error("Reading this receipt took too long. Try a smaller, clearer photo.")),
+          60_000
+        );
+      })
+    ]);
+  } catch (error) {
+    workerPromise = null;
+    await worker.terminate();
+    throw new Error(
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : "Could not read this receipt photo. Try a clearer JPEG or PNG."
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+  const { data } = result;
   let index = 0;
   const blocks = (data.blocks ?? []).flatMap((block) =>
     block.paragraphs.flatMap((paragraph) =>

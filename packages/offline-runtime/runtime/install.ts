@@ -31,6 +31,8 @@ export async function installOfflineRuntime(input: {
   binding: RuntimeBinding | null;
   adapter?: InstalledRuntimeAdapter;
   businessDataOnly: boolean;
+  /** Handoff callers activate routing only after the destination acknowledges resume. */
+  activate?: boolean;
   prepareShell?: (progress: (completed: number, total: number) => void) => Promise<void>;
   progress: (step: InstallStep, completed: number, total: number) => void;
 }): Promise<void> {
@@ -100,7 +102,7 @@ export async function installOfflineRuntime(input: {
       state.pin = { ...binding!, ...input.scope, pinnedAt: now, active: true, explicitSwap: false };
     state.pullCursor = snapshot.cursor;
     state.installed = true;
-    state.offlineModeActive = true;
+    state.offlineModeActive = input.activate ?? true;
     state.installedAt = now;
   });
   input.progress("complete", 1, 1);

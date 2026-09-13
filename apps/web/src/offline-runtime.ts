@@ -104,7 +104,24 @@ export async function setOfflineMode(scope: Scope, active: boolean): Promise<voi
   const db = await offlineDatabase();
   await db.transaction(scope, (state) => {
     if (active && !state.installed) throw new Error("Install offline business data first.");
-    if (!active && state.operations.some((operation) => operation.syncStatus !== "ACKED"))
+    const session = state.runtimeHandoffSession;
+    if (
+      !active &&
+      session &&
+      session.status !== "hosted" &&
+      (session.status !== "returning" ||
+        session.handoff.runtime.executionHostId !== session.hostedExecutionHostId)
+    )
+      throw new Error(
+        "Use Runtime Handoff to resume the hosted agent before changing offline routing."
+      );
+    if (
+      !active &&
+      (state.conflicts.length ||
+        state.operations.some((operation) => operation.syncStatus !== "ACKED") ||
+        state.runtimeHandoffSession?.pendingMessages.length ||
+        state.runtimeHandoffSession?.checkpoints.length)
+    )
       throw new Error("Sync or resolve all pending changes before going online.");
     state.offlineModeActive = active;
   });

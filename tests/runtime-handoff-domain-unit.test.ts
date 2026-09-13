@@ -16,6 +16,36 @@ import {
   globalDefaultRuntimeBindingId
 } from "../services/api/src/cp2/domains/native-runtime/store";
 
+describe("RuntimeHandoff retry authorization", () => {
+  it("checks ownership before returning a cached checkpoint and scopes keys to the task", () => {
+    const harness = buildHarness();
+    const first = seedConversation(harness, "retry-owner-one");
+    const second = seedConversation(harness, "retry-owner-two");
+    const result = harness.domain.createCheckpoint(first.accountId, {
+      taskId: first.conversationId,
+      idempotencyKey: "shared-retry-key"
+    });
+    expect(() =>
+      harness.domain.createCheckpoint(null, {
+        taskId: first.conversationId,
+        idempotencyKey: "shared-retry-key"
+      })
+    ).toThrow("Sign in required");
+    expect(() =>
+      harness.domain.createCheckpoint(second.accountId, {
+        taskId: first.conversationId,
+        idempotencyKey: "shared-retry-key"
+      })
+    ).toThrow("another account");
+    const independent = harness.domain.createCheckpoint(second.accountId, {
+      taskId: second.conversationId,
+      idempotencyKey: "shared-retry-key"
+    });
+    expect(independent.handoff.id).not.toBe(result.handoff.id);
+    expect(independent.handoff.conversationId).toBe(second.conversationId);
+  });
+});
+
 // This suite exercises RuntimeHandoffDomain directly against a hand-built deps object rather than
 // through the full HTTP/Fastify stack (see tests/runtime-handoff-protocol.test.ts for the REST
 // surface) - it is faster to write precise transaction/concurrency/activation-failure scenarios

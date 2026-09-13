@@ -1,0 +1,2 @@
+drop index if exists cp2_runtime_handoffs_task_created_idx;
+alter table cp2_runtime_handoffs drop constraint if exists cp2_runtime_handoffs_created_at_check;

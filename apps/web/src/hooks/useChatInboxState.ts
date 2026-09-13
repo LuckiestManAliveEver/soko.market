@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { currentOfflineScope, getOfflineState } from "../offline-runtime";
+import { handoffChatMessages } from "../runtime-handoff";
 
 import type {
   ConnectedMailboxSummary,
@@ -91,6 +93,15 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
   // onCreateConversation. See docs/frontend/frontend.md Phase 3 "New chat" affordance.
   async function loadMessagingInbox(preferredConversationId: string | null = activeConversationId) {
     if (session === null) return;
+    const offlineScope = currentOfflineScope();
+    if (offlineScope) {
+      const local = (await getOfflineState(offlineScope)).runtimeHandoffSession;
+      if (local) {
+        setActiveConversationId(local.handoff.conversationId);
+        setChatMessages(handoffChatMessages(local.messages));
+      }
+      return;
+    }
     try {
       const response = await getJson<{ conversations: ConversationInboxItem[] }>(
         "/v1/conversations",
@@ -117,6 +128,16 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
 
   async function loadConversationThread(conversationId: string) {
     if (session === null) return;
+    const offlineScope = currentOfflineScope();
+    if (offlineScope) {
+      const local = (await getOfflineState(offlineScope)).runtimeHandoffSession;
+      if (local?.handoff.conversationId !== conversationId) {
+        setStatusMessage("This conversation is unavailable on this device. Go online to open it.");
+        return;
+      }
+      setChatMessages(handoffChatMessages(local.messages));
+      return;
+    }
     const view = await getJson<ConversationView>(`/v1/conversations/${conversationId}`);
     setActiveConversation(view);
     setIsContactTyping((view.typing ?? []).some((typing) => typing.actorId !== session.user.id));
@@ -167,6 +188,20 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
   }
 
   async function selectConversation(conversationId: string) {
+    const offlineScope = currentOfflineScope();
+    if (offlineScope) {
+      const local = (await getOfflineState(offlineScope)).runtimeHandoffSession;
+      if (local?.handoff.conversationId !== conversationId) {
+        setStatusMessage("Go online to open a conversation that has not moved to this device.");
+        return;
+      }
+      setActiveConversationId(conversationId);
+      setReplyToMessageId(null);
+      setView("chat");
+      setChatMessages(handoffChatMessages(local.messages));
+      navigateToOwnerRoute({ mode, view: "chat", conversationId });
+      return;
+    }
     setActiveConversationId(conversationId);
     setReplyToMessageId(null);
     setView("chat");

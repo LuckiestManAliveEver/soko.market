@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { isExplicitOfflineMode, offlineModeEvent } from "../offline-runtime";
+import { apiFetch } from "../lib/api";
 
 import { dataUrlPayload, getErrorMessage, readFileAsDataUrl } from "../chat-message-plumbing";
 import { deleteJson, getJson, patchJson, postJson } from "../api-helpers";
@@ -30,7 +32,45 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
   const [purchaseReceipts, setPurchaseReceipts] = useState<PurchaseReceiptSummary[]>([]);
   const [supplierForm, setSupplierForm] = useState<SupplierFormState>(emptySupplierForm);
 
+  const [receiptOcrJobs, setReceiptOcrJobs] = useState<ReceiptOCRJobSummary[]>([]);
+  const receiptLoad = useRef(0);
+  const receiptRequested = useRef(false);
+  const { businessId, setStatusMessage } = deps;
+  const loadReceiptOcrJobs = useCallback(async () => {
+    receiptRequested.current = true;
+    const generation = ++receiptLoad.current;
+    if (!businessId) return;
+    try {
+      const jobs = await apiFetch<ReceiptOCRJobSummary[]>(
+        `/businesses/${businessId}/receipt-ocr/jobs`
+      );
+      if (generation === receiptLoad.current) setReceiptOcrJobs(jobs);
+    } catch (error) {
+      if (generation === receiptLoad.current) setStatusMessage(getErrorMessage(error));
+    }
+  }, [businessId, setStatusMessage]);
+  useEffect(() => {
+    const requestGeneration = receiptLoad;
+    setReceiptOcrJobs([]);
+    receiptRequested.current = false;
+    const refresh = () => {
+      setReceiptOcrJobs([]);
+      if (receiptRequested.current) void loadReceiptOcrJobs();
+    };
+    window.addEventListener(offlineModeEvent, refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      requestGeneration.current++;
+      window.removeEventListener(offlineModeEvent, refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, [loadReceiptOcrJobs]);
+
   async function loadSuppliers(businessId: string) {
+    if (isExplicitOfflineMode()) {
+      setSuppliers([]);
+      return;
+    }
     try {
       setSuppliers(
         await getJson<SupplierBusinessCardSummary[]>(
@@ -46,6 +86,10 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
   // Business-wide purchase history across every supplier, distinct from the per-supplier receipts
   // already embedded in SupplierBusinessCardSummary - this is the flat ledger view.
   async function loadPurchaseReceipts(businessId: string) {
+    if (isExplicitOfflineMode()) {
+      setPurchaseReceipts([]);
+      return;
+    }
     try {
       setPurchaseReceipts(
         await getJson<PurchaseReceiptSummary[]>(
@@ -252,6 +296,14 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
     }
 
     try {
+      if (isExplicitOfflineMode()) {
+        if (!["image/jpeg", "image/png", "image/webp"].includes(file.type))
+          throw new Error(
+            "Use a JPEG, PNG or WebP photo offline. Reconnect for other receipt file types."
+          );
+        if (file.size > 10 * 1024 * 1024)
+          throw new Error("Receipt photos must be 10 MB or smaller.");
+      }
       const requiresOCR = file.type.startsWith("image/") || file.type === "application/pdf";
       const extractedText = requiresOCR ? "" : await file.text();
       const contentBase64 = requiresOCR ? dataUrlPayload(await readFileAsDataUrl(file)) : undefined;
@@ -266,10 +318,13 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
           fileSignature: await readFileSignature(file)
         }
       );
+      await loadReceiptOcrJobs();
       deps.setStatusMessage(
         job.status === "failed" || job.status === "FAILED"
           ? "Receipt OCR failed. Retry or enter the receipt manually."
-          : "Receipt OCR complete. Confirm matched supplier and agent."
+          : isExplicitOfflineMode()
+            ? "Receipt saved on this device. Sync and go online to review and confirm it."
+            : "Receipt OCR complete. Confirm matched supplier and agent."
       );
       return job;
     } catch (error) {
@@ -283,6 +338,10 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
       return;
     }
 
+    if (isExplicitOfflineMode()) {
+      deps.setStatusMessage("Sync and go online before confirming this receipt.");
+      return;
+    }
     try {
       await postJson<PurchaseReceiptSummary>(
         `/businesses/${deps.businessId}/receipt-ocr/jobs/${job.id}/confirm`,
@@ -295,6 +354,8 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
       );
       await loadSuppliers(deps.businessId);
       await deps.loadReports(deps.businessId);
+      await loadPurchaseReceipts(deps.businessId);
+      await loadReceiptOcrJobs();
       deps.setStatusMessage("Receipt saved. Uploaded image was deleted after processing.");
     } catch (error) {
       deps.setStatusMessage(getErrorMessage(error));
@@ -302,6 +363,8 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
   }
 
   deps.registerReset("suppliers", () => {
+    receiptLoad.current++;
+    setReceiptOcrJobs([]);
     setSuppliers([]);
     // purchaseReceipts was never included in resetClientToStartup's reset sweep before this
     // extraction - a pre-existing gap (same class of bug the backend domain-modularization
@@ -312,10 +375,12 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
   });
   deps.registerRefresh("suppliers", ["suppliers", "imports"], loadSuppliers);
   deps.registerRefresh("purchase-receipts", ["suppliers"], loadPurchaseReceipts);
+  deps.registerRefresh("receipt-ocr-jobs", ["suppliers"], loadReceiptOcrJobs);
 
   return {
     suppliers,
     purchaseReceipts,
+    receiptOcrJobs,
     supplierForm,
     setSupplierForm,
     loadSuppliers,

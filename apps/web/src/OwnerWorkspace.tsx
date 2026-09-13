@@ -62,6 +62,7 @@ type SupplierState = Pick<
   ReturnType<typeof useSuppliersState>,
   | "suppliers"
   | "purchaseReceipts"
+  | "receiptOcrJobs"
   | "supplierForm"
   | "setSupplierForm"
   | "saveSupplier"
@@ -269,6 +270,7 @@ export function renderOwnerWorkspace(input: OwnerWorkspaceBindings) {
   const {
     suppliers,
     purchaseReceipts,
+    receiptOcrJobs,
     supplierForm,
     setSupplierForm,
     saveSupplier,
@@ -444,6 +446,7 @@ export function renderOwnerWorkspace(input: OwnerWorkspaceBindings) {
           businessId={businessId}
           suppliers={suppliers}
           purchaseReceipts={purchaseReceipts}
+          receiptOcrJobs={receiptOcrJobs}
           form={supplierForm}
           onFormChange={setSupplierForm}
           onSave={() => void runAction("supplier-save", saveSupplier)}

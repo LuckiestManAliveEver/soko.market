@@ -1,4 +1,6 @@
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { currentOfflineScope, isExplicitOfflineMode } from "../offline-runtime";
+import { runtimeHandoffController, runtimeTransition } from "../runtime-handoff";
 
 import type { RuntimeToolName } from "@soko/tool-core";
 import { renderRuntimeModelOutputInstructions, runtimeToolRegistry } from "@soko/tool-core";
@@ -51,7 +53,12 @@ import {
 import { executeInferenceRoute } from "../inference/executor";
 import { readClientInferencePreferences } from "../inference/preferences";
 import { createRemoteInferenceProvider } from "../inference/remote-provider";
-import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "../lib/api";
+import {
+  apiFetch,
+  isRetryableApiRequestError,
+  readApiBaseUrl,
+  readStableDeviceId
+} from "../lib/api";
 import { queueMessagingOutbox } from "../messaging/outbox";
 import {
   clientInferenceFeatureFlags,
@@ -189,12 +196,44 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     emailSubject?: string,
     emailInvoiceId?: string
   ) {
+    const send = () =>
+      sendChatDraftOnRuntime(draftOverride, preferredProvider, emailSubject, emailInvoiceId);
+    if (session && business && navigator.locks && !isExplicitOfflineMode()) {
+      await navigator.locks.request("soko-runtime-handoff", { ifAvailable: true }, async (lock) => {
+        if (!lock) {
+          setStatusMessage(
+            "Another tab is using this runtime. Your draft is saved; wait for its turn or handoff to finish."
+          );
+          return;
+        }
+        await send();
+      });
+    } else await send();
+  }
+
+  async function sendChatDraftOnRuntime(
+    draftOverride?: string,
+    preferredProvider?: ChannelProvider,
+    emailSubject?: string,
+    emailInvoiceId?: string
+  ) {
     if (session === null) {
       requireMessagingSignIn();
       return;
     }
+    if (
+      business &&
+      runtimeTransition({
+        accountId: session.account.id,
+        storeId: business.id,
+        deviceId: readStableDeviceId()
+      })
+    ) {
+      setStatusMessage("Wait for the runtime handoff to finish before sending another message.");
+      return;
+    }
     let activeSession = session;
-    if (navigator.onLine && authBootstrapState !== "authenticated") {
+    if (navigator.onLine && !isExplicitOfflineMode() && authBootstrapState !== "authenticated") {
       const validatedSession = await ensureAuthenticatedSession();
       if (validatedSession === null) return;
       activeSession = validatedSession;
@@ -212,6 +251,69 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     let runtimeMessage = appendAttachmentSummary(agentRequest, attachments);
 
     if (message.length === 0 && attachments.length === 0) {
+      return;
+    }
+
+    const offlineScope = currentOfflineScope();
+    if (offlineScope) {
+      if (runtimeTransition(offlineScope)) {
+        setStatusMessage("Wait for the runtime handoff to finish before sending another message.");
+        return;
+      }
+      if (
+        !activeConversationId ||
+        business?.id !== offlineScope.storeId ||
+        isHumanDirectConversation(activeConversation, session) ||
+        isExternalChannelConversation(activeConversation) ||
+        attachments.length
+      ) {
+        setStatusMessage("This message needs an online connection. Your draft is saved.");
+        return;
+      }
+      const localMessage = {
+        id: createClientMessageId("message"),
+        role: "user" as const,
+        content: message,
+        createdAt: new Date().toISOString()
+      };
+      setChatMessages((messages) => [
+        ...messages,
+        {
+          id: localMessage.id,
+          author: "merchant",
+          body: message,
+          createdAt: localMessage.createdAt,
+          status: "pending"
+        }
+      ]);
+      setChatDraft("");
+      setStatusMessage("Thinking on this device…");
+      try {
+        const reply = await (
+          await runtimeHandoffController()
+        ).turn(offlineScope, activeConversationId, localMessage);
+        setChatMessages((messages) => [
+          ...messages.map((item) =>
+            item.id === localMessage.id ? { ...item, status: "delivered" as const } : item
+          ),
+          {
+            id: reply.id,
+            author: "sokoclaw",
+            body: reply.content,
+            createdAt: reply.createdAt,
+            status: "delivered"
+          }
+        ]);
+        setReplyToMessageId(null);
+        setStatusMessage("Offline · This device");
+      } catch (error) {
+        setChatMessages((messages) =>
+          messages.map((item) =>
+            item.id === localMessage.id ? { ...item, status: "failed" as const } : item
+          )
+        );
+        setStatusMessage(getErrorMessage(error));
+      }
       return;
     }
 

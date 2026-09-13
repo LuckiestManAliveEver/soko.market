@@ -54,6 +54,7 @@ describe("Pinned artifact integrity", () => {
     await cacheArtifactsByUrl([artifact], cache, progress, fetcher);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(stored.has(artifact.url)).toBe(true);
+    expect(stored.get(artifact.url)?.headers.get("content-type")).toBe("application/javascript");
     await expect(
       cacheArtifactsByUrl([{ ...artifact, sha256: "0".repeat(64) }], cache, progress, fetcher)
     ).rejects.toThrow("integrity");
