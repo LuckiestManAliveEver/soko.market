@@ -1,4 +1,6 @@
 import { OfflineRuntimeSettings } from "./OfflineRuntimeSettings";
+import { useRuntimeHandoff } from "./hooks/useRuntimeHandoff";
+import type { ChatMessage } from "./app-shell";
 import { Suspense, useEffect, useState } from "react";
 
 import type {
@@ -45,6 +47,8 @@ import { getErrorMessage } from "./chat-message-plumbing";
 import { buildAgentProfileUpdate } from "./agent-profile-payload";
 
 export interface AgentProfileSurfaceProps {
+  conversationId?: string | null;
+  chatMessages?: ChatMessage[];
   accountId: string;
   identityLevel: SessionResponse["account"]["identityLevel"];
   agent: AgentSettings;
@@ -74,6 +78,8 @@ export interface AgentProfileSurfaceProps {
 }
 
 export function AgentProfileSurface({
+  conversationId = null,
+  chatMessages = [],
   accountId,
   identityLevel,
   agent,
@@ -97,6 +103,12 @@ export function AgentProfileSurface({
   onScheduleAccountDeletion,
   isLoggingOut
 }: AgentProfileSurfaceProps) {
+  const runtimeHandoff = useRuntimeHandoff(
+    accountId,
+    business.id,
+    conversationId,
+    JSON.stringify([agent.agentDefinitionId, agent.model, agent.runtimeVersion])
+  );
   const [draftAgent, setDraftAgent] = useState(agent);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -321,15 +333,27 @@ export function AgentProfileSurface({
         <div>
           <p className="eyebrow">{business.name}</p>
           <h2>{draftAgent.name}</h2>
-          <p>{draftAgent.description}</p>
+          <p aria-live="polite">AI business attendant · {runtimeHandoff.status}</p>
+          <p className="shell-note">Runtime can move between hosted and local execution</p>
         </div>
         <div className="agent-profile-actions">
+          <button
+            className="secondary"
+            type="button"
+            disabled={runtimeHandoff.disabled || isSaving || isLoggingOut}
+            aria-busy={runtimeHandoff.busy}
+            aria-describedby="runtime-handoff-guidance"
+            title={runtimeHandoff.reason}
+            onClick={() => void runtimeHandoff.toggle(chatMessages)}
+          >
+            {runtimeHandoff.label}
+          </button>
           {isEditing ? (
             <>
               <button
                 type="button"
                 onClick={() => void saveAgent()}
-                disabled={isSaving}
+                disabled={isSaving || runtimeHandoff.busy}
                 aria-busy={isSaving}
               >
                 {isSaving ? "Saving…" : "Save"}
@@ -340,7 +364,7 @@ export function AgentProfileSurface({
             </>
           ) : (
             <>
-              <button type="button" onClick={startEditing}>
+              <button type="button" onClick={startEditing} disabled={runtimeHandoff.busy}>
                 Edit
               </button>
               <button
@@ -356,6 +380,14 @@ export function AgentProfileSurface({
           )}
         </div>
       </section>
+      <p
+        id="runtime-handoff-guidance"
+        className="shell-note"
+        role={runtimeHandoff.error ? "alert" : "status"}
+      >
+        {runtimeHandoff.error ||
+          (runtimeHandoff.disabled && !runtimeHandoff.busy ? runtimeHandoff.reason : "")}
+      </p>
 
       <section className="agent-settings-grid">
         <OfflineRuntimeSettings accountId={accountId} businessId={business.id} />

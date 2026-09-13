@@ -312,6 +312,7 @@ export function OwnerApp() {
   const {
     suppliers,
     purchaseReceipts,
+    receiptOcrJobs,
     supplierForm,
     setSupplierForm,
     loadSuppliers,
@@ -1353,6 +1354,7 @@ export function OwnerApp() {
     suppliersState: {
       suppliers,
       purchaseReceipts,
+      receiptOcrJobs,
       supplierForm,
       setSupplierForm,
       saveSupplier,
@@ -1935,6 +1937,8 @@ export function OwnerApp() {
                   >
                     <Suspense fallback={<NativeLaunchScreen message="Opening agent settings…" />}>
                       <AgentProfileSurface
+                        conversationId={activeConversationId}
+                        chatMessages={chatMessages}
                         agent={agentSettings}
                         accountId={session?.account.id ?? ""}
                         identityLevel={session?.account.identityLevel ?? "device"}

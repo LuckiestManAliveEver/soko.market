@@ -39,7 +39,12 @@ export async function cacheArtifactsByUrl(
   let done = 0;
   for (const artifact of artifacts) {
     const cached = await cache.match(artifact.url);
-    if (cached && (await verified(await cached.arrayBuffer(), artifact))) {
+    if (
+      cached &&
+      (!artifact.url.endsWith(".js") ||
+        cached.headers.get("content-type")?.includes("javascript")) &&
+      (await verified(await cached.arrayBuffer(), artifact))
+    ) {
       done += artifact.bytes;
       progress(done, total);
       continue;
@@ -47,7 +52,18 @@ export async function cacheArtifactsByUrl(
     const buffer = await downloadVerified(artifact, fetcher, (count) =>
       progress(done + count, total)
     );
-    await cache.put(artifact.url, new Response(buffer));
+    await cache.put(
+      artifact.url,
+      new Response(buffer, {
+        headers: {
+          "content-type": new URL(artifact.url, "https://offline.soko.invalid").pathname.endsWith(
+            ".js"
+          )
+            ? "application/javascript"
+            : "application/octet-stream"
+        }
+      })
+    );
     done += buffer.byteLength;
     progress(done, total);
   }

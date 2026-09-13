@@ -254,6 +254,18 @@ export class LocalProvider implements SokoProvider {
           "OPERATION_UNAVAILABLE",
           "PDF receipts need an online connection. Photograph the receipt instead, or reconnect."
         );
+      if (!["image/jpeg", "image/png", "image/webp"].includes(capture.contentType))
+        throw new OfflineError(
+          "OPERATION_UNAVAILABLE",
+          "Use a JPEG, PNG or WebP receipt photo offline. This file type needs an online connection."
+        );
+      if (capture.contentBase64.length > 4 * Math.ceil((10 * 1024 * 1024) / 3))
+        throw new OfflineError("VALIDATION_FAILED", "Receipt photos must be 10 MB or smaller.");
+      if (
+        !/^[A-Za-z0-9+/]+={0,2}$/.test(capture.contentBase64) ||
+        capture.contentBase64.length % 4 === 1
+      )
+        throw new OfflineError("VALIDATION_FAILED", "The receipt photo content is invalid.");
       const fileName = capture.fileName;
       const contentType = capture.contentType;
       const extraction = await this.ocr({

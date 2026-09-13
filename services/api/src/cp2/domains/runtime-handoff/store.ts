@@ -213,48 +213,55 @@ export class RuntimeHandoffDomain {
     input: RuntimeCheckpointCreateInput,
     now: Date = new Date()
   ): RuntimeCheckpointResult {
-    return this.withIdempotency("checkpoint", input.idempotencyKey, () => {
-      const resolved = this.resolveHandoff(sessionId, input.taskId, now);
-      const actorId = this.resolveActorId(sessionId, now);
-      const promote = input.promote === true;
-      if (promote) {
-        this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
-      } else if (input.expectedHandoffId !== undefined) {
-        this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, false);
+    return this.withIdempotency(
+      "checkpoint",
+      input.idempotencyKey,
+      sessionId,
+      input.taskId,
+      now,
+      () => {
+        const resolved = this.resolveHandoff(sessionId, input.taskId, now);
+        const actorId = this.resolveActorId(sessionId, now);
+        const promote = input.promote === true;
+        if (promote) {
+          this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
+        } else if (input.expectedHandoffId !== undefined) {
+          this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, false);
+        }
+        const previous = resolved.activeHandoff;
+        const { handoff, taskHead } = this.allocateAndInsertCheckpoint({
+          taskId: input.taskId,
+          conversationId: resolved.conversationId,
+          parentHandoffId: previous.id,
+          goal: input.goal ?? previous.goal,
+          currentState: input.currentState ?? previous.currentState,
+          completedActions: input.completedActions ?? previous.completedActions,
+          decisions: input.decisions ?? previous.decisions,
+          rejectedPaths: input.rejectedPaths ?? previous.rejectedPaths,
+          pendingActions: input.pendingActions ?? previous.pendingActions,
+          nextAction: input.nextAction === undefined ? previous.nextAction : input.nextAction,
+          relevantContext: input.relevantContext ?? previous.relevantContext,
+          artifacts: input.artifacts ?? previous.artifacts,
+          tests: {
+            passed: input.testsPassed ?? previous.tests.passed,
+            failed: input.testsFailed ?? previous.tests.failed,
+            pending: input.testsPending ?? previous.tests.pending
+          },
+          runtime: previous.runtime,
+          now,
+          promote
+        });
+        this.deps.recordAuditEvent({
+          type: "runtime_handoff.checkpoint_created",
+          aggregateType: "task",
+          aggregateId: input.taskId,
+          actorId,
+          occurredAt: now.toISOString(),
+          payload: { handoffId: handoff.id, promoted: promote }
+        });
+        return { handoff, taskHead, promoted: promote };
       }
-      const previous = resolved.activeHandoff;
-      const { handoff, taskHead } = this.allocateAndInsertCheckpoint({
-        taskId: input.taskId,
-        conversationId: resolved.conversationId,
-        parentHandoffId: previous.id,
-        goal: input.goal ?? previous.goal,
-        currentState: input.currentState ?? previous.currentState,
-        completedActions: input.completedActions ?? previous.completedActions,
-        decisions: input.decisions ?? previous.decisions,
-        rejectedPaths: input.rejectedPaths ?? previous.rejectedPaths,
-        pendingActions: input.pendingActions ?? previous.pendingActions,
-        nextAction: input.nextAction === undefined ? previous.nextAction : input.nextAction,
-        relevantContext: input.relevantContext ?? previous.relevantContext,
-        artifacts: input.artifacts ?? previous.artifacts,
-        tests: {
-          passed: input.testsPassed ?? previous.tests.passed,
-          failed: input.testsFailed ?? previous.tests.failed,
-          pending: input.testsPending ?? previous.tests.pending
-        },
-        runtime: previous.runtime,
-        now,
-        promote
-      });
-      this.deps.recordAuditEvent({
-        type: "runtime_handoff.checkpoint_created",
-        aggregateType: "task",
-        aggregateId: input.taskId,
-        actorId,
-        occurredAt: now.toISOString(),
-        payload: { handoffId: handoff.id, promoted: promote }
-      });
-      return { handoff, taskHead, promoted: promote };
-    });
+    );
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -266,101 +273,112 @@ export class RuntimeHandoffDomain {
     input: RuntimeSwapInput,
     now: Date = new Date()
   ): RuntimeSwapResult {
-    return this.withIdempotency(`swap:${input.dimension}`, input.idempotencyKey, () => {
-      // ---- Prepare (11.1): read-only, no authoritative state changes ----
-      const resolved = this.resolveHandoff(sessionId, input.taskId, now);
-      const actorId = this.resolveActorId(sessionId, now);
-      this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
-      const current = resolved.activeHandoff.runtime;
-      const candidate: RuntimeRef = {
-        agentId: input.dimension === "agent" ? input.targetId : current.agentId,
-        modelId: input.dimension === "model" ? input.targetId : current.modelId,
-        executionHostId: input.dimension === "host" ? input.targetId : current.executionHostId
-      };
-      // Reuses the same agent/model/host compatibility rules turn-time resolution enforces
-      // (section 10) rather than re-implementing them. Throws (leaving the old runtime fully
-      // authoritative - nothing below has run yet) if the candidate chain is not viable.
-      this.deps.nativeRuntimeBindings.validateCandidateExecutionChain(candidate);
+    return this.withIdempotency(
+      `swap:${input.dimension}`,
+      input.idempotencyKey,
+      sessionId,
+      input.taskId,
+      now,
+      () => {
+        // ---- Prepare (11.1): read-only, no authoritative state changes ----
+        const resolved = this.resolveHandoff(sessionId, input.taskId, now);
+        const actorId = this.resolveActorId(sessionId, now);
+        this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
+        const current = resolved.activeHandoff.runtime;
+        const candidate: RuntimeRef = {
+          agentId: input.dimension === "agent" ? input.targetId : current.agentId,
+          modelId: input.dimension === "model" ? input.targetId : current.modelId,
+          executionHostId: input.dimension === "host" ? input.targetId : current.executionHostId
+        };
+        // Reuses the same agent/model/host compatibility rules turn-time resolution enforces
+        // (section 10) rather than re-implementing them. Throws (leaving the old runtime fully
+        // authoritative - nothing below has run yet) if the candidate chain is not viable.
+        this.deps.nativeRuntimeBindings.validateCandidateExecutionChain(candidate);
 
-      // ---- Commit (11.2): one small synchronous unit; no I/O, no provider calls ----
-      const conversation = this.requireConversationRecord(input.taskId);
-      this.requireMatchingHead(input.expectedHandoffId, this.requireTaskHead(input.taskId), true);
-      const binding = this.deps.nativeRuntimeBindings.materializeConversationBinding({
-        accountId: conversation.accountId,
-        businessId: conversation.activeShopId,
-        agentId: candidate.agentId,
-        modelId: candidate.modelId,
-        executionHostId: candidate.executionHostId,
-        updatedBy: actorId,
-        now
-      });
-      const previous = resolved.activeHandoff;
-      const { handoff, taskHead } = this.allocateAndInsertCheckpoint({
-        taskId: input.taskId,
-        conversationId: conversation.id,
-        parentHandoffId: previous.id,
-        goal: previous.goal,
-        currentState: previous.currentState,
-        completedActions: previous.completedActions,
-        decisions: previous.decisions,
-        rejectedPaths: previous.rejectedPaths,
-        pendingActions: previous.pendingActions,
-        nextAction: previous.nextAction,
-        relevantContext: previous.relevantContext,
-        artifacts: previous.artifacts,
-        tests: previous.tests,
-        runtime: candidate,
-        now,
-        promote: true
-      });
-      this.deps.setConversationRuntimeBinding(conversation.id, binding.id, now);
-      this.setTaskInstanceHandoff(input.taskId, handoff.id, "STARTING", candidate, now, null);
-
-      // ---- Activate (11.3): confirm the new chain actually resolves. A failure here never
-      // undoes the commit above - the checkpoint and task head stay authoritative regardless
-      // (section 12) - it only changes the runtime instance's own lifecycle status. ----
-      let activationFailed = false;
-      let activationError: string | null = null;
-      let runtimeInstance: RuntimeTaskInstance;
-      try {
-        this.deps.nativeRuntimeBindings.resolveBindingForConversation(binding.id, conversation.id);
-        runtimeInstance = this.setTaskInstanceHandoff(
-          input.taskId,
-          handoff.id,
-          "READY",
-          candidate,
+        // ---- Commit (11.2): one small synchronous unit; no I/O, no provider calls ----
+        const conversation = this.requireConversationRecord(input.taskId);
+        this.requireMatchingHead(input.expectedHandoffId, this.requireTaskHead(input.taskId), true);
+        const binding = this.deps.nativeRuntimeBindings.materializeConversationBinding({
+          accountId: conversation.accountId,
+          businessId: conversation.activeShopId,
+          agentId: candidate.agentId,
+          modelId: candidate.modelId,
+          executionHostId: candidate.executionHostId,
+          updatedBy: actorId,
+          now
+        });
+        const previous = resolved.activeHandoff;
+        const { handoff, taskHead } = this.allocateAndInsertCheckpoint({
+          taskId: input.taskId,
+          conversationId: conversation.id,
+          parentHandoffId: previous.id,
+          goal: previous.goal,
+          currentState: previous.currentState,
+          completedActions: previous.completedActions,
+          decisions: previous.decisions,
+          rejectedPaths: previous.rejectedPaths,
+          pendingActions: previous.pendingActions,
+          nextAction: previous.nextAction,
+          relevantContext: previous.relevantContext,
+          artifacts: previous.artifacts,
+          tests: previous.tests,
+          runtime: candidate,
           now,
-          null
-        );
-      } catch (error) {
-        activationFailed = true;
-        activationError = error instanceof Cp2Error ? error.message : "Runtime activation failed.";
-        runtimeInstance = this.setTaskInstanceHandoff(
-          input.taskId,
-          handoff.id,
-          "FAILED",
-          candidate,
-          now,
-          activationError
-        );
-      }
+          promote: true
+        });
+        this.deps.setConversationRuntimeBinding(conversation.id, binding.id, now);
+        this.setTaskInstanceHandoff(input.taskId, handoff.id, "STARTING", candidate, now, null);
 
-      this.deps.recordAuditEvent({
-        type: `runtime_handoff.swap_${input.dimension}`,
-        aggregateType: "task",
-        aggregateId: input.taskId,
-        actorId,
-        occurredAt: now.toISOString(),
-        payload: {
-          handoffId: handoff.id,
-          bindingId: binding.id,
-          targetId: input.targetId,
-          activationFailed
+        // ---- Activate (11.3): confirm the new chain actually resolves. A failure here never
+        // undoes the commit above - the checkpoint and task head stay authoritative regardless
+        // (section 12) - it only changes the runtime instance's own lifecycle status. ----
+        let activationFailed = false;
+        let activationError: string | null = null;
+        let runtimeInstance: RuntimeTaskInstance;
+        try {
+          this.deps.nativeRuntimeBindings.resolveBindingForConversation(
+            binding.id,
+            conversation.id
+          );
+          runtimeInstance = this.setTaskInstanceHandoff(
+            input.taskId,
+            handoff.id,
+            "READY",
+            candidate,
+            now,
+            null
+          );
+        } catch (error) {
+          activationFailed = true;
+          activationError =
+            error instanceof Cp2Error ? error.message : "Runtime activation failed.";
+          runtimeInstance = this.setTaskInstanceHandoff(
+            input.taskId,
+            handoff.id,
+            "FAILED",
+            candidate,
+            now,
+            activationError
+          );
         }
-      });
 
-      return { handoff, taskHead, runtimeInstance, activationFailed, activationError };
-    });
+        this.deps.recordAuditEvent({
+          type: `runtime_handoff.swap_${input.dimension}`,
+          aggregateType: "task",
+          aggregateId: input.taskId,
+          actorId,
+          occurredAt: now.toISOString(),
+          payload: {
+            handoffId: handoff.id,
+            bindingId: binding.id,
+            targetId: input.targetId,
+            activationFailed
+          }
+        });
+
+        return { handoff, taskHead, runtimeInstance, activationFailed, activationError };
+      }
+    );
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -372,34 +390,41 @@ export class RuntimeHandoffDomain {
     input: RuntimeRollbackInput,
     now: Date = new Date()
   ): RuntimeRollbackResult {
-    return this.withIdempotency("rollback", input.idempotencyKey, () => {
-      const resolved = this.resolveHandoff(sessionId, input.taskId, now);
-      const actorId = this.resolveActorId(sessionId, now);
-      this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
-      const target = this.handoffs.get(input.targetHandoffId);
-      if (target === undefined || target.taskId !== input.taskId) {
-        throw new Cp2Error(
-          404,
-          "RUNTIME_HANDOFF_NOT_FOUND",
-          "Target checkpoint was not found for this task."
-        );
+    return this.withIdempotency(
+      "rollback",
+      input.idempotencyKey,
+      sessionId,
+      input.taskId,
+      now,
+      () => {
+        const resolved = this.resolveHandoff(sessionId, input.taskId, now);
+        const actorId = this.resolveActorId(sessionId, now);
+        this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
+        const target = this.handoffs.get(input.targetHandoffId);
+        if (target === undefined || target.taskId !== input.taskId) {
+          throw new Cp2Error(
+            404,
+            "RUNTIME_HANDOFF_NOT_FOUND",
+            "Target checkpoint was not found for this task."
+          );
+        }
+        const taskHead: RuntimeTaskHead = {
+          ...resolved.taskHead,
+          activeHandoffId: target.id,
+          updatedAt: now.toISOString()
+        };
+        this.taskHeads.set(input.taskId, taskHead);
+        this.deps.recordAuditEvent({
+          type: "runtime_handoff.rollback",
+          aggregateType: "task",
+          aggregateId: input.taskId,
+          actorId,
+          occurredAt: now.toISOString(),
+          payload: { fromHandoffId: resolved.activeHandoff.id, toHandoffId: target.id }
+        });
+        return { taskHead, activeHandoff: target };
       }
-      const taskHead: RuntimeTaskHead = {
-        ...resolved.taskHead,
-        activeHandoffId: target.id,
-        updatedAt: now.toISOString()
-      };
-      this.taskHeads.set(input.taskId, taskHead);
-      this.deps.recordAuditEvent({
-        type: "runtime_handoff.rollback",
-        aggregateType: "task",
-        aggregateId: input.taskId,
-        actorId,
-        occurredAt: now.toISOString(),
-        payload: { fromHandoffId: resolved.activeHandoff.id, toHandoffId: target.id }
-      });
-      return { taskHead, activeHandoff: target };
-    });
+    );
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -459,48 +484,55 @@ export class RuntimeHandoffDomain {
     input: RuntimeOfflineSyncInput,
     now: Date = new Date()
   ): RuntimeOfflineSyncResult {
-    return this.withIdempotency("offline-sync", input.idempotencyKey, () => {
-      const resolved = this.resolveHandoff(sessionId, input.taskId, now);
-      const actorId = this.resolveActorId(sessionId, now);
-      if (input.promote === true) {
-        this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
-      } else if (input.expectedHandoffId !== undefined) {
-        this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, false);
-      }
-      const syncedHandoffs: RuntimeHandoff[] = [];
-      for (const offline of input.checkpoints) {
-        syncedHandoffs.push(
-          this.syncOneOfflineCheckpoint(input.taskId, resolved.conversationId, offline, now)
-        );
-      }
-      let taskHead = this.taskHeads.get(input.taskId) as RuntimeTaskHead;
-      if (input.promote === true && syncedHandoffs.length > 0) {
-        const lastSynced = syncedHandoffs[syncedHandoffs.length - 1] as RuntimeHandoff;
-        const targetId = input.promoteToHandoffId ?? lastSynced.id;
-        if (!this.handoffs.has(targetId)) {
-          throw new Cp2Error(
-            404,
-            "RUNTIME_HANDOFF_NOT_FOUND",
-            "promoteToHandoffId was not found for this task."
+    return this.withIdempotency(
+      "offline-sync",
+      input.idempotencyKey,
+      sessionId,
+      input.taskId,
+      now,
+      () => {
+        const resolved = this.resolveHandoff(sessionId, input.taskId, now);
+        const actorId = this.resolveActorId(sessionId, now);
+        if (input.promote === true) {
+          this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
+        } else if (input.expectedHandoffId !== undefined) {
+          this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, false);
+        }
+        const syncedHandoffs: RuntimeHandoff[] = [];
+        for (const offline of input.checkpoints) {
+          syncedHandoffs.push(
+            this.syncOneOfflineCheckpoint(input.taskId, resolved.conversationId, offline, now)
           );
         }
-        taskHead = { ...taskHead, activeHandoffId: targetId, updatedAt: now.toISOString() };
-        this.taskHeads.set(input.taskId, taskHead);
-      }
-      this.deps.recordAuditEvent({
-        type: "runtime_handoff.offline_synced",
-        aggregateType: "task",
-        aggregateId: input.taskId,
-        actorId,
-        occurredAt: now.toISOString(),
-        payload: {
-          syncedCount: syncedHandoffs.length,
-          promoted: input.promote === true,
-          handoffIds: syncedHandoffs.map((handoff) => handoff.id).join(",")
+        let taskHead = this.taskHeads.get(input.taskId) as RuntimeTaskHead;
+        if (input.promote === true && syncedHandoffs.length > 0) {
+          const lastSynced = syncedHandoffs[syncedHandoffs.length - 1] as RuntimeHandoff;
+          const targetId = input.promoteToHandoffId ?? lastSynced.id;
+          if (!this.handoffs.has(targetId)) {
+            throw new Cp2Error(
+              404,
+              "RUNTIME_HANDOFF_NOT_FOUND",
+              "promoteToHandoffId was not found for this task."
+            );
+          }
+          taskHead = { ...taskHead, activeHandoffId: targetId, updatedAt: now.toISOString() };
+          this.taskHeads.set(input.taskId, taskHead);
         }
-      });
-      return { syncedHandoffs, taskHead };
-    });
+        this.deps.recordAuditEvent({
+          type: "runtime_handoff.offline_synced",
+          aggregateType: "task",
+          aggregateId: input.taskId,
+          actorId,
+          occurredAt: now.toISOString(),
+          payload: {
+            syncedCount: syncedHandoffs.length,
+            promoted: input.promote === true,
+            handoffIds: syncedHandoffs.map((handoff) => handoff.id).join(",")
+          }
+        });
+        return { syncedHandoffs, taskHead };
+      }
+    );
   }
 
   /**
@@ -514,7 +546,7 @@ export class RuntimeHandoffDomain {
     input: RuntimeMergeInput,
     now: Date = new Date()
   ): RuntimeMergeResult {
-    return this.withIdempotency("merge", input.idempotencyKey, () => {
+    return this.withIdempotency("merge", input.idempotencyKey, sessionId, input.taskId, now, () => {
       const resolved = this.resolveHandoff(sessionId, input.taskId, now);
       const actorId = this.resolveActorId(sessionId, now);
       this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
@@ -992,12 +1024,20 @@ export class RuntimeHandoffDomain {
   private withIdempotency<T>(
     operationType: string,
     idempotencyKey: string | null | undefined,
+    sessionId: string | null,
+    taskId: string,
+    now: Date,
     run: () => T
   ): T {
+    // Retries must pass the same ownership check as new mutations before returning state.
+    const { session } = this.requireConversation(sessionId, taskId, now);
     if (idempotencyKey === null || idempotencyKey === undefined || idempotencyKey.trim() === "") {
       return run();
     }
-    const dedupKey = `${operationType}:${idempotencyKey}`;
+    const scopedKey = createHash("sha256")
+      .update(JSON.stringify([session.account.id, taskId, idempotencyKey]))
+      .digest("hex");
+    const dedupKey = `${operationType}:${scopedKey}`;
     const existing = this.operationDedup.get(dedupKey);
     if (existing !== undefined) {
       return existing.result as T;
@@ -1006,7 +1046,7 @@ export class RuntimeHandoffDomain {
     this.operationDedup.set(dedupKey, {
       id: createHash("sha256").update(dedupKey).digest("hex"),
       operationType,
-      idempotencyKey,
+      idempotencyKey: scopedKey,
       result,
       createdAt: new Date().toISOString()
     });

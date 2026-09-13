@@ -93,7 +93,25 @@ export interface LocalState extends Scope {
   nextLocalSeq: number;
   lastPushedLocalSeq: number;
   pullCursor: string | null;
+  /** RuntimeHandoff is the execution checkpoint; conversation content stays separate. */
+  runtimeHandoffSession?: LocalRuntimeHandoffSession;
   peerOutbox?: Array<{ envelope: ConversationMessageSummary; expiresAt: number }>;
+}
+export interface LocalRuntimeMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+}
+export interface LocalRuntimeHandoffSession {
+  adapterId: string;
+  hostedExecutionHostId: string;
+  cloudHandoffId: string;
+  handoff: RuntimeHandoff;
+  checkpoints: RuntimeHandoff[];
+  messages: LocalRuntimeMessage[];
+  pendingMessages: LocalRuntimeMessage[];
+  status: "prepared" | "offline" | "returning" | "hosted";
 }
 export interface Ack {
   id: string;
@@ -148,6 +166,7 @@ export class OfflineError extends Error {
   }
 }
 import type {
+  RuntimeHandoff,
   ConversationMessageSummary,
   OcrEngine,
   OcrProfile,

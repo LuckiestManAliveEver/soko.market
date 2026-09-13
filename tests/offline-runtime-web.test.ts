@@ -60,7 +60,7 @@ describe("Chat API offline adapter", () => {
         await new Promise((resolve) => setTimeout(resolve, 30));
       });
       await act(async () => {
-        button("Go Offline").click();
+        button("Prepare offline storage").click();
       });
       expect(document.body.textContent).toContain("Set up offline mode");
       await act(async () => {
@@ -76,12 +76,20 @@ describe("Chat API offline adapter", () => {
         button("Install").click();
         await new Promise((resolve) => setTimeout(resolve, 60));
       });
-      expect(host.textContent).toContain("Offline business data is ready");
+      expect(host.textContent).toContain("Offline business data is prepared");
       await act(async () => {
         button("Done").click();
       });
       expect(network).toHaveBeenCalledTimes(1);
       expect(String(network.mock.calls[0]?.[0])).toContain("offline-runtime/snapshot");
+      // Installing only prepares the snapshot now - going offline is a separate, explicit step
+      // (either this standalone toggle, or the header's runtime handoff for an active agent
+      // conversation), so sync stays impossible to trigger by accident from Install alone.
+      await act(async () => {
+        button("Resume saved offline session").click();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      expect(host.textContent).toContain("Offline mode is active");
       await act(async () => {
         window.dispatchEvent(new Event("online"));
         await new Promise((resolve) => setTimeout(resolve, 30));

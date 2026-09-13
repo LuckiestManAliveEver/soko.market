@@ -359,7 +359,7 @@ describe("Offline runtime API integration", () => {
             ]
           }
         ],
-        fullText: "Acme Supplies\nTotal 500",
+        fullText: "Supplier: Acme Supplies\nRice,2,250,500\nTotal: 500",
         averageConfidence: 0.87,
         warnings: []
       };
@@ -375,6 +375,33 @@ describe("Offline runtime API integration", () => {
           body: { fileName: "receipt.pdf", contentType: "application/pdf", contentBase64: "Zm9v" }
         })
       ).rejects.toThrow("online connection");
+      for (const contentType of [
+        "image/heic",
+        "image/bmp",
+        "text/plain",
+        "application/octet-stream"
+      ]) {
+        await expect(
+          local.call("receipts.ocr.create", {
+            body: { fileName: "receipt", contentType, contentBase64: "Zm9v" }
+          })
+        ).rejects.toThrow("online connection");
+      }
+      await expect(
+        local.call("receipts.ocr.create", {
+          body: { fileName: "receipt.png", contentType: "image/png", contentBase64: "!!!!" }
+        })
+      ).rejects.toThrow("invalid");
+      await expect(
+        local.call("receipts.ocr.create", {
+          body: {
+            fileName: "receipt.png",
+            contentType: "image/png",
+            contentBase64: "A".repeat(4 * Math.ceil((10 * 1024 * 1024) / 3) + 4)
+          }
+        })
+      ).rejects.toThrow("10 MB");
+      expect((await db.read(fixture.scope)).operations).toHaveLength(0);
       expect(ocr).not.toHaveBeenCalled();
       const captured = await local.call<Entity>("receipts.ocr.create", {
         body: { fileName: "receipt.jpg", contentType: "image/jpeg", contentBase64: "Zm9v" }
@@ -392,8 +419,39 @@ describe("Offline runtime API integration", () => {
         `/businesses/${fixture.scope.storeId}/receipt-ocr/jobs`
       );
       expect(jobs.json()).toMatchObject([
-        { fullText: "Acme Supplies\nTotal 500", engine: "tesseract", averageConfidence: 0.87 }
+        {
+          fullText: "Supplier: Acme Supplies\nRice,2,250,500\nTotal: 500",
+          engine: "tesseract",
+          averageConfidence: 0.87
+        }
       ]);
+      const cloudJob = jobs.json()[0];
+      expect(cloudJob.id).not.toBe(captured.id);
+      expect(await local.call("receipts.ocr.list", {})).toMatchObject([{ id: cloudJob.id }]);
+      // Replay the queued operation: delivery retries must not create another job.
+      const operation = (await db.read(fixture.scope)).operations[0]!;
+      await fixture.transport.push([operation]);
+      const repeated = await fixture.request(
+        "GET",
+        `/businesses/${fixture.scope.storeId}/receipt-ocr/jobs`
+      );
+      expect(repeated.json()).toHaveLength(1);
+      const confirm = () =>
+        fixture.request(
+          "POST",
+          `/businesses/${fixture.scope.storeId}/receipt-ocr/jobs/${cloudJob.id}/confirm`,
+          { createSupplier: true }
+        );
+      const receipt = await confirm();
+      expect(receipt.statusCode).toBe(200);
+      expect(receipt.json()).toMatchObject({
+        supplierName: "Acme Supplies",
+        total: 500,
+        imageStored: false
+      });
+      expect(receipt.json().lineItems).toHaveLength(1);
+      expect((await confirm()).json().id).toBe(receipt.json().id);
+      expect(JSON.stringify(operation)).not.toContain("contentBase64");
     } finally {
       await fixture.app.close();
     }

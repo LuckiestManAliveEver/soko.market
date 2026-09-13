@@ -35,6 +35,30 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+for (const width of [360, 1280]) {
+  test(`runtime handoff is visible before Edit at ${width}px and explains an unavailable host`, async ({
+    page
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Account and agent settings" }).click();
+    const dialog = page.getByRole("dialog", { name: "Account and agent settings" });
+    const header = dialog.locator(".agent-profile-header");
+    await expect(header.getByRole("button", { name: "Go offline", exact: true })).toBeVisible();
+    await expect(header.getByRole("button", { name: "Go offline", exact: true })).toBeDisabled();
+    await expect(header.locator(".agent-profile-actions button")).toHaveText([
+      "Go offline",
+      "Edit",
+      "Sign out"
+    ]);
+    await expect(header.getByText("AI business attendant · Hosted", { exact: true })).toBeVisible();
+    await expect(dialog.locator("#runtime-handoff-guidance")).not.toBeEmpty();
+    await expect
+      .poll(() => header.evaluate((element) => element.scrollWidth <= element.clientWidth))
+      .toBe(true);
+  });
+}
+
 test("secondary modules preserve the conversation URL and browser history", async ({ page }) => {
   await page.goto("/");
   const initialHistoryLength = await page.evaluate(() => history.length);

@@ -7,6 +7,7 @@ import { readStableDeviceId } from "./lib/api";
 import { clearApiRequestCache } from "./api-request-cache";
 import { ensureOcrEngineCached, isOcrEngineCached } from "./offline-ocr";
 import type { OfflineAssistantReply } from "./webllm-runtime";
+import { runtimeHandoffController, withRuntimeTransition } from "./runtime-handoff";
 import {
   offlineDatabase,
   getOfflineState,
@@ -107,6 +108,9 @@ export function OfflineRuntimeSettings({
     }
   }
   async function install(target: StorageTarget, handle: FileSystemDirectoryHandle | null) {
+    const current = await getOfflineState(scope);
+    if (current.runtimeHandoffSession && current.runtimeHandoffSession.status !== "hosted")
+      throw new Error("Return the active runtime online before replacing its offline storage.");
     await useStorageTarget(target, handle ?? undefined);
     if (!dataOnly) await ensureInstalledOfflineRuntime();
     const runtime = installedOfflineRuntime();
@@ -118,17 +122,28 @@ export function OfflineRuntimeSettings({
       binding: runtime.binding,
       ...(runtime.adapter ? { adapter: runtime.adapter } : {}),
       businessDataOnly: dataOnly,
+      activate: false,
       prepareShell: prepareOfflineShell,
       progress: (step, done, total) => setProgress({ step, done, total })
     });
-    await setOfflineMode(scope, true);
     setMessage(
       dataOnly
-        ? "Offline business data is ready. AI, checkout and payments require an online connection."
-        : "Your pinned offline runtime is ready."
+        ? "Offline business data is prepared. Use Go offline in the header when a compatible agent runtime is available."
+        : "The local model is installed. Use Go offline in the header when it can resume your active agent."
     );
   }
   async function sync(goOnline: boolean) {
+    if (
+      goOnline &&
+      state?.runtimeHandoffSession &&
+      state.runtimeHandoffSession.status !== "hosted"
+    ) {
+      await withRuntimeTransition(scope, "online", async () => {
+        await (await runtimeHandoffController()).goOnline(scope);
+      });
+      setMessage("Changes synced. The same conversation is back online.");
+      return;
+    }
     const client = await createOfflineSyncClient(scope);
     await client.sync();
     window.dispatchEvent(new Event(offlineModeEvent));
@@ -146,7 +161,7 @@ export function OfflineRuntimeSettings({
   }
   return (
     <SettingsGroup
-      title="Go Offline"
+      title="Offline storage and sync"
       description="Install business data, receipt scanning and an on-device assistant so you can keep working without a connection"
     >
       <section aria-labelledby="go-offline-requirements-title">
@@ -235,11 +250,14 @@ export function OfflineRuntimeSettings({
           Resume saved offline session
         </button>
       )}
-      {!modeActive && offlineRuntimeEnabled && pending === 0 && (
-        <button type="button" disabled={busy || !online} onClick={() => setConfirming(true)}>
-          Go Offline
-        </button>
-      )}
+      {!modeActive &&
+        offlineRuntimeEnabled &&
+        pending === 0 &&
+        (!state?.runtimeHandoffSession || state.runtimeHandoffSession.status === "hosted") && (
+          <button type="button" disabled={busy || !online} onClick={() => setConfirming(true)}>
+            Prepare offline storage
+          </button>
+        )}
       <OfflineInstallWizard
         open={confirming}
         busy={busy}

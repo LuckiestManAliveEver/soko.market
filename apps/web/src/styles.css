@@ -4376,6 +4376,7 @@ details.nested-form-section summary {
   display: grid;
   gap: 12px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .settings-group {

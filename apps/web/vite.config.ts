@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import webPackage from "./package.json";
+import { ocrAssetFiles, ocrManifestVersion } from "./src/offline-ocr-assets";
 
 const workspaceRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -18,36 +19,65 @@ const workspaceRoot = fileURLToPath(new URL("../..", import.meta.url));
 function tesseractOfflineAssets(): Plugin {
   const require = createRequire(import.meta.url);
   const packageDir = (name: string) => dirname(require.resolve(`${name}/package.json`));
-  const files: Array<{ source: string; fileName: string }> = [
-    { source: join(packageDir("tesseract.js"), "dist/worker.min.js"), fileName: "worker.min.js" },
-    ...(
-      [
-        "tesseract-core-lstm.wasm.js",
-        "tesseract-core-simd-lstm.wasm.js",
-        "tesseract-core-relaxedsimd-lstm.wasm.js"
-      ] as const
-    ).map((name) => ({ source: join(packageDir("tesseract.js-core"), name), fileName: name })),
-    {
-      source: join(packageDir("@tesseract.js-data/eng"), "4.0.0_best_int/eng.traineddata.gz"),
-      fileName: "lang/eng.traineddata.gz"
-    }
-  ];
-  return {
-    name: "tesseract-offline-assets",
-    generateBundle() {
-      const artifacts = files.map(({ source, fileName }) => {
-        const buffer = readFileSync(source);
-        this.emitFile({ type: "asset", fileName: `tesseract/${fileName}`, source: buffer });
-        return {
+  const files = ocrAssetFiles.map((fileName) => ({
+    fileName,
+    source:
+      fileName === "worker.min.js"
+        ? join(packageDir("tesseract.js"), "dist", fileName)
+        : fileName.startsWith("lang/")
+          ? join(packageDir("@tesseract.js-data/eng"), "4.0.0_best_int/eng.traineddata.gz")
+          : join(packageDir("tesseract.js-core"), fileName)
+  }));
+  const assets = () =>
+    files.map(({ source, fileName }) => {
+      const buffer = readFileSync(source);
+      return {
+        fileName,
+        buffer,
+        artifact: {
           url: `/tesseract/${fileName}`,
           sha256: createHash("sha256").update(buffer).digest("hex"),
           bytes: buffer.byteLength
-        };
+        }
+      };
+    });
+  const manifest = (entries: ReturnType<typeof assets>) =>
+    JSON.stringify({
+      version: ocrManifestVersion,
+      artifacts: entries.map((entry) => entry.artifact)
+    });
+  return {
+    name: "tesseract-offline-assets",
+    configureServer(server) {
+      // Development must serve the same opt-in engine URLs as the production build.
+      const entries = assets();
+      server.middlewares.use((req, res, next) => {
+        const path = req.url?.split("?")[0];
+        if (path === "/tesseract/manifest.json") {
+          res.setHeader("Content-Type", "application/json");
+          res.end(manifest(entries));
+          return;
+        }
+        const entry = entries.find((item) => item.artifact.url === path);
+        if (!entry) {
+          next();
+          return;
+        }
+        res.setHeader(
+          "Content-Type",
+          entry.fileName.endsWith(".js") ? "application/javascript" : "application/octet-stream"
+        );
+        res.end(entry.buffer);
       });
+    },
+    generateBundle() {
+      const entries = assets();
+      for (const { fileName, buffer } of entries)
+        this.emitFile({ type: "asset", fileName: `tesseract/${fileName}`, source: buffer });
       this.emitFile({
         type: "asset",
         fileName: "tesseract/manifest.json",
-        source: JSON.stringify({ artifacts })
+        source: manifest(entries)
       });
     }
   };

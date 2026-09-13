@@ -98,7 +98,20 @@ self.addEventListener("fetch", (event) => {
     // Cache-verified by apps/web/src/offline-ocr.ts (packages/offline-runtime's
     // cacheArtifactsByUrl), keyed by this same request URL so a worker's own importScripts/fetch
     // for the OCR engine resolves offline with no code here needing to know about that cache.
-    event.respondWith(ocrEngineResponse(request).then((cached) => cached || fetch(request)));
+    // Only an explicit installation may fetch engine assets. A scan must never
+    // silently fall back to the network if browser storage has been evicted.
+    event.respondWith(
+      request.cache === "no-store"
+        ? fetch(request)
+        : ocrEngineResponse(request).then(
+            (cached) =>
+              cached ||
+              new Response(
+                "Offline receipt scanner asset missing. Enable scanning again from Settings.",
+                { status: 503 }
+              )
+          )
+    );
     return;
   }
 
