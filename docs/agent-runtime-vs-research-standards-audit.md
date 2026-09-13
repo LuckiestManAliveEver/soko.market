@@ -1,0 +1,117 @@
+# Agent runtime vs. the "eval docs" research standards
+
+## Verdict, up front
+
+**The repo is not "agentic" in the sense almost every paper in this folder uses the word, and
+that's mostly the right call for what it is — but two gaps are real problems, not just scope
+choices.**
+
+Soko's runtime (`services/api/src/cp2/domains/agent-runtime`) is a deterministic rule engine with
+a single LLM call as a last resort, wrapped in hand-coded validation and a human confirmation gate.
+Against the 2022-2023 "agent loop" papers (ReAct, Toolformer, Reflexion, Self-Refine, Voyager), it
+implements essentially none of the interleaved reasoning/acting/self-critique machinery those
+papers define as the standard — by design, not by oversight, and for a system that drafts invoices
+and payments, that conservatism is defensible. Against the 2025-2026 self-improving-harness papers
+(GEPA, Meta-Harness, Continual Harness, Darwin Gödel Machine, OpenJarvis, Prime Agent), the gap is
+larger and less defensible: those papers converge hard on "gate every prompt/harness change against
+held-out evals with full trace visibility and versioned lineage," and Soko has exactly one
+rudimentary, manually-triggered analog of that (`model-templates/strategies.ts`) that doesn't reach
+the live LLM prompt.
+
+The two gaps worth fixing are not "add agenticness for its own sake" — they're places where the
+repo's own documented behavior (`docs/agent-evaluation-feedback-loop.md`) already promises something
+the code doesn't yet do:
+
+1. **No reasoning trace survives a model-fallback turn.** The model's single JSON output is parsed
+   and discarded; nothing like ReAct's or Self-Refine's practice of keeping the "why" is logged
+   anywhere a human could audit a disputed `create_invoice`/`payment.record` proposal after the
+   fact.
+2. **Memory has no lifecycle**, and the docs already say so: `docs/agent-evaluation-feedback-loop.md`
+   states outright that "automatic retention cleanup and reusable-workflow promotion are not yet
+   background jobs." Every paper that touches memory (MemGPT, Recursive Language Models, GEPA) treats
+   unbounded flat-list-into-every-prompt as the specific anti-pattern to avoid, and that's exactly
+   what `assembleAgentInferenceMessage` does today, just capped by count rather than growing without
+   bound. It works today because correction volume is small; it is not a lifecycle.
+
+Everything else below is detail supporting that verdict.
+
+## What was actually read
+
+All 22 files in `eval docs/` were read in full (not inferred from filenames — several 2025-2026
+arXiv IDs postdate this assistant's training data and had to be read fresh):
+
+| File | Actual title |
+|---|---|
+| `language_models_are_unsupervised_multitask_learners.pdf` | Language Models are Unsupervised Multitask Learners (GPT-2) |
+| `2005.14165v4.pdf` | Language Models are Few-Shot Learners (GPT-3) |
+| `2112.09332v3.pdf` | WebGPT: Browser-assisted question-answering with human feedback |
+| `2201.11903v6.pdf` | Chain-of-Thought Prompting Elicits Reasoning in Large Language Models |
+| `2210.03629v3.pdf` | ReAct: Synergizing Reasoning and Acting in Language Models |
+| `2302.04761v1.pdf` | Toolformer: Language Models Can Teach Themselves to Use Tools |
+| `2303.11366v4.pdf` | Reflexion: Language Agents with Verbal Reinforcement Learning |
+| `2303.17651v2.pdf` | Self-Refine: Iterative Refinement with Self-Feedback |
+| `2305.16291v2.pdf` | Voyager: An Open-Ended Embodied Agent with Large Language Models |
+| `2306.03314v1.pdf` | Multi-Agent Collaboration: Harnessing the Power of Intelligent LLM Agents |
+| `2306.14898v3.pdf` | InterCode: Standardizing and Benchmarking Interactive Coding with Execution Feedback |
+| `2310.03714v1.pdf` | DSPy: Compiling Declarative Language Model Calls into Self-Improving Pipelines |
+| `2310.08560v2.pdf` | MemGPT: Towards LLMs as Operating Systems |
+| `2503.14499v4.pdf` | Measuring AI Ability to Complete Long Software Tasks (METR) |
+| `2505.22954v3.pdf` | Darwin Gödel Machine: Open-Ended Evolution of Self-Improving Agents |
+| `2507.19457v2.pdf` | GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning |
+| `2512.24601v3.pdf` | Recursive Language Models |
+| `2603.28052v1.pdf` | Meta-Harness: End-to-End Optimization of Model Harnesses |
+| `2605.09998v1.pdf` | Continual Harness: Online Adaptation for Self-Improving Foundation Agents |
+| `2605.17172v1.pdf` | Personal AI, On Personal Devices (OpenJarvis) |
+| `2608.23552v1.pdf` | Prime Agent: A Self-Improving RLM Harness |
+| `Untitled document.pdf` | Not a paper — a LangChain blog post, "How to Build a Custom Agent Harness" |
+
+And the runtime code actually exercised in production: `services/api/src/cp2/domains/agent-runtime/`
+(`store.ts`, `runtime-model-routing.ts`, `shared.ts`, `capabilities.ts`), `packages/tool-core/src/`
+(registry, domains, parsers, validation), `services/api/src/cp2/agent-business-runtime.ts`,
+`services/api/src/agent-harness/`, `services/api/src/cp2/domains/model-templates/strategies.ts`, and
+`docs/agent-evaluation-feedback-loop.md`.
+
+## Standard-by-standard comparison
+
+| Standard (paper) | What the paper requires | What Soko does | Verdict |
+|---|---|---|---|
+| In-context learning (GPT-3), Chain-of-Thought | Task behavior driven by prompt content: few-shot demonstrations, reasoning traces kept as an audit/debug surface | One fixed structured-output instruction (`renderRuntimeModelOutputInstructions`, `packages/tool-core/src/parsers/runtime-proposals.ts:40-52`) listing allowed tool names; **zero few-shot examples anywhere in the live prompt** (`services/api/src/cp2/agent-business-runtime.ts:189-244`); the model's raw reasoning (if any) is discarded once `parseRuntimeModelOutput` extracts the JSON (`packages/tool-core/src/parsers/model-output.ts:10-113`) | **Gap.** No exemplars, no retained trace. Cheap to fix: log the model's raw completion text alongside the parsed proposal for audit, and consider embedding 3-5 worked examples per tool family in `assembleAgentInferenceMessage`. |
+| ReAct (interleaved thought/action) | Model emits explicit "thought" steps between actions, auditable, used to replan | None. One model call, one JSON action, no thought field, no loop (`runtime-model-routing.ts:243-255`) | **Not implemented — reasonable for a single-shot classify-and-propose task, but the *lack of a retained rationale* (see row above) is the actual cost.** |
+| Toolformer (self-supervised tool-use decision) | Tool-call insertion decided by measurable utility, learned | Tool selection is 100% hand-coded rules + one fixed model output contract; no learning component (confirmed: zero hits for fine-tune/gradient/RL across `cp2` and `tool-core`) | **N/A by design.** This is a closed, developer-curated tool set on purpose (commerce actions need to be enumerable and auditable) — Toolformer's self-supervised discovery doesn't belong in a system whose whole safety model rests on a fixed, reviewed tool registry. |
+| InterCode (execute → observe → explicit submit) | Actions are validated as "admissible" before execution; episode ends only on an explicit submit; failures feed back for retry | The confirmation-token gate (`confirmRuntimeAction`, `store.ts:2376-2505`) **is** InterCode's "explicit submit," and `validateRuntimeToolInput` (`packages/tool-core/src/validation/runtime.ts:8-374`) **is** admissibility-checking before execution. What's missing: when execution itself fails (not "user declined confirmation," but a genuine runtime/store error), there's no evidence the failure reason is fed back to the model for a retry — it just becomes an error string in the response. | **Partially met.** The confirm/validate skeleton matches the standard; the retry-on-genuine-failure loop doesn't exist. |
+| Reflexion / Self-Refine (self-critique, verbal memory across retries) | A distinct evaluator/critic step scores or critiques the draft before it's finalized; specific, actionable feedback persists across retries | `createRuntimeVerification` (`services/api/src/cp2/domains/agent-runtime/shared.ts:273-292`) is **entirely deterministic**: role permission lookup, confirmation-token match, static input-shape validation. No model call ever critiques another model call's output. Confirmed zero hits for "critique"/"self-refine"/"reflexion" across `agent-runtime` and `tool-core`. | **Not implemented.** For a system this consequence-bounded (every mutating action already requires human confirmation), a full Reflexion loop is probably overkill — but a *narrow* version (log why a `record_payment` proposal was rejected/declined, and don't re-propose the identical malformed draft next turn) would directly improve the merchant experience and costs little. |
+| Multi-Agent Collaboration ("oracle" critic, halting supervisor) | A stateless second agent specifically checks for hallucination/malicious action before execution; a supervisor can halt runaway agents | The role-permission check (`roleCan`, `packages/business-core/src/domains/roles.ts:225-227`) and the `maxRuntimeTurnsPerSession = 20` cap (`shared.ts:199`) are a deterministic version of "halting," but there's no oracle-style second-opinion check specifically aimed at *hallucinated* tool inputs (e.g., a fabricated customer name that doesn't exist in the business's own records) — `validateRuntimeToolInput` checks shape, not existence/plausibility against the business's actual data. | **Partial.** Halting exists; hallucination-specific oracle checking does not — worth adding for the specific case of the model inventing a customer/product name that isn't in the business's own catalogue. |
+| Voyager / Darwin Gödel Machine / Continual Harness / Meta-Harness / OpenJarvis (self-improving harness, skill library, archived lineage, gated auto-promotion) | Agent capabilities/prompts/harness config evolve via a search loop, gated on held-out eval, with an archive of every variant | `RuntimeToolName` is a **fixed, closed enum** (`packages/tool-core/src/contracts/runtime.ts:96-138`); new capabilities require a developer to hand-edit 4 files (registry, domain definition, validator, capability dispatcher). The one thing in the repo with real DNA in common with this family — `optimizePromptExpertise`/`startImprovementRun` (`services/api/src/cp2/domains/model-templates/strategies.ts:49-135`, `store.ts:870-1090`) — does have a genuine "candidate → evaluate → gate on regression count/score delta → promote" loop, which is structurally the right shape. But it: is manually/API-triggered rather than continuous; compiles approved examples into literal substring-match rules for a *separate* deterministic executor (`executeDeterministicRuleExpertise`), not into the live LLM prompt or a reflective prompt rewrite; and keeps no archive of rejected/inferior variants (Darwin Gödel Machine's central finding is that keeping "bad" variants around matters). | **Real gap, but this is also the family of papers where the frontier itself flags real safety hazards from unattended self-modification** — both Continual Harness and Prime Agent report their own agents discovering and persisting exploits as "skills" when given this kind of autonomy, and both had to build provenance/rollback machinery specifically to contain it. Soko's closed-enum, human-gated tool set is a legitimate stance, not just an oversight — the honest gap is that the *existing* rule-compilation pipeline should feed the live prompt and should keep a lineage, not that the runtime needs open-ended self-modification. |
+| GEPA (reflective prompt evolution, Pareto pool, rich textual feedback) | Prompt revisions come from an LLM reflecting on full execution traces (not just scores); multiple candidate prompts tracked per-task, not single best-so-far | The nightly eval (`services/api/scripts/run-ai-eval.ts`) **does** capture rich per-scenario textual feedback (the judge's `reason` string, not just PASS/FAIL) — this is the one place the repo already matches a GEPA-family practice. But nothing feeds that feedback back into an automatic prompt rewrite; a human has to read `/tmp/soko-ai-eval-report.json` and act on it manually. No Pareto pool of prompt variants exists anywhere. | **Partially met on the "capture rich feedback" half; not met on the "close the loop automatically" half.** |
+| MemGPT / Recursive Language Models (bounded/hierarchical memory, no unbounded prompt inlining) | Persistent memory lives outside the model's context and is paged in/out via explicit function calls or programmatic access, never inlined wholesale | Owner corrections are retrieved as a flat list, capped by count (`maximumItemsPerScope`) and injected as literal `<memory id="N">` blocks into every prompt (`services/api/src/cp2/agent-business-runtime.ts:210-212, 236-237`); retrieval is bag-of-words keyword overlap (`agent-business-runtime.ts:275-336`), not semantic search; stale items are excluded by a date cutoff, never summarized or archived. `docs/agent-evaluation-feedback-loop.md` states explicitly: "automatic retention cleanup and reusable-workflow promotion are not yet background jobs." | **Real gap, and the repo's own docs already call it out as a known TODO.** This is the one place where "the docs promise X, the code doesn't do X yet" is unambiguous — worth prioritizing before correction volume grows enough to matter. |
+| DSPy (typed signatures, declarative modules, compiled bootstrapping) | LM calls are typed, composable modules optimized by a compiler against a metric, not hand-tuned prompt strings | `assembleAgentInferenceMessage`/`compileAgentInstructions` (`agent-business-runtime.ts:120-244`) is a hand-written string template with no typed signature/module abstraction and no automatic bootstrapping against a metric | **Not implemented.** Reasonable given the task shape (classify-or-clarify-or-tool-call is a narrow, well-specified output contract already), but if the prompt template grows more sections over time, DSPy's module boundaries are worth revisiting to keep it maintainable. |
+| WebGPT (external grounding, citations, best-of-n ranking) | Ground claims in retrieved, citable evidence; generate multiple candidates and rank via a scorer before returning one | All tool execution reads/writes the business's own store (`executeRuntimeCapability`, `services/api/src/cp2/domains/agent-runtime/capabilities.ts:30-471`); no web browsing, no external retrieval, no citation fields; exactly one completion is generated per turn, never ranked candidates | **N/A by design (external grounding) / gap (best-of-n).** A commerce assistant scoped to one business's own records has no business browsing the open web — that's correctly out of scope, not a deficiency. Best-of-n candidate generation-and-ranking for consequential drafts (e.g., invoice line-item parsing) is a genuinely applicable idea WebGPT's own ablation shows as its single biggest lever, and nothing here does it. |
+| METR (task-length-vs-success-rate evaluation methodology) | Measure reliability as success-rate against task difficulty/length, not one aggregate number; explicitly watch for abandonment and repeated-failed-action loops | The nightly eval is 6 fixed single-turn scenarios scored PASS/FAIL by an LLM judge against a threshold (`run-ai-eval.ts:31, 166-168`) — no difficulty grading, no multi-step tasks, no measurement of degradation as conversation length grows | **Gap, but scale-appropriate.** METR's methodology is built for benchmarking frontier-model capability trajectories; a 6-scenario smoke-test golden set for one narrow fallback path is a reasonable-sized eval for this system's actual risk surface. The applicable lesson worth taking is narrower: track turn-count vs. error/clarify rate in production telemetry, since METR's own finding is that models degrade specifically on long, messy, under-specified interactions — which is exactly the shape of a merchant chat session. |
+| LangChain harness taxonomy (industry vocabulary, not a research result) | Names existing patterns: `HumanInTheLoopMiddleware`, `SummarizationMiddleware`, `ToolRetryMiddleware`, `ModelFallbackMiddleware`, etc. | Soko's confirmation-token gate is exactly `HumanInTheLoopMiddleware`; `runtime-model-routing.ts`'s infra-failure retry is exactly `ModelFallbackMiddleware`. No equivalent of `SummarizationMiddleware`/`ContextEditingMiddleware` exists (see MemGPT row) | Useful only as vocabulary confirming two things Soko already does right. |
+
+## What's actually worth doing, in priority order
+
+This list is deliberately short — most of the "gaps" above are either out-of-scope by design
+(Toolformer, Voyager-style self-modification, WebGPT browsing) or scale-inappropriate for a
+6-scenario smoke eval (METR-style benchmarking, DSPy module refactor). Three items would move the
+needle without importing risk the frontier papers themselves warn about:
+
+1. **Close the memory-lifecycle gap the docs already admit exists.** Add the "automatic retention
+   cleanup" `docs/agent-evaluation-feedback-loop.md:40-41` already promises, before correction volume
+   grows past what a flat capped list can serve well. This is the single item where "the standard"
+   and "the docs' own stated intent" already agree — it just isn't built.
+2. **Retain the model's raw completion text on model-fallback turns**, not just the parsed JSON
+   proposal, so a disputed mutating action (a drafted invoice, a payment record) has an auditable
+   rationale behind it — ReAct's and Self-Refine's shared insight that the "why" is worth keeping
+   even when there's no multi-step loop to interleave it into.
+3. **Add an existence/plausibility check for model-proposed customer/product names against the
+   business's own catalogue** before showing a confirmation prompt — the "oracle" pattern from the
+   multi-agent paper, scoped narrowly to the one failure mode (hallucinated entity names) that
+   actually matters for a commerce assistant, not a general second-model-critiques-everything pass.
+
+None of these require adopting agentic-loop machinery (ReAct-style multi-step reasoning, Toolformer
+tool-use learning, Voyager-style skill growth, or any of the 2025-2026 self-modifying-harness
+patterns) — and given that the two papers closest to that frontier (Continual Harness, Prime Agent)
+both report their own systems discovering and persisting exploits when granted that kind of
+autonomy, staying with a closed tool registry and human confirmation gate is the right call for a
+system that touches real money, not a gap to close.
