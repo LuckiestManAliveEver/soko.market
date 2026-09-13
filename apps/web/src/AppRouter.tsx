@@ -5,25 +5,45 @@ import {
   installBrowserLinkInterceptor,
   subscribeToBrowserNavigation
 } from "./browser-navigation";
+import { appRouteModuleKeys, loadLazyModuleWithRecovery } from "./lazy-module-recovery";
+import { LazyModuleErrorBoundary } from "./LazyModuleErrorBoundary";
 import { recordComponentRender, recordRouteRender } from "./performance";
 import { readAuthenticationRoutePath, readOwnerRoute, routes } from "./routes";
 import { isSokoId, normalizeSokoId } from "./sokoid-and-storefront";
 
 const initialPathname = window.location.pathname;
 const initialSokoApplicationModule = shouldWarmOwnerRoute(initialPathname)
-  ? import("./SokoApplication")
+  ? loadLazyModuleWithRecovery(appRouteModuleKeys.ownerApp, () => import("./SokoApplication"))
   : null;
 
-const TermsOfServicePage = lazy(() => import("./legal/TermsOfServicePage"));
-const PrivacyPolicyPage = lazy(() => import("./legal/PrivacyPolicyPage"));
-const AccountDeletionPage = lazy(() => import("./legal/AccountDeletionPage"));
+const TermsOfServicePage = lazy(() =>
+  loadLazyModuleWithRecovery(
+    appRouteModuleKeys.termsOfService,
+    () => import("./legal/TermsOfServicePage")
+  )
+);
+const PrivacyPolicyPage = lazy(() =>
+  loadLazyModuleWithRecovery(
+    appRouteModuleKeys.privacyPolicy,
+    () => import("./legal/PrivacyPolicyPage")
+  )
+);
+const AccountDeletionPage = lazy(() =>
+  loadLazyModuleWithRecovery(
+    appRouteModuleKeys.accountDeletion,
+    () => import("./legal/AccountDeletionPage")
+  )
+);
 const OwnerApp = lazy(() => loadSokoApplication().then((module) => ({ default: module.OwnerApp })));
 const PublicStorefront = lazy(() =>
   loadSokoApplication().then((module) => ({ default: module.PublicStorefrontChat }))
 );
 
 function loadSokoApplication() {
-  return initialSokoApplicationModule ?? import("./SokoApplication");
+  return (
+    initialSokoApplicationModule ??
+    loadLazyModuleWithRecovery(appRouteModuleKeys.ownerApp, () => import("./SokoApplication"))
+  );
 }
 
 function shouldWarmOwnerRoute(pathname: string): boolean {
@@ -47,6 +67,8 @@ export function AppRouter() {
   if (storefrontRoute !== null) {
     return (
       <LazyRoute
+        moduleKey={appRouteModuleKeys.publicStorefront}
+        label="This shop"
         page={
           <PublicStorefront
             agentId={storefrontRoute.agentId}
@@ -58,15 +80,33 @@ export function AppRouter() {
   }
 
   if (window.location.pathname === routes.terms) {
-    return <LegalRoute label="Terms of Service" page={<TermsOfServicePage />} />;
+    return (
+      <LegalRoute
+        moduleKey={appRouteModuleKeys.termsOfService}
+        label="Terms of Service"
+        page={<TermsOfServicePage />}
+      />
+    );
   }
 
   if (window.location.pathname === routes.privacy) {
-    return <LegalRoute label="Privacy Policy" page={<PrivacyPolicyPage />} />;
+    return (
+      <LegalRoute
+        moduleKey={appRouteModuleKeys.privacyPolicy}
+        label="Privacy Policy"
+        page={<PrivacyPolicyPage />}
+      />
+    );
   }
 
   if (window.location.pathname === routes.accountDeletion) {
-    return <LegalRoute label="account deletion" page={<AccountDeletionPage />} />;
+    return (
+      <LegalRoute
+        moduleKey={appRouteModuleKeys.accountDeletion}
+        label="account deletion"
+        page={<AccountDeletionPage />}
+      />
+    );
   }
 
   if (
@@ -84,10 +124,20 @@ export function AppRouter() {
     );
   }
 
-  return <LazyRoute page={<OwnerApp />} />;
+  return (
+    <LazyRoute moduleKey={appRouteModuleKeys.ownerApp} label="Soko.market" page={<OwnerApp />} />
+  );
 }
 
-function LazyRoute({ page }: { page: ReactNode }) {
+function LazyRoute({
+  moduleKey,
+  label,
+  page
+}: {
+  moduleKey: string;
+  label: string;
+  page: ReactNode;
+}) {
   return (
     <Profiler
       id="application-route"
@@ -96,32 +146,44 @@ function LazyRoute({ page }: { page: ReactNode }) {
         recordRouteRender(window.location.pathname);
       }}
     >
+      <LazyModuleErrorBoundary moduleKey={moduleKey} label={label}>
+        <Suspense
+          fallback={
+            <main className="legal-placeholder" aria-busy="true">
+              <AppIcon className="route-brand-icon" />
+              <p>Loading Soko.market…</p>
+            </main>
+          }
+        >
+          {page}
+        </Suspense>
+      </LazyModuleErrorBoundary>
+    </Profiler>
+  );
+}
+
+function LegalRoute({
+  moduleKey,
+  label,
+  page
+}: {
+  moduleKey: string;
+  label: string;
+  page: ReactNode;
+}) {
+  return (
+    <LazyModuleErrorBoundary moduleKey={moduleKey} label={label}>
       <Suspense
         fallback={
           <main className="legal-placeholder" aria-busy="true">
             <AppIcon className="route-brand-icon" />
-            <p>Loading Soko.market…</p>
+            <p>Loading {label}…</p>
           </main>
         }
       >
         {page}
       </Suspense>
-    </Profiler>
-  );
-}
-
-function LegalRoute({ label, page }: { label: string; page: ReactNode }) {
-  return (
-    <Suspense
-      fallback={
-        <main className="legal-placeholder" aria-busy="true">
-          <AppIcon className="route-brand-icon" />
-          <p>Loading {label}…</p>
-        </main>
-      }
-    >
-      {page}
-    </Suspense>
+    </LazyModuleErrorBoundary>
   );
 }
 
