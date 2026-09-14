@@ -120,7 +120,11 @@ import {
 } from "@soko/tool-core";
 import { queryCatalogueProducts, roleCan, type BusinessPermission } from "@soko/business-core";
 import { Cp2Error } from "../../cp2-error.js";
-import { asModelRuntimeError, type ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
+import {
+  asModelRuntimeError,
+  type ModelRuntimeAdapter,
+  type ModelRuntimeAvailability
+} from "../../../inference/model-runtime.js";
 import { runtimeAdapterIdForAgent } from "../../../agent-harness/agent-runtime-adapter.js";
 import { normalizeRequiredBoundedText } from "../../text-normalization.js";
 import {
@@ -1137,6 +1141,12 @@ export class AgentRuntimeDomain {
       now
     );
     const profile = this.currentAgentProfile(input.businessId, now);
+    // Settings (the quick switcher and the readiness banner) reads this endpoint to show a shop's
+    // runtime as ready the moment it exists, without requiring a chat message first - so this
+    // still runs the same idempotent zero-setup repair the first chat turn would. That repair step
+    // is now bounded by a single control-plane deadline (see ensureDefaultRuntimeForTurn) so a
+    // degraded or unreachable inference host makes this endpoint report UNAVAILABLE quickly
+    // instead of blocking the settings page for the full inference timeout budget.
     await this.ensureDefaultRuntimeForTurn({
       ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
       businessId: input.businessId,
@@ -2751,7 +2761,8 @@ export class AgentRuntimeDomain {
             this.deps.platformDefaultRuntime.executionTarget
       );
     if (hasHostedRuntime) return;
-    if (this.deps.modelRuntimeAdapterResolver === undefined) return;
+    const modelRuntimeAdapterResolver = this.deps.modelRuntimeAdapterResolver;
+    if (modelRuntimeAdapterResolver === undefined) return;
 
     const agentAdapter = this.deps.agentRuntimeAdapterResolver(agentRuntimeAdapterId);
     if (
@@ -2780,13 +2791,22 @@ export class AgentRuntimeDomain {
     };
     let agentAvailable = false;
     try {
+      // Bounded the same way as every other live runtime probe in this file (see
+      // withRuntimeDeadline usages above and in getEffectiveRuntime) - a hung or unreachable
+      // execution host must not block this repair step for its full inference timeout budget
+      // (VERCEL_INFERENCE_TIMEOUT_MS defaults to 5 minutes, sized for real generation, not a
+      // lightweight availability check). Without this bound a degraded inference host turns
+      // every chat send that reaches this path into the client-visible generic request timeout
+      // instead of a fast, typed runtime-unavailable failure.
       agentAvailable = (
-        await agentAdapter.canRun({
-          agent,
-          modelId: this.deps.platformDefaultRuntime.modelId,
-          conversationId: input.conversationId ?? "runtime-unbound",
-          shopId: input.businessId
-        })
+        await withRuntimeDeadline(() =>
+          agentAdapter.canRun({
+            agent,
+            modelId: this.deps.platformDefaultRuntime.modelId,
+            conversationId: input.conversationId ?? "runtime-unbound",
+            shopId: input.businessId
+          })
+        )
       ).available;
     } catch {
       return;
@@ -2805,39 +2825,54 @@ export class AgentRuntimeDomain {
         .map((model) => model.id)
     ]);
     const defaultExecutionTarget = this.deps.platformDefaultRuntime.executionTarget;
+    const probeTargets = preferredIds
+      .map((modelId) => {
+        const model = this.deps.resolveCatalogModel(modelId);
+        if (model === undefined || !model.available || !model.capabilities.includes("chat")) {
+          return null;
+        }
+        const adapter = modelRuntimeAdapterResolver({
+          modelId,
+          executionTarget: defaultExecutionTarget,
+          agentId,
+          shopId: input.businessId
+        });
+        return adapter === undefined ? null : { modelId, model, adapter };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+    // Probe every remaining candidate concurrently under one shared control-plane deadline instead
+    // of one deadline per candidate applied serially - with several catalog models and an
+    // unreachable inference host, per-candidate bounds alone could still add up to minutes of total
+    // latency (N candidates x the per-probe timeout) before this repair step gives up. A single
+    // shared deadline caps the whole step at withRuntimeDeadline's bound regardless of how many
+    // candidates exist; Promise.allSettled never itself rejects; it is the deadline race that
+    // guarantees this resolves even if some adapters never answer.
+    let settled: PromiseSettledResult<ModelRuntimeAvailability>[];
+    try {
+      settled = await withRuntimeDeadline((signal) =>
+        Promise.allSettled(
+          probeTargets.map(({ modelId, adapter }) =>
+            adapter.canRun({ modelId, agentId, shopId: input.businessId, signal })
+          )
+        )
+      );
+    } catch {
+      return;
+    }
     const candidates: Array<{
       model: AiModelSummary;
       executionTarget: ModelExecutionTarget;
       checkedAt: string;
     }> = [];
-    for (const modelId of preferredIds) {
-      const model = this.deps.resolveCatalogModel(modelId);
-      if (model === undefined || !model.available || !model.capabilities.includes("chat")) {
-        continue;
-      }
-      const adapter = this.deps.modelRuntimeAdapterResolver({
-        modelId,
-        executionTarget: defaultExecutionTarget,
-        agentId,
-        shopId: input.businessId
-      });
-      if (adapter === undefined) continue;
-      try {
-        const availability = await adapter.canRun({
-          modelId,
-          agentId,
-          shopId: input.businessId
+    for (let index = 0; index < probeTargets.length; index += 1) {
+      const result = settled[index];
+      if (result?.status === "fulfilled" && result.value.available) {
+        candidates.push({
+          model: (probeTargets[index] as (typeof probeTargets)[number]).model,
+          executionTarget: defaultExecutionTarget,
+          checkedAt: input.now.toISOString()
         });
-        if (availability.available) {
-          candidates.push({
-            model,
-            executionTarget: defaultExecutionTarget,
-            checkedAt: input.now.toISOString()
-          });
-        }
-      } catch {
-        // Availability probing is advisory and provider-neutral. Another compatible adapter may
-        // still satisfy the request, and details are intentionally not exposed to the merchant.
       }
       if (candidates.length >= 2) break;
     }

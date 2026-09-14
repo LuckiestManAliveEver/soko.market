@@ -56,7 +56,41 @@ time a shop's agent needs one:
 
 This is a bootstrap repair path for fresh in-memory stores and deployments upgrading from a draft
 default. Migration 077 makes the production platform default a real graph up front. The same logic
-runs for conversation and conversation-free turns.
+runs for conversation and conversation-free turns, and for the settings-facing effective-runtime
+read below - the same repair keeps a shop's readiness banner accurate without requiring a chat
+message first.
+
+### Control-plane deadline (incident postmortem)
+
+Steps 2 and 3 above make real network calls to whatever execution host the candidate model
+declares. Before this was bounded, an unreachable or degraded inference host (the exact condition
+a production inference outage produces) let this repair step block for the full
+`VERCEL_INFERENCE_TIMEOUT_MS` budget (300 000 ms by default) - a ceiling sized for a real generation
+call, not a lightweight availability check. Two request paths call this function while awaiting it
+directly: `POST /v1/messages` / `POST /businesses/:id/runtime/turns` (chat) and
+`GET /businesses/:id/runtime/effective` (Settings' readiness banner and quick switcher). The
+frontend's own request timeout is a flat 20 seconds (`apps/web/src/lib/api.ts`), so during a real
+inference outage both chat and Settings blocked well past that boundary and surfaced as the generic
+client-side "The request took too long and was cancelled." instead of a fast, typed failure - the
+shared dependency behind that incident.
+
+The fix applies the same `withRuntimeDeadline` control-plane deadline (`cp2/runtime-deadline.ts`,
+5 seconds by default) already used by `getEffectiveRuntime`'s own readiness probe:
+
+- The harness probe (`agentAdapter.canRun`) is wrapped individually.
+- Every remaining candidate model's `canRun` probe runs **concurrently** via `Promise.allSettled`
+  under **one shared** deadline, not one deadline applied serially per candidate - with several
+  catalog models to try, a per-candidate-only bound could still add up to minutes of total latency
+  before the repair step gave up. `Promise.allSettled` never itself rejects, so it is the deadline
+  race around it that guarantees this step resolves even when every adapter hangs; an adapter call
+  already past the deadline may keep running in the background, exactly like every other
+  `withRuntimeDeadline` use site in this file - only the caller's wait is bounded.
+
+A timed-out probe is treated exactly like a failed one: the candidate is skipped, and if no
+candidate becomes available the caller falls through to its existing typed failure
+(`RUNTIME_MODELS_UNAVAILABLE`, `AGENT_MODEL_NOT_CONFIGURED`) well inside the frontend's 20-second
+timeout, instead of a generic client-side cancellation. See `tests/zero-setup-native-runtime.test.ts`
+for the regression coverage (a hung model host on both the chat and the settings path).
 
 ## Effective runtime API
 

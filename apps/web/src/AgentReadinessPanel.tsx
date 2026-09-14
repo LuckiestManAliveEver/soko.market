@@ -55,7 +55,7 @@ export function AgentReadinessPanel({
           <span className="runtime-unsaved">Unsaved draft changes</span>
         ) : null}
       </div>
-      {runtimeReadiness?.issues.map((issue) => (
+      {(runtimeReadiness?.issues ?? []).map((issue) => (
         <p className="security-warning" key={issue.code}>
           {issue.message}
         </p>
