@@ -159,7 +159,7 @@ export function buildApi(options: BuildApiOptions = {}) {
 
     if (
       options.mutationPersistenceFlush === undefined ||
-      (request.method === "GET" && !request.url.startsWith("/v1/runtime/")) ||
+      (request.method === "GET" && !requiresRuntimeDurabilityConfirmation(request.url)) ||
       request.method === "HEAD" ||
       request.method === "OPTIONS" ||
       reply.statusCode >= 400 ||
@@ -446,6 +446,28 @@ class AuthenticationPersistenceUnavailable extends Error {
 function positiveIntegerFromEnv(name: string, fallback: number): number {
   const raw = Number(process.env[name]);
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+// Only GET /v1/runtime/:taskId and GET /v1/runtime/:taskId/handoff (without a `version` query)
+// can mutate: both resolve through RuntimeHandoffDomain.resolveHandoff(), which bootstraps a
+// legacy task's first checkpoint the first time either is called for a task that predates the
+// Runtime Handoff Protocol (see bootstrapLegacyHandoff in cp2/domains/runtime-handoff/store.ts).
+// The same /handoff path with a `version` query instead calls getRuntimeHandoffByVersion
+// (runtime-handoff/routes.ts), a pure read of an already-recorded checkpoint that never
+// bootstraps. Every other GET under /v1/runtime/ - capabilities, transfer status, handoff-by-id -
+// is likewise a pure read; postgres-store.ts's mutatingMethodNames deliberately excludes
+// getRuntimeCapabilities/getRuntimeTransfer for exactly this reason (their own possible expiry
+// side effect is idempotent and self-heals on the next real mutation's snapshot). Routing all of
+// /v1/runtime/ through the flush wait below undid that: cp2Store.flush() drains one saveQueue
+// shared by every tenant, so an unrelated business's slow write made this read wait on it and
+// could time out into a false "Runtime unavailable" for a request that changed nothing.
+const runtimeHandoffTaskGetPattern = /^\/v1\/runtime\/[^/]+$/;
+const runtimeHandoffLatestGetPattern = /^\/v1\/runtime\/[^/]+\/handoff$/;
+function requiresRuntimeDurabilityConfirmation(url: string): boolean {
+  const [pathname = url, query = ""] = url.split("?");
+  if (runtimeHandoffTaskGetPattern.test(pathname)) return true;
+  if (!runtimeHandoffLatestGetPattern.test(pathname)) return false;
+  return !new URLSearchParams(query).has("version");
 }
 
 // Bounds how long a response can be held open waiting on the shared persistence queue

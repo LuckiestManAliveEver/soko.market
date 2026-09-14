@@ -698,6 +698,71 @@ describe("runtime capability and transfer API", () => {
     }
   });
 
+  it("does not block a pure-read capabilities GET on an unrelated stalled persistence flush, but still blocks the legacy-bootstrapping GET", async () => {
+    const f = await setup();
+    try {
+      // Set up a second, not-yet-resolved task on the *unblocked* app first, so the only request
+      // that ever touches the stalled app is the one this test is actually about - otherwise every
+      // setup mutation would itself wait out the real persistence-flush deadline.
+      const secondOwner = await createOwnerBusiness(f.app, "+254700009778", "Second Shop");
+      await activateModel(f.app, secondOwner, "qwen2.5-0.5b-android");
+      const conversation = await f.app.inject({
+        method: "POST",
+        url: "/v1/conversations",
+        headers: jsonHeaders(secondOwner.cookie),
+        payload: JSON.stringify({ kind: "personal", activeShopId: secondOwner.businessId })
+      });
+      const secondTaskId = conversation.json<{ conversation: { id: string } }>().conversation.id;
+
+      const previousDeadline = process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS;
+      process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS = "200";
+      const blocked = buildApi({
+        cp2: { store: f.store },
+        mutationPersistenceFlush: () => new Promise<void>(() => undefined)
+      });
+      try {
+        // getRuntimeCapabilities is deliberately excluded from postgres-store.ts's
+        // mutatingMethodNames because it never needs to enqueue a save of its own; the response
+        // must therefore never wait on some *other* tenant's persistence backlog either, let alone
+        // time out into it.
+        const caps = await blocked.inject({
+          method: "GET",
+          url: `/v1/runtime/${f.taskId}/capabilities`,
+          headers: { cookie: f.owner.cookie, "x-soko-device-id": "device" }
+        });
+        expect(caps.statusCode).toBe(200);
+
+        // GET .../handoff?version=N calls getRuntimeHandoffByVersion, a pure read of an
+        // already-recorded checkpoint - unlike the same path with no query, it never bootstraps,
+        // so it must not be swept up by the path-only pattern into waiting on the flush either.
+        const byVersion = await blocked.inject({
+          method: "GET",
+          url: `/v1/runtime/${f.taskId}/handoff?version=1`,
+          headers: { cookie: f.owner.cookie }
+        });
+        expect(byVersion.statusCode).toBe(200);
+
+        // resolveRuntimeHandoff can legacy-bootstrap a checkpoint on first call (a real write), so
+        // this GET - unlike capabilities above - must still wait for that write's durability to be
+        // confirmed, and time out the same way a mutating request would.
+        const resolved = await blocked.inject({
+          method: "GET",
+          url: `/v1/runtime/${secondTaskId}`,
+          headers: { cookie: secondOwner.cookie }
+        });
+        expect(resolved.statusCode).toBe(503);
+        expect(resolved.json().code).toBe("RUNTIME_PERSISTENCE_PENDING");
+      } finally {
+        await blocked.close();
+        if (previousDeadline === undefined)
+          delete process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS;
+        else process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS = previousDeadline;
+      }
+    } finally {
+      await f.app.close();
+    }
+  });
+
   it("restores a local checkpoint before committing and probes hosted execution before the return", async () => {
     const f = await setup();
     try {

@@ -6,7 +6,7 @@ import {
 import { useEffect, useState } from "react";
 import type { LocalState } from "@soko/offline-runtime";
 import { currentOfflineScope, getOfflineState, offlineModeEvent } from "../offline-runtime";
-import { apiCloudFetch, readStableDeviceId } from "../lib/api";
+import { apiCloudFetch, isRetryableApiRequestError, readStableDeviceId } from "../lib/api";
 import {
   localRuntimeMessages,
   runtimeHandoffController,
@@ -36,68 +36,87 @@ export function useRuntimeHandoff(
     let revision = 0;
     let disposed = false;
     const scope = { accountId, storeId: businessId, deviceId: readStableDeviceId() };
+    const maxRuntimeCheckRetries = 3;
+    const runtimeCheckRetryBaseDelayMs = 1_000;
+    const runtimeCheckRetryMaxDelayMs = 8_000;
+    const isStale = (current: number) => disposed || current !== revision;
+    const checkRuntime = async (current: number) => {
+      const next = await getOfflineState(scope);
+      if (isStale(current)) return undefined;
+      setState(next);
+      if (next.runtimeHandoffSession && next.runtimeHandoffSession.status !== "hosted")
+        return undefined;
+      let caps: RuntimeCapabilities | undefined;
+      if (navigator.onLine && conversationId) {
+        const fetched = await (
+          await runtimeHandoffController()
+        ).capabilities(scope, conversationId);
+        if (isStale(current)) return undefined;
+        caps = fetched;
+        setCanonicalStatus(
+          fetched.activeTransfer
+            ? fetched.local.some(
+                (host) => host.executionHostId === fetched.activeTransfer?.targetHostId
+              )
+              ? "Switching to local…"
+              : "Switching to hosted…"
+            : fetched.local.some((host) => host.active)
+              ? "Local"
+              : fetched.hosted.some((host) => host.active)
+                ? "Hosted"
+                : "Runtime unavailable"
+        );
+      }
+      if (navigator.onLine && !conversationId) {
+        const runtime = await apiCloudFetch<EffectiveRuntimeSummary>(
+          `/businesses/${encodeURIComponent(businessId)}/runtime/effective`
+        );
+        if (isStale(current)) return undefined;
+        setCanonicalStatus(
+          runtime.ready
+            ? isLocalRuntimeHost(runtime.execution.type)
+              ? "Local"
+              : "Hosted"
+            : "Runtime unavailable"
+        );
+      }
+      return !navigator.locks
+        ? {
+            available: false,
+            reason: "This browser cannot safely coordinate runtime handoffs."
+          }
+        : !navigator.onLine
+          ? {
+              available: false,
+              reason: "Reconnect to prepare this conversation for local execution."
+            }
+          : await (await runtimeHandoffController()).availability(scope, conversationId, caps);
+    };
     const refresh = async () => {
       const current = ++revision;
       setConnected(navigator.onLine);
       setTransition(runtimeTransition(scope));
-      try {
-        const next = await getOfflineState(scope);
-        if (disposed || current !== revision) return;
-        setState(next);
-        if (next.runtimeHandoffSession && next.runtimeHandoffSession.status !== "hosted") return;
-        let caps: RuntimeCapabilities | undefined;
-        if (navigator.onLine && conversationId) {
-          const fetched = await (
-            await runtimeHandoffController()
-          ).capabilities(scope, conversationId);
-          if (disposed || current !== revision) return;
-          caps = fetched;
-          setCanonicalStatus(
-            fetched.activeTransfer
-              ? fetched.local.some(
-                  (host) => host.executionHostId === fetched.activeTransfer?.targetHostId
-                )
-                ? "Switching to local…"
-                : "Switching to hosted…"
-              : fetched.local.some((host) => host.active)
-                ? "Local"
-                : fetched.hosted.some((host) => host.active)
-                  ? "Hosted"
-                  : "Runtime unavailable"
-          );
-        }
-        if (navigator.onLine && !conversationId) {
-          const runtime = await apiCloudFetch<EffectiveRuntimeSummary>(
-            `/businesses/${encodeURIComponent(businessId)}/runtime/effective`
-          );
-          if (disposed || current !== revision) return;
-          setCanonicalStatus(
-            runtime.ready
-              ? isLocalRuntimeHost(runtime.execution.type)
-                ? "Local"
-                : "Hosted"
-              : "Runtime unavailable"
-          );
-        }
-        const result = !navigator.locks
-          ? {
+      let delayMs = runtimeCheckRetryBaseDelayMs;
+      for (let attempt = 0; attempt <= maxRuntimeCheckRetries; attempt++) {
+        try {
+          const result = await checkRuntime(current);
+          if (!isStale(current) && result !== undefined) setAvailability(result);
+          return;
+        } catch (cause) {
+          if (isStale(current)) return;
+          const retriesLeft = maxRuntimeCheckRetries - attempt;
+          if (retriesLeft <= 0 || !isRetryableApiRequestError(cause)) {
+            setCanonicalStatus("Runtime unavailable");
+            setAvailability({
               available: false,
-              reason: "This browser cannot safely coordinate runtime handoffs."
-            }
-          : !navigator.onLine
-            ? {
-                available: false,
-                reason: "Reconnect to prepare this conversation for local execution."
-              }
-            : await (await runtimeHandoffController()).availability(scope, conversationId, caps);
-        if (!disposed && current === revision) setAvailability(result);
-      } catch (cause) {
-        if (!disposed && current === revision) {
-          setCanonicalStatus("Runtime unavailable");
-          setAvailability({
-            available: false,
-            reason: cause instanceof Error ? cause.message : "Local runtime is unavailable."
-          });
+              reason: cause instanceof Error ? cause.message : "Local runtime is unavailable."
+            });
+            return;
+          }
+          setCanonicalStatus(`Runtime unavailable — retrying in ${Math.round(delayMs / 1000)}s…`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          if (isStale(current)) return;
+          delayMs = Math.min(delayMs * 2, runtimeCheckRetryMaxDelayMs);
         }
       }
     };
