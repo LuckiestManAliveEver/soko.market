@@ -381,7 +381,9 @@ describe("zero-setup native runtime", () => {
   // longer than the frontend's 20-second request timeout - surfacing as the generic
   // "The request took too long and was cancelled." instead of a fast, typed failure.
   it("fails a first turn fast when the model host never answers, instead of hanging for the inference timeout", async () => {
-    const hangingAdapter = adapter(primaryModelId, async () => generation(primaryModelId, "Ready."));
+    const hangingAdapter = adapter(primaryModelId, async () =>
+      generation(primaryModelId, "Ready.")
+    );
     hangingAdapter.canRun = () => new Promise(() => undefined);
     const store = createCp2Store({ modelRuntimeAdapterResolver: () => hangingAdapter });
     const app = buildApi({ cp2: { store } });
@@ -417,7 +419,9 @@ describe("zero-setup native runtime", () => {
   // control-plane deadline bound and report UNAVAILABLE, rather than blocking the settings page for
   // the full inference timeout budget while the model host never answers.
   it("bounds the settings-facing effective-runtime endpoint even when the model host never answers", async () => {
-    const hangingAdapter = adapter(primaryModelId, async () => generation(primaryModelId, "Ready."));
+    const hangingAdapter = adapter(primaryModelId, async () =>
+      generation(primaryModelId, "Ready.")
+    );
     hangingAdapter.canRun = () => new Promise(() => undefined);
     const store = createCp2Store({ modelRuntimeAdapterResolver: () => hangingAdapter });
     const app = buildApi({ cp2: { store } });
@@ -433,7 +437,11 @@ describe("zero-setup native runtime", () => {
         await vi.advanceTimersByTimeAsync(5_000);
         const response = await pending;
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toMatchObject({ source: "default", status: "UNAVAILABLE", ready: false });
+        expect(response.json()).toMatchObject({
+          source: "default",
+          status: "UNAVAILABLE",
+          ready: false
+        });
       } finally {
         vi.useRealTimers();
       }
