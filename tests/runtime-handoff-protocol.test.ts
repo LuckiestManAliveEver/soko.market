@@ -732,6 +732,16 @@ describe("runtime capability and transfer API", () => {
         });
         expect(caps.statusCode).toBe(200);
 
+        // GET .../handoff?version=N calls getRuntimeHandoffByVersion, a pure read of an
+        // already-recorded checkpoint - unlike the same path with no query, it never bootstraps,
+        // so it must not be swept up by the path-only pattern into waiting on the flush either.
+        const byVersion = await blocked.inject({
+          method: "GET",
+          url: `/v1/runtime/${f.taskId}/handoff?version=1`,
+          headers: { cookie: f.owner.cookie }
+        });
+        expect(byVersion.statusCode).toBe(200);
+
         // resolveRuntimeHandoff can legacy-bootstrap a checkpoint on first call (a real write), so
         // this GET - unlike capabilities above - must still wait for that write's durability to be
         // confirmed, and time out the same way a mutating request would.
