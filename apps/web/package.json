@@ -16,6 +16,7 @@
     "@mlc-ai/web-llm": "0.2.85",
     "@mlc-ai/web-xgrammar": "0.1.27",
     "@simplewebauthn/browser": "^13.0.0",
+    "@soko/offline-runtime": "workspace:*",
     "@soko/shared-types": "workspace:*",
     "@soko/sync-core": "workspace:*",
     "@soko/tool-core": "workspace:*",
@@ -23,13 +24,13 @@
     "libphonenumber-js": "^1.13.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "@soko/offline-runtime": "workspace:*",
     "tesseract.js": "7.0.0"
   },
   "devDependencies": {
+    "@tesseract.js-data/eng": "1.0.0",
     "@types/react": "^19.0.4",
     "@types/react-dom": "^19.0.2",
-    "@tesseract.js-data/eng": "1.0.0",
+    "@types/web-bluetooth": "^0.0.21",
     "tesseract.js-core": "7.0.0"
   }
 }

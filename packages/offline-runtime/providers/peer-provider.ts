@@ -15,7 +15,12 @@ export interface PeerTransport {
 export interface PeerQueuedMessage {
   envelope: ConversationMessageSummary;
   expiresAt: number;
+  attempts: number;
 }
+/** Resend cap from the whitepaper's sender-outbox section (§6.1): a message that still has
+ *  not been acknowledged after this many transmit attempts is dropped with a visible failure
+ *  instead of being retried forever. */
+export const PEER_OUTBOX_RESEND_CAP = 8;
 export interface PeerOutbox {
   load(): Promise<PeerQueuedMessage[]>;
   save(messages: PeerQueuedMessage[]): Promise<void>;
@@ -34,6 +39,7 @@ export function createPeerOutbox(db: LocalDatabase, scope: Scope): PeerOutbox {
 export class PeerProvider implements SokoProvider {
   readonly name = "peer";
   private handlers = new Set<(envelope: ConversationMessageSummary) => void>();
+  private deliveryFailedHandlers = new Set<(envelope: ConversationMessageSummary) => void>();
   private fragments = new Map<
     string,
     { parts: Map<number, Uint8Array>; count: number; expires: number }
@@ -81,10 +87,10 @@ export class PeerProvider implements SokoProvider {
     const queue = (await this.outbox.load()).filter((entry) => entry.expiresAt > Date.now());
     if (!queue.some((entry) => entry.envelope.id === envelope.id)) {
       if (queue.length >= 100) throw new Error("Nearby message queue is full.");
-      queue.push({ envelope, expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
+      queue.push({ envelope, expiresAt: Date.now() + 24 * 60 * 60 * 1000, attempts: 0 });
       await this.outbox.save(queue);
     }
-    if (await this.isAvailable()) await this.transmit(envelope);
+    if (await this.isAvailable()) await this.attemptDelivery(envelope.id);
     // Sending frames is not a delivery acknowledgement. Retain until the authenticated
     // application acknowledges the message, including across process restarts.
   }
@@ -97,14 +103,43 @@ export class PeerProvider implements SokoProvider {
       this.handlers.delete(handler);
     };
   }
+  /** Fires once a queued message is dropped after PEER_OUTBOX_RESEND_CAP unacknowledged
+   *  transmit attempts, so the caller can surface a visible failure instead of leaving the
+   *  sender believing delivery is still pending. */
+  onDeliveryFailed(handler: (envelope: ConversationMessageSummary) => void): () => void {
+    this.deliveryFailedHandlers.add(handler);
+    return () => {
+      this.deliveryFailedHandlers.delete(handler);
+    };
+  }
   async flush(): Promise<void> {
     const queue = (await this.outbox.load()).filter((entry) => entry.expiresAt > Date.now());
     await this.outbox.save(queue);
-    for (const entry of queue) await this.transmit(entry.envelope);
+    for (const entry of queue) await this.attemptDelivery(entry.envelope.id);
+  }
+  /** Transmits one queued entry and advances its attempt count, dropping it with a visible
+   *  failure once PEER_OUTBOX_RESEND_CAP is reached rather than retrying forever. */
+  private async attemptDelivery(id: string): Promise<void> {
+    const queue = await this.outbox.load();
+    const entry = queue.find((candidate) => candidate.envelope.id === id);
+    if (!entry) return;
+    const attempts = entry.attempts + 1;
+    if (attempts >= PEER_OUTBOX_RESEND_CAP) {
+      await this.outbox.save(queue.filter((candidate) => candidate.envelope.id !== id));
+      for (const handler of this.deliveryFailedHandlers) handler(entry.envelope);
+      return;
+    }
+    await this.outbox.save(
+      queue.map((candidate) =>
+        candidate.envelope.id === id ? { ...candidate, attempts } : candidate
+      )
+    );
+    await this.transmit(entry.envelope);
   }
   close(): void {
     this.unsubscribe();
     this.handlers.clear();
+    this.deliveryFailedHandlers.clear();
     this.fragments.clear();
   }
   private async transmit(envelope: ConversationMessageSummary): Promise<void> {

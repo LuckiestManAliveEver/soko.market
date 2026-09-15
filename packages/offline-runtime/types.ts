@@ -95,7 +95,7 @@ export interface LocalState extends Scope {
   pullCursor: string | null;
   /** RuntimeHandoff is the execution checkpoint; conversation content stays separate. */
   runtimeHandoffSession?: LocalRuntimeHandoffSession;
-  peerOutbox?: Array<{ envelope: ConversationMessageSummary; expiresAt: number }>;
+  peerOutbox?: Array<{ envelope: ConversationMessageSummary; expiresAt: number; attempts: number }>;
 }
 export interface LocalRuntimeMessage {
   id: string;

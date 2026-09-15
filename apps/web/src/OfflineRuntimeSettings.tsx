@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { installOfflineRuntime, type InstallStep, type LocalState } from "@soko/offline-runtime";
+import type { ConversationMessageSummary } from "@soko/shared-types";
 import { SettingsGroup } from "./SettingsGroup";
 import { OfflineInstallWizard } from "./OfflineInstallWizard";
 import { prepareOfflineShell } from "./offline-shell";
@@ -8,6 +9,17 @@ import { clearApiRequestCache } from "./api-request-cache";
 import { ensureOcrEngineCached, isOcrEngineCached } from "./offline-ocr";
 import type { OfflineAssistantReply } from "./webllm-runtime";
 import { runtimeHandoffController, withRuntimeTransition } from "./runtime-handoff";
+import {
+  peerMessagingEnabled,
+  peerMessagingSupported,
+  nearbyConnectionStatus,
+  onNearbyStatusChange,
+  connectNearbyDevice,
+  disconnectNearbyDevice,
+  sendNearbyMessage,
+  nearbyProvider,
+  type NearbyConnectionStatus
+} from "./peer-messaging";
 import {
   offlineDatabase,
   getOfflineState,
@@ -52,6 +64,40 @@ export function OfflineRuntimeSettings({
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantReply, setAssistantReply] = useState<OfflineAssistantReply | null>(null);
   const [assistantError, setAssistantError] = useState("");
+  const [nearbyStatus, setNearbyStatus] =
+    useState<NearbyConnectionStatus>(nearbyConnectionStatus());
+  const [nearbyBusy, setNearbyBusy] = useState(false);
+  const [nearbyError, setNearbyError] = useState("");
+  const [nearbyDraft, setNearbyDraft] = useState("");
+  const [nearbyReceived, setNearbyReceived] = useState<ConversationMessageSummary[]>([]);
+  const [nearbyFailed, setNearbyFailed] = useState<ConversationMessageSummary[]>([]);
+  const nearbyHandlersCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (!peerMessagingEnabled || !peerMessagingSupported()) return;
+    let cancelled = false;
+    const unsubscribeStatus = onNearbyStatusChange(setNearbyStatus);
+    void nearbyProvider({ accountId, storeId: businessId, deviceId: readStableDeviceId() }).then(
+      (provider) => {
+        if (cancelled) return;
+        const unsubscribeReceive = provider.onReceive((message) => {
+          setNearbyReceived((previous) => [...previous, message]);
+        });
+        const unsubscribeFailed = provider.onDeliveryFailed((message) => {
+          setNearbyFailed((previous) => [...previous, message]);
+        });
+        nearbyHandlersCleanup.current = () => {
+          unsubscribeReceive();
+          unsubscribeFailed();
+        };
+      }
+    );
+    return () => {
+      cancelled = true;
+      unsubscribeStatus();
+      nearbyHandlersCleanup.current?.();
+      nearbyHandlersCleanup.current = null;
+    };
+  }, [accountId, businessId]);
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
@@ -209,7 +255,9 @@ export function OfflineRuntimeSettings({
             once.
           </li>
           <li>
-            Nearby device-to-device messaging - a research prototype, not available in this PWA.
+            {peerMessagingEnabled
+              ? "Nearby device-to-device messaging over Bluetooth is a separate, opt-in channel below - it does not carry your regular conversations and needs a Bluetooth-capable browser plus a compatible nearby device."
+              : "Nearby device-to-device messaging - a research prototype, not available in this PWA."}
           </li>
           <li>
             The on-device assistant answers only from what you type - it has no catalogue, order,
@@ -325,6 +373,115 @@ export function OfflineRuntimeSettings({
             </div>
           )}
         </div>
+      )}
+      {peerMessagingEnabled && modeActive && (
+        <section aria-labelledby="nearby-messaging-title">
+          <h4 id="nearby-messaging-title">Message a nearby device (Bluetooth, experimental)</h4>
+          <p>
+            Connects directly to one nearby Soko-compatible device over Bluetooth - no internet, no
+            server in between. This is separate from your regular conversations: messages sent here
+            only reach the device you are connected to, only while connected, and are not saved to
+            any conversation history.
+          </p>
+          {!peerMessagingSupported() ? (
+            <p role="alert">This browser does not support Bluetooth (Web Bluetooth).</p>
+          ) : (
+            <>
+              <p role="status">
+                {nearbyStatus === "connected"
+                  ? "Connected to a nearby device."
+                  : nearbyStatus === "connecting"
+                    ? "Connecting…"
+                    : "Not connected."}
+              </p>
+              {nearbyStatus === "connected" ? (
+                <button
+                  type="button"
+                  disabled={nearbyBusy}
+                  onClick={() => {
+                    disconnectNearbyDevice();
+                  }}
+                >
+                  Disconnect
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={nearbyBusy || nearbyStatus === "connecting"}
+                  onClick={() => {
+                    setNearbyBusy(true);
+                    setNearbyError("");
+                    void connectNearbyDevice({
+                      accountId,
+                      storeId: businessId,
+                      deviceId: readStableDeviceId()
+                    })
+                      .catch((error: unknown) => {
+                        setNearbyError(
+                          error instanceof Error
+                            ? error.message
+                            : "Could not connect to that device."
+                        );
+                      })
+                      .finally(() => setNearbyBusy(false));
+                  }}
+                >
+                  Connect a nearby device
+                </button>
+              )}
+              {nearbyError && <p role="alert">{nearbyError}</p>}
+              {nearbyStatus === "connected" && (
+                <div>
+                  <textarea
+                    aria-label="Message the nearby device"
+                    value={nearbyDraft}
+                    disabled={nearbyBusy}
+                    onChange={(event) => setNearbyDraft(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    disabled={nearbyBusy || !nearbyDraft.trim()}
+                    onClick={() => {
+                      setNearbyBusy(true);
+                      setNearbyError("");
+                      void sendNearbyMessage(
+                        { accountId, storeId: businessId, deviceId: readStableDeviceId() },
+                        nearbyDraft
+                      )
+                        .then(() => setNearbyDraft(""))
+                        .catch((error: unknown) => {
+                          setNearbyError(
+                            error instanceof Error ? error.message : "Could not send that message."
+                          );
+                        })
+                        .finally(() => setNearbyBusy(false));
+                    }}
+                  >
+                    Send
+                  </button>
+                </div>
+              )}
+              {nearbyReceived.length > 0 && (
+                <ul aria-label="Messages received from the nearby device">
+                  {nearbyReceived.map((message) => (
+                    <li key={message.id}>
+                      {message.content.type === "text"
+                        ? message.content.text
+                        : "(unsupported message)"}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {nearbyFailed.length > 0 && (
+                <p role="alert">
+                  {nearbyFailed.length} message{nearbyFailed.length === 1 ? "" : "s"} could not be
+                  delivered after repeated attempts and {nearbyFailed.length === 1 ? "was" : "were"}{" "}
+                  dropped.
+                </p>
+              )}
+            </>
+          )}
+        </section>
       )}
       {modeActive && state?.pin?.active && (
         <div>
