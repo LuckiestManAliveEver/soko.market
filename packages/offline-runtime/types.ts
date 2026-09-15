@@ -95,7 +95,45 @@ export interface LocalState extends Scope {
   pullCursor: string | null;
   /** RuntimeHandoff is the execution checkpoint; conversation content stays separate. */
   runtimeHandoffSession?: LocalRuntimeHandoffSession;
-  peerOutbox?: Array<{ envelope: ConversationMessageSummary; expiresAt: number; attempts: number }>;
+  /** Mirrors providers/peer-provider.ts's PeerQueuedMessage/PeerOutboxEnvelope shape - kept as an
+   *  inline structural type here (rather than imported) so types.ts, the package's base module,
+   *  never depends on providers/. */
+  peerOutbox?: Array<{
+    id: string;
+    envelope:
+      | { kind: "conversation_message"; message: ConversationMessageSummary }
+      | { kind: "order_intent"; intent: OfflineOrderIntent };
+    expiresAt: number;
+    attempts: number;
+  }>;
+  pendingOfflineOrders?: PendingOfflineOrder[];
+}
+
+/** OfflineOrderIntent/OfflineOrderIntentOutcome/CatalogueDigest and friends are defined in
+ *  @soko/shared-types (not here) and re-exported, because services/api's NativeSmsInboundResult
+ *  (also in shared-types) needs to reference OfflineOrderIntentOutcome, and shared-types cannot
+ *  depend on this package (this package already depends on shared-types, e.g.
+ *  ConversationMessageSummary below - the dependency only goes one way). */
+export type {
+  OfflineOrderTransport,
+  OfflineOrderIntentStatus,
+  OfflineOrderCustomerClaim,
+  OfflineOrderItemIntent,
+  OfflineOrderIntent,
+  OfflineOrderItemOutcome,
+  OfflineOrderIntentOutcome,
+  CatalogueDigest
+} from "@soko/shared-types";
+
+/** Local record of one captured intent plus its last known reconciliation outcome. Never
+ *  decrements local product stock - `provisionalReservation` is purely a merchant-facing
+ *  "someone already asked for this" signal until the server confirms it. */
+export interface PendingOfflineOrder {
+  intent: OfflineOrderIntent;
+  status: OfflineOrderIntentStatus;
+  createdAtLocal: string;
+  syncedAt: string | null;
+  outcome: OfflineOrderIntentOutcome | null;
 }
 export interface LocalRuntimeMessage {
   id: string;
@@ -157,7 +195,8 @@ export function emptyState(scope: Scope): LocalState {
     pin: null,
     nextLocalSeq: 1,
     lastPushedLocalSeq: 0,
-    pullCursor: null
+    pullCursor: null,
+    pendingOfflineOrders: []
   };
 }
 export class OfflineError extends Error {
@@ -174,5 +213,8 @@ import type {
   ConversationMessageSummary,
   OcrEngine,
   OcrProfile,
-  OcrBlockSummary
+  OcrBlockSummary,
+  OfflineOrderIntent,
+  OfflineOrderIntentOutcome,
+  OfflineOrderIntentStatus
 } from "@soko/shared-types";

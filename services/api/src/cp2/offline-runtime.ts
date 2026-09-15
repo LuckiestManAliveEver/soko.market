@@ -1,4 +1,11 @@
-import type { Ack, BusinessChange, Collection, Entity, Operation } from "@soko/offline-runtime";
+import type {
+  Ack,
+  BusinessChange,
+  Collection,
+  Entity,
+  Operation,
+  OfflineOrderIntentOutcome
+} from "@soko/offline-runtime";
 import { same } from "@soko/offline-runtime";
 import { Cp2Error } from "./cp2-error.js";
 
@@ -14,6 +21,11 @@ export interface OfflineReceipt {
 export class OfflineJournal {
   readonly receipts = new Map<string, OfflineReceipt>();
   readonly changes = new Map<string, BusinessChange>();
+  /** Idempotency cache for offline order intents, keyed by the intent's own client-generated id.
+   *  Unlike `receipts` (below), these have no per-device local sequence to order against - an
+   *  intent can arrive from any customer device over BLE, or from a phone number over SMS - so
+   *  this only ever dedupes a retried push, it never rejects one as "out of order". */
+  private readonly orderIntentOutcomes = new Map<string, OfflineOrderIntentOutcome>();
   private sequence = 0;
   restore(receipts: OfflineReceipt[] = [], changes: BusinessChange[] = [], watermark = 0): void {
     this.receipts.clear();
@@ -95,6 +107,16 @@ export class OfflineJournal {
       ack: structuredClone(ack)
     });
     return ack;
+  }
+  /** Runs `apply()` at most once per intent id; a retried push of the same id returns the
+   *  cached outcome instead of re-processing it (so a batch retry after a dropped HTTP response
+   *  can never double-confirm or double-reject the same order). */
+  replayOrderIntent(intentId: string, apply: () => OfflineOrderIntentOutcome): OfflineOrderIntentOutcome {
+    const cached = this.orderIntentOutcomes.get(intentId);
+    if (cached) return structuredClone(cached);
+    const outcome = apply();
+    this.orderIntentOutcomes.set(intentId, structuredClone(outcome));
+    return outcome;
   }
   recordFailure(operation: Operation, ack: Ack): void {
     const key = JSON.stringify([

@@ -7,6 +7,13 @@ Enrollment defaults off: `OFFLINE_RUNTIME_ENABLED=false` on the API and `VITE_OF
 3. Add one second internal tester/device to the same test shop. Exercise conflicting stock counts, nonoverlapping catalogue changes, failed uploads, revoked sessions and the manual-resolution choices.
 4. Wider beta requires measured results on actual Android hardware and a working native runtime before claiming offline AI. BLE remains a separately gated prototype.
 
+BLE order intents (`peer.orderIntent.send`/`catalogue_digest`) and SMS order parsing ride the same
+BLE-prototype and native-SMS gates as everything else in this document - see
+`docs/offline/offline-commerce.md`. Neither is flipped on by that work; a merchant device only
+reconciles an order intent through `/sync/order-intents` once it is already an enrolled offline
+install, and SMS order parsing only runs on messages the existing `native_sms` channel already
+ingests.
+
 Watch: installation bytes/time, estimate quota and usage, persistent-storage availability, cold offline startup, peak memory, write latency, sync pending count/age, rejection/conflict count, acknowledgement latency, retry count, API persistence failures and journal size. Do not send customer/product contents as telemetry. Current progress and pending counts are visible locally; aggregate remote telemetry is not silently enabled.
 
 ## Rollback

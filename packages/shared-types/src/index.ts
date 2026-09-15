@@ -768,6 +768,11 @@ export interface NativeSmsInboundResult {
   customer: CustomerSummary;
   receipt: ProviderUpdateReceiptSummary;
   message: ConversationMessageSummary | null;
+  /** Set when this SMS text looked like an order and was reconciled immediately (the merchant's
+   *  device is, by definition, online at the moment this ingestion call happens). Null when the
+   *  text wasn't order-shaped, or when it was ambiguous and a clarification reply was sent
+   *  instead - see services/api/src/cp2/domains/agent-runtime/offline-order-planning.ts. */
+  orderIntentOutcome: OfflineOrderIntentOutcome | null;
 }
 
 export interface ProviderUpdateReceiptSummary {
@@ -2866,6 +2871,75 @@ export interface InventoryMovementSummary {
   reason: string;
   actorId: string;
   createdAt: string;
+}
+
+/** Where an order intent was captured. Kept narrow on purpose: every new transport this list
+ *  gains needs its own identity-claim rules reviewed, the same way
+ *  packages/offline-runtime/providers/peer-provider.ts's BLE transport does today. */
+export type OfflineOrderTransport = "ble" | "sms";
+export type OfflineOrderIntentStatus = "pending_sync" | "confirmed" | "rejected" | "partial";
+
+/** How the buyer's identity was asserted when the intent was captured. Never a BLE device name
+ *  or address - peer-provider.ts's transport never trusts one as identity. */
+export type OfflineOrderCustomerClaim =
+  | { type: "account"; accountId: string; displayName: string | null }
+  | { type: "phone"; phone: string; displayName: string | null };
+
+export interface OfflineOrderItemIntent {
+  /** Cloud product id, when the capturing device's catalogue mirror already knows it. */
+  productCloudId: string | null;
+  /** The name as quoted/typed at capture time - used for display and, for SMS, for server-side
+   *  matching when no productCloudId is available yet. */
+  name: string;
+  quantity: number;
+  /** Price as quoted to the buyer at capture time. Tentative: the server is the only thing that
+   *  turns this into a real invoice line, and may reprice against the current catalogue. */
+  quotedUnitPrice: number | null;
+}
+
+/** One order a merchant's device received while offline, over BLE or SMS. Client- or
+ *  server-authored (SMS is parsed server-side), idempotency-keyed by `id`. This never represents
+ *  a confirmed sale on its own - see docs/offline/offline-commerce.md. */
+export interface OfflineOrderIntent {
+  id: string;
+  accountId: string;
+  storeId: string;
+  transport: OfflineOrderTransport;
+  customerClaim: OfflineOrderCustomerClaim;
+  items: OfflineOrderItemIntent[];
+  paymentMethod: string | null;
+  paymentReference: string | null;
+  note: string | null;
+  receivedAtLocal: string;
+  rawText: string | null;
+}
+
+export interface OfflineOrderItemOutcome {
+  name: string;
+  quantity: number;
+  productId: string | null;
+  reason: string | null;
+}
+
+/** What the offline-order reconciliation endpoint returns for one intent. `confirmed`/`partial`
+ *  carry the real invoice id the intent became; `rejected` never does. */
+export interface OfflineOrderIntentOutcome {
+  id: string;
+  status: OfflineOrderIntentStatus;
+  invoiceId: string | null;
+  confirmedItems: OfflineOrderItemOutcome[];
+  rejectedItems: OfflineOrderItemOutcome[];
+  message: string;
+}
+
+/** A small, broadcastable BLE beacon of a merchant device's catalogue state - never the
+ *  catalogue itself. A peer that sees a stale digest should `connect()` for a direct pull of the
+ *  delta rather than wait for or request a full broadcast. */
+export interface CatalogueDigest {
+  storeId: string;
+  productListHash: string;
+  lastSyncSequence: number;
+  issuedAt: string;
 }
 
 export interface OfflineCacheSnapshot {

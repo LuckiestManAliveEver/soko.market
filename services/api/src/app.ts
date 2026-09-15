@@ -184,8 +184,10 @@ export function buildApi(options: BuildApiOptions = {}) {
       }
     } catch (error) {
       if (error instanceof PersistenceFlushDeadlineExceeded) {
-        // An offline ACK must prove durability before the device clears its pending mutation.
-        if (request.routeOptions.url === "/sync/push") throw error;
+        // An offline ACK must prove durability before the device clears its pending mutation -
+        // same reasoning for a confirmed/rejected order intent outcome.
+        if (request.routeOptions.url === "/sync/push" || request.routeOptions.url === "/sync/order-intents")
+          throw error;
         if (request.url.startsWith("/v1/runtime/")) {
           reply.code(503);
           return JSON.stringify({

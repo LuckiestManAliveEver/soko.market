@@ -86,3 +86,13 @@ CREATE TABLE IF NOT EXISTS pending_conflicts (
   FOREIGN KEY(scope_key, operation_id) REFERENCES sync_operations(scope_key, local_id)
 );
 INSERT OR IGNORE INTO local_migrations VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+-- Additive, from db/migrations/002_offline_orders.sql - see that file's own comment.
+CREATE TABLE IF NOT EXISTS pending_offline_orders (
+  local_id TEXT NOT NULL, scope_key TEXT NOT NULL REFERENCES runtime_scopes(scope_key) ON DELETE CASCADE,
+  store_id TEXT NOT NULL, transport TEXT NOT NULL CHECK(transport IN ('ble','sms')),
+  status TEXT NOT NULL DEFAULT 'pending_sync' CHECK(status IN ('pending_sync','confirmed','rejected','partial')),
+  created_at_local TEXT NOT NULL, synced_at TEXT,
+  intent TEXT NOT NULL CHECK(json_valid(intent)), outcome TEXT CHECK(outcome IS NULL OR json_valid(outcome)),
+  PRIMARY KEY(scope_key, local_id),
+  FOREIGN KEY(scope_key, store_id) REFERENCES runtime_scopes(scope_key, store_id)
+);

@@ -7,6 +7,8 @@ import {
   openSqliteLocalDatabase,
   LocalProvider,
   installOfflineRuntime,
+  recordPendingOfflineOrder,
+  type OfflineOrderIntent,
   type SqliteDriver
 } from "../packages/offline-runtime/index";
 
@@ -53,6 +55,40 @@ describe("Native SQLite local store", () => {
       );
       driver.exec(sql);
       expect(driver.prepare("SELECT count(*) AS n FROM local_migrations").get()?.n).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("persists pending offline order intents into their own table, additive to the base schema", async () => {
+    const driver = new DatabaseSync(":memory:");
+    const db = openSqliteLocalDatabase(driver as unknown as SqliteDriver);
+    const scope = { accountId: "account", storeId: "shop", deviceId: "native-device" };
+    try {
+      const intent: OfflineOrderIntent = {
+        id: "intent-1",
+        accountId: scope.accountId,
+        storeId: scope.storeId,
+        transport: "ble",
+        customerClaim: { type: "account", accountId: "buyer-account", displayName: "Buyer" },
+        items: [{ productCloudId: "sugar", name: "Sugar 1kg", quantity: 2, quotedUnitPrice: 100 }],
+        paymentMethod: null,
+        paymentReference: null,
+        note: null,
+        receivedAtLocal: new Date().toISOString(),
+        rawText: null
+      };
+      await recordPendingOfflineOrder(db, scope, intent);
+      expect(
+        driver.prepare("SELECT count(*) AS n FROM pending_offline_orders").get()?.n
+      ).toBe(1);
+      expect(
+        driver
+          .prepare("SELECT status, transport FROM pending_offline_orders WHERE local_id = ?")
+          .get("intent-1")
+      ).toMatchObject({ status: "pending_sync", transport: "ble" });
+      expect(() => driver.exec("UPDATE pending_offline_orders SET transport='carrier-pigeon'")).toThrow();
+      expect(() => driver.exec("UPDATE pending_offline_orders SET status='shipped'")).toThrow();
     } finally {
       db.close();
     }

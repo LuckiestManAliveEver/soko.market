@@ -10,6 +10,8 @@ export * from "./providers/peer-provider.js";
 export * from "./sync/writer.js";
 export * from "./sync/client.js";
 export * from "./sync/conflict-resolver.js";
+export * from "./offline-orders/intent.js";
+export * from "./offline-orders/sync.js";
 export * from "./runtime/pin.js";
 export * from "./runtime/install.js";
 export * from "./runtime/artifacts.js";

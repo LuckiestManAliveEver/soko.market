@@ -110,7 +110,10 @@ import type {
   NativeSmsExecutableCommand,
   NativeSmsInboundResult,
   NativeSmsResultCode,
+  OfflineOrderIntent,
+  OfflineOrderIntentOutcome,
   PlatformIdentitySummary,
+  ProductSummary,
   ProviderUpdateReceiptSummary,
   PublicStorefrontMessageSummary,
   PushSubscriptionSummary,
@@ -148,6 +151,11 @@ import {
   type ConversationAttachmentRecord
 } from "../../workspace-file-delivery.js";
 import { decryptOAuthToken, encryptOAuthToken, hashOAuthSecret } from "../../oauth.js";
+import {
+  offlineOrderClarificationMessage,
+  offlineOrderOutcomeMessage,
+  parseOfflineOrderText
+} from "../agent-runtime/offline-order-planning.js";
 import {
   normalizeDestination,
   normalizeInternationalOwnerPhoneNumber
@@ -243,6 +251,16 @@ export interface MessagingDomainDeps {
     now: Date;
   }) => CustomerSummary;
   requireInvoice: (businessId: string, invoiceId: string) => InvoiceSummary;
+  /** Same callback shape as requireInvoice above - offline-order reconciliation isn't extracted
+   *  out of Cp2Store yet either, and SMS order parsing needs the live product catalogue to match
+   *  quoted item names against. */
+  productsForBusiness: (businessId: string) => ProductSummary[];
+  /** The one reconciliation path for OfflineOrderIntent, whichever transport captured it - see
+   *  Cp2Store.pushOfflineOrderIntents. Injected rather than duplicated here. */
+  pushOfflineOrderIntents: (
+    sessionId: string | null,
+    intents: OfflineOrderIntent[]
+  ) => OfflineOrderIntentOutcome[];
   ensureSokoSessionContext: (session: AuthSessionView, now: Date) => StoredSokoSessionContext;
   createRuntimeTurn: (input: {
     sessionId: string | null;
@@ -1243,8 +1261,105 @@ export class MessagingDomain {
       providerMessageId: externalMessageId,
       now: new Date(occurredAt)
     });
+    const orderIntentOutcome = this.reconcileInboundSmsOrder({
+      sessionId: input.sessionId,
+      businessId: input.businessId,
+      accountId: auth.account.id,
+      device,
+      externalMessageId,
+      sender,
+      customer,
+      text: input.text,
+      occurredAt,
+      now
+    });
     const touchedDevice = this.touchNativeSmsDevice(device, now);
-    return { device: this.nativeSmsDeviceView(touchedDevice, now), customer, ...ingested };
+    return {
+      device: this.nativeSmsDeviceView(touchedDevice, now),
+      customer,
+      ...ingested,
+      orderIntentOutcome
+    };
+  }
+
+  /** The single hook where an inbound SMS becomes an OfflineOrderIntent. Text that doesn't look
+   *  order-shaped is left alone (returns null, no reply sent) - only messages with at least one
+   *  quantity-led segment reach the parser at all. Reuses
+   *  offline-order-planning.ts's parseOfflineOrderText (same function the unit tests exercise
+   *  directly) and Cp2Store.pushOfflineOrderIntents (the same reconciliation path BLE intents go
+   *  through via POST /sync/order-intents) - there is exactly one place order text turns into a
+   *  structured intent and exactly one place an intent turns into a real invoice. */
+  private reconcileInboundSmsOrder(input: {
+    sessionId: string | null;
+    businessId: string;
+    accountId: string;
+    device: NativeSmsDeviceSummary;
+    externalMessageId: string;
+    sender: string;
+    customer: CustomerSummary;
+    text: string;
+    occurredAt: string;
+    now: Date;
+  }): OfflineOrderIntentOutcome | null {
+    const parsed = parseOfflineOrderText(input.text, this.deps.productsForBusiness(input.businessId));
+    if (!parsed.looksLikeOrder) return null;
+    const replyIdempotencyKey = `sms-order:${input.device.id}:${input.externalMessageId}`;
+    if (parsed.items.length === 0) {
+      // Ambiguous - reply asking for clarification instead of guessing at the order. This is a
+      // system-initiated transactional reply, not an automatic conversational one; the
+      // `automaticRepliesEnabled: false` metadata set on this conversation above is about the AI
+      // agent, and doesn't apply here.
+      this.sendChannelMessage({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        customerId: input.customer.id,
+        provider: "native_sms",
+        text: offlineOrderClarificationMessage(parsed.problems),
+        idempotencyKey: `${replyIdempotencyKey}:clarify`,
+        now: input.now
+      }).catch(() => undefined);
+      return null;
+    }
+    const intent: OfflineOrderIntent = {
+      id: replyIdempotencyKey,
+      accountId: input.accountId,
+      storeId: input.businessId,
+      transport: "sms",
+      customerClaim: { type: "phone", phone: input.sender, displayName: input.customer.name },
+      items: parsed.items.map((item) => ({
+        productCloudId: item.productId,
+        name: item.name,
+        quantity: item.quantity,
+        quotedUnitPrice: null
+      })),
+      paymentMethod: null,
+      paymentReference: null,
+      note: null,
+      receivedAtLocal: input.occurredAt,
+      rawText: input.text
+    };
+    // Best-effort relative to message ingestion: the canonical conversation message above is
+    // already durably recorded by this point, and a reconciliation failure (e.g. a transient
+    // authorization or stock-conflict error) must never fail the whole ingestion response - the
+    // device would otherwise retry an inbound message it already delivered successfully.
+    let outcome: OfflineOrderIntentOutcome | undefined;
+    try {
+      [outcome] = this.deps.pushOfflineOrderIntents(input.sessionId, [intent]);
+    } catch {
+      return null;
+    }
+    if (outcome) {
+      this.sendChannelMessage({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        customerId: input.customer.id,
+        provider: "native_sms",
+        text: offlineOrderOutcomeMessage(outcome),
+        idempotencyKey: `${replyIdempotencyKey}:outcome`,
+        now: input.now
+      }).catch(() => undefined);
+    }
+    return outcome ?? null;
   }
 
   listConnectedMailboxProviders(input: {

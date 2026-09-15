@@ -9,8 +9,15 @@ import {
   type Operation as OfflineOperation,
   type Ack as OfflineAck,
   type BusinessChange as OfflineBusinessChange,
-  type Entity as OfflineEntity
+  type Entity as OfflineEntity,
+  type OfflineOrderIntent,
+  type OfflineOrderIntentOutcome,
+  type OfflineOrderItemOutcome,
+  type OfflineOrderCustomerClaim,
+  type OfflineOrderItemIntent
 } from "@soko/offline-runtime";
+import { normalizeExistingCustomerPhone } from "./domains/messaging/shared.js";
+import { matchOfflineOrderProducts } from "./domains/agent-runtime/offline-order-planning.js";
 import {
   parseProductBody as parseOfflineProduct,
   parseStockAdjustmentBody as parseOfflineStock,
@@ -1100,6 +1107,9 @@ export class Cp2Store {
       createGuestCustomer: (input) => this.salesDomain.createGuestCustomer(input),
       requireInvoice: (businessId, invoiceId) =>
         this.salesDomain.requireInvoice(businessId, invoiceId),
+      productsForBusiness: (businessId) => this.salesDomain.productsForBusiness(businessId),
+      pushOfflineOrderIntents: (sessionId, intents) =>
+        this.pushOfflineOrderIntents(sessionId, intents),
       ensureSokoSessionContext: (session, now) => this.ensureSokoSessionContext(session, now),
       createRuntimeTurn: (input) => this.agentRuntimeDomain.createRuntimeTurn(input),
       agentModelRecoveryGuidance: (businessId, error) =>
@@ -4532,6 +4542,11 @@ export class Cp2Store {
   ): ReturnType<SalesDomain["createCustomer"]> {
     return this.salesDomain.createCustomer(...args);
   }
+  createGuestCustomer(
+    ...args: Parameters<SalesDomain["createGuestCustomer"]>
+  ): ReturnType<SalesDomain["createGuestCustomer"]> {
+    return this.salesDomain.createGuestCustomer(...args);
+  }
   updateCustomer(
     ...args: Parameters<SalesDomain["updateCustomer"]>
   ): ReturnType<SalesDomain["updateCustomer"]> {
@@ -5865,6 +5880,204 @@ export class Cp2Store {
       this.offlineJournal.recordFailure(operation, ack);
       return ack;
     }
+  }
+
+  /** The one reconciliation path for every OfflineOrderIntent, whichever transport captured it -
+   *  called from POST /sync/order-intents (BLE, pushed by the merchant's own device) and directly
+   *  from MessagingDomain.ingestNativeSmsMessage (SMS, reconciled the moment the buffered text
+   *  reaches this already-online server). Assigns real sequence numbers and does real stock
+   *  checks by doing nothing but calling the existing, synchronous createInvoice/confirmInvoice -
+   *  see docs/offline/offline-commerce.md for why that alone is enough to make two devices
+   *  racing to sell the last unit resolve to exactly one winner. */
+  pushOfflineOrderIntents(
+    sessionId: string | null,
+    intents: OfflineOrderIntent[]
+  ): OfflineOrderIntentOutcome[] {
+    return intents.map((intent) => this.reconcileOfflineOrderIntent(sessionId, intent));
+  }
+
+  private reconcileOfflineOrderIntent(
+    sessionId: string | null,
+    intent: OfflineOrderIntent
+  ): OfflineOrderIntentOutcome {
+    return this.offlineJournal.replayOrderIntent(intent.id, () => {
+      const now = new Date();
+      const businessId = intent.storeId;
+      const actor = this.requireAuthorizedSession(sessionId, businessId, "invoice:write", now);
+      if (actor.account.id !== intent.accountId)
+        throw new Cp2Error(
+          403,
+          "offline_order_account_mismatch",
+          "This order intent belongs to another account."
+        );
+
+      let customer;
+      try {
+        customer = this.resolveOfflineOrderCustomer(sessionId, businessId, intent.customerClaim, now);
+      } catch (error) {
+        return rejectedOrderOutcome(intent, `Could not identify the customer: ${errorMessage(error)}`);
+      }
+
+      const products = this.salesDomain.productsForBusiness(businessId);
+      const unmatched: OfflineOrderItemOutcome[] = [];
+      const matched: { item: OfflineOrderItemIntent; product: ProductSummary }[] = [];
+      for (const item of intent.items) {
+        const product = matchOfflineOrderProduct(products, item);
+        if (!product) {
+          unmatched.push({
+            name: item.name,
+            quantity: item.quantity,
+            productId: null,
+            reason: "Product not found in the catalogue, or the name matched more than one."
+          });
+          continue;
+        }
+        matched.push({ item, product });
+      }
+      if (matched.length === 0)
+        return {
+          id: intent.id,
+          status: "rejected",
+          invoiceId: null,
+          confirmedItems: [],
+          rejectedItems: unmatched,
+          message: "No items in this order matched the catalogue."
+        };
+
+      // Single synchronous pass over an in-memory Map, exactly like confirmInvoice's own
+      // check-then-decrement below - nothing can interleave between reading `product.quantity`
+      // here and confirmInvoice() applying it, so two intents racing for the same unit resolve
+      // deterministically to whichever this process reaches first.
+      const claimedWithinIntent = new Map<string, number>();
+      const fulfillable: { item: OfflineOrderItemIntent; product: ProductSummary }[] = [];
+      const oversold: OfflineOrderItemOutcome[] = [];
+      for (const { item, product } of matched) {
+        const alreadyClaimed = claimedWithinIntent.get(product.id) ?? 0;
+        const available = product.quantity - alreadyClaimed;
+        if (item.quantity <= available) {
+          fulfillable.push({ item, product });
+          claimedWithinIntent.set(product.id, alreadyClaimed + item.quantity);
+        } else {
+          oversold.push({
+            name: product.name,
+            quantity: item.quantity,
+            productId: product.id,
+            reason: `Only ${Math.max(available, 0)} ${product.unit} available.`
+          });
+        }
+      }
+      const rejectedItems = [...unmatched, ...oversold];
+      if (fulfillable.length === 0)
+        return {
+          id: intent.id,
+          status: "rejected",
+          invoiceId: null,
+          confirmedItems: [],
+          rejectedItems,
+          message: "This order could not be fulfilled: every item was out of stock or unrecognized."
+        };
+
+      const draft = this.createInvoice({
+        sessionId,
+        businessId,
+        now,
+        invoice: {
+          customerId: customer.id,
+          customerName: null,
+          taxRate: 0,
+          items: fulfillable.map(({ item, product }) => ({
+            productId: product.id,
+            quantity: item.quantity,
+            unitPrice: item.quotedUnitPrice ?? product.sellingPrice ?? 0
+          }))
+        }
+      });
+      let invoice;
+      try {
+        invoice = this.confirmInvoice({ sessionId, businessId, invoiceId: draft.id, now }).invoice;
+      } catch (error) {
+        // Only reachable if stock moved between the check above and here - e.g. an earlier
+        // intent in the same batch already consumed it. Leaves no stray unconfirmed draft: the
+        // whole intent is rejected and the draft stays a harmless, never-surfaced "draft" record.
+        return {
+          id: intent.id,
+          status: "rejected",
+          invoiceId: null,
+          confirmedItems: [],
+          rejectedItems: [
+            ...rejectedItems,
+            ...fulfillable.map(({ item, product }) => ({
+              name: product.name,
+              quantity: item.quantity,
+              productId: product.id,
+              reason: errorMessage(error)
+            }))
+          ],
+          message: "Stock changed before this order could be confirmed."
+        };
+      }
+
+      const confirmedItems: OfflineOrderItemOutcome[] = fulfillable.map(({ item, product }) => ({
+        name: product.name,
+        quantity: item.quantity,
+        productId: product.id,
+        reason: null
+      }));
+      return {
+        id: intent.id,
+        status: rejectedItems.length === 0 ? "confirmed" : "partial",
+        invoiceId: invoice.id,
+        confirmedItems,
+        rejectedItems,
+        message:
+          rejectedItems.length === 0
+            ? `Order confirmed as invoice ${invoice.invoiceNumber}.`
+            : `Invoice ${invoice.invoiceNumber} confirmed for the items in stock; ${rejectedItems.length} item(s) were rejected.`
+      };
+    });
+  }
+
+  private resolveOfflineOrderCustomer(
+    sessionId: string | null,
+    businessId: string,
+    claim: OfflineOrderCustomerClaim,
+    now: Date
+  ) {
+    if (claim.type === "phone") {
+      const phone = normalizeInternationalOwnerPhoneNumber(claim.phone).e164;
+      const existing = this.salesDomain
+        .customersForBusiness(businessId)
+        .find((candidate) => normalizeExistingCustomerPhone(candidate.phone) === phone);
+      if (existing) return existing;
+      const guest = this.createGuestCustomer({
+        businessId,
+        provider: "native_sms",
+        externalUserId: phone,
+        displayName: claim.displayName,
+        now
+      });
+      const withPhone = { ...guest, phone };
+      this.salesDomain.customersMap.set(withPhone.id, withPhone);
+      return withPhone;
+    }
+    const existing = this.salesDomain
+      .customersForBusiness(businessId)
+      .find((candidate) => candidate.linkedAccountId === claim.accountId);
+    if (existing) return existing;
+    const guest = this.createGuestCustomer({
+      businessId,
+      provider: "soko",
+      externalUserId: claim.accountId,
+      displayName: claim.displayName,
+      now
+    });
+    return this.linkCustomerAccount({
+      sessionId,
+      businessId,
+      customerId: guest.id,
+      accountId: claim.accountId,
+      now
+    });
   }
 
   enqueueSyncMutation(input: {
@@ -11073,4 +11286,41 @@ function syncOriginCursor(accountId: string): string {
 function syncRecordDate(value: string): Date {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? new Date(0) : date;
+}
+
+function rejectedOrderOutcome(intent: OfflineOrderIntent, message: string): OfflineOrderIntentOutcome {
+  return {
+    id: intent.id,
+    status: "rejected",
+    invoiceId: null,
+    confirmedItems: [],
+    rejectedItems: intent.items.map((item) => ({
+      name: item.name,
+      quantity: item.quantity,
+      productId: item.productCloudId,
+      reason: message
+    })),
+    message
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "This order could not be processed.";
+}
+
+/** Prefers an exact productCloudId match (a BLE device with a synced catalogue mirror), then an
+ *  unambiguous name/alias match (the common case for both BLE and SMS), then an unambiguous
+ *  substring match. Anything that resolves to more than one product is treated as unmatched
+ *  rather than guessed at - the same "don't guess" rule offline-order-planning.ts's SMS parser
+ *  follows for ambiguous text. */
+function matchOfflineOrderProduct(
+  products: ProductSummary[],
+  item: OfflineOrderItemIntent
+): ProductSummary | null {
+  if (item.productCloudId) {
+    const byId = products.find((product) => product.id === item.productCloudId);
+    if (byId) return byId;
+  }
+  const candidates = matchOfflineOrderProducts(products, item.name);
+  return candidates.length === 1 ? candidates[0]! : null;
 }

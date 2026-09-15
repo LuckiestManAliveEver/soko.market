@@ -1,6 +1,6 @@
 import { emptyState, scopeKey, type LocalState, type Scope } from "../types.js";
 import type { LocalDatabase } from "./client.js";
-import { initialSql } from "./migrations/sql.js";
+import { initialSql, offlineOrdersSql } from "./migrations/sql.js";
 /** Structural subset of better-sqlite3; native code stays out of the PWA bundle. */
 export interface SqliteDriver {
   exec(sql: string): unknown;
@@ -9,6 +9,7 @@ export interface SqliteDriver {
 }
 export function openSqliteLocalDatabase(driver: SqliteDriver): LocalDatabase {
   driver.exec(initialSql);
+  driver.exec(offlineOrdersSql);
   function read(scope: Scope): LocalState {
     const result = driver
       .prepare("SELECT state_json FROM runtime_scopes WHERE scope_key = ?")
@@ -81,6 +82,23 @@ export function openSqliteLocalDatabase(driver: SqliteDriver): LocalDatabase {
           driver
             .prepare("INSERT INTO pending_conflicts VALUES (?, ?, ?)")
             .run(key, conflict.operationId, JSON.stringify(conflict));
+        driver.prepare("DELETE FROM pending_offline_orders WHERE scope_key = ?").run(key);
+        for (const order of state.pendingOfflineOrders ?? [])
+          driver
+            .prepare(
+              "INSERT INTO pending_offline_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .run(
+              order.intent.id,
+              key,
+              scope.storeId,
+              order.intent.transport,
+              order.status,
+              order.createdAtLocal,
+              order.syncedAt,
+              JSON.stringify(order.intent),
+              order.outcome ? JSON.stringify(order.outcome) : null
+            );
         if (state.pin) {
           const pin = state.pin;
           driver
