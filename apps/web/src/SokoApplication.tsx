@@ -240,6 +240,10 @@ export function OwnerApp() {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
+  // Purely local, ephemeral display state: which capability a card in this session's own thread
+  // came from (Soko Home's "trace" affordance). Never sent to the server and not worth surviving
+  // navigation, unlike the hook-owned state above.
+  const [isCapabilityTraceOpen, setIsCapabilityTraceOpen] = useState(false);
 
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Guest";
@@ -1524,7 +1528,11 @@ export function OwnerApp() {
     <OwnerCoreProvider value={ownerCoreValue}>
       <Surface title="Soko.market">
         <div
-          className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}
+          className={
+            isAuthScreen
+              ? "app-frame auth-frame"
+              : `app-frame${isCapabilityTraceOpen ? " capability-trace-visible" : ""}`
+          }
           data-shell-instance={shellInstanceIdRef.current}
           data-capability-profile={capabilitySettingsRef.current.profile}
           data-commerce-mode={mode === "seller" ? "sell" : "buy"}
@@ -1579,21 +1587,29 @@ export function OwnerApp() {
             ) : null}
             {!isAuthScreen ? (
               <button
-                className="icon-button shell-agent-button"
+                className={
+                  business === null
+                    ? "icon-button shell-agent-button shop-entry-button"
+                    : "icon-button shell-agent-button"
+                }
                 type="button"
+                data-testid={business === null ? "shop-entry-button" : "agent-profile-link"}
                 onClick={() => {
                   if (business === null) {
-                    openAuth();
+                    switchMode("seller");
                   } else {
                     openAgentProfile();
                   }
                 }}
-                aria-label={business === null ? "Owner login" : "Account and agent settings"}
-                data-testid={business === null ? undefined : "agent-profile-link"}
+                aria-label={business === null ? "Open your shop" : "Account and agent settings"}
                 onPointerEnter={() => prefetchOwnerView("agent", business?.id ?? null)}
                 onFocus={() => prefetchOwnerView("agent", business?.id ?? null)}
               >
-                <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
+                {business === null ? (
+                  <span className="shop-entry-icon" aria-hidden="true" />
+                ) : (
+                  <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
+                )}
               </button>
             ) : null}
           </header>
@@ -1648,6 +1664,19 @@ export function OwnerApp() {
                 </button>
               </div>
               <div className="shell-secondary-actions">
+                <button
+                  className={`header-action-button shell-capability-trace-button${
+                    isCapabilityTraceOpen ? " on" : ""
+                  }`}
+                  type="button"
+                  aria-pressed={isCapabilityTraceOpen}
+                  aria-label={
+                    isCapabilityTraceOpen ? "Hide capability calls" : "Show capability calls"
+                  }
+                  onClick={() => setIsCapabilityTraceOpen((open) => !open)}
+                >
+                  <span className="capability-trace-icon" aria-hidden="true" />
+                </button>
                 {installPrompt.canInstall ? (
                   <button
                     className="header-action-button workspace"

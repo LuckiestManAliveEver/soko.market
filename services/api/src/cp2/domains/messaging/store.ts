@@ -1301,7 +1301,10 @@ export class MessagingDomain {
     occurredAt: string;
     now: Date;
   }): OfflineOrderIntentOutcome | null {
-    const parsed = parseOfflineOrderText(input.text, this.deps.productsForBusiness(input.businessId));
+    const parsed = parseOfflineOrderText(
+      input.text,
+      this.deps.productsForBusiness(input.businessId)
+    );
     if (!parsed.looksLikeOrder) return null;
     const replyIdempotencyKey = `sms-order:${input.device.id}:${input.externalMessageId}`;
     if (parsed.items.length === 0) {

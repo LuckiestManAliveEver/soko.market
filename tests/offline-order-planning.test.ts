@@ -84,8 +84,15 @@ describe("matchOfflineOrderProducts", () => {
   });
 
   it("returns every candidate when the substring match is ambiguous", () => {
-    const products = [product({ id: "a", name: "Soda 500ml" }), product({ id: "b", name: "Soda Can" })];
-    expect(matchOfflineOrderProducts(products, "soda").map((p) => p.id).sort()).toEqual(["a", "b"]);
+    const products = [
+      product({ id: "a", name: "Soda 500ml" }),
+      product({ id: "b", name: "Soda Can" })
+    ];
+    expect(
+      matchOfflineOrderProducts(products, "soda")
+        .map((p) => p.id)
+        .sort()
+    ).toEqual(["a", "b"]);
   });
 
   it("returns nothing for an empty needle", () => {
@@ -99,7 +106,7 @@ describe("offlineOrderClarificationMessage / offlineOrderOutcomeMessage", () => 
     const second = offlineOrderClarificationMessage(["problem one", "problem two"]);
     expect(first).toBe(second);
     expect(first).toContain("problem one");
-    expect(first).toContain('2 sugar 1kg, 1 soap');
+    expect(first).toContain("2 sugar 1kg, 1 soap");
   });
 
   it("builds distinct deterministic replies per outcome status", () => {
@@ -119,7 +126,9 @@ describe("offlineOrderClarificationMessage / offlineOrderOutcomeMessage", () => 
       status: "partial",
       invoiceId: "invoice-1",
       confirmedItems: [{ name: "Sugar 1kg", quantity: 1, productId: "sugar", reason: null }],
-      rejectedItems: [{ name: "Soap", quantity: 1, productId: "soap", reason: "Only 0 unit available." }],
+      rejectedItems: [
+        { name: "Soap", quantity: 1, productId: "soap", reason: "Only 0 unit available." }
+      ],
       message: ""
     });
     expect(partial).toContain("part of your order");
@@ -130,7 +139,9 @@ describe("offlineOrderClarificationMessage / offlineOrderOutcomeMessage", () => 
       status: "rejected",
       invoiceId: null,
       confirmedItems: [],
-      rejectedItems: [{ name: "Soap", quantity: 1, productId: "soap", reason: "Only 0 unit available." }],
+      rejectedItems: [
+        { name: "Soap", quantity: 1, productId: "soap", reason: "Only 0 unit available." }
+      ],
       message: ""
     });
     expect(rejected).toContain("couldn't fulfil");

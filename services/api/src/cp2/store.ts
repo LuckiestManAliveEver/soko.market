@@ -5913,9 +5913,17 @@ export class Cp2Store {
 
       let customer;
       try {
-        customer = this.resolveOfflineOrderCustomer(sessionId, businessId, intent.customerClaim, now);
+        customer = this.resolveOfflineOrderCustomer(
+          sessionId,
+          businessId,
+          intent.customerClaim,
+          now
+        );
       } catch (error) {
-        return rejectedOrderOutcome(intent, `Could not identify the customer: ${errorMessage(error)}`);
+        return rejectedOrderOutcome(
+          intent,
+          `Could not identify the customer: ${errorMessage(error)}`
+        );
       }
 
       const products = this.salesDomain.productsForBusiness(businessId);
@@ -11288,7 +11296,10 @@ function syncRecordDate(value: string): Date {
   return Number.isNaN(date.getTime()) ? new Date(0) : date;
 }
 
-function rejectedOrderOutcome(intent: OfflineOrderIntent, message: string): OfflineOrderIntentOutcome {
+function rejectedOrderOutcome(
+  intent: OfflineOrderIntent,
+  message: string
+): OfflineOrderIntentOutcome {
   return {
     id: intent.id,
     status: "rejected",

@@ -4,7 +4,9 @@ import type { OfflineOrderIntent, OfflineOrderIntentOutcome, Scope } from "../ty
 const MAX_INTENTS_PER_PUSH = 25;
 
 export interface OfflineOrderSyncTransport {
-  pushOrderIntents(intents: OfflineOrderIntent[]): Promise<{ outcomes: OfflineOrderIntentOutcome[] }>;
+  pushOrderIntents(
+    intents: OfflineOrderIntent[]
+  ): Promise<{ outcomes: OfflineOrderIntentOutcome[] }>;
 }
 
 /** Pushes every still-unsynced offline order intent to the server's reconciliation endpoint and

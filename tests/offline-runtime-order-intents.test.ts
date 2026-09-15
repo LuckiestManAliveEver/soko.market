@@ -31,7 +31,9 @@ function intent(overrides: Partial<OfflineOrderIntent> = {}): OfflineOrderIntent
       accountId: "buyer-account",
       displayName: "Buyer"
     },
-    items: overrides.items ?? [{ productCloudId: "product-1", name: "Sugar 1kg", quantity: 2, quotedUnitPrice: 100 }],
+    items: overrides.items ?? [
+      { productCloudId: "product-1", name: "Sugar 1kg", quantity: 2, quotedUnitPrice: 100 }
+    ],
     paymentMethod: null,
     paymentReference: null,
     note: null,
@@ -47,7 +49,10 @@ describe("recordPendingOfflineOrder", () => {
     await recordPendingOfflineOrder(db, scope, intent());
     const state = await db.read(scope);
     expect(state.pendingOfflineOrders).toHaveLength(1);
-    expect(state.pendingOfflineOrders?.[0]).toMatchObject({ status: "pending_sync", outcome: null });
+    expect(state.pendingOfflineOrders?.[0]).toMatchObject({
+      status: "pending_sync",
+      outcome: null
+    });
     expect(state.rows).toEqual([]);
   });
 
@@ -100,7 +105,9 @@ describe("pushOfflineOrderIntents", () => {
     expect(pushed).toHaveLength(1);
     expect(pushed[0]?.map((entry) => entry.id).sort()).toEqual(["a", "b"]);
     const state = await db.read(scope);
-    const byId = Object.fromEntries((state.pendingOfflineOrders ?? []).map((entry) => [entry.intent.id, entry]));
+    const byId = Object.fromEntries(
+      (state.pendingOfflineOrders ?? []).map((entry) => [entry.intent.id, entry])
+    );
     expect(byId.a?.status).toBe("confirmed");
     expect(byId.a?.outcome?.invoiceId).toBe("invoice-a");
     expect(byId.b?.status).toBe("rejected");

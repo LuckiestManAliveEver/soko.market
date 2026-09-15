@@ -5,7 +5,11 @@ import {
   type PeerTransport,
   type PeerQueuedMessage
 } from "../packages/offline-runtime/index";
-import type { CatalogueDigest, ConversationMessageSummary, OfflineOrderIntent } from "@soko/shared-types";
+import type {
+  CatalogueDigest,
+  ConversationMessageSummary,
+  OfflineOrderIntent
+} from "@soko/shared-types";
 
 function memoryOutbox() {
   let queue: PeerQueuedMessage[] = [];

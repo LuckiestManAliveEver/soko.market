@@ -111,7 +111,10 @@ export class OfflineJournal {
   /** Runs `apply()` at most once per intent id; a retried push of the same id returns the
    *  cached outcome instead of re-processing it (so a batch retry after a dropped HTTP response
    *  can never double-confirm or double-reject the same order). */
-  replayOrderIntent(intentId: string, apply: () => OfflineOrderIntentOutcome): OfflineOrderIntentOutcome {
+  replayOrderIntent(
+    intentId: string,
+    apply: () => OfflineOrderIntentOutcome
+  ): OfflineOrderIntentOutcome {
     const cached = this.orderIntentOutcomes.get(intentId);
     if (cached) return structuredClone(cached);
     const outcome = apply();

@@ -78,7 +78,10 @@ export function registerOfflineRuntimeRoutes(app: FastifyInstance, store: Cp2Sto
       if (!Array.isArray(body.intents) || body.intents.length < 1 || body.intents.length > 50)
         throw new Cp2Error(400, "offline_batch_invalid", "Send between 1 and 50 order intents.");
       const intents = body.intents.map(parseOfflineOrderIntent);
-      const outcomes = store.pushOfflineOrderIntents(readSessionCookie(request.headers.cookie), intents);
+      const outcomes = store.pushOfflineOrderIntents(
+        readSessionCookie(request.headers.cookie),
+        intents
+      );
       return { outcomes };
     } catch (error) {
       return sendCp2Error(reply, error);
@@ -177,10 +180,13 @@ function parseOfflineOrderIntent(raw: unknown): OfflineOrderIntent {
       record.paymentReference === null || record.paymentReference === undefined
         ? null
         : parseString(record.paymentReference, "paymentReference"),
-    note: record.note === null || record.note === undefined ? null : parseString(record.note, "note"),
+    note:
+      record.note === null || record.note === undefined ? null : parseString(record.note, "note"),
     receivedAtLocal: String(record.receivedAtLocal),
     rawText:
-      record.rawText === null || record.rawText === undefined ? null : parseString(record.rawText, "rawText")
+      record.rawText === null || record.rawText === undefined
+        ? null
+        : parseString(record.rawText, "rawText")
   };
 }
 function parseOfflineOrderCustomerClaim(raw: unknown): OfflineOrderCustomerClaim {
@@ -197,7 +203,11 @@ function parseOfflineOrderCustomerClaim(raw: unknown): OfflineOrderCustomerClaim
 }
 function parseOfflineOrderItemIntent(raw: unknown): OfflineOrderItemIntent {
   const record = parseRequestBody(raw);
-  if (typeof record.quantity !== "number" || !Number.isFinite(record.quantity) || record.quantity <= 0)
+  if (
+    typeof record.quantity !== "number" ||
+    !Number.isFinite(record.quantity) ||
+    record.quantity <= 0
+  )
     throw new Cp2Error(400, "offline_order_intent_invalid", "Invalid order item quantity.");
   let quotedUnitPrice: number | null = null;
   if (record.quotedUnitPrice !== null && record.quotedUnitPrice !== undefined) {
