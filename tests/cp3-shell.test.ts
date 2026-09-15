@@ -68,7 +68,7 @@ describe("owner shell contract", () => {
   it("creates the initial unified marketplace and seller welcome message", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringMatching(/running Jane's Shop.*Sign up or log in/)
+      body: expect.stringMatching(/What do you need\?.*running Jane's Shop/u)
     });
   });
 });

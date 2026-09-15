@@ -376,7 +376,10 @@ describe("frontend user guidance", () => {
     expect(phoneSignup).toContain("termsAccepted");
     expect(phoneSignup).toContain("privacyAccepted");
     expect(phoneFirst).not.toContain('"/auth/pin/continue"');
-    expect(welcomeMessage).toContain("Sign up or log in");
+    // The welcome body itself no longer gates on signing in - browsing and chat work immediately
+    // on a device account (docs/authentication/progressive-identity.md) - but the explicit
+    // signup/login buttons above are still rendered whenever a message thread has no session yet.
+    expect(welcomeMessage).toContain("What do you need?");
   });
 
   it("links authentication requirements to the correct login or signup process", () => {

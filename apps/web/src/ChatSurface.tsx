@@ -2,7 +2,7 @@ import { Fragment, Suspense, useEffect, useRef, useState } from "react";
 
 import type { CountryCode } from "libphonenumber-js";
 
-import type { MessageDeliveryAttemptSummary } from "@soko/shared-types";
+import type { ConversationMessageContent, MessageDeliveryAttemptSummary } from "@soko/shared-types";
 
 import { detectCapabilitySettings } from "./capability-profile";
 import { recordReadiness } from "./performance";
@@ -38,6 +38,30 @@ import { CatalogueNestedCard } from "./CatalogueNestedCard";
 import { StackedModule } from "./StackedModule";
 import type { ChatSurfaceProps } from "./chat-surface-contracts";
 export type { ChatSurfaceProps } from "./chat-surface-contracts";
+
+// Soko Home's "trace" affordance (hidden by default, toggled by the header's capability-trace
+// button): names the real capability that produced a generated card, instead of the mockup's
+// scripted stand-in text. Content types with no capability behind them (plain text, confirmation
+// prompts, the owner-controls menu) intentionally return null and show no trace.
+const capabilityTraceLabels: Partial<Record<ConversationMessageContent["type"], string>> = {
+  "product-capture-progress": "product.capture",
+  "status-broadcast": "messaging.broadcast",
+  "unified-checkout": "commerce.checkout",
+  "product-management": "product.update",
+  "supplier-management": "supplier.update",
+  "customer-management": "customer.update",
+  "invoice-management": "invoice.draft",
+  "payment-management": "payment.record",
+  "import-management": "document_import.confirm",
+  "logistics-management": "logistics.update_status"
+};
+
+function capabilityTraceLabel(content: ConversationMessageContent | undefined): string | null {
+  if (content === undefined) return null;
+  return capabilityTraceLabels[content.type] ?? null;
+}
+
+const homeSuggestionPrompts = ["Find me 50kg maize nearby", "Track my delivery", "Talk to a shop"];
 
 export function ChatSurface({
   activeConversationId,
@@ -512,6 +536,11 @@ export function ChatSurface({
                     message.body
                   )}
                 </p>
+                {message.author === "sokoclaw" && capabilityTraceLabel(message.content) !== null ? (
+                  <span className="capability-trace" aria-hidden="true">
+                    {capabilityTraceLabel(message.content)}
+                  </span>
+                ) : null}
                 {message.content?.type === "owner-controls" &&
                 message.content.shopId === businessId ? (
                   <ContextualBusinessCards
@@ -976,6 +1005,17 @@ export function ChatSurface({
             <p>Loading…</p>
           )}
         </StackedModule>
+        {mode === "marketplace" &&
+        activeModuleView === null &&
+        visibleMessages.filter((message) => message.id !== "welcome").length === 0 ? (
+          <div className="home-suggestion-chips" role="group" aria-label="Suggested requests">
+            {homeSuggestionPrompts.map((prompt) => (
+              <button key={prompt} type="button" onClick={() => commitDraft(prompt)}>
+                {prompt}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <ChatComposer
           activeAgentName={agent.name}
           agent={agentSettings}

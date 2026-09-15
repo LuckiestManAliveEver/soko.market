@@ -40,6 +40,7 @@ import {
   activeAgentStorageKey,
   activeBusinessStorageKey,
   activeModeStorageKey,
+  deviceContinueAttemptStorageKey,
   guestBrowsingStorageKey,
   ownerAuthStorageKey,
   pendingOAuthStorageKey,
@@ -300,6 +301,67 @@ export function useAuthState(deps: UseAuthStateDeps) {
     return refresh;
   }
 
+  const deviceContinueAttemptTtlMs = 10 * 60 * 1000;
+
+  // The one-tap "Continue to Soko" idempotency key (docs/authentication/progressive-identity.md):
+  // a short-lived bearer retry capability, not an account ID or credential, kept only until the
+  // attempt succeeds or this ten-minute window lapses so a relaunch mid-attempt resolves to the
+  // same account instead of minting a second one.
+  function readDeviceContinueAttemptKey(): string {
+    try {
+      const raw = localStorage.getItem(deviceContinueAttemptStorageKey);
+      if (raw !== null) {
+        const parsed = JSON.parse(raw) as { key?: string; createdAt?: string };
+        if (
+          typeof parsed.key === "string" &&
+          typeof parsed.createdAt === "string" &&
+          Date.now() - new Date(parsed.createdAt).getTime() < deviceContinueAttemptTtlMs
+        ) {
+          return parsed.key;
+        }
+      }
+    } catch {
+      // Falls through to minting a fresh attempt key below.
+    }
+    const key =
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `continue-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(
+      deviceContinueAttemptStorageKey,
+      JSON.stringify({ key, createdAt: new Date().toISOString() })
+    );
+    return key;
+  }
+
+  /**
+   * One-tap device-account entry: a fresh visitor gets a real, cookie-backed session with no
+   * phone/email/PIN form, so browsing and chat work immediately. Identity is requested later,
+   * progressively, only when an action actually needs it (order/pay/save) - see
+   * docs/authentication/progressive-identity.md.
+   */
+  async function continueToSoko(): Promise<SessionResponse | null> {
+    const idempotencyKey = readDeviceContinueAttemptKey();
+    try {
+      const response = await apiFetch<SessionResponse>("/auth/continue", {
+        method: "POST",
+        body: {},
+        idempotencyKey
+      });
+      localStorage.removeItem(deviceContinueAttemptStorageKey);
+      logAuthenticationLifecycle("device_account_continued", response);
+      acceptAuthenticatedSession(response);
+      await loadMarketplaceIntroState();
+      await validateStoredBusiness();
+      return response;
+    } catch (error) {
+      if (!isRetryableApiRequestError(error)) {
+        localStorage.removeItem(deviceContinueAttemptStorageKey);
+      }
+      return null;
+    }
+  }
+
   async function performSessionRefresh(): Promise<SessionResponse | null> {
     // "offline-authenticated" is an unverified local cache. Once online it must become pending
     // so no server-backed feature can race the canonical bootstrap request.
@@ -359,6 +421,25 @@ export function useAuthState(deps: UseAuthStateDeps) {
             return null;
           }
         }
+
+        // A genuinely fresh visitor - nothing on this device says otherwise, and nothing asked
+        // for a deliberate sign-up/login/deletion/restoration screen - gets Soko's documented
+        // zero-form entry (docs/authentication/progressive-identity.md) instead of a login wall:
+        // browsing and chat work immediately on a real, cookie-backed device account, and identity
+        // (phone/PIN) is only requested later, when an action actually needs it.
+        const isFreshVisitor =
+          cached === null &&
+          storedBusiness === null &&
+          initialOwnerAuth === null &&
+          initialAuthenticationTarget === null &&
+          !accountDeletionIntent &&
+          !accountRestorationIntent;
+
+        if (isFreshVisitor) {
+          const continued = await continueToSoko();
+          if (continued !== null) return continued;
+        }
+
         requireReauthentication(
           initialAuthenticationTarget === "signup"
             ? "Create your Soko account."
@@ -579,6 +660,7 @@ export function useAuthState(deps: UseAuthStateDeps) {
     handleOAuthCallback,
     loadOAuthProviders,
     acceptAuthenticatedSession,
+    continueToSoko,
     completePhoneFirstAuthentication,
     completeOAuthSession,
     refreshSession,

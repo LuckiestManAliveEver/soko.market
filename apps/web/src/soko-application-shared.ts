@@ -1609,6 +1609,7 @@ export const ownerAuthStorageKey = "soko.chatFirst.ownerAuth";
 export const setupDraftStorageKey = "soko.chatFirst.setupDraft";
 export const pendingOAuthStorageKey = "soko.chatFirst.pendingOAuth";
 export const guestBrowsingStorageKey = "soko.market.guest-browsing.v1";
+export const deviceContinueAttemptStorageKey = "soko.market.device-continue-attempt.v1";
 
 export const socialSignupProviders: Array<{
   id: SocialSignupProvider;

@@ -5806,16 +5806,17 @@ details.nested-form-section summary {
 }
 
 .welcome-auth-actions button {
-  background: #117a4f;
-  color: #fff;
+  background: var(--soko-accent);
+  color: var(--soko-accent-ink);
   font-size: 13px;
   min-height: 36px;
   padding: 7px 14px;
 }
 
 .welcome-auth-actions button.secondary {
-  background: #edf5f0;
-  color: #1f4d38;
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  color: var(--soko-ink);
 }
 
 .messenger-thread {
@@ -6090,27 +6091,28 @@ details.nested-form-section summary {
   }
 }
 
-/* Soko conversation shell --------------------------------------------------
-   Visual language shared by the shell, BUY flow, and SELL/status flow. */
+/* Soko Home shell --------------------------------------------------
+   Visual language shared by the shell, BUY flow, and SELL/status flow -
+   the "Soko Home" design system (dark ink, saffron accent, green/clay modes). */
 :root {
-  --soko-paper: #fbf4e9;
-  --soko-paper-dim: #f3eada;
-  --soko-ink: #1c1730;
-  --soko-ink-soft: #635c7a;
-  --soko-ink-faint: #9c93b0;
-  --soko-line: rgb(28 23 48 / 12%);
-  --soko-line-strong: rgb(28 23 48 / 22%);
-  --soko-accent: #e0117f;
-  --soko-accent-soft: #fbe1ef;
-  --soko-buy: #1f8f4e;
-  --soko-buy-soft: #e1f3e7;
-  --soko-buy-tint: #f1faf4;
-  --soko-sell: #b4780f;
-  --soko-sell-soft: #fbeac9;
-  --soko-sell-tint: #fcf6e7;
-  --soko-bezel: #100c1b;
-  --soko-display-font:
-    "Space Grotesk", "Avenir Next", Avenir, Inter, ui-sans-serif, system-ui, sans-serif;
+  --soko-paper: #12151c;
+  --soko-paper-dim: #1b202b;
+  --soko-ink: #f4f2ee;
+  --soko-ink-soft: #c7cbd4;
+  --soko-ink-faint: #8b93a3;
+  --soko-line: #323a48;
+  --soko-line-strong: #454e60;
+  --soko-accent: #e3a13c;
+  --soko-accent-ink: #3a2707;
+  --soko-accent-soft: #2f2010;
+  --soko-buy: #2f6b56;
+  --soko-buy-soft: #1f4438;
+  --soko-buy-tint: #142520;
+  --soko-sell: #c2543f;
+  --soko-sell-soft: #3a1f18;
+  --soko-sell-tint: #241612;
+  --soko-bezel: #05060a;
+  --soko-display-font: "Sora", "Avenir Next", Avenir, Inter, ui-sans-serif, system-ui, sans-serif;
   --soko-mono-font: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --soko-serif-font:
     Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, "Times New Roman",
@@ -6119,10 +6121,10 @@ details.nested-form-section summary {
 
 body {
   background:
-    radial-gradient(circle at 12% 5%, rgb(224 17 127 / 7%), transparent 32rem),
-    radial-gradient(circle at 88% 100%, rgb(31 143 78 / 6%), transparent 34rem),
-    var(--soko-paper-dim);
+    radial-gradient(circle at 12% 5%, rgb(227 161 60 / 8%), transparent 32rem),
+    radial-gradient(circle at 88% 100%, rgb(47 107 86 / 9%), transparent 34rem), var(--soko-bezel);
   color: var(--soko-ink);
+  font-family: "IBM Plex Sans", Inter, ui-sans-serif, system-ui, sans-serif;
 }
 
 .app-frame:not(.auth-frame) {
@@ -6206,17 +6208,136 @@ body {
   letter-spacing: 0.18em;
 }
 
+/* A customer with no shop yet sees the plain auth-brand-title lockup (no business name to show)
+   even outside the auth screens themselves - restyle it to the Soko Home palette instead of the
+   legacy light-theme green it inherits by default. */
+.app-frame:not(.auth-frame) .auth-brand-title {
+  color: var(--soko-ink);
+  font-family: var(--soko-display-font);
+}
+
+.app-frame:not(.auth-frame) .auth-header-icon {
+  background: var(--soko-paper-dim);
+  border-color: var(--soko-line);
+}
+
 .shell-agent-button.icon-button {
-  background: linear-gradient(145deg, #ff3d9f, #a70a62);
-  border: 2px solid rgb(255 255 255 / 75%);
+  background: linear-gradient(145deg, var(--soko-accent), #a86a1f);
+  border: 2px solid rgb(244 242 238 / 35%);
   border-radius: 999px;
-  box-shadow: 0 4px 12px rgb(224 17 127 / 25%);
-  color: #fff;
+  box-shadow: 0 4px 12px rgb(5 6 10 / 35%);
+  color: var(--soko-accent-ink);
   height: 40px;
   min-height: 40px;
   min-width: 40px;
   padding: 0;
   width: 40px;
+}
+
+/* Soko Home's persistent merchant entry point ("open your shop"): a plain icon button matching
+   the header's other affordances, not the colorful agent-profile avatar above, since it opens the
+   shop-registration flow rather than representing an already-set-up account. */
+.shell-agent-button.shop-entry-button {
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  border-radius: 12px;
+  box-shadow: none;
+  color: var(--soko-ink);
+}
+
+.shop-entry-icon {
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  display: inline-block;
+  height: 12px;
+  position: relative;
+  width: 16px;
+}
+
+.shop-entry-icon::before {
+  border: 1.5px solid currentColor;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  content: "";
+  height: 5px;
+  left: 1px;
+  position: absolute;
+  top: -6px;
+  width: 10px;
+}
+
+.shell-capability-trace-button {
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  border-radius: 12px;
+  color: var(--soko-ink-soft);
+}
+
+.shell-capability-trace-button.on {
+  background: var(--soko-buy-soft);
+  border-color: var(--soko-buy);
+  color: var(--soko-ink);
+}
+
+.capability-trace-icon {
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  display: inline-block;
+  height: 14px;
+  position: relative;
+  width: 14px;
+}
+
+.capability-trace-icon::before {
+  background: currentColor;
+  border-radius: 50%;
+  content: "";
+  height: 4px;
+  left: 5px;
+  position: absolute;
+  top: 5px;
+  width: 4px;
+}
+
+/* Soko Home's "trace" affordance (ChatSurface.tsx capabilityTraceLabel): names the capability
+   behind a generated card. Hidden by default; the header's capability-trace toggle reveals it by
+   adding .capability-trace-visible to .app-frame. */
+.capability-trace {
+  background: var(--soko-buy-soft);
+  border: 1px solid var(--soko-buy);
+  border-radius: 6px;
+  color: #8fd8bd;
+  display: none;
+  font-family: var(--soko-mono-font);
+  font-size: 10px;
+  margin-top: 2px;
+  padding: 2px 7px;
+  width: fit-content;
+}
+
+.capability-trace-visible .capability-trace {
+  display: inline-block;
+}
+
+.home-suggestion-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px clamp(14px, 4vw, 42px) 10px;
+}
+
+.home-suggestion-chips button {
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  border-radius: 999px;
+  color: var(--soko-ink);
+  font-size: 13px;
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
+.home-suggestion-chips button:hover {
+  border-color: var(--soko-accent);
 }
 
 .shell-mode-bar {
@@ -6266,9 +6387,9 @@ body {
 }
 
 .commerce-mode-toggle .mode-active {
-  background: var(--soko-ink);
-  box-shadow: 0 3px 10px rgb(28 23 48 / 16%);
-  color: #fff;
+  background: var(--soko-accent);
+  box-shadow: 0 3px 10px rgb(5 6 10 / 35%);
+  color: var(--soko-accent-ink);
 }
 
 .commerce-mode-toggle .messages {
@@ -6315,9 +6436,9 @@ body {
 }
 
 .shell-secondary-actions .workspace {
-  background: var(--soko-ink);
-  border-color: var(--soko-ink);
-  color: #fff;
+  background: var(--soko-accent);
+  border-color: var(--soko-accent);
+  color: var(--soko-accent-ink);
 }
 
 .app-frame:not(.auth-frame) .app-credits {
@@ -6426,7 +6547,7 @@ body {
 .messenger-inbox-tools input,
 .new-conversation-form input,
 .new-session-form input {
-  background: rgb(255 255 255 / 58%);
+  background: var(--soko-paper-dim);
   border: 1px solid var(--soko-line);
   border-radius: 999px;
   color: var(--soko-ink);
@@ -6470,7 +6591,7 @@ body {
 .cart-item-thumb,
 .status-contact-avatar {
   align-items: center;
-  background: linear-gradient(135deg, var(--soko-ink-soft), #443e5c);
+  background: linear-gradient(135deg, var(--soko-line-strong), var(--soko-paper-dim));
   border-radius: 11px;
   color: #fff;
   display: inline-flex;
@@ -6487,19 +6608,19 @@ body {
 .thread-avatar.buy,
 .buy-result-thumb-contact,
 .cart-item-thumb-contact {
-  background: linear-gradient(135deg, #2cad63, #166238);
+  background: linear-gradient(135deg, var(--soko-buy), #1a3d31);
 }
 
 .conversation-avatar.sell,
 .thread-avatar.sell,
 .buy-result-thumb-catalogue,
 .cart-item-thumb-catalogue {
-  background: linear-gradient(135deg, #cf911f, #8c5c09);
+  background: linear-gradient(135deg, var(--soko-sell), #6e2e21);
 }
 
 .conversation-avatar.chat,
 .status-contact-avatar {
-  background: linear-gradient(135deg, #f23596, #8a0f5c);
+  background: linear-gradient(135deg, var(--soko-accent), #8a5a1f);
 }
 
 /* Merged chat mockup: conversation/thread avatars read as circular contact
@@ -6599,11 +6720,11 @@ body {
 
 .new-chat-fab {
   align-items: center;
-  background: var(--soko-ink);
+  background: var(--soko-accent);
   border-radius: 999px;
   bottom: 18px;
-  box-shadow: 0 10px 26px rgb(28 23 48 / 30%);
-  color: #fff;
+  box-shadow: 0 10px 26px rgb(5 6 10 / 45%);
+  color: var(--soko-accent-ink);
   display: inline-flex;
   font-size: 13px;
   font-weight: 700;
@@ -6741,7 +6862,7 @@ body {
 }
 
 .thread-topic-form input {
-  background: rgb(255 255 255 / 76%);
+  background: var(--soko-paper-dim);
   border: 1px solid var(--soko-line-strong);
   border-radius: 999px;
   color: var(--soko-ink);
@@ -6788,15 +6909,15 @@ body {
 
 .message.sokoclaw,
 .message.contact {
-  background: rgb(255 255 255 / 82%);
+  background: var(--soko-paper-dim);
   border: 1px solid var(--soko-line);
-  box-shadow: 0 7px 22px rgb(28 23 48 / 5%);
+  box-shadow: 0 7px 22px rgb(5 6 10 / 20%);
 }
 
 .message.merchant {
-  background: var(--soko-ink);
-  border: 1px solid var(--soko-ink);
-  color: #fff;
+  background: var(--soko-accent);
+  border: 1px solid var(--soko-accent);
+  color: var(--soko-accent-ink);
 }
 
 /* Merged chat mockup: give bubbles a tail corner toward the sender's avatar
@@ -6813,7 +6934,7 @@ body {
 .message.merchant p,
 .message.merchant .message-meta,
 .message.merchant .message-actions button {
-  color: rgb(255 255 255 / 78%);
+  color: rgb(58 39 7 / 78%);
 }
 
 .message p {
@@ -6829,7 +6950,7 @@ body {
 }
 
 .message.merchant .message-author {
-  color: #fff;
+  color: var(--soko-accent-ink);
 }
 
 .message-actions button,
@@ -6897,7 +7018,8 @@ body {
 .composer .send-button {
   background: var(--soko-accent);
   border-radius: 999px;
-  box-shadow: 0 5px 14px rgb(224 17 127 / 22%);
+  box-shadow: 0 5px 14px rgb(227 161 60 / 30%);
+  color: var(--soko-accent-ink);
   min-height: 38px;
   min-width: 38px;
   padding: 6px;
@@ -6905,7 +7027,7 @@ body {
 
 /* Stacked conversational modules */
 .stacked-module-backdrop {
-  background: rgb(16 12 27 / 54%);
+  background: rgb(5 6 10 / 54%);
   backdrop-filter: blur(5px);
 }
 
@@ -6913,7 +7035,7 @@ body {
   background: var(--soko-paper);
   border: 1px solid rgb(255 255 255 / 50%);
   border-radius: 22px 22px 0 0;
-  box-shadow: 0 -22px 70px rgb(16 12 27 / 22%);
+  box-shadow: 0 -22px 70px rgb(5 6 10 / 22%);
   color: var(--soko-ink);
 }
 
@@ -6957,10 +7079,10 @@ body {
 .record-list,
 .shop-discovery-card,
 .public-shop-card {
-  background: rgb(255 255 255 / 78%);
+  background: var(--soko-paper-dim);
   border-color: var(--soko-line);
   border-radius: 14px;
-  box-shadow: 0 9px 28px rgb(28 23 48 / 5%);
+  box-shadow: 0 9px 28px rgb(5 6 10 / 5%);
 }
 
 .mode-card {
@@ -6984,7 +7106,7 @@ body {
 .mode-badge {
   background: var(--soko-buy-soft);
   border-radius: 999px;
-  color: #116535;
+  color: #8fd8bd;
   font-family: var(--soko-mono-font);
   font-size: 9px;
   justify-self: start;
@@ -6997,7 +7119,7 @@ body {
 .status-broadcast-composer .eyebrow {
   background: var(--soko-sell-soft);
   border-radius: 999px;
-  color: #744800;
+  color: #e8ab98;
   font-family: var(--soko-mono-font);
   font-size: 9px;
   justify-self: start;
@@ -7007,7 +7129,7 @@ body {
 
 /* BUY: search, mixed-source results, and unified cart */
 .buy-search-form {
-  background: var(--soko-ink);
+  background: var(--soko-paper-dim);
   border-radius: 14px;
   display: grid;
   gap: 8px;
@@ -7047,7 +7169,7 @@ body {
 
 .buy-result-card {
   align-items: center;
-  background: rgb(255 255 255 / 82%);
+  background: var(--soko-paper-dim);
   border: 1px solid var(--soko-line);
   border-radius: 13px;
   display: grid;
@@ -7098,7 +7220,7 @@ body {
 }
 
 .unified-cart-summary {
-  background: rgb(255 255 255 / 86%);
+  background: var(--soko-paper-dim);
   gap: 8px;
 }
 
@@ -7169,14 +7291,14 @@ body {
 }
 
 .fulfilment-split-card {
-  background: rgb(255 255 255 / 86%);
+  background: var(--soko-paper-dim);
   border-color: color-mix(in srgb, var(--soko-buy) 22%, transparent);
 }
 
 .fulfilment-split-card .eyebrow {
   background: var(--soko-buy-soft);
   border-radius: 999px;
-  color: #116535;
+  color: #8fd8bd;
   font-family: var(--soko-mono-font);
   font-size: 9px;
   justify-self: start;
@@ -7198,7 +7320,7 @@ body {
 .fulfilment-handoff-row > span:last-child {
   background: var(--soko-buy-soft);
   border-radius: 999px;
-  color: #116535;
+  color: #8fd8bd;
   font-family: var(--soko-mono-font);
   font-size: 8px;
   font-weight: 700;
@@ -7207,8 +7329,8 @@ body {
 }
 
 .fulfilment-failures {
-  background: #fff3ed;
-  border: 1px solid rgb(168 64 32 / 20%);
+  background: var(--soko-sell-soft);
+  border: 1px solid rgb(194 84 63 / 35%);
   border-radius: 11px;
   display: grid;
   gap: 5px;
@@ -7219,7 +7341,7 @@ body {
 .product-capture-card,
 .status-broadcast-composer,
 .status-broadcast-card {
-  background: rgb(255 255 255 / 82%);
+  background: var(--soko-paper-dim);
   border-color: color-mix(in srgb, var(--soko-sell) 24%, transparent);
 }
 
@@ -7258,7 +7380,7 @@ body {
 .sell-module .record-form button:not(.secondary):not(.model-use-button),
 .product-capture-card button:not(.secondary),
 .status-broadcast-composer button:not(.secondary) {
-  background: var(--soko-ink);
+  background: var(--soko-sell);
   border-radius: 10px;
   color: #fff;
 }
@@ -7272,10 +7394,10 @@ body {
 
 .pos-catalogue,
 .pos-checkout {
-  background: rgb(255 255 255 / 84%);
+  background: var(--soko-paper-dim);
   border: 1px solid var(--soko-line);
   border-radius: 14px;
-  box-shadow: 0 9px 28px rgb(28 23 48 / 5%);
+  box-shadow: 0 9px 28px rgb(5 6 10 / 5%);
   display: grid;
   gap: 14px;
   padding: clamp(13px, 2vw, 20px);
@@ -7479,7 +7601,7 @@ body {
 }
 
 .pos-actions button {
-  background: var(--soko-ink);
+  background: var(--soko-sell);
   border-radius: 10px;
   color: #fff;
   font-weight: 800;
