@@ -15,8 +15,20 @@ describe("Offline order intent reconciliation", () => {
     const { store, cookie, businessId, accountId, createProduct } = await fixture();
     const product = await createProduct({ name: "Sugar 1kg", quantity: 1, sellingPrice: 150 });
     const [first, second] = store.pushOfflineOrderIntents(sessionIdFromCookie(cookie), [
-      buildIntent({ id: "race-a", accountId, storeId: businessId, productId: product.id, quantity: 1 }),
-      buildIntent({ id: "race-b", accountId, storeId: businessId, productId: product.id, quantity: 1 })
+      buildIntent({
+        id: "race-a",
+        accountId,
+        storeId: businessId,
+        productId: product.id,
+        quantity: 1
+      }),
+      buildIntent({
+        id: "race-b",
+        accountId,
+        storeId: businessId,
+        productId: product.id,
+        quantity: 1
+      })
     ]);
     expect(first?.status).toBe("confirmed");
     expect(first?.invoiceId).toBeTruthy();
@@ -29,7 +41,13 @@ describe("Offline order intent reconciliation", () => {
     const { store, cookie, businessId, accountId, createProduct } = await fixture();
     const product = await createProduct({ name: "Rice 2kg", quantity: 1, sellingPrice: 200 });
     const outcomes = store.pushOfflineOrderIntents(sessionIdFromCookie(cookie), [
-      buildIntent({ id: "over-a", accountId, storeId: businessId, productId: product.id, quantity: 2 })
+      buildIntent({
+        id: "over-a",
+        accountId,
+        storeId: businessId,
+        productId: product.id,
+        quantity: 2
+      })
     ]);
     expect(outcomes[0]?.status).toBe("rejected");
     expect(outcomes[0]?.invoiceId).toBeNull();
@@ -38,13 +56,28 @@ describe("Offline order intent reconciliation", () => {
   it("confirms a partial order when one item is in stock and another is oversold", async () => {
     const { store, cookie, businessId, accountId, createProduct } = await fixture();
     const inStock = await createProduct({ name: "Salt 500g", quantity: 5, sellingPrice: 50 });
-    const outOfStock = await createProduct({ name: "Cooking Oil 1L", quantity: 0, sellingPrice: 300 });
+    const outOfStock = await createProduct({
+      name: "Cooking Oil 1L",
+      quantity: 0,
+      sellingPrice: 300
+    });
     const [outcome] = store.pushOfflineOrderIntents(sessionIdFromCookie(cookie), [
       {
-        ...buildIntent({ id: "partial-1", accountId, storeId: businessId, productId: inStock.id, quantity: 2 }),
+        ...buildIntent({
+          id: "partial-1",
+          accountId,
+          storeId: businessId,
+          productId: inStock.id,
+          quantity: 2
+        }),
         items: [
           { productCloudId: inStock.id, name: inStock.name, quantity: 2, quotedUnitPrice: null },
-          { productCloudId: outOfStock.id, name: outOfStock.name, quantity: 1, quotedUnitPrice: null }
+          {
+            productCloudId: outOfStock.id,
+            name: outOfStock.name,
+            quantity: 1,
+            quotedUnitPrice: null
+          }
         ]
       }
     ]);
@@ -59,7 +92,14 @@ describe("Offline order intent reconciliation", () => {
   it("rejects the whole intent when no item matches the catalogue, without throwing", async () => {
     const { store, cookie, businessId, accountId } = await fixture();
     const [outcome] = store.pushOfflineOrderIntents(sessionIdFromCookie(cookie), [
-      buildIntent({ id: "unknown-1", accountId, storeId: businessId, productId: null, quantity: 1, name: "kerosene" })
+      buildIntent({
+        id: "unknown-1",
+        accountId,
+        storeId: businessId,
+        productId: null,
+        quantity: 1,
+        name: "kerosene"
+      })
     ]);
     expect(outcome?.status).toBe("rejected");
     expect(outcome?.invoiceId).toBeNull();
@@ -68,12 +108,24 @@ describe("Offline order intent reconciliation", () => {
   it("is idempotent: replaying the same intent id never decrements stock twice", async () => {
     const { store, cookie, businessId, accountId, createProduct } = await fixture();
     const product = await createProduct({ name: "Flour 2kg", quantity: 3, sellingPrice: 250 });
-    const intent = buildIntent({ id: "replay-1", accountId, storeId: businessId, productId: product.id, quantity: 1 });
+    const intent = buildIntent({
+      id: "replay-1",
+      accountId,
+      storeId: businessId,
+      productId: product.id,
+      quantity: 1
+    });
     const [first] = store.pushOfflineOrderIntents(sessionIdFromCookie(cookie), [intent]);
     const [second] = store.pushOfflineOrderIntents(sessionIdFromCookie(cookie), [intent]);
     expect(second).toEqual(first);
     const stillFulfillable = store.pushOfflineOrderIntents(sessionIdFromCookie(cookie), [
-      buildIntent({ id: "replay-check", accountId, storeId: businessId, productId: product.id, quantity: 2 })
+      buildIntent({
+        id: "replay-check",
+        accountId,
+        storeId: businessId,
+        productId: product.id,
+        quantity: 2
+      })
     ]);
     // 3 - 1 (replay-1, applied once) = 2 left, exactly enough - proves replay-1 didn't double-decrement.
     expect(stillFulfillable[0]?.status).toBe("confirmed");
@@ -85,13 +137,25 @@ describe("Offline order intent reconciliation", () => {
     const buyerAccountId = await signUpAccount(store, "254700000921");
     const [first] = store.pushOfflineOrderIntents(sessionIdFromCookie(cookie), [
       {
-        ...buildIntent({ id: "buyer-1", accountId, storeId: businessId, productId: product.id, quantity: 1 }),
+        ...buildIntent({
+          id: "buyer-1",
+          accountId,
+          storeId: businessId,
+          productId: product.id,
+          quantity: 1
+        }),
         customerClaim: { type: "account", accountId: buyerAccountId, displayName: "Buyer" }
       }
     ]);
     const [second] = store.pushOfflineOrderIntents(sessionIdFromCookie(cookie), [
       {
-        ...buildIntent({ id: "buyer-2", accountId, storeId: businessId, productId: product.id, quantity: 1 }),
+        ...buildIntent({
+          id: "buyer-2",
+          accountId,
+          storeId: businessId,
+          productId: product.id,
+          quantity: 1
+        }),
         customerClaim: { type: "account", accountId: buyerAccountId, displayName: "Buyer" }
       }
     ]);
@@ -148,7 +212,11 @@ describe("Offline order intent reconciliation", () => {
       "254700000930",
       androidHeaders
     );
-    const product = await createProduct({ name: "Cooking Gas 6kg", quantity: 1, sellingPrice: 3500 });
+    const product = await createProduct({
+      name: "Cooking Gas 6kg",
+      quantity: 1,
+      sellingPrice: 3500
+    });
     const buyerAccountId = await signUpAccount(store, "254700000931");
 
     const blePush = await app.inject({
@@ -162,8 +230,14 @@ describe("Offline order intent reconciliation", () => {
             accountId,
             storeId: businessId,
             transport: "ble",
-            customerClaim: { type: "account", accountId: buyerAccountId, displayName: "Nearby buyer" },
-            items: [{ productCloudId: product.id, name: product.name, quantity: 1, quotedUnitPrice: null }],
+            customerClaim: {
+              type: "account",
+              accountId: buyerAccountId,
+              displayName: "Nearby buyer"
+            },
+            items: [
+              { productCloudId: product.id, name: product.name, quantity: 1, quotedUnitPrice: null }
+            ],
             paymentMethod: null,
             paymentReference: null,
             note: null,
@@ -203,7 +277,8 @@ describe("Offline order intent reconciliation", () => {
       })
     });
     expect(smsPush.statusCode).toBe(200);
-    const smsOutcome = smsPush.json<{ orderIntentOutcome: { status: string } | null }>().orderIntentOutcome;
+    const smsOutcome = smsPush.json<{ orderIntentOutcome: { status: string } | null }>()
+      .orderIntentOutcome;
 
     const statuses = [bleOutcome?.status, smsOutcome?.status];
     expect(statuses.filter((status) => status === "confirmed")).toHaveLength(1);
@@ -253,7 +328,10 @@ function extractCookie(header: string | string[] | undefined): string {
   return value.split(";")[0] as string;
 }
 
-async function signUpAccount(store: ReturnType<typeof createCp2Store>, destination: string): Promise<string> {
+async function signUpAccount(
+  store: ReturnType<typeof createCp2Store>,
+  destination: string
+): Promise<string> {
   const app = buildApi({ cp2: { store } });
   const auth = await app.inject({
     method: "POST",

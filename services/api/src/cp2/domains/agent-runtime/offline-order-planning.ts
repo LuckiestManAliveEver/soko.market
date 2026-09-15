@@ -72,7 +72,10 @@ export function parseOfflineOrderText(
  *  still resolves to exactly one product. Shared with the offline-order reconciliation endpoint
  *  (services/api/src/cp2/store.ts's matchOfflineOrderProduct) so there is one matching rule for
  *  both "what did the SMS ask for" and "what does the BLE/SMS item resolve to at confirm time". */
-export function matchOfflineOrderProducts(products: ProductSummary[], name: string): ProductSummary[] {
+export function matchOfflineOrderProducts(
+  products: ProductSummary[],
+  name: string
+): ProductSummary[] {
   const needle = name.trim().toLowerCase();
   if (needle === "") return [];
   const exact = products.filter(

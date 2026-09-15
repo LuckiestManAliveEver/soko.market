@@ -46,6 +46,7 @@ is wired to a real, working transport and exposed as an explicit, off-by-default
 What is still explicitly out of scope, per the platform boundary above: a background/mesh-style
 network (impossible from a browser tab, since there is no peripheral role), and the whitepaper's
 encryption/identity/courier layers (Noise sessions, Ed25519 signing, spray-and-wait copy budgets)
+
 - those remain a native host's responsibility if and when one exists; this transport's own
-docstring says so (`PeerTransport`: "Must authenticate peers and encrypt the link before exposing
-it to this adapter").
+  docstring says so (`PeerTransport`: "Must authenticate peers and encrypt the link before exposing
+  it to this adapter").

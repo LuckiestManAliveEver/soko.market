@@ -85,9 +85,7 @@ export function openSqliteLocalDatabase(driver: SqliteDriver): LocalDatabase {
         driver.prepare("DELETE FROM pending_offline_orders WHERE scope_key = ?").run(key);
         for (const order of state.pendingOfflineOrders ?? [])
           driver
-            .prepare(
-              "INSERT INTO pending_offline_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            )
+            .prepare("INSERT INTO pending_offline_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .run(
               order.intent.id,
               key,

@@ -79,15 +79,15 @@ describe("Native SQLite local store", () => {
         rawText: null
       };
       await recordPendingOfflineOrder(db, scope, intent);
-      expect(
-        driver.prepare("SELECT count(*) AS n FROM pending_offline_orders").get()?.n
-      ).toBe(1);
+      expect(driver.prepare("SELECT count(*) AS n FROM pending_offline_orders").get()?.n).toBe(1);
       expect(
         driver
           .prepare("SELECT status, transport FROM pending_offline_orders WHERE local_id = ?")
           .get("intent-1")
       ).toMatchObject({ status: "pending_sync", transport: "ble" });
-      expect(() => driver.exec("UPDATE pending_offline_orders SET transport='carrier-pigeon'")).toThrow();
+      expect(() =>
+        driver.exec("UPDATE pending_offline_orders SET transport='carrier-pigeon'")
+      ).toThrow();
       expect(() => driver.exec("UPDATE pending_offline_orders SET status='shipped'")).toThrow();
     } finally {
       db.close();

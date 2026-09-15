@@ -60,5 +60,7 @@ export function validateOfflineOrderIntent(intent: OfflineOrderIntent): void {
     (claim.type === "phone" && (typeof claim.phone !== "string" || !claim.phone)) ||
     (claim.type !== "account" && claim.type !== "phone")
   )
-    throw new Error("Offline order intents must carry a real customer claim, not a device identity.");
+    throw new Error(
+      "Offline order intents must carry a real customer claim, not a device identity."
+    );
 }
