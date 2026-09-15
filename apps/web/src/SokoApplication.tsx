@@ -1587,21 +1587,6 @@ export function OwnerApp() {
             ) : null}
             {!isAuthScreen ? (
               <button
-                className={`icon-button shell-capability-trace-button${
-                  isCapabilityTraceOpen ? " on" : ""
-                }`}
-                type="button"
-                aria-pressed={isCapabilityTraceOpen}
-                aria-label={
-                  isCapabilityTraceOpen ? "Hide capability calls" : "Show capability calls"
-                }
-                onClick={() => setIsCapabilityTraceOpen((open) => !open)}
-              >
-                <span className="capability-trace-icon" aria-hidden="true" />
-              </button>
-            ) : null}
-            {!isAuthScreen ? (
-              <button
                 className={
                   business === null
                     ? "icon-button shell-agent-button shop-entry-button"
@@ -1679,6 +1664,19 @@ export function OwnerApp() {
                 </button>
               </div>
               <div className="shell-secondary-actions">
+                <button
+                  className={`header-action-button shell-capability-trace-button${
+                    isCapabilityTraceOpen ? " on" : ""
+                  }`}
+                  type="button"
+                  aria-pressed={isCapabilityTraceOpen}
+                  aria-label={
+                    isCapabilityTraceOpen ? "Hide capability calls" : "Show capability calls"
+                  }
+                  onClick={() => setIsCapabilityTraceOpen((open) => !open)}
+                >
+                  <span className="capability-trace-icon" aria-hidden="true" />
+                </button>
                 {installPrompt.canInstall ? (
                   <button
                     className="header-action-button workspace"

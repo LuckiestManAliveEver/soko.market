@@ -108,6 +108,13 @@ button:disabled {
   margin: 0;
 }
 
+/* The legal-markdown body (Terms/Privacy/account-deletion) renders plain <a> tags with no class of
+   their own, so they fell through to the browser's default link blue - fine against the old
+   near-white page background, unreadable (1.35:1) against this dark one. */
+.soko-surface a {
+  color: #85eec3;
+}
+
 .app-frame {
   display: grid;
   gap: 0;
@@ -523,7 +530,7 @@ button:disabled {
 }
 
 .eyebrow {
-  color: #8d9b91;
+  color: #a3b0a7;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0;
@@ -873,7 +880,7 @@ button:disabled {
 
 .account-deletion-primary-action {
   align-items: center;
-  background: #117a4f;
+  background: #0d6943;
   border-radius: 10px;
   color: #ebebeb;
   display: inline-flex;
@@ -886,7 +893,7 @@ button:disabled {
 }
 
 .account-deletion-primary-action:hover {
-  background: #0d6943;
+  background: #0a5638;
 }
 
 .account-deletion-assurance {
@@ -6274,7 +6281,6 @@ body {
 .shell-capability-trace-button {
   background: var(--soko-paper-dim);
   border: 1px solid var(--soko-line);
-  border-radius: 12px;
   color: var(--soko-ink-soft);
 }
 
