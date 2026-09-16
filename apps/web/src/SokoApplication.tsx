@@ -126,6 +126,7 @@ import {
 import { useInstallPrompt } from "./misc-browser-utils";
 
 import { BusinessSetupPanel } from "./BusinessSetupPanel";
+import { MenuDrawer } from "./MenuDrawer";
 
 import { ChatSurface } from "./ChatSurface";
 import { renderOwnerWorkspace, type OwnerWorkspaceBindings } from "./OwnerWorkspace";
@@ -244,6 +245,12 @@ export function OwnerApp() {
   // came from (Soko Home's "trace" affordance). Never sent to the server and not worth surviving
   // navigation, unlike the hook-owned state above.
   const [isCapabilityTraceOpen, setIsCapabilityTraceOpen] = useState(false);
+  // Soko Home's hamburger menu drawer and which of AgentProfileSurface's own settings groups it
+  // should open+scroll to on arrival - both purely local UI state, reset once consumed.
+  const [isMenuDrawerOpen, setIsMenuDrawerOpen] = useState(false);
+  const [agentProfileInitialSection, setAgentProfileInitialSection] = useState<
+    "business" | "agent" | "security" | null
+  >(null);
 
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Guest";
@@ -1561,12 +1568,9 @@ export function OwnerApp() {
               <button
                 className="shell-menu-button"
                 type="button"
-                aria-label="Open sessions and messages"
-                aria-expanded={isMessagingInboxOpen}
-                onClick={() => {
-                  if (view !== "chat" && view !== "home") returnToChat();
-                  setIsMessagingInboxOpen((open) => !open);
-                }}
+                aria-label="Open menu"
+                aria-expanded={isMenuDrawerOpen}
+                onClick={() => setIsMenuDrawerOpen(true)}
               >
                 <span aria-hidden="true" />
               </button>
@@ -1580,7 +1584,11 @@ export function OwnerApp() {
               <button
                 className="brand-lockup"
                 type="button"
-                onClick={() => setupComplete && openAgentProfile()}
+                onClick={() => {
+                  if (!setupComplete) return;
+                  setAgentProfileInitialSection(null);
+                  openAgentProfile();
+                }}
                 onPointerEnter={() => prefetchOwnerView("agent", business.id)}
                 onFocus={() => prefetchOwnerView("agent", business.id)}
               >
@@ -1616,6 +1624,7 @@ export function OwnerApp() {
                   if (business === null) {
                     switchMode("seller");
                   } else {
+                    setAgentProfileInitialSection(null);
                     openAgentProfile();
                   }
                 }}
@@ -1631,7 +1640,45 @@ export function OwnerApp() {
               </button>
             ) : null}
           </header>
-          {!isAuthScreen && <OfflineRuntimeNotice onReview={openAgentProfile} />}
+          {!isAuthScreen ? (
+            <MenuDrawer
+              open={isMenuDrawerOpen}
+              hasBusiness={business !== null}
+              onClose={() => setIsMenuDrawerOpen(false)}
+              onMessageHistory={() => {
+                setIsMenuDrawerOpen(false);
+                if (view !== "chat" && view !== "home") returnToChat();
+                setIsMessagingInboxOpen(true);
+              }}
+              onShopSettings={() => {
+                setIsMenuDrawerOpen(false);
+                setAgentProfileInitialSection("business");
+                openAgentProfile();
+              }}
+              onAgentSettings={() => {
+                setIsMenuDrawerOpen(false);
+                setAgentProfileInitialSection("agent");
+                openAgentProfile();
+              }}
+              onAccountSettings={() => {
+                setIsMenuDrawerOpen(false);
+                setAgentProfileInitialSection("security");
+                openAgentProfile();
+              }}
+              onSetUpShop={() => {
+                setIsMenuDrawerOpen(false);
+                switchMode("seller");
+              }}
+            />
+          ) : null}
+          {!isAuthScreen && (
+            <OfflineRuntimeNotice
+              onReview={() => {
+                setAgentProfileInitialSection(null);
+                openAgentProfile();
+              }}
+            />
+          )}
 
           {!isAuthScreen ? (
             <nav className="shell-mode-bar" aria-label="Commerce mode and messages">
@@ -2012,6 +2059,7 @@ export function OwnerApp() {
                   >
                     <Suspense fallback={<NativeLaunchScreen message="Opening agent settings…" />}>
                       <AgentProfileSurface
+                        initialOpenSection={agentProfileInitialSection}
                         conversationId={activeConversationId}
                         chatMessages={chatMessages}
                         agent={agentSettings}

@@ -71,8 +71,50 @@ describe("Soko Home: merchant entry point", () => {
     );
     expect(normalizedChatSurface.length).toBeGreaterThan(0); // sanity: file loaded
     expect(sokoApplication).toMatch(
-      /if \(business === null\) \{\s*switchMode\("seller"\);\s*\} else \{\s*openAgentProfile\(\);\s*\}/u
+      /if \(business === null\) \{\s*switchMode\("seller"\);\s*\} else \{\s*setAgentProfileInitialSection\(null\);\s*openAgentProfile\(\);\s*\}/u
     );
+  });
+});
+
+describe("Soko Home: hamburger menu drawer", () => {
+  it("opens the menu drawer instead of toggling the message inbox directly", () => {
+    expect(sokoApplication).toContain('aria-label="Open menu"');
+    expect(sokoApplication).toContain("aria-expanded={isMenuDrawerOpen}");
+    expect(sokoApplication).toContain("onClick={() => setIsMenuDrawerOpen(true)}");
+  });
+
+  it("renders MenuDrawer wired to message history and the three settings destinations", () => {
+    expect(sokoApplication).toContain('import { MenuDrawer } from "./MenuDrawer";');
+    expect(sokoApplication).toContain("<MenuDrawer");
+    expect(sokoApplication).toContain("hasBusiness={business !== null}");
+    expect(sokoApplication).toContain('setAgentProfileInitialSection("business");');
+    expect(sokoApplication).toContain('setAgentProfileInitialSection("agent");');
+    expect(sokoApplication).toContain('setAgentProfileInitialSection("security");');
+  });
+
+  it("threads the requested settings section into AgentProfileSurface, which opens and scrolls to it", () => {
+    const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
+    expect(sokoApplication).toContain("initialOpenSection={agentProfileInitialSection}");
+    expect(agentProfileSurface).toContain(
+      'initialOpenSection?: "business" | "agent" | "security" | null;'
+    );
+    expect(agentProfileSurface).toContain("target.open = true;");
+    expect(agentProfileSurface).toContain('target.scrollIntoView({ behavior: "smooth"');
+  });
+
+  it("resets the requested section on every other path into agent settings, so a stale menu pick can't stick", () => {
+    expect(sokoApplication).toMatch(
+      /if \(!setupComplete\) return;\s*setAgentProfileInitialSection\(null\);\s*openAgentProfile\(\);/u
+    );
+    expect(sokoApplication).toMatch(
+      /onReview=\{\(\) => \{\s*setAgentProfileInitialSection\(null\);\s*openAgentProfile\(\);\s*\}\}/u
+    );
+  });
+
+  it("falls back to a single 'set up your shop' item for a customer with no business yet", () => {
+    const menuDrawer = readFileSync("apps/web/src/MenuDrawer.tsx", "utf8");
+    expect(menuDrawer).toContain("Set up your shop");
+    expect(menuDrawer).toContain("hasBusiness ? (");
   });
 });
 

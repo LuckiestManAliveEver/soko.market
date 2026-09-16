@@ -75,6 +75,9 @@ export interface AgentProfileSurfaceProps {
     reason: string;
   }) => Promise<boolean>;
   isLoggingOut: boolean;
+  /** Soko Home's menu drawer deep-links here from "Shop settings"/"Agent settings"/"Account
+   *  settings" - which of this page's own SettingsGroups to open and scroll to on arrival. */
+  initialOpenSection?: "business" | "agent" | "security" | null;
 }
 
 export function AgentProfileSurface({
@@ -101,7 +104,8 @@ export function AgentProfileSurface({
   onLogout,
   onLogoutAll,
   onScheduleAccountDeletion,
-  isLoggingOut
+  isLoggingOut,
+  initialOpenSection = null
 }: AgentProfileSurfaceProps) {
   const runtimeHandoff = useRuntimeHandoff(
     accountId,
@@ -147,6 +151,21 @@ export function AgentProfileSurface({
     void loadAgentProfile();
     void loadAgentRuntimeDetails();
   }, [accountId, business.id]);
+
+  useEffect(() => {
+    if (initialOpenSection === null) return;
+    const sectionId =
+      initialOpenSection === "business"
+        ? "settings-group-business"
+        : initialOpenSection === "agent"
+          ? "settings-group-agent-behavior"
+          : "settings-group-login-security";
+    const target = document.getElementById(sectionId);
+    if (target instanceof HTMLDetailsElement) {
+      target.open = true;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [initialOpenSection]);
 
   async function runProfileAction(key: string, action: () => Promise<void>) {
     if (pendingProfileAction !== null) return;
@@ -410,6 +429,7 @@ export function AgentProfileSurface({
       <section className="agent-settings-grid">
         <OfflineRuntimeSettings accountId={accountId} businessId={business.id} />
         <SettingsGroup
+          id="settings-group-business"
           title="Business"
           description="Shops, storefront link, and runtime readiness"
           defaultOpen
@@ -441,6 +461,7 @@ export function AgentProfileSurface({
         </SettingsGroup>
 
         <SettingsGroup
+          id="settings-group-agent-behavior"
           title="Agent behavior"
           description="Identity, voice, sales policy, context, and memory"
         >
@@ -546,6 +567,7 @@ export function AgentProfileSurface({
         </SettingsGroup>
 
         <SettingsGroup
+          id="settings-group-login-security"
           title="Login & security"
           description="Passkeys, recovery, devices, and notifications"
         >
