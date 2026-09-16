@@ -398,7 +398,9 @@ export function useAuthState(deps: UseAuthStateDeps) {
         return null;
       }
 
-      if (isDefinitiveAuthenticationError(error)) {
+      const isDefiniteAuthError = isDefinitiveAuthenticationError(error);
+
+      if (isDefiniteAuthError) {
         try {
           const recovered = await recoverDeviceAccount();
           if (recovered !== null) {
@@ -421,31 +423,38 @@ export function useAuthState(deps: UseAuthStateDeps) {
             return null;
           }
         }
+      }
 
-        // Every non-deliberate cold boot - whether this is a genuinely fresh visitor or a
-        // returning one whose session merely expired - gets Soko's documented zero-form entry
-        // (docs/authentication/progressive-identity.md) instead of a login wall: browsing and
-        // chat work immediately on a real, cookie-backed device account, and identity (phone/PIN)
-        // is only requested later, when an action actually needs it. Only an explicit deep link
-        // to /login or /signup, or an account-deletion/restoration intent, is a deliberate enough
-        // request to show that screen instead of the chat shell.
-        const isDeliberateAuthFlow =
-          initialAuthenticationTarget !== null || accountDeletionIntent || accountRestorationIntent;
+      // Every non-deliberate cold boot - whether this is a genuinely fresh visitor, a returning
+      // one whose session merely expired, or one whose very first /auth/bootstrap call hit a
+      // transient network/server error (a cold start, a dropped connection, a 5xx) rather than a
+      // definitive "you're not logged in" - gets Soko's documented zero-form entry
+      // (docs/authentication/progressive-identity.md) instead of a login wall: browsing and chat
+      // work immediately on a real, cookie-backed device account, and identity (phone/PIN) is only
+      // requested later, when an action actually needs it. Only an explicit deep link to /login or
+      // /signup, or an account-deletion/restoration intent, is a deliberate enough request to show
+      // that screen instead of the chat shell. This is what previously left a fresh visitor
+      // staring at the signup form on nothing more than a flaky first request: only the definitive-
+      // auth-error branch above ever tried continueToSoko, so any other failure skipped straight to
+      // "open the signup screen" below.
+      const isDeliberateAuthFlow =
+        initialAuthenticationTarget !== null || accountDeletionIntent || accountRestorationIntent;
 
-        if (!isDeliberateAuthFlow) {
-          const continued = await continueToSoko();
-          if (continued !== null) {
-            if (initialOwnerAuth !== null) {
-              setStatusMessage(
-                storedBusiness !== null
-                  ? `Welcome back. Log in to restore access to ${storedBusiness.name}.`
-                  : "Welcome back. Log in to restore your account."
-              );
-            }
-            return continued;
+      if (!isDeliberateAuthFlow) {
+        const continued = await continueToSoko();
+        if (continued !== null) {
+          if (initialOwnerAuth !== null) {
+            setStatusMessage(
+              storedBusiness !== null
+                ? `Welcome back. Log in to restore access to ${storedBusiness.name}.`
+                : "Welcome back. Log in to restore your account."
+            );
           }
+          return continued;
         }
+      }
 
+      if (isDefiniteAuthError || isDeliberateAuthFlow) {
         requireReauthentication(
           initialAuthenticationTarget === "signup"
             ? "Create your Soko account."
@@ -454,13 +463,12 @@ export function useAuthState(deps: UseAuthStateDeps) {
         return null;
       }
 
+      // Neither a definitive auth failure nor a deliberate auth flow, and even the zero-form
+      // fallback above couldn't reach the server: stay on the chat shell (same sessionless state
+      // guest browsing already renders) instead of forcing a signup wall nobody asked for.
       if (cached !== null) setSession(cached);
       if (storedBusiness !== null) setBusiness(storedBusiness);
       setAuthBootstrapState("failed");
-      if (cached === null) {
-        setIsAuthOpen(true);
-        setAuthenticationView(initialAuthenticationTarget ?? "signup");
-      }
       setStatusMessage("Soko could not restore this session. Check your connection and retry.");
       return null;
     }

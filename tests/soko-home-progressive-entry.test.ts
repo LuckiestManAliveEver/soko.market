@@ -33,6 +33,35 @@ describe("Soko Home: zero-form entry (docs/authentication/progressive-identity.m
     expect(useAuthState).toContain("deviceContinueAttemptStorageKey");
     expect(useAuthState).toContain("deviceContinueAttemptTtlMs = 10 * 60 * 1000");
   });
+
+  it("also attempts the zero-form entry when /auth/bootstrap fails for a non-authentication reason", () => {
+    // Previously only the isDefinitiveAuthenticationError branch ever called continueToSoko - a
+    // network hiccup, a cold-start timeout, or a 5xx on the very first /auth/bootstrap request
+    // (not a definitive "you're not logged in") fell straight through to a fallback that forced
+    // the signup screen open for a fresh visitor, contradicting "all users start from the chat
+    // shell". The zero-form attempt and its isDeliberateAuthFlow gate must now sit outside (after)
+    // the isDefiniteAuthError branch, so it runs for both kinds of failure.
+    const definiteErrorBranchEnd = useAuthState.indexOf(
+      "if (isDefiniteAuthError || isDeliberateAuthFlow)"
+    );
+    const deliberateFlowDeclaration = useAuthState.indexOf("const isDeliberateAuthFlow =");
+    const continueAttempt = useAuthState.indexOf("if (!isDeliberateAuthFlow) {");
+    expect(definiteErrorBranchEnd).toBeGreaterThan(0);
+    expect(deliberateFlowDeclaration).toBeGreaterThan(0);
+    expect(continueAttempt).toBeGreaterThan(0);
+    expect(deliberateFlowDeclaration).toBeLessThan(definiteErrorBranchEnd);
+    expect(continueAttempt).toBeLessThan(definiteErrorBranchEnd);
+  });
+
+  it("never forces the signup screen open as a fallback for a non-deliberate, non-authentication bootstrap failure", () => {
+    expect(useAuthState).not.toContain(
+      'setAuthenticationView(initialAuthenticationTarget ?? "signup")'
+    );
+    const fallbackTail = useAuthState.slice(
+      useAuthState.indexOf("if (cached !== null) setSession(cached)")
+    );
+    expect(fallbackTail).not.toContain("setIsAuthOpen(true)");
+  });
 });
 
 describe("Soko Home: recognized returning device pill", () => {

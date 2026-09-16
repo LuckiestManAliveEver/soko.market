@@ -37,7 +37,7 @@ describe("progressive onboarding UI", () => {
     expect(recoverySource).toContain('false,\n    ["sign"]');
     expect(recoverySource).toContain('"/auth/device/recover"');
     const recoveryBranch = authStateSource.slice(
-      authStateSource.indexOf("if (isDefinitiveAuthenticationError(error))"),
+      authStateSource.indexOf("if (isDefiniteAuthError) {"),
       authStateSource.indexOf("if (cached !== null) setSession(cached)")
     );
     const recoveryIndex = recoveryBranch.indexOf("recoverDeviceAccount()");
