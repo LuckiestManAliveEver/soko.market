@@ -247,6 +247,17 @@ export function OwnerApp() {
 
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Guest";
+  // Soko Home's "recognized device" pill: this device remembers a stronger identity
+  // (initialOwnerAuth/initialBusiness, read once at cold boot) than the one the current session
+  // actually holds (a fresh device-only account, per progressive-identity.md). Once the account
+  // this session belongs to is itself upgraded past "device", the pill has nothing left to invite
+  // and disappears on its own - no separate dismiss state to track.
+  const recognizedDeviceLabel =
+    session?.account.identityLevel === "device" && initialOwnerAuth !== null
+      ? initialBusiness !== null
+        ? `This device — continue to ${initialBusiness.name}?`
+        : "This device — log in to pick up where you left off?"
+      : null;
 
   // Domain hooks extracted from OwnerApp's state (see docs/architecture/frontend-modularization-
   // roadmap.md's OwnerApp decomposition). Grouped together and placed after every raw useState/
@@ -763,7 +774,14 @@ export function OwnerApp() {
   // references refreshSession by name at hook-call time) - same TDZ-avoidance reasoning as every
   // other domain hook ordering decision in this effort.
   const authBootstrapPending = isAuthBootstrapPending(authBootstrapState);
-  const shouldShowAuth = !authBootstrapPending && isAuthOpen && session === null;
+  // A device-only session (progressive-identity.md) is a real, cookie-backed session, but it is
+  // not yet the identity someone deliberately asking to log in or sign up wants - show the auth
+  // screen for it the same as no session at all. completePhoneFirstAuthentication's new session
+  // response simply replaces this temporary one, exactly like a fresh signup/login would.
+  const shouldShowAuth =
+    !authBootstrapPending &&
+    isAuthOpen &&
+    (session === null || session.account.identityLevel === "device");
   const setupComplete = business !== null && !shouldShowAuth && !authBootstrapPending;
   const isAuthScreen = authBootstrapPending || shouldShowAuth || isAccountRestorationOpen;
   const {
@@ -1881,6 +1899,7 @@ export function OwnerApp() {
                 onBrowseAsGuest={browseAsGuest}
                 onSignUp={() => openAuth("signup")}
                 onLogIn={() => openAuth("login")}
+                recognizedDeviceLabel={recognizedDeviceLabel}
                 onRefreshPublicStorefronts={() => void loadPublicStorefronts()}
                 onConversationPreference={(conversationId, preference) =>
                   void runAction("conversation-preference", () =>

@@ -35,6 +35,35 @@ describe("Soko Home: zero-form entry (docs/authentication/progressive-identity.m
   });
 });
 
+describe("Soko Home: recognized returning device pill", () => {
+  it("derives the pill from identityLevel, not just from having a session", () => {
+    expect(sokoApplication).toContain(
+      'session?.account.identityLevel === "device" && initialOwnerAuth !== null'
+    );
+    expect(sokoApplication).toContain("This device — continue to ${initialBusiness.name}?");
+    expect(sokoApplication).toContain('"This device — log in to pick up where you left off?"');
+    expect(sokoApplication).toContain("recognizedDeviceLabel={recognizedDeviceLabel}");
+  });
+
+  it("only shows on an untouched marketplace thread and taps straight into login", () => {
+    expect(normalizedChatSurface).toContain(
+      'mode === "marketplace" && activeModuleView === null && recognizedDeviceLabel !== null && visibleMessages.filter((message) => message.id !== "welcome").length === 0'
+    );
+    expect(chatSurface).toContain(
+      '<button className="recognized-device-pill" type="button" onClick={onLogIn}>'
+    );
+  });
+
+  it("actually opens the login form on tap, instead of a no-op behind a stale session===null gate", () => {
+    // A device-only session is real and non-null, so the pre-device-account shouldShowAuth gate
+    // (session === null) silently swallowed onLogIn's isAuthOpen=true - the phone/PIN form never
+    // rendered. It must also fire for a session whose identityLevel is still "device".
+    expect(sokoApplication).toMatch(
+      /const shouldShowAuth =\s*!authBootstrapPending &&\s*isAuthOpen &&\s*\(session === null \|\| session\.account\.identityLevel === "device"\);/u
+    );
+  });
+});
+
 describe("Soko Home: merchant entry point", () => {
   it("routes an already-authenticated customer straight into business setup, not a redundant login screen", () => {
     expect(sokoApplication).toContain(
