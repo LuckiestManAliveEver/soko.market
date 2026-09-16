@@ -422,22 +422,28 @@ export function useAuthState(deps: UseAuthStateDeps) {
           }
         }
 
-        // A genuinely fresh visitor - nothing on this device says otherwise, and nothing asked
-        // for a deliberate sign-up/login/deletion/restoration screen - gets Soko's documented
-        // zero-form entry (docs/authentication/progressive-identity.md) instead of a login wall:
-        // browsing and chat work immediately on a real, cookie-backed device account, and identity
-        // (phone/PIN) is only requested later, when an action actually needs it.
-        const isFreshVisitor =
-          cached === null &&
-          storedBusiness === null &&
-          initialOwnerAuth === null &&
-          initialAuthenticationTarget === null &&
-          !accountDeletionIntent &&
-          !accountRestorationIntent;
+        // Every non-deliberate cold boot - whether this is a genuinely fresh visitor or a
+        // returning one whose session merely expired - gets Soko's documented zero-form entry
+        // (docs/authentication/progressive-identity.md) instead of a login wall: browsing and
+        // chat work immediately on a real, cookie-backed device account, and identity (phone/PIN)
+        // is only requested later, when an action actually needs it. Only an explicit deep link
+        // to /login or /signup, or an account-deletion/restoration intent, is a deliberate enough
+        // request to show that screen instead of the chat shell.
+        const isDeliberateAuthFlow =
+          initialAuthenticationTarget !== null || accountDeletionIntent || accountRestorationIntent;
 
-        if (isFreshVisitor) {
+        if (!isDeliberateAuthFlow) {
           const continued = await continueToSoko();
-          if (continued !== null) return continued;
+          if (continued !== null) {
+            if (initialOwnerAuth !== null) {
+              setStatusMessage(
+                storedBusiness !== null
+                  ? `Welcome back. Log in to restore access to ${storedBusiness.name}.`
+                  : "Welcome back. Log in to restore your account."
+              );
+            }
+            return continued;
+          }
         }
 
         requireReauthentication(

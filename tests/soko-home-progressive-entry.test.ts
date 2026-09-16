@@ -16,11 +16,17 @@ describe("Soko Home: zero-form entry (docs/authentication/progressive-identity.m
     expect(useAuthState).toContain("idempotencyKey");
   });
 
-  it("only auto-continues for a device with no evidence of a prior real account or deliberate auth intent", () => {
+  it("auto-continues every non-deliberate cold boot, new visitor or returning one, instead of a login wall", () => {
     expect(useAuthState).toMatch(
-      /const isFreshVisitor =\s*cached === null &&\s*storedBusiness === null &&\s*initialOwnerAuth === null &&\s*initialAuthenticationTarget === null &&\s*!accountDeletionIntent &&\s*!accountRestorationIntent;/u
+      /const isDeliberateAuthFlow =\s*initialAuthenticationTarget !== null \|\| accountDeletionIntent \|\| accountRestorationIntent;/u
     );
-    expect(useAuthState).toContain("if (isFreshVisitor) {");
+    expect(useAuthState).toContain("if (!isDeliberateAuthFlow) {");
+    expect(useAuthState).not.toContain("initialOwnerAuth === null &&");
+  });
+
+  it("invites a recognized returning device to log back in without blocking the chat shell", () => {
+    expect(useAuthState).toContain("if (initialOwnerAuth !== null) {");
+    expect(useAuthState).toContain("Welcome back. Log in to restore access to");
   });
 
   it("keeps the idempotency attempt key short-lived and bearer-only, per the documented contract", () => {
