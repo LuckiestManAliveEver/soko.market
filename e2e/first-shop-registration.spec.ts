@@ -154,9 +154,7 @@ test("captures and normalizes the compulsory owner phone without SMS", async ({ 
   await expect(continueButton).toBeDisabled();
   await page.getByLabel("Phone number").fill("123");
   await continueButton.click();
-  await expect(page.getByRole("alert")).toHaveText(
-    "Enter a valid phone number for the selected country."
-  );
+  await expect(page.getByRole("alert")).toHaveText("The phone number is too short.");
 
   await page.getByLabel("Phone number").fill("254712345678");
   await continueButton.click();

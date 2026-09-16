@@ -98,8 +98,11 @@ test("signs up with a profile and later logs in from the welcome message", async
   await page.addInitScript(() => {
     localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
   });
+  // Zero-form entry (docs/authentication/progressive-identity.md): a non-deliberate cold boot at
+  // /marketplace lands straight on the chat shell with its inline welcome message, not behind a
+  // separate "choose guest/signup/login" screen - there is no "Continue to marketplace as guest"
+  // button to click before the welcome message appears.
   await page.goto("/marketplace");
-  await page.getByRole("button", { name: "Continue to marketplace as guest" }).click();
 
   const welcome = page.getByTestId("welcome-message");
   await expect(welcome).toBeVisible();
@@ -130,6 +133,12 @@ test("signs up with a profile and later logs in from the welcome message", async
   await page.evaluate(() => localStorage.removeItem("soko.market.auth-bootstrap.v1"));
   await page.reload();
 
+  // A non-deliberate reload never auto-navigates to /login, even once the session is invalid
+  // (docs/authentication/progressive-identity.md) - it lands back on the chat shell's welcome
+  // message, same as any other cold boot. The phone number is still remembered separately (in
+  // soko.chatFirst.ownerAuth, untouched above) once the visitor deliberately taps Log in.
+  await expect(welcome).toBeVisible();
+  await page.getByTestId("welcome-login-button").click();
   await expect(page).toHaveURL(/\/login$/u);
   await expect(page.getByText(`Continuing as ${phone}`)).toBeVisible();
   await page.getByRole("button", { name: "Continue to log in" }).click();
