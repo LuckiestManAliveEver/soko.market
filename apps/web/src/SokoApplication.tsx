@@ -440,6 +440,7 @@ export function OwnerApp() {
     getAuthSetters: () => ({ setIsAuthOpen, setAuthenticationView, setIsAccountRestorationOpen }),
     getBusinessSetupSetters: () => ({ setIsBusinessSetupOpen, setBusinessSetupStep }),
     getChatSetters: () => ({ setIsMessagingInboxOpen, setChatMessages }),
+    getContinueToSoko: () => continueToSoko,
     registerReset: domainResetRegistry.registerReset
   });
   // useMarketplaceState is called after useNavigationState (completeMarketplaceIntro/
@@ -642,6 +643,7 @@ export function OwnerApp() {
     loadOAuthProviders,
     acceptAuthenticatedSession,
     completePhoneFirstAuthentication,
+    continueToSoko,
     refreshSession,
     ensureAuthenticatedSession,
     rejectDefinitiveAuthenticationFailure,

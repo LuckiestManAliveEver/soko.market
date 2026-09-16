@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const useAuthState = readFileSync("apps/web/src/hooks/useAuthState.ts", "utf8");
+const useNavigationState = readFileSync("apps/web/src/hooks/useNavigationState.ts", "utf8");
 const sokoApplication = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
 const chatSurface = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
 const appShell = readFileSync("apps/web/src/app-shell.ts", "utf8");
@@ -73,6 +74,21 @@ describe("Soko Home: zero-form entry (docs/authentication/progressive-identity.m
       useAuthState.indexOf("if (cached !== null) setSession(cached)")
     );
     expect(fallbackTail).not.toContain("setIsAuthOpen(true)");
+  });
+
+  it("gives a guest a real device account too, so messaging never hits a sign-in wall", () => {
+    // browseAsGuest previously only skipped the signup form and left session null - "guest" was a
+    // second-class, pre-progressive-identity state where sending a message (session === null in
+    // ChatComposer/ChatSurface/sendChatDraftOnRuntime) still forced a "sign in to message" wall.
+    // continueToSoko is the same zero-form entry every other cold boot already gets automatically;
+    // browseAsGuest now triggers it explicitly, since a deliberate /signup visit skips the
+    // automatic attempt.
+    expect(useNavigationState).toContain(
+      "getContinueToSoko: () => () => Promise<SessionResponse | null>"
+    );
+    expect(useNavigationState).toContain("void deps.getContinueToSoko()();");
+    expect(useNavigationState).not.toContain("Sign in only when you want to message");
+    expect(sokoApplication).toContain("getContinueToSoko: () => continueToSoko,");
   });
 });
 
