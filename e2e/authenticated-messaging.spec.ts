@@ -24,8 +24,11 @@ test("messaging is locked until the visitor chooses signup or login", async ({ p
   await page.addInitScript(() => {
     localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
   });
+  // Zero-form entry (docs/authentication/progressive-identity.md): a non-deliberate cold boot at
+  // /marketplace lands straight on the chat shell with its inline welcome message, not behind a
+  // separate "choose guest/signup/login" screen - there is no "Continue to marketplace as guest"
+  // button to click before the welcome message appears.
   await page.goto("/marketplace");
-  await page.getByRole("button", { name: "Continue to marketplace as guest" }).click();
 
   const welcome = page.getByTestId("welcome-message");
   await expect(welcome).toBeVisible();

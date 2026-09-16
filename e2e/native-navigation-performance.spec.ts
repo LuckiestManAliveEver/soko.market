@@ -22,25 +22,43 @@ test.beforeEach(async ({ page }) => {
 
 test("primary navigation remains local while data refreshes slowly", async ({ page }) => {
   await page.goto("/sell");
-  await expect(page.getByRole("button", { name: "Catalogue" })).toBeVisible({
-    timeout: 30_000
-  });
+  const workspaceButton = page.getByRole("button", { name: "Workspace", exact: true });
+  await expect(workspaceButton).toBeVisible({ timeout: 30_000 });
   const shellId = await page.locator(".app-frame").getAttribute("data-shell-instance");
   const timings: Record<string, number> = {};
 
+  // Workspace cards (opened from the "Workspace" header button, not their own URLs - Soko's
+  // seller workspace navigates locally by swapping which dialog is open over the same /sell URL
+  // and shell instance, rather than pushing a route per destination) each open their own dialog,
+  // titled per apps/web/src/app-shell.ts's quickActions labels, and close back to plain chat.
   for (const destination of [
-    { label: "Catalogue", path: "/catalogue" },
-    { label: "Sales and invoices", path: "/invoices" },
-    { label: "Documents and receipts", path: "/receipts" },
-    { label: "Business reports", path: "/reports" },
-    { label: "Business overview", path: "/sell" }
+    { card: "Invoices", dialogTitle: "Invoices" },
+    { card: "Knowledge", dialogTitle: "Purchase receipts" },
+    { card: "Business Summary", dialogTitle: "Reports" }
   ]) {
-    const duration = await clickToSecondPaint(page, destination.label);
-    timings[destination.path] = Math.round(duration * 10) / 10;
-    await expect(page).toHaveURL(new RegExp(`${destination.path}$`));
-    expect(duration, `${destination.label} navigation`).toBeLessThan(300);
+    await workspaceButton.click();
+    await expect(page.getByRole("dialog", { name: "Workspace" })).toBeVisible();
+    const duration = await clickToSecondPaint(page, destination.card);
+    timings[destination.dialogTitle] = Math.round(duration * 10) / 10;
+    await expect(page.getByRole("dialog", { name: destination.dialogTitle })).toBeVisible();
+    expect(duration, `${destination.card} navigation`).toBeLessThan(300);
     expect(await page.locator(".app-frame").getAttribute("data-shell-instance")).toBe(shellId);
+    await expect(page).toHaveURL(/\/sell$/);
+    await page.getByRole("button", { name: `Close ${destination.dialogTitle}` }).click();
   }
+
+  // Catalogue is a nested view inside the same launcher dialog (relabeled "Catalogue" instead of
+  // "Workspace") rather than its own dialog - apps/web/src/ChatSurface.tsx's workspacePanelTitle.
+  await workspaceButton.click();
+  await expect(page.getByRole("dialog", { name: "Workspace" })).toBeVisible();
+  const catalogueDuration = await clickToSecondPaint(page, "Catalogue");
+  timings.catalogue = Math.round(catalogueDuration * 10) / 10;
+  await expect(page.getByRole("dialog", { name: "Catalogue" })).toBeVisible();
+  expect(catalogueDuration, "Catalogue navigation").toBeLessThan(300);
+  expect(await page.locator(".app-frame").getAttribute("data-shell-instance")).toBe(shellId);
+  await expect(page).toHaveURL(/\/sell$/);
+  await page.getByRole("button", { name: "Close Catalogue" }).click();
+
   console.log("[SOKO_NAV_BENCH]", JSON.stringify(timings));
 });
 
@@ -53,9 +71,10 @@ test("workspace and model settings do not replace the authenticated shell", asyn
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\/sell$/);
+  await page.locator(".settings-group-title", { hasText: "Model & inference" }).click();
   await page.getByRole("button", { name: "Open model library" }).click();
-  await expect(page.getByLabel("Account model storage", { exact: true })).toBeVisible({
+  await expect(page.getByRole("heading", { name: "Model library", exact: true })).toBeVisible({
     timeout: 30_000
   });
   await expect(page.getByLabel("Soko backend models", { exact: true })).toHaveCount(0);
@@ -74,7 +93,8 @@ test("backend model activation survives reload and can be removed", async ({ pag
   await page.goto("/sell");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
-  await expect(page).toHaveURL(/\/$/u);
+  await expect(page).toHaveURL(/\/sell$/u);
+  await page.locator(".settings-group-title", { hasText: "Model & inference" }).click();
   await page.getByRole("button", { name: "Open model library" }).click();
   const backendModels = page.getByLabel("Soko backend models", { exact: true });
   await expect(backendModels).toBeVisible();
@@ -85,6 +105,9 @@ test("backend model activation survives reload and can be removed", async ({ pag
   ).toBeVisible();
 
   await page.reload();
+  await page.getByRole("button", { name: "Account and agent settings" }).click();
+  await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
+  await page.locator(".settings-group-title", { hasText: "Model & inference" }).click();
   await page.getByRole("button", { name: "Open model library" }).click();
   await expect(
     backendModels.getByRole("button", { name: "Remove from agent", exact: true })
@@ -152,7 +175,11 @@ async function installDelayedApi(page: Page): Promise<void> {
         accountId: "performance-account",
         userId: "performance-user",
         sessionId: "performance-session",
-        conversationId: "performance-conversation",
+        // Not a real conversation ID with a matching /v1/conversations/:id fixture below - a
+        // non-null value here makes the app optimistically route to that (nonexistent)
+        // conversation's URL, which confuses every URL assertion in this file with an unrelated
+        // "could not be found" redirect.
+        conversationId: null,
         activeShopId: "performance-shop",
         agentId: "performance-shop",
         activeModelId: "qwen2.5-0.5b-android",
@@ -180,11 +207,22 @@ async function installDelayedApi(page: Page): Promise<void> {
     }
     if (url.pathname === "/roles/check") return json({ allowed: true, role: "owner" });
     if (url.pathname === "/health") return json({ status: "ok" });
-    // Opening the model library (agent settings > "Open model library") fetches these two
+    // Opening the model library (agent settings > "Open model library") fetches these three
     // without their own fallback/catch, unlike the rest of loadAiModels's requests - an
     // unmocked 404 here throws and the library never expands. See loadAiModels in
-    // SokoApplication.tsx.
+    // AgentModelPanel.tsx.
     if (url.pathname === "/v1/ai-models") return json({ models: [] });
+    if (url.pathname.endsWith("/runtime/effective") && url.pathname.startsWith("/businesses/")) {
+      return json({
+        harness: { id: "soko-ai", name: "Soko AI" },
+        model: { id: "qwen2.5-0.5b-android", name: "Qwen2.5 0.5B (Android recommended)" },
+        execution: { type: "backend", hostId: null, ready: true },
+        binding: activeBinding !== null ? { id: activeBinding.id } : null,
+        source: activeBinding !== null ? "explicit" : "default",
+        status: "READY",
+        ready: true
+      });
+    }
     if (url.pathname.endsWith("/ai-model") && url.pathname.startsWith("/businesses/")) {
       return json({
         businessId: "performance-shop",

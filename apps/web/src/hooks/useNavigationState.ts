@@ -163,7 +163,10 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     setIsMessagingInboxOpen(false);
     setMode("marketplace");
     setView("chat");
-    setIsMarketplaceShortcutOpen(true);
+    // Not setIsMarketplaceShortcutOpen(true): that panel is a modal (StackedModule) that makes the
+    // rest of the shell inert, including the chat welcome message's own Log in button - trapping a
+    // guest who just chose "Browse as guest" behind an unrequested panel instead of landing them on
+    // the plain chat home, same as any other non-deliberate arrival at marketplace mode.
     navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
     setStatusMessage("Browsing as a guest.");
     // "Guest" only means skipping the signup form here, not going without Soko's own zero-form

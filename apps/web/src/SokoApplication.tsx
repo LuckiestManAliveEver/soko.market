@@ -15,8 +15,7 @@ import {
   authenticationRoute,
   readAuthenticationRouteHash,
   readAuthenticationRoutePath,
-  readOwnerRoute,
-  routes
+  readOwnerRoute
 } from "./routes";
 import {
   initializeOwnerHistory,
@@ -430,8 +429,11 @@ export function OwnerApp() {
     setView,
     getIsMarketplaceIntroComplete: () => isMarketplaceIntroComplete,
     preservedScreenLimit: capabilitySettingsRef.current.preservedScreenLimit,
-    initialMarketplaceShortcutOpen:
-      window.location.pathname === routes.marketplace && initialOwnerRoute?.view === "chat",
+    // Previously true whenever the URL was exactly "/marketplace" (a leftover from before that
+    // path, "/" and "/chat" all became the same unified-chat route): the "Marketplace" panel it
+    // opens is a modal (StackedModule) that makes the rest of the shell inert, including the
+    // header's shop icon, blocking it on the very first load of the customer's canonical URL.
+    initialMarketplaceShortcutOpen: false,
     initialRoutedProductId: initialOwnerRoute?.productId ?? null,
     populateProductForm,
     setStatusMessage,
@@ -944,9 +946,7 @@ export function OwnerApp() {
       setActiveConversationId(route.conversationId ?? null);
       setReplyToMessageId(null);
       setIsWorkspacePanelOpen(false);
-      setIsMarketplaceShortcutOpen(
-        window.location.pathname === routes.marketplace && route.view === "chat"
-      );
+      setIsMarketplaceShortcutOpen(false);
       markNavigationCommitted(measurement);
       const historyState = readSokoHistoryState(window.history.state);
       if (historyState !== null) {
@@ -1687,9 +1687,14 @@ export function OwnerApp() {
           )}
 
           {!isAuthScreen ? (
-            <nav className="shell-mode-bar" aria-label="Commerce mode and messages">
+            <nav
+              className="shell-mode-bar"
+              aria-label={mode === "seller" ? "Commerce mode and messages" : "Shell actions"}
+            >
               <button
-                className={`header-action-button marketplace commerce-mode-toggle ${mode === "marketplace" ? "mode-active" : ""}`}
+                className={`header-action-button marketplace commerce-mode-toggle ${
+                  mode === "marketplace" && isMarketplaceShortcutOpen ? "mode-active" : ""
+                }`}
                 type="button"
                 data-testid="marketplace-button"
                 aria-label="Marketplace"
@@ -1705,20 +1710,26 @@ export function OwnerApp() {
                   switchMode("marketplace");
                 }}
               >
-                Buy
+                {/* A seller previewing the buyer side reads this as "switch to Buy"; a customer
+                    reads it as "browse shops/cart", since they're already shopping. Neither is the
+                    removed Buy/Sell mode-switch pill - it never renders a "Sell" counterpart and,
+                    for a customer, never changes mode at all. */}
+                {mode === "seller" ? "Buy" : "Browse"}
               </button>
-              <button
-                className="header-action-button messages"
-                type="button"
-                data-testid="messages-button"
-                aria-expanded={isMessagingInboxOpen}
-                onClick={() => {
-                  if (view !== "chat" && view !== "home") returnToChat();
-                  setIsMessagingInboxOpen((open) => !open);
-                }}
-              >
-                Messages
-              </button>
+              {mode === "seller" ? (
+                <button
+                  className="header-action-button messages"
+                  type="button"
+                  data-testid="messages-button"
+                  aria-expanded={isMessagingInboxOpen}
+                  onClick={() => {
+                    if (view !== "chat" && view !== "home") returnToChat();
+                    setIsMessagingInboxOpen((open) => !open);
+                  }}
+                >
+                  Messages
+                </button>
+              ) : null}
               <div className="shell-secondary-actions">
                 <button
                   className={`header-action-button shell-capability-trace-button${
@@ -1743,7 +1754,7 @@ export function OwnerApp() {
                     Install app
                   </button>
                 ) : null}
-                {session === null ? (
+                {mode === "seller" && session === null ? (
                   <>
                     <button
                       className="header-auth-button secondary"

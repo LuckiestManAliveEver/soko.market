@@ -71,6 +71,13 @@ export async function invalidateApiCacheForMutation(path: string): Promise<void>
   const businessResource = normalized.match(/^(\/businesses\/[^/]+\/[^/]+)/)?.[1];
   const modelSelectionChanged =
     normalized.endsWith("/agent-model") || normalized.endsWith("/ai-model");
+  // /api/agents/{agentId} mutations (model activation, removal, ...) live under a different path
+  // prefix than /businesses/{businessId}, but agentId and businessId are the same ID in this system
+  // (AgentModelPanel's canonicalRuntimeAgentId is business.id) - without this, activating or
+  // removing a backend model left the model-binding and runtime/effective GETs serving their
+  // pre-mutation cached response for up to staleTimeMs, so the UI silently reverted to the old
+  // binding right after a successful activation/removal.
+  const agentId = normalized.match(/^\/api\/agents\/([^/]+)/)?.[1];
 
   for (const key of responseCache.keys()) {
     const cachePath = key.split("?")[0] ?? key;
@@ -83,6 +90,9 @@ export async function invalidateApiCacheForMutation(path: string): Promise<void>
         (cachePath === `${businessRoot}/agent-model` ||
           cachePath === `${businessRoot}/ai-model` ||
           cachePath === `${businessRoot}/agent-profile`)) ||
+      (agentId !== undefined &&
+        (cachePath.startsWith(`/api/agents/${agentId}/`) ||
+          cachePath.startsWith(`/businesses/${agentId}/`))) ||
       (normalized.startsWith("/v1/messages") && cachePath.startsWith("/v1/conversations")) ||
       (normalized.startsWith("/v1/conversations") && cachePath.startsWith("/v1/conversations")) ||
       (normalized.startsWith("/auth/") && cachePath.startsWith("/auth/"));

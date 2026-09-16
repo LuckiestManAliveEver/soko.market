@@ -542,7 +542,8 @@ test("messaging inbox and thread adapt across phone and desktop screens", async 
     await page.setViewportSize(viewport);
     await page.goto("/");
     if (viewport.width < 760) {
-      await page.getByRole("button", { name: "Messages", exact: true }).click();
+      await page.getByRole("button", { name: "Open menu" }).click();
+      await page.getByRole("button", { name: "Message history" }).click();
     }
     await expect(page.getByRole("heading", { name: "Messages" })).toBeVisible();
     await page.getByRole("button", { name: /Delivery coordination/ }).click();
@@ -786,10 +787,14 @@ test("touch controls satisfy the WCAG 2.2 minimum target size", async ({ page })
   expect(undersized).toEqual([]);
 });
 
-test("the status notice never covers the Buy/Messages/shop header buttons", async ({ page }) => {
+test("the status notice never covers the customer home's header buttons", async ({ page }) => {
+  // The customer home (mode === "marketplace") has no Buy/Messages pills - Message history is
+  // reached through the hamburger menu instead (see Soko Home: hides the Buy/Messages pills...
+  // in tests/soko-home-progressive-entry.test.ts).
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await page.getByTestId("messages-button").click();
+  await page.getByRole("button", { name: "Open menu" }).click();
+  await page.getByRole("button", { name: "Message history" }).click();
   await page.getByRole("button", { name: "Notifications" }).click();
 
   const notice = page.locator(".app-action-notice");
@@ -797,13 +802,23 @@ test("the status notice never covers the Buy/Messages/shop header buttons", asyn
   const noticeBox = await notice.boundingBox();
   expect(noticeBox).not.toBeNull();
 
-  for (const testId of ["marketplace-button", "messages-button", "agent-profile-link"]) {
-    const buttonBox = await page.getByTestId(testId).boundingBox();
-    expect(buttonBox, testId).not.toBeNull();
+  // Query by DOM attribute, not accessible role: the open Messages dialog marks the rest of the
+  // shell inert, which would make role-based lookups of these background buttons time out even
+  // though they are still laid out behind the dialog and must not be covered by the notice.
+  const headerButtons = [
+    page.locator(".shell-menu-button"),
+    page.getByTestId("agent-profile-link"),
+    page.locator(".shell-capability-trace-button")
+  ];
+  for (const button of headerButtons) {
+    const buttonBox = await button.boundingBox();
+    expect(buttonBox).not.toBeNull();
     const overlapsVertically =
       noticeBox!.y < buttonBox!.y + buttonBox!.height &&
       noticeBox!.y + noticeBox!.height > buttonBox!.y;
-    expect(overlapsVertically, `${testId} vertical range must not overlap the notice`).toBe(false);
+    expect(overlapsVertically, "header button vertical range must not overlap the notice").toBe(
+      false
+    );
   }
 });
 
