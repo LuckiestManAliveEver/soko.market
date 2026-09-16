@@ -1,8 +1,11 @@
 import { Fragment, Suspense, useEffect, useRef, useState } from "react";
 
 import type { CountryCode } from "libphonenumber-js";
+import type { Scope } from "@soko/offline-runtime";
 
 import type { ConversationMessageContent, MessageDeliveryAttemptSummary } from "@soko/shared-types";
+
+import { readStableDeviceId } from "./lib/api";
 
 import { detectCapabilitySettings } from "./capability-profile";
 import { recordReadiness } from "./performance";
@@ -177,6 +180,12 @@ export function ChatSurface({
   const isAuthenticated = session !== null;
   const sokoId = business?.sokoId ?? "Not set up yet";
   const smsDefaultCountry = (session?.user.phoneCountryCode as CountryCode | undefined) ?? "KE";
+  // Bluetooth "Send via" only makes sense for a business's own device pairing (see
+  // peer-messaging.ts) - a signed-out or business-less session never surfaces the option.
+  const nearbyScope: Scope | null =
+    session !== null && business !== null
+      ? { accountId: session.account.id, storeId: business.id, deviceId: readStableDeviceId() }
+      : null;
 
   const isCompactViewport = useCompactViewport();
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -255,6 +264,7 @@ export function ChatSurface({
     channelEndpoints,
     chatDraft,
     initialEmailSubject,
+    nearbyScope,
     smsDefaultCountry,
     onDraftChange,
     onPlatformHandoff,

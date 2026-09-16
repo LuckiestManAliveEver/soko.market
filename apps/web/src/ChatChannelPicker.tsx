@@ -2,13 +2,35 @@ import type { ChannelEndpointSummary, ChannelProvider } from "@soko/shared-types
 
 import { formatChannelProvider } from "./formatters";
 import { StackedModule } from "./StackedModule";
+import type { NearbyConnectionStatus } from "./peer-messaging";
 
 interface ChatChannelPickerProps {
+  bluetoothAvailable: boolean;
+  bluetoothBusy: boolean;
+  bluetoothError: string | null;
+  bluetoothSelected: boolean;
+  bluetoothStatus: NearbyConnectionStatus;
   channelEndpoints: ChannelEndpointSummary[];
   open: boolean;
   selectedProvider: ChannelProvider | null;
   onClose: () => void;
   onSelect: (provider: ChannelProvider | null) => void;
+  onSelectBluetooth: () => void;
+}
+
+function usesSmsCharges(provider: ChannelProvider): boolean {
+  return provider === "sms" || provider === "native_sms";
+}
+
+function bluetoothStatusLabel(
+  available: boolean,
+  busy: boolean,
+  status: NearbyConnectionStatus
+): string {
+  if (!available) return " · needs a Bluetooth-capable browser and a paired device";
+  if (busy || status === "connecting") return " · connecting…";
+  if (status === "connected") return " · connected";
+  return " · pairs a nearby device when selected";
 }
 
 function channelAbbreviation(provider: ChannelProvider): string {
@@ -46,11 +68,17 @@ function isChannelAvailable(endpoint: ChannelEndpointSummary): boolean {
 }
 
 export function ChatChannelPicker({
+  bluetoothAvailable,
+  bluetoothBusy,
+  bluetoothError,
+  bluetoothSelected,
+  bluetoothStatus,
   channelEndpoints,
   open,
   selectedProvider,
   onClose,
-  onSelect
+  onSelect,
+  onSelectBluetooth
 }: ChatChannelPickerProps) {
   return (
     <StackedModule
@@ -95,10 +123,32 @@ export function ChatChannelPicker({
               <span>
                 {formatChannelProvider(endpoint.provider)}
                 {available ? "" : ` · ${endpoint.status}`}
+                {usesSmsCharges(endpoint.provider)
+                  ? " · data or carrier SMS charges may apply"
+                  : ""}
               </span>
             </button>
           );
         })}
+        <button
+          type="button"
+          role="option"
+          aria-selected={bluetoothSelected}
+          disabled={!bluetoothAvailable || bluetoothBusy}
+          onClick={() => {
+            onSelectBluetooth();
+            onClose();
+          }}
+        >
+          <span className="channel-picker-icon" aria-hidden="true">
+            BT
+          </span>
+          <span>
+            Bluetooth (nearby device)
+            {bluetoothStatusLabel(bluetoothAvailable, bluetoothBusy, bluetoothStatus)}
+            {bluetoothSelected && bluetoothError !== null ? ` · ${bluetoothError}` : ""}
+          </span>
+        </button>
       </div>
     </StackedModule>
   );

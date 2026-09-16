@@ -51,6 +51,19 @@ export function formatExternalShareText(data: PlatformShareData): string {
   return [text, url].filter((value) => value.length > 0).join("\n");
 }
 
+export function externalShareNoticeFor(status: PlatformShareResult["status"]): string | null {
+  switch (status) {
+    case "share_completed":
+      return "Handed to your selected app. Delivery status stays with that app.";
+    case "copied_to_clipboard":
+      return "Message copied. Paste it into any messaging app or connected-device service.";
+    case "share_unavailable":
+      return "External sharing is not available on this device. Use SMS or copy the message manually.";
+    default:
+      return null;
+  }
+}
+
 /**
  * Hands a message to an operating-system share target. The resolved result means only that the
  * handoff completed; delivery and read receipts remain owned by the selected external platform.

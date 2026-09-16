@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { CountryCode } from "libphonenumber-js";
+import type { Scope } from "@soko/offline-runtime";
 import type {
   ChannelEndpointSummary,
   ChannelProvider,
@@ -8,14 +9,16 @@ import type {
 } from "@soko/shared-types";
 
 import type { SmsHandoffRequest } from "../messaging/SmsHandoffDialog";
-import { normalizeSmsRecipient } from "../messaging/sms-handoff";
-import { shareMessageExternally } from "../messaging/platform-handoff";
+import { buildSmsHandoffRequest } from "../messaging/sms-handoff";
+import { externalShareNoticeFor, shareMessageExternally } from "../messaging/platform-handoff";
+import { useBluetoothSendState } from "./bluetoothSendState";
 
 interface ChatComposerStateInput {
   activeConversationId: string | null;
   channelEndpoints: ChannelEndpointSummary[];
   chatDraft: string;
   initialEmailSubject: string;
+  nearbyScope: Scope | null;
   smsDefaultCountry: CountryCode;
   onDraftChange: (draft: string) => void;
   onPlatformHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
@@ -31,7 +34,21 @@ export function useChatComposerState(input: ChatComposerStateInput) {
   const [liveDraft, setLiveDraft] = useState(input.chatDraft);
   const [emailSubject, setEmailSubject] = useState(input.initialEmailSubject);
   const [emailInvoiceId, setEmailInvoiceId] = useState("");
-  const [selectedProvider, setSelectedProvider] = useState<ChannelProvider | null>(null);
+  const [selectedProvider, setSelectedProviderState] = useState<ChannelProvider | null>(null);
+  const bluetooth = useBluetoothSendState(input.nearbyScope);
+
+  const setSelectedProvider = useCallback(
+    (provider: ChannelProvider | null) => {
+      bluetooth.reset();
+      setSelectedProviderState(provider);
+    },
+    [bluetooth]
+  );
+
+  function selectBluetooth() {
+    setSelectedProviderState(null);
+    bluetooth.select();
+  }
 
   function clearDraftSyncTimer() {
     if (draftSyncTimerRef.current === null) return;
@@ -56,6 +73,13 @@ export function useChatComposerState(input: ChatComposerStateInput) {
 
   function sendLiveDraft() {
     clearDraftSyncTimer();
+    if (bluetooth.selected) {
+      bluetooth.send(liveDraft, () => {
+        setLiveDraft("");
+        input.onDraftChange("");
+      });
+      return;
+    }
     input.onSend(
       liveDraft,
       selectedProvider ?? undefined,
@@ -65,17 +89,9 @@ export function useChatComposerState(input: ChatComposerStateInput) {
   }
 
   function openSmsHandoff(recipient: string, label: string) {
-    let normalizedCandidate = "";
-    try {
-      normalizedCandidate = normalizeSmsRecipient(recipient, input.smsDefaultCountry);
-    } catch {
-      // The confirmation sheet collects or corrects a missing contact number.
-    }
-    setSmsHandoffRequest({
-      body: liveDraft,
-      label: label.trim() || "SMS recipient",
-      recipient: normalizedCandidate || recipient
-    });
+    setSmsHandoffRequest(
+      buildSmsHandoffRequest(recipient, label, liveDraft, input.smsDefaultCountry)
+    );
   }
 
   async function openPlatformHandoff(label: string) {
@@ -84,15 +100,7 @@ export function useChatComposerState(input: ChatComposerStateInput) {
       title: label.trim() ? `Message for ${label.trim()}` : "Message from Soko"
     });
     input.onPlatformHandoff(result.status, result.errorCode);
-    setExternalShareNotice(
-      result.status === "share_completed"
-        ? "Handed to your selected app. Delivery status stays with that app."
-        : result.status === "copied_to_clipboard"
-          ? "Message copied. Paste it into any messaging app or connected-device service."
-          : result.status === "share_unavailable"
-            ? "External sharing is not available on this device. Use SMS or copy the message manually."
-            : null
-    );
+    setExternalShareNotice(externalShareNoticeFor(result.status));
   }
 
   useEffect(() => setLiveDraft(input.chatDraft), [input.chatDraft]);
@@ -112,11 +120,15 @@ export function useChatComposerState(input: ChatComposerStateInput) {
           endpoint.capabilities.includes("CAN_INITIATE"))
     );
     setSelectedProvider(available?.provider ?? null);
-  }, [input.activeConversationId, input.channelEndpoints]);
+  }, [input.activeConversationId, input.channelEndpoints, setSelectedProvider]);
 
   useEffect(() => () => clearDraftSyncTimer(), []);
 
   return {
+    bluetoothAvailable: bluetooth.available,
+    bluetoothBusy: bluetooth.busy,
+    bluetoothError: bluetooth.error,
+    bluetoothStatus: bluetooth.status,
     commitDraft,
     emailInvoiceId,
     emailSubject,
@@ -125,9 +137,11 @@ export function useChatComposerState(input: ChatComposerStateInput) {
     liveDraft,
     openPlatformHandoff,
     openSmsHandoff,
+    selectBluetooth,
     selectedProvider,
     sellerPhotoInputRef,
     sendLiveDraft,
+    sendViaBluetooth: bluetooth.selected,
     setEmailInvoiceId,
     setEmailSubject,
     setSelectedProvider,
