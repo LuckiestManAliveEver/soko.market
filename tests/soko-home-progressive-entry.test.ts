@@ -41,16 +41,28 @@ describe("Soko Home: zero-form entry (docs/authentication/progressive-identity.m
     // the signup screen open for a fresh visitor, contradicting "all users start from the chat
     // shell". The zero-form attempt and its isDeliberateAuthFlow gate must now sit outside (after)
     // the isDefiniteAuthError branch, so it runs for both kinds of failure.
-    const definiteErrorBranchEnd = useAuthState.indexOf(
-      "if (isDefiniteAuthError || isDeliberateAuthFlow)"
-    );
+    const reauthenticationGate = useAuthState.indexOf("if (isDeliberateAuthFlow) {");
     const deliberateFlowDeclaration = useAuthState.indexOf("const isDeliberateAuthFlow =");
     const continueAttempt = useAuthState.indexOf("if (!isDeliberateAuthFlow) {");
-    expect(definiteErrorBranchEnd).toBeGreaterThan(0);
+    expect(reauthenticationGate).toBeGreaterThan(0);
     expect(deliberateFlowDeclaration).toBeGreaterThan(0);
     expect(continueAttempt).toBeGreaterThan(0);
-    expect(deliberateFlowDeclaration).toBeLessThan(definiteErrorBranchEnd);
-    expect(continueAttempt).toBeLessThan(definiteErrorBranchEnd);
+    expect(deliberateFlowDeclaration).toBeLessThan(reauthenticationGate);
+    expect(continueAttempt).toBeLessThan(reauthenticationGate);
+  });
+
+  it("never opens the signup/login screen for a non-deliberate cold boot, even a definitive auth failure", () => {
+    // requireReauthentication (which opens the signup/login screen) must only ever be reachable
+    // from performSessionRefresh's catch block through the isDeliberateAuthFlow gate - a definitive
+    // 401 alone, on its own, must never route there for a visitor who never asked for that screen.
+    expect(useAuthState).not.toContain("if (isDefiniteAuthError || isDeliberateAuthFlow)");
+    const gate = useAuthState.indexOf("if (isDeliberateAuthFlow) {");
+    const guardedSlice = useAuthState.slice(gate, gate + 200);
+    expect(gate).toBeGreaterThan(0);
+    expect(guardedSlice).toContain("requireReauthentication(");
+    // Only one non-negated occurrence of the gate exists - the continueToSoko attempt above it
+    // checks `!isDeliberateAuthFlow` instead.
+    expect(useAuthState.indexOf("if (isDeliberateAuthFlow) {", gate + 1)).toBe(-1);
   });
 
   it("never forces the signup screen open as a fallback for a non-deliberate, non-authentication bootstrap failure", () => {
