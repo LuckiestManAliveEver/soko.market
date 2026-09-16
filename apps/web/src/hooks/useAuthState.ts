@@ -433,10 +433,7 @@ export function useAuthState(deps: UseAuthStateDeps) {
       // work immediately on a real, cookie-backed device account, and identity (phone/PIN) is only
       // requested later, when an action actually needs it. Only an explicit deep link to /login or
       // /signup, or an account-deletion/restoration intent, is a deliberate enough request to show
-      // that screen instead of the chat shell. This is what previously left a fresh visitor
-      // staring at the signup form on nothing more than a flaky first request: only the definitive-
-      // auth-error branch above ever tried continueToSoko, so any other failure skipped straight to
-      // "open the signup screen" below.
+      // that screen instead of the chat shell.
       const isDeliberateAuthFlow =
         initialAuthenticationTarget !== null || accountDeletionIntent || accountRestorationIntent;
 
@@ -454,7 +451,13 @@ export function useAuthState(deps: UseAuthStateDeps) {
         }
       }
 
-      if (isDefiniteAuthError || isDeliberateAuthFlow) {
+      // Only a deliberate deep link (/login, /signup, or an account-deletion/restoration intent)
+      // ever opens the signup/login screen from cold boot now - not a definitive auth failure by
+      // itself. A non-deliberate visitor whose session is genuinely invalid and whose zero-form
+      // fallback also failed (rate-limited, /auth/continue itself erroring) still belongs in chat,
+      // not on a screen they never asked for; they'll be asked to identify themselves later, only
+      // when an action actually needs it, per docs/authentication/progressive-identity.md.
+      if (isDeliberateAuthFlow) {
         requireReauthentication(
           initialAuthenticationTarget === "signup"
             ? "Create your Soko account."
@@ -463,9 +466,9 @@ export function useAuthState(deps: UseAuthStateDeps) {
         return null;
       }
 
-      // Neither a definitive auth failure nor a deliberate auth flow, and even the zero-form
-      // fallback above couldn't reach the server: stay on the chat shell (same sessionless state
-      // guest browsing already renders) instead of forcing a signup wall nobody asked for.
+      // Not a deliberate auth flow, and even the zero-form fallback above couldn't reach the
+      // server: stay on the chat shell (same sessionless state guest browsing already renders)
+      // instead of forcing a signup wall nobody asked for.
       if (cached !== null) setSession(cached);
       if (storedBusiness !== null) setBusiness(storedBusiness);
       setAuthBootstrapState("failed");
