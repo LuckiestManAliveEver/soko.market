@@ -538,10 +538,12 @@ export function ChatSurface({
                       >
                         {agent.name}
                       </button>
-                      <ShopPresenceButtons
-                        activeStatus={shopPresenceStatus}
-                        onStatusChange={onStatusChange}
-                      />
+                      {mode === "seller" && hasBusiness ? (
+                        <ShopPresenceButtons
+                          activeStatus={shopPresenceStatus}
+                          onStatusChange={onStatusChange}
+                        />
+                      ) : null}
                     </>
                   )}
                 </span>

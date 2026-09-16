@@ -990,6 +990,59 @@ components extracted in that effort — that record is accurate for its
 own point in time and is left untouched; this section is the record of
 its later removal.
 
+## Customer home = conversation; shop icon = seller entry (Phase 7 — implemented)
+
+Phase 6 removed the seller's permanent tab bar. This phase closes the
+matching gap on the customer side: the customer-facing shell still
+carried a permanent Buy/Sell mode toggle, an unconditional Messages
+button, and unconditional header Sign up/Log in buttons — the exact
+"top nav + big onboarding card" pattern this document's governing
+principle rejects, just on the buyer's half of the shell instead of the
+seller's. Two invariants now hold for the customer entry point,
+enforced by `tests/soko-home-progressive-entry.test.ts`:
+
+- **Customer home = conversation.** `/`, `/chat`, and `/marketplace`
+  all resolve to the same route (`readOwnerRoute` in `routes.ts`) and
+  render the same `mode: "marketplace"` chat shell — there is no
+  separate customer landing page. The customer-facing header
+  (`SokoApplication.tsx`'s `top-bar`/`shell-mode-bar`) carries only the
+  `soko.market` wordmark, the hamburger menu, and the shop icon; the
+  old Buy/Sell toggle, the unconditional Messages button, and the
+  header Sign up/Log in buttons only render at all `mode === "seller"`
+  now (message history for a customer lives in the hamburger menu
+  instead). A first-time visitor gets one conversational welcome
+  message (`createInitialChatMessages` in `app-shell.ts`) with inline
+  Sign up/Log in/Browse as guest actions and three suggestion chips
+  (`homeSuggestionPrompts` in `ChatSurface.tsx`) that commit a chat
+  draft, not navigate to a page. Commerce results (product/shop/order
+  cards) render as generated conversation surfaces via the same
+  `renderGeneratedSurface` protocol Phases 1-4 established — this
+  phase added no new card types, only removed the navigation chrome
+  competing with them for the customer's attention.
+- **Shop icon = seller/business entry point.** The single icon button
+  at the top-right of the header (`shop-entry-button` when
+  `business === null`, `agent-profile-link` once a shop exists) is the
+  only way a customer reaches seller mode from shell chrome. It calls
+  `switchMode("seller")`, which itself branches on identity
+  (`useNavigationState.ts`): signed-out → opens the sign-up/login
+  screen; signed-in without a shop → opens business setup; an existing
+  seller → opens the agent/workspace surface directly. A returning
+  seller who has navigated away from seller mode (e.g. into Browse) can
+  also get back in via "Go to my shop" in the hamburger menu
+  (`MenuDrawer.tsx`), since the shop icon itself only starts new shop
+  setup for a business-less visitor rather than re-entering an existing
+  one.
+
+Progressive identity (guest search/browse without a signup wall,
+identity requested only when an action needs it) predates this phase —
+see `docs/authentication/progressive-identity.md` and the zero-form
+entry tests in the same spec file — and was not re-litigated here.
+Session/runtime restoration failure (`useAuthState.ts`'s
+`ensureAuthenticatedSession`) already keeps the chat shell mounted on a
+bootstrap failure and surfaces the failure as a small, dismissable
+`app-action-notice` status line rather than a blocking screen; this
+phase relied on that existing behavior rather than changing it.
+
 ## Target architecture
 
 ```text
