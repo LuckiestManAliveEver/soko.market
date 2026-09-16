@@ -349,16 +349,9 @@ button:disabled {
 
 .header-action-button.marketplace,
 .header-action-button.messages,
-.header-action-button.sell,
 .header-action-button.mode-active {
   border-radius: 999px;
   min-width: 72px;
-}
-
-.header-action-button.sell {
-  background: #117a4f;
-  border-color: #117a4f;
-  color: #ebebeb;
 }
 
 .header-action-button.mode-active {
@@ -6481,65 +6474,36 @@ body {
   background: var(--soko-paper-dim);
   border: 1px solid var(--soko-line);
   border-radius: 999px;
-  display: grid;
-  flex: 0 0 224px;
-  gap: 3px;
-  grid-template-columns: 1fr 1fr;
-  padding: 3px;
-  position: relative;
-}
-
-.commerce-mode-toggle .header-action-button {
-  background: transparent;
-  border: 0;
-  border-radius: 999px;
   color: var(--soko-ink-soft);
+  flex: 0 0 auto;
   font-family: var(--soko-display-font);
   font-size: 13px;
   min-height: 36px;
-  min-width: 0;
   padding: 7px 18px;
 }
 
-.commerce-mode-toggle .marketplace {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-.commerce-mode-toggle [data-testid="sell-button"] {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.commerce-mode-toggle .mode-active {
+.commerce-mode-toggle.mode-active {
   background: var(--soko-accent);
   box-shadow: 0 3px 10px rgb(5 6 10 / 35%);
   color: var(--soko-accent-ink);
 }
 
-.commerce-mode-toggle .messages {
+.header-action-button.messages {
   background: var(--soko-paper);
   border: 1px solid var(--soko-line-strong);
   color: var(--soko-ink);
-  grid-column: auto;
-  left: calc(100% + 10px);
+  flex: 0 0 auto;
+  font-family: var(--soko-display-font);
+  font-size: 13px;
+  min-height: 36px;
   min-width: 86px;
-  position: absolute;
-  top: 3px;
+  padding: 7px 18px;
 }
 
 .shell-secondary-actions {
   align-items: center;
   display: flex;
   gap: 7px;
-  /* .commerce-mode-toggle .messages sits outside normal flow (position: absolute, to visually
-     float beside the Buy/Sell toggle without joining its 2-column grid), so this margin has to
-     manually clear it instead of flexbox doing that automatically. Its own min-width (86px)
-     understates its real rendered width (measured ~103px: 18px+18px padding plus "Messages" at
-     13px), so the previous 88px margin left this row of buttons starting ~14px under the
-     Messages button's real right edge. 112px clears the measured width with a safety margin for
-     minor font-rendering differences across environments. */
-  margin-left: 112px;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
@@ -7985,20 +7949,11 @@ body {
   }
 
   .commerce-mode-toggle {
-    flex-basis: 190px;
-  }
-
-  .commerce-mode-toggle .header-action-button {
     padding-inline: 12px;
   }
 
-  .commerce-mode-toggle .messages {
-    left: calc(100% + 7px);
+  .header-action-button.messages {
     min-width: 78px;
-  }
-
-  .shell-secondary-actions {
-    margin-left: 78px;
   }
 
   .shell-secondary-actions .workspace,
@@ -8029,17 +7984,9 @@ body {
     min-height: 54px;
   }
 
-  .commerce-mode-toggle {
-    flex-basis: 174px;
-  }
-
-  .commerce-mode-toggle .messages {
+  .header-action-button.messages {
     font-size: 9px;
     min-width: 66px;
-  }
-
-  .shell-secondary-actions {
-    margin-left: 66px;
   }
 
   .shell-secondary-actions .header-auth-button {

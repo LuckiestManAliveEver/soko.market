@@ -5,6 +5,7 @@ export interface MenuDrawerProps {
   hasBusiness: boolean;
   onClose: () => void;
   onMessageHistory: () => void;
+  onGoToShop: () => void;
   onShopSettings: () => void;
   onAgentSettings: () => void;
   onAccountSettings: () => void;
@@ -22,12 +23,17 @@ export interface MenuDrawerProps {
  * Built on StackedModule rather than a bespoke slide-in panel so it gets the same tested focus
  * trap, Escape-to-close, and inert-background handling every other panel in the app already has;
  * .menu-drawer-module repositions it from the shared bottom-sheet layout to a left-edge drawer.
+ *
+ * "Go to my shop" is a business owner's only in-app way back into seller/workspace mode now that
+ * the customer-facing header has no Buy/Sell toggle (selling is reachable only through the header
+ * shop icon before a shop exists, or here once one does).
  */
 export function MenuDrawer({
   open,
   hasBusiness,
   onClose,
   onMessageHistory,
+  onGoToShop,
   onShopSettings,
   onAgentSettings,
   onAccountSettings,
@@ -50,6 +56,12 @@ export function MenuDrawer({
       <div className="menu-divider" />
       {hasBusiness ? (
         <>
+          <button className="menu-item" type="button" onClick={onGoToShop}>
+            <span className="menu-item-icon">
+              <span className="shop-entry-icon" aria-hidden="true" />
+            </span>
+            Go to my shop
+          </button>
           <button className="menu-item" type="button" onClick={onShopSettings}>
             <span className="menu-item-icon">
               <span className="shop-entry-icon" aria-hidden="true" />

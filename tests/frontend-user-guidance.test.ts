@@ -79,11 +79,9 @@ describe("frontend user guidance", () => {
     const styles = readFileSync("apps/web/src/styles.css", "utf8");
     const marketplaceIndex = application.indexOf('data-testid="marketplace-button"');
     const messagesIndex = application.indexOf('data-testid="messages-button"');
-    const sellIndex = application.indexOf('data-testid="sell-button"');
 
     expect(marketplaceIndex).toBeGreaterThan(-1);
     expect(messagesIndex).toBeGreaterThan(marketplaceIndex);
-    expect(messagesIndex).toBeLessThan(sellIndex);
     expect(styles).toContain(".header-action-button.messages");
     expect(contextualBusinessCards).toContain('title: "My Network"');
   });

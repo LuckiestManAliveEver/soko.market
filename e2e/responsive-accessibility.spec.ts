@@ -786,7 +786,7 @@ test("touch controls satisfy the WCAG 2.2 minimum target size", async ({ page })
   expect(undersized).toEqual([]);
 });
 
-test("the status notice never covers the Buy/Messages/Sell header buttons", async ({ page }) => {
+test("the status notice never covers the Buy/Messages/shop header buttons", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await page.getByTestId("messages-button").click();
@@ -797,7 +797,7 @@ test("the status notice never covers the Buy/Messages/Sell header buttons", asyn
   const noticeBox = await notice.boundingBox();
   expect(noticeBox).not.toBeNull();
 
-  for (const testId of ["marketplace-button", "messages-button", "sell-button"]) {
+  for (const testId of ["marketplace-button", "messages-button", "agent-profile-link"]) {
     const buttonBox = await page.getByTestId(testId).boundingBox();
     expect(buttonBox, testId).not.toBeNull();
     const overlapsVertically =

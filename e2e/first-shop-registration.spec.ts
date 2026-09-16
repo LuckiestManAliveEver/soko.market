@@ -56,7 +56,7 @@ test("a signed-in account registers its first shop without OTP", async ({ page }
     localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
   });
   await page.goto("/marketplace");
-  await page.getByTestId("sell-button").click();
+  await page.getByTestId("shop-entry-button").click();
 
   await expect(page.getByRole("heading", { name: "Set up your business" })).toBeVisible();
   await expect(
@@ -147,7 +147,7 @@ test("captures and normalizes the compulsory owner phone without SMS", async ({ 
     localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
   });
   await page.goto("/marketplace");
-  await page.getByTestId("sell-button").click();
+  await page.getByTestId("shop-entry-button").click();
 
   await expect(page.getByRole("heading", { name: "Add your phone number" })).toBeVisible();
   const continueButton = page.getByRole("button", { name: "Continue", exact: true });

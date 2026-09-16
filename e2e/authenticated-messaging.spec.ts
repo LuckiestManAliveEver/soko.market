@@ -32,7 +32,7 @@ test("messaging is locked until the visitor chooses signup or login", async ({ p
   await expect(page.getByTestId("welcome-signup-button")).toBeVisible();
   await expect(page.getByTestId("welcome-login-button")).toBeVisible();
 
-  await page.getByTestId("sell-button").click();
+  await page.getByTestId("shop-entry-button").click();
   await expect(page.locator(".app-action-notice")).toContainText(
     "Sign up or log in from the welcome message"
   );
