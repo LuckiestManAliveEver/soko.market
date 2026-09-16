@@ -99,7 +99,7 @@ describe("PWA installability", () => {
     expect(serviceWorker).not.toContain('addEventListener("sync"');
   });
 
-  it("uses the canonical kiondo icon throughout branded application surfaces", () => {
+  it("keeps canonical app icons while using the reference monogram in the home header", () => {
     const icon = readFileSync(`${publicDirectory}/icons/soko-icon.svg`, "utf8");
     const iconComponent = readFileSync("apps/web/src/AppIcon.tsx", "utf8");
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
@@ -114,7 +114,8 @@ describe("PWA installability", () => {
     expect(icon).toContain("Two round African woven kiondo baskets");
     expect(icon).toContain('viewBox="100 50 480 480"');
     expect(iconComponent).toContain('src="/icons/soko-icon.svg"');
-    expect(application).toContain('<AppIcon className="logo-mark" />');
+    expect(application).toContain('<span className="home-brand-mark" aria-hidden="true">');
+    expect(application).toContain('<AppIcon className="auth-header-icon" />');
     expect(phoneFirst).toContain('<AppIcon className="auth-wordmark-icon" />');
     expect(router).toContain('<AppIcon className="route-brand-icon" />');
     for (const legalPage of legalPages) {
