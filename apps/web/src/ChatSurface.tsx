@@ -120,6 +120,7 @@ export function ChatSurface({
   onBrowseAsGuest,
   onSignUp,
   onLogIn,
+  recognizedDeviceLabel,
   onRefreshPublicStorefronts,
   onConversationPreference,
   onRenameConversation,
@@ -475,6 +476,15 @@ export function ChatSurface({
           </header>
         ) : null}
         <div className="message-list" aria-live="polite" ref={messageListRef}>
+          {mode === "marketplace" &&
+          activeModuleView === null &&
+          recognizedDeviceLabel !== null &&
+          visibleMessages.filter((message) => message.id !== "welcome").length === 0 ? (
+            <button className="recognized-device-pill" type="button" onClick={onLogIn}>
+              <span className="recognized-device-dot" aria-hidden="true" />
+              <span>{recognizedDeviceLabel}</span>
+            </button>
+          ) : null}
           {showBlankSessionState ? (
             <div className="blank-session-state" role="status">
               <h3>Start a new chat</h3>

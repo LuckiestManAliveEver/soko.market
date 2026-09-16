@@ -85,6 +85,7 @@ export interface ChatSurfaceProps {
   onBrowseAsGuest: () => void;
   onSignUp: () => void;
   onLogIn: () => void;
+  recognizedDeviceLabel: string | null;
   onRefreshPublicStorefronts: () => void;
   onConversationPreference: (
     conversationId: string,
