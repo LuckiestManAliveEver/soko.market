@@ -237,9 +237,7 @@ export function ChatComposer({
                 }
               }}
               placeholder={
-                mode === "seller"
-                  ? "Ask your agent, or type # to call a capability"
-                  : "What are you looking for?"
+                mode === "seller" ? "Ask your agent, or type # to call a capability" : "Ask Soko..."
               }
             />
           </label>

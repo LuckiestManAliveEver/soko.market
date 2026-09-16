@@ -1,0 +1,243 @@
+/* Customer home from soko-home.html, with real application actions. */
+.app-frame:not(.auth-frame) .top-bar {
+  grid-template-columns: 38px minmax(0, 1fr) 38px 38px;
+  gap: 6px;
+  padding: calc(20px + env(safe-area-inset-top, 0px)) 18px 12px;
+}
+.app-frame:not(.auth-frame) .auth-brand-title,
+.app-frame:not(.auth-frame) .brand-lockup {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  justify-self: start;
+  gap: 9px;
+  padding: 0;
+  margin-left: 3px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.app-frame:not(.auth-frame) .brand-lockup strong {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.home-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(155deg, #e3a13c, #c97f1f);
+  color: #3a2707;
+  font-family: var(--soko-display-font);
+  font-size: 15px;
+  font-weight: 700;
+}
+.app-frame:not(.auth-frame) .top-bar > .shell-menu-button,
+.app-frame:not(.auth-frame) .top-bar > .shell-capability-trace-button,
+.app-frame:not(.auth-frame) .top-bar > .shell-agent-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0;
+  border: 1px solid var(--soko-line);
+  border-radius: 12px;
+  background: var(--soko-paper-dim);
+  color: var(--soko-ink);
+  box-shadow: none;
+}
+.app-frame:not(.auth-frame) .top-bar > .shell-capability-trace-button.on {
+  background: var(--soko-accent);
+  color: var(--soko-accent-ink);
+  border-color: var(--soko-accent);
+}
+.app-frame:not(.auth-frame)[data-commerce-mode="buy"] {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.app-frame:not(.auth-frame)[data-commerce-mode="buy"] > .top-bar {
+  flex-shrink: 0;
+}
+.app-frame:not(.auth-frame)[data-commerce-mode="buy"] .chat-workspace-shell {
+  flex: 1;
+  height: auto;
+  background: var(--soko-paper);
+}
+.app-frame[data-commerce-mode="buy"] .chat-surface {
+  grid-template-rows: minmax(0, 1fr);
+}
+.app-frame[data-commerce-mode="buy"] .messenger-thread {
+  display: flex;
+  flex-direction: column;
+}
+.app-frame[data-commerce-mode="buy"] .message-list {
+  flex: 1;
+  padding: 6px 16px 14px;
+}
+.app-frame[data-commerce-mode="buy"] .home-empty-messages {
+  display: flex;
+  flex-direction: column;
+}
+.home-welcome {
+  margin: auto 0;
+  padding: 0 14px;
+  text-align: center;
+  order: 1;
+}
+.home-welcome h1 {
+  color: var(--soko-ink);
+  font-family: var(--soko-display-font);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0 0 8px;
+}
+.home-welcome p {
+  color: var(--soko-ink-faint);
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0;
+}
+.home-suggestion-chips {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px 16px 10px;
+}
+.home-suggestion-chips button {
+  flex-shrink: 0;
+  font-weight: 400;
+  padding: 8px 13px;
+}
+.app-frame:not(.auth-frame)[data-commerce-mode="buy"] .app-credits {
+  display: none;
+}
+.app-frame:not(.auth-frame)[data-commerce-mode="buy"] .composer {
+  flex-shrink: 0;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 14px calc(20px + env(safe-area-inset-bottom, 0px));
+  border: 0;
+  border-top: 1px solid var(--soko-line);
+  border-radius: 0;
+}
+.app-frame[data-commerce-mode="buy"] .composer-bottom-row {
+  display: contents;
+}
+.app-frame[data-commerce-mode="buy"] .composer-more-button {
+  grid-column: 1;
+  grid-row: 1;
+}
+.app-frame[data-commerce-mode="buy"] .composer-input:has(textarea) {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+}
+.app-frame[data-commerce-mode="buy"] .composer-input:has(textarea) > span {
+  display: none;
+}
+.app-frame[data-commerce-mode="buy"] .composer-input textarea {
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  border-radius: 22px;
+  font-size: 14.5px;
+  line-height: 20px;
+  min-height: 44px;
+  padding: 11px 16px;
+  width: 100%;
+}
+.app-frame[data-commerce-mode="buy"] .composer-input textarea:focus {
+  outline: 1px solid var(--soko-accent);
+  outline-offset: -1px;
+}
+.app-frame[data-commerce-mode="buy"] .composer-bottom-row-trailing {
+  grid-column: 3;
+  grid-row: 1;
+  gap: 8px;
+}
+.app-frame:not(.auth-frame)[data-commerce-mode="buy"] .composer .icon-button {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  color: var(--soko-ink);
+}
+.app-frame[data-commerce-mode="buy"] .composer .send-button {
+  width: 40px;
+  height: 40px;
+  box-shadow: none;
+}
+.app-frame[data-commerce-mode="buy"]
+  .composer
+  > :not(.composer-bottom-row):not(.composer-input:has(textarea)),
+.app-frame[data-commerce-mode="buy"] .composer-pill {
+  grid-column: 1 / -1;
+}
+@media (min-width: 760px) {
+  .app-frame[data-commerce-mode="buy"] .messenger-thread {
+    width: min(100%, 800px);
+    margin-inline: auto;
+  }
+}
+
+.app-frame[data-commerce-mode="buy"] > .shell-mode-bar {
+  display: none;
+}
+
+.app-frame[data-commerce-mode="buy"] .messenger-thread {
+  grid-row: 1;
+}
+.app-frame[data-commerce-mode="buy"] .composer-card-lock {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.app-frame[data-commerce-mode="buy"] .chat-workspace-shell {
+  display: flex;
+  flex-direction: column;
+}
+.app-frame[data-commerce-mode="buy"] .chat-workspace-shell > .chat-surface {
+  flex: 1;
+  height: auto;
+}
+.app-frame[data-commerce-mode="buy"] .chat-workspace-shell > :not(.chat-surface) {
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+}
+.app-frame[data-commerce-mode="buy"] .composer-agent-indicator {
+  display: none;
+}
+.app-frame[data-commerce-mode="buy"] .composer-input textarea {
+  font-weight: 400;
+}
+
+.app-frame[data-commerce-mode="buy"] .send-icon {
+  width: 18px;
+  height: 2px;
+  border: 0;
+  background: currentColor;
+}
+.app-frame[data-commerce-mode="buy"] .send-icon::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: -5px;
+  width: 10px;
+  height: 10px;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  transform: rotate(45deg);
+}

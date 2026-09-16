@@ -393,6 +393,14 @@ export function ChatSurface({
     onDeleteConversation
   };
 
+  const isHomeConversation = mode === "marketplace" && activeModuleView === null;
+  const isHomeEmpty =
+    isHomeConversation && visibleMessages.every((message) => message.id === "welcome");
+
+  const homeMessages = windowedMessages.filter(
+    (message) => !isHomeConversation || message.id !== "welcome"
+  );
+
   return (
     <div className={`chat-surface ${showMessageThread && isInboxOpen ? "inbox-open" : ""}`}>
       {showMessageThread ? (
@@ -421,7 +429,7 @@ export function ChatSurface({
         className="messenger-thread"
         aria-label={showBlankSessionState ? "New chat" : (selectedConversation?.title ?? "Chat")}
       >
-        {showMessageThread ? (
+        {showMessageThread && !isHomeEmpty ? (
           <header className="messenger-thread-header">
             <span
               className={`thread-avatar ${mode === "seller" ? "sell" : "buy"}`}
@@ -485,7 +493,17 @@ export function ChatSurface({
             ) : null}
           </header>
         ) : null}
-        <div className="message-list" aria-live="polite" ref={messageListRef}>
+        <div
+          className={`message-list${isHomeEmpty ? " home-empty-messages" : ""}`}
+          aria-live="polite"
+          ref={messageListRef}
+        >
+          {isHomeEmpty ? (
+            <div className="home-welcome" data-testid="home-welcome">
+              <h1>Karibu. What do you need?</h1>
+              <p>Find products, shops, services, deliveries — or just ask.</p>
+            </div>
+          ) : null}
           {mode === "marketplace" &&
           activeModuleView === null &&
           recognizedDeviceLabel !== null &&
@@ -495,7 +513,7 @@ export function ChatSurface({
               <span>{recognizedDeviceLabel}</span>
             </button>
           ) : null}
-          {showBlankSessionState ? (
+          {showBlankSessionState && !isHomeEmpty ? (
             <div className="blank-session-state" role="status">
               <h3>Start a new chat</h3>
               <p>Ask your Soko agent anything, or pick a chat from the list.</p>
@@ -516,7 +534,7 @@ export function ChatSurface({
               Load {Math.min(hiddenMessageCount, defaultMessageWindow)} older messages
             </button>
           ) : null}
-          {windowedMessages.map((message) => (
+          {homeMessages.map((message) => (
             <Fragment key={message.id}>
               <article
                 className={`message ${message.author}`}

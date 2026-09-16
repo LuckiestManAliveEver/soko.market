@@ -4,6 +4,7 @@ export interface MenuDrawerProps {
   open: boolean;
   hasBusiness: boolean;
   onClose: () => void;
+  onBrowse: () => void;
   onMessageHistory: () => void;
   onGoToShop: () => void;
   onShopSettings: () => void;
@@ -32,6 +33,7 @@ export function MenuDrawer({
   open,
   hasBusiness,
   onClose,
+  onBrowse,
   onMessageHistory,
   onGoToShop,
   onShopSettings,
@@ -52,6 +54,12 @@ export function MenuDrawer({
           <span className="menu-icon-history" aria-hidden="true" />
         </span>
         Message history
+      </button>
+      <button className="menu-item" type="button" onClick={onBrowse}>
+        <span className="menu-item-icon" aria-hidden="true">
+          <span className="shop-entry-icon" />
+        </span>
+        Browse marketplace
       </button>
       <div className="menu-divider" />
       {hasBusiness ? (
