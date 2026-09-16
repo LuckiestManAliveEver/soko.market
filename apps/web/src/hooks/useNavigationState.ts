@@ -57,6 +57,9 @@ interface UseNavigationStateDeps {
     setIsMessagingInboxOpen: (open: boolean) => void;
     setChatMessages: (messages: (current: ChatMessage[]) => ChatMessage[]) => void;
   };
+  // Same getter reasoning as Auth/BusinessSetup/Chat above: Auth (continueToSoko's owner) is
+  // called after Navigation, so browseAsGuest can't take continueToSoko as a plain dep.
+  getContinueToSoko: () => () => Promise<SessionResponse | null>;
   registerReset: (domainKey: string, fn: () => void) => void;
 }
 
@@ -162,7 +165,12 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     setView("chat");
     setIsMarketplaceShortcutOpen(true);
     navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
-    setStatusMessage("Browsing as a guest. Sign in only when you want to message, order, or sell.");
+    setStatusMessage("Browsing as a guest.");
+    // "Guest" only means skipping the signup form here, not going without Soko's own zero-form
+    // entry (docs/authentication/progressive-identity.md) - continueToSoko gives this browser the
+    // same real, cookie-backed device account cold boot already gets everyone else, so messaging
+    // works immediately instead of hitting a sign-in wall the moment a guest tries to use it.
+    void deps.getContinueToSoko()();
   }
 
   function switchMode(nextMode: SokoMode) {
