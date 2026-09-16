@@ -5,10 +5,12 @@ interface ChatComposerActionsProps {
   draftHasText: boolean;
   mode: SokoMode;
   open: boolean;
+  sendViaLabel: string;
   onAttachFiles: () => void;
   onClose: () => void;
   onOpenCommand: () => void;
   onSendSms: () => void;
+  onSendVia: () => void;
   onShareApps: () => void;
   onTakePhoto: () => void;
 }
@@ -17,10 +19,12 @@ export function ChatComposerActions({
   draftHasText,
   mode,
   open,
+  sendViaLabel,
   onAttachFiles,
   onClose,
   onOpenCommand,
   onSendSms,
+  onSendVia,
   onShareApps,
   onTakePhoto
 }: ChatComposerActionsProps) {
@@ -33,6 +37,10 @@ export function ChatComposerActions({
       onClose={onClose}
     >
       <div className="composer-action-grid">
+        <button type="button" aria-label="Send via" onClick={onSendVia}>
+          <span className="phonebook-icon" aria-hidden="true" />
+          <span>{sendViaLabel}</span>
+        </button>
         {mode === "seller" ? (
           <button
             type="button"

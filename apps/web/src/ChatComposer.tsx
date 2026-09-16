@@ -12,6 +12,7 @@ import {
 } from "./soko-application-shared";
 import { chatModuleCommands } from "./chat-module-commands";
 import { startVoiceInput } from "./chat-message-plumbing";
+import { formatChannelProvider } from "./formatters";
 import type { ChatComposerState } from "./hooks/useChatComposerState";
 import { ChatChannelPicker } from "./ChatChannelPicker";
 import { ChatComposerActions } from "./ChatComposerActions";
@@ -69,6 +70,10 @@ export function ChatComposer({
   onSellerPhotoCapture
 }: ChatComposerProps) {
   const {
+    bluetoothAvailable,
+    bluetoothBusy,
+    bluetoothError,
+    bluetoothStatus,
     commitDraft,
     emailInvoiceId,
     emailSubject,
@@ -77,9 +82,11 @@ export function ChatComposer({
     liveDraft,
     openPlatformHandoff,
     openSmsHandoff,
+    selectBluetooth,
     selectedProvider,
     sellerPhotoInputRef,
     sendLiveDraft,
+    sendViaBluetooth,
     setEmailInvoiceId,
     setEmailSubject,
     setSelectedProvider,
@@ -97,6 +104,11 @@ export function ChatComposer({
           (capability) =>
             capability.toolName.includes(hashtagQuery) || capability.module.includes(hashtagQuery)
         );
+  const sendViaLabel = sendViaBluetooth
+    ? "Send via · Bluetooth"
+    : selectedProvider === null
+      ? "Send via"
+      : `Send via · ${formatChannelProvider(selectedProvider)}`;
 
   function openMessageActions() {
     messageInputRef.current?.blur();
@@ -146,16 +158,6 @@ export function ChatComposer({
             />
           ) : null}
           <small className="composer-agent-indicator">{activeAgentName} will answer</small>
-          <button
-            className="icon-button composer-icon-button composer-channel-button"
-            type="button"
-            aria-label="Choose how to send"
-            aria-haspopup="dialog"
-            aria-expanded={channelPickerOpen}
-            onClick={() => setChannelPickerOpen(true)}
-          >
-            <span className="phonebook-icon" aria-hidden="true" />
-          </button>
           <input
             ref={fileInputRef}
             className="chat-file-input"
@@ -288,10 +290,11 @@ export function ChatComposer({
                 onClick={sendLiveDraft}
                 disabled={
                   isSending ||
+                  (sendViaBluetooth && bluetoothBusy) ||
                   (selectedProvider === "email" && emailSubject.trim().length === 0) ||
                   (liveDraft.trim().length === 0 && pendingAttachments.length === 0)
                 }
-                aria-busy={isSending}
+                aria-busy={isSending || (sendViaBluetooth && bluetoothBusy)}
               >
                 <span className="send-icon" aria-hidden="true" />
                 <span className="visually-hidden">Send</span>
@@ -306,10 +309,16 @@ export function ChatComposer({
                 : " External messages are not covered by Soko end-to-end encryption."}
             </small>
           ) : null}
+          {sendViaBluetooth && bluetoothError !== null ? (
+            <small className="external-share-notice" role="status">
+              {bluetoothError}
+            </small>
+          ) : null}
           <ChatComposerActions
             draftHasText={liveDraft.trim().length > 0}
             mode={mode}
             open={messageActionsOpen}
+            sendViaLabel={sendViaLabel}
             onClose={() => setMessageActionsOpen(false)}
             onAttachFiles={() => runMessageAction(() => fileInputRef.current?.click())}
             onOpenCommand={() => runMessageAction(() => updateLiveDraft("#"))}
@@ -321,17 +330,24 @@ export function ChatComposer({
                 )
               )
             }
+            onSendVia={() => runMessageAction(() => setChannelPickerOpen(true))}
             onShareApps={() =>
               runMessageAction(() => void openPlatformHandoff(selectedConversationTitle))
             }
             onTakePhoto={() => runMessageAction(() => sellerPhotoInputRef.current?.click())}
           />
           <ChatChannelPicker
+            bluetoothAvailable={bluetoothAvailable}
+            bluetoothBusy={bluetoothBusy}
+            bluetoothError={bluetoothError}
+            bluetoothSelected={sendViaBluetooth}
+            bluetoothStatus={bluetoothStatus}
             channelEndpoints={channelEndpoints}
             open={channelPickerOpen}
             selectedProvider={selectedProvider}
             onClose={() => setChannelPickerOpen(false)}
             onSelect={setSelectedProvider}
+            onSelectBluetooth={selectBluetooth}
           />
         </div>
       )}

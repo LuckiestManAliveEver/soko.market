@@ -25,13 +25,14 @@ describe("mobile chat composer actions", () => {
     document.body.replaceChildren();
   });
 
-  it("puts the message box on top, a bottom row with More/pills/mic/Send, keeps the channel button, and opens the accessible action sheet", async () => {
+  it("puts the message box on top, a bottom row with More/pills/mic/Send, moves Send via under the plus sign, and opens the accessible action sheet", async () => {
     function Harness() {
       const composer = useChatComposerState({
         activeConversationId: "conversation-1",
         channelEndpoints: [],
         chatDraft: "",
         initialEmailSubject: "",
+        nearbyScope: null,
         smsDefaultCountry: "KE",
         onDraftChange: vi.fn(),
         onPlatformHandoff: vi.fn(),
@@ -86,11 +87,8 @@ describe("mobile chat composer actions", () => {
     expect(composer.textContent).toContain("Shopkeeper will answer");
     expect(host.querySelector('[aria-label="Voice input"]')).toBeNull();
     expect(host.querySelector('[aria-label="Attach file"]')).toBeNull();
-
-    const channelButton = host.querySelector<HTMLButtonElement>(
-      '[aria-label="Choose how to send"]'
-    )!;
-    expect(channelButton).not.toBeNull();
+    // "Send via" is no longer its own top-level icon button - it only lives in the "+" sheet.
+    expect(host.querySelector('[aria-label="Choose how to send"]')).toBeNull();
 
     const more = host.querySelector<HTMLButtonElement>('[aria-label="Open message actions"]')!;
     await act(async () => more.click());
@@ -98,6 +96,7 @@ describe("mobile chat composer actions", () => {
     const dialog = document.body.querySelector('[role="dialog"]');
     expect(dialog?.getAttribute("aria-labelledby")).toBe("composer-message-actions-title");
     for (const label of [
+      "Send via",
       "Take photo",
       "Photos",
       "Files",
@@ -109,6 +108,26 @@ describe("mobile chat composer actions", () => {
     }
     // Voice moved out of the action sheet into the always-visible mic button.
     expect(dialog?.querySelector('[aria-label="Record voice"]')).toBeNull();
+
+    const sendVia = dialog!.querySelector<HTMLButtonElement>('[aria-label="Send via"]')!;
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        sendVia.click();
+        await vi.runAllTimersAsync();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const channelDialog = document.body.querySelector(
+      '[aria-labelledby="composer-channel-picker-title"]'
+    );
+    expect(channelDialog).not.toBeNull();
+    expect(channelDialog?.querySelector('[role="option"]')?.textContent).toContain(
+      "Normal message"
+    );
+    expect(channelDialog?.textContent).toContain("Bluetooth");
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
