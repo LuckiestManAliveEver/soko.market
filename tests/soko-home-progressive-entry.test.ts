@@ -147,6 +147,52 @@ describe("Soko Home: merchant entry point", () => {
     expect(menuDrawer).toContain("onGoToShop");
     expect(menuDrawer).toContain("Go to my shop");
   });
+
+  it("scopes the Messages pill and header sign-up/log-in to seller mode, out of the customer home", () => {
+    // The Buy/Sell toggle removal above only dropped the "Sell" pill; "Messages" and the header
+    // sign-up/log-in buttons stayed unconditionally rendered, which is the exact legacy "Messages
+    // button + Sign up/Log in in the top nav" pattern the unified-chat spec forbids on the
+    // customer home. They now render only while mode is "seller" (the merchant's own header,
+    // reachable solely via the shop icon or menu) - Message history moved into the hamburger menu,
+    // and the in-chat welcome message is the customer home's one sign-up/log-in entry point.
+    //
+    // The remaining "marketplace-button" is not that toggle: it never renders a "Sell" pill, it
+    // relabels itself "Browse" (never "Buy") for a customer, and for a customer it only opens/closes
+    // the storefront-browsing/cart panel in place - it never switches mode. It stays reachable on
+    // the customer home because the panel it opens (cart, checkout, storefronts) has no other entry
+    // point yet.
+    const shellModeBarStart = sokoApplication.indexOf(
+      'aria-label={mode === "seller" ? "Commerce mode and messages" : "Shell actions"}'
+    );
+    expect(shellModeBarStart).toBeGreaterThan(-1);
+    const shellModeBar = sokoApplication.slice(
+      shellModeBarStart,
+      sokoApplication.indexOf("</nav>", shellModeBarStart)
+    );
+
+    const buyIndex = shellModeBar.indexOf('data-testid="marketplace-button"');
+    expect(buyIndex).toBeGreaterThan(-1);
+    expect(shellModeBar).toContain('mode === "seller" ? "Buy" : "Browse"');
+
+    const sellerGateStart = shellModeBar.indexOf('mode === "seller" ? (', buyIndex);
+    expect(sellerGateStart).toBeGreaterThan(buyIndex);
+    const sellerGateEnd = shellModeBar.indexOf(") : null}", sellerGateStart);
+    expect(sellerGateEnd).toBeGreaterThan(sellerGateStart);
+
+    const messagesIndex = shellModeBar.indexOf('data-testid="messages-button"');
+    expect(messagesIndex).toBeGreaterThan(sellerGateStart);
+    expect(messagesIndex).toBeLessThan(sellerGateEnd);
+
+    const authGateStart = shellModeBar.indexOf('mode === "seller" && session === null ? (');
+    expect(authGateStart).toBeGreaterThan(sellerGateEnd);
+    const authGateEnd = shellModeBar.indexOf(") : null}", authGateStart);
+    const signupIndex = shellModeBar.indexOf('data-testid="header-signup-button"');
+    const loginIndex = shellModeBar.indexOf('data-testid="header-login-button"');
+    expect(signupIndex).toBeGreaterThan(authGateStart);
+    expect(signupIndex).toBeLessThan(authGateEnd);
+    expect(loginIndex).toBeGreaterThan(signupIndex);
+    expect(loginIndex).toBeLessThan(authGateEnd);
+  });
 });
 
 describe("Soko Home: hamburger menu drawer", () => {
