@@ -99,7 +99,8 @@ describe("mobile chat composer actions", () => {
     expect(dialog?.getAttribute("aria-labelledby")).toBe("composer-message-actions-title");
     for (const label of [
       "Take photo",
-      "Photos or files",
+      "Photos",
+      "Files",
       "Open command",
       "Send as SMS",
       "Share to apps"
