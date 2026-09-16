@@ -417,7 +417,8 @@ test("mobile composer keeps one More control and exposes secondary actions in a 
   const actions = page.getByRole("dialog", { name: "More message actions" });
   await expect(actions).toBeVisible();
   await expect(actions.getByRole("button", { name: "Take photo", exact: true })).toBeVisible();
-  await expect(actions.getByRole("button", { name: "Photos or files", exact: true })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Photos", exact: true })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Files", exact: true })).toBeVisible();
   await expect(actions.getByRole("button", { name: "Record voice", exact: true })).toHaveCount(0);
   await expect(actions.getByRole("button", { name: "Open command", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");

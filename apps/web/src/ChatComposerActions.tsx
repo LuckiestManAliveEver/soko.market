@@ -44,9 +44,13 @@ export function ChatComposerActions({
             <span>Camera</span>
           </button>
         ) : null}
-        <button type="button" aria-label="Photos or files" onClick={onAttachFiles}>
-          <span className="attach-icon" aria-hidden="true" />
-          <span>Photos or files</span>
+        <button type="button" aria-label="Photos" onClick={onAttachFiles}>
+          <span className="composer-photos-icon" aria-hidden="true" />
+          <span>Photos</span>
+        </button>
+        <button type="button" aria-label="Files" onClick={onAttachFiles}>
+          <span className="composer-files-icon" aria-hidden="true" />
+          <span>Files</span>
         </button>
         {mode === "seller" ? (
           <button type="button" aria-label="Open command" onClick={onOpenCommand}>
