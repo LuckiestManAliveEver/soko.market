@@ -77,6 +77,25 @@ export function normalizeSmsRecipient(recipient: string, defaultCountry?: Countr
   return parsed.number;
 }
 
+export function buildSmsHandoffRequest(
+  recipient: string,
+  label: string,
+  body: string,
+  defaultCountry?: CountryCode
+): { body: string; label: string; recipient: string } {
+  let normalizedCandidate = "";
+  try {
+    normalizedCandidate = normalizeSmsRecipient(recipient, defaultCountry);
+  } catch {
+    // The confirmation sheet collects or corrects a missing contact number.
+  }
+  return {
+    body,
+    label: label.trim() || "SMS recipient",
+    recipient: normalizedCandidate || recipient
+  };
+}
+
 export function buildExternalSmsUri(recipient: string, body: string): string {
   if (!/^\+[1-9]\d{6,14}$/.test(recipient)) {
     throw new SmsRecipientError("Normalize the telephone number before opening the SMS app.");
