@@ -261,7 +261,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `Karibu. What do you need? Find products, shops, services, or deliveries — just ask. Tap Sell when you are ready to start running ${businessName}.`
+      body: `Karibu. What do you need? Find products, shops, services, or deliveries — just ask. Tap the shop icon when you are ready to start running ${businessName}.`
     }
   ];
 }

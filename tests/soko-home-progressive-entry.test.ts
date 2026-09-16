@@ -253,4 +253,28 @@ describe("Soko Home: suggested requests and capability trace", () => {
   it("welcomes with the Soko Home framing instead of gating on sign-up", () => {
     expect(appShell).toContain("What do you need?");
   });
+
+  it("never tells the customer welcome message to tap a removed Sell button", () => {
+    // app-shell.ts's welcome copy predates the Buy/Sell toggle removal (see "Soko Home: merchant
+    // entry point" above) and still said "Tap Sell" - dangling copy pointing at UI that no longer
+    // exists now that selling only starts from the header's shop icon.
+    expect(appShell).not.toContain("Tap Sell");
+    expect(appShell).toContain("Tap the shop icon");
+  });
+});
+
+describe("Soko Home: shop presence stays out of the customer conversation", () => {
+  it("only renders the seller's own shop-status dots in seller mode with a business, never on the customer/guest home", () => {
+    // ShopPresenceButtons ("Online"/"Private"/"Offline" across devices) is a seller control for
+    // the merchant's own shop status - it previously rendered next to the agent's name on every
+    // agent message unconditionally, including the customer/marketplace welcome message a
+    // business-less guest sees first, and even inside another shop's conversation for a visitor
+    // who happens to run their own business. Gated so it only ever appears in the seller's own
+    // workspace chat.
+    expect(chatSurface).toContain('mode === "seller" && hasBusiness ? (');
+    const gateIndex = chatSurface.indexOf('mode === "seller" && hasBusiness ? (');
+    const presenceIndex = chatSurface.indexOf("<ShopPresenceButtons", gateIndex);
+    expect(presenceIndex).toBeGreaterThan(gateIndex);
+    expect(presenceIndex).toBeLessThan(gateIndex + 120);
+  });
 });
