@@ -131,6 +131,22 @@ describe("Soko Home: merchant entry point", () => {
       /if \(business === null\) \{\s*switchMode\("seller"\);\s*\} else \{\s*setAgentProfileInitialSection\(null\);\s*openAgentProfile\(\);\s*\}/u
     );
   });
+
+  it("removes the customer-facing Buy/Sell toggle, keeping selling behind the shop icon and the menu", () => {
+    // spec: the target UI has no Buy/Sell toggle for customers - selling lives behind the shop
+    // icon -> merchant login -> workspace path only. A returning merchant who has already
+    // navigated away from seller mode (e.g. into Buy) needs a different way back in now that the
+    // header's old "Sell" pill is gone, since the shop icon itself still only starts *new* shop
+    // setup for a business-less visitor rather than re-entering an existing one; "Go to my shop"
+    // in the hamburger menu is that path.
+    expect(sokoApplication).not.toContain('data-testid="sell-button"');
+    expect(sokoApplication).not.toContain('className="commerce-mode-toggle"');
+    expect(sokoApplication).toContain("commerce-mode-toggle");
+    expect(sokoApplication).toContain("onGoToShop={() => {");
+    const menuDrawer = readFileSync("apps/web/src/MenuDrawer.tsx", "utf8");
+    expect(menuDrawer).toContain("onGoToShop");
+    expect(menuDrawer).toContain("Go to my shop");
+  });
 });
 
 describe("Soko Home: hamburger menu drawer", () => {

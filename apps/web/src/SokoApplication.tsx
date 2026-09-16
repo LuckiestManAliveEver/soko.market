@@ -1652,6 +1652,10 @@ export function OwnerApp() {
                 if (view !== "chat" && view !== "home") returnToChat();
                 setIsMessagingInboxOpen(true);
               }}
+              onGoToShop={() => {
+                setIsMenuDrawerOpen(false);
+                switchMode("seller");
+              }}
               onShopSettings={() => {
                 setIsMenuDrawerOpen(false);
                 setAgentProfileInitialSection("business");
@@ -1684,52 +1688,37 @@ export function OwnerApp() {
 
           {!isAuthScreen ? (
             <nav className="shell-mode-bar" aria-label="Commerce mode and messages">
-              <div className="commerce-mode-toggle" data-mode={mode === "seller" ? "sell" : "buy"}>
-                <button
-                  className={`header-action-button marketplace ${mode === "marketplace" ? "mode-active" : ""}`}
-                  type="button"
-                  data-testid="marketplace-button"
-                  aria-label="Marketplace"
-                  aria-expanded={mode === "marketplace" && isMarketplaceShortcutOpen}
-                  onClick={() => {
-                    if (mode === "marketplace") {
-                      if (view !== "chat" && view !== "home") returnToChat();
-                      setIsMarketplaceShortcutOpen((open) =>
-                        view === "chat" || view === "home" ? !open : true
-                      );
-                      return;
-                    }
-                    switchMode("marketplace");
-                  }}
-                >
-                  Buy
-                </button>
-                <button
-                  className="header-action-button messages"
-                  type="button"
-                  data-testid="messages-button"
-                  aria-expanded={isMessagingInboxOpen}
-                  onClick={() => {
+              <button
+                className={`header-action-button marketplace commerce-mode-toggle ${mode === "marketplace" ? "mode-active" : ""}`}
+                type="button"
+                data-testid="marketplace-button"
+                aria-label="Marketplace"
+                aria-expanded={mode === "marketplace" && isMarketplaceShortcutOpen}
+                onClick={() => {
+                  if (mode === "marketplace") {
                     if (view !== "chat" && view !== "home") returnToChat();
-                    setIsMessagingInboxOpen((open) => !open);
-                  }}
-                >
-                  Messages
-                </button>
-                <button
-                  className={
-                    mode === "seller"
-                      ? "header-action-button mode-active"
-                      : "header-action-button sell"
+                    setIsMarketplaceShortcutOpen((open) =>
+                      view === "chat" || view === "home" ? !open : true
+                    );
+                    return;
                   }
-                  type="button"
-                  data-testid="sell-button"
-                  onClick={() => switchMode(mode === "seller" ? "marketplace" : "seller")}
-                  aria-pressed={mode === "seller"}
-                >
-                  Sell
-                </button>
-              </div>
+                  switchMode("marketplace");
+                }}
+              >
+                Buy
+              </button>
+              <button
+                className="header-action-button messages"
+                type="button"
+                data-testid="messages-button"
+                aria-expanded={isMessagingInboxOpen}
+                onClick={() => {
+                  if (view !== "chat" && view !== "home") returnToChat();
+                  setIsMessagingInboxOpen((open) => !open);
+                }}
+              >
+                Messages
+              </button>
               <div className="shell-secondary-actions">
                 <button
                   className={`header-action-button shell-capability-trace-button${
