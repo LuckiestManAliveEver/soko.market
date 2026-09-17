@@ -66,7 +66,8 @@ test("secondary modules preserve the conversation URL and browser history", asyn
   await page.goto("/");
   const initialHistoryLength = await page.evaluate(() => history.length);
 
-  await page.getByRole("button", { name: "Marketplace", exact: true }).click();
+  await page.getByRole("button", { name: "Open menu", exact: true }).click();
+  await page.getByRole("button", { name: "Browse marketplace", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Marketplace" })).toBeVisible();
   await expect(page).toHaveURL(/\/$/);
   await expect.poll(() => page.evaluate(() => history.length)).toBe(initialHistoryLength);
@@ -165,7 +166,8 @@ for (const nestedProfileChunk of [
 
 test("clicking a public shop opens its storefront instead of a blank screen", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Marketplace", exact: true }).click();
+  await page.getByRole("button", { name: "Open menu", exact: true }).click();
+  await page.getByRole("button", { name: "Browse marketplace", exact: true }).click();
 
   const shopCard = page.getByRole("link", { name: /Responsive Public Shop/u });
   await expect(shopCard).toBeVisible();
