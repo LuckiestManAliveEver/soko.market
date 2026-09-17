@@ -74,6 +74,7 @@ export interface ChatSurfaceProps {
   onAddToCart: (result: BuyResultSummary) => void;
   onRemoveFromCart: (cartItemId: string) => void;
   onCheckout: () => void;
+  onRefreshInvoices: () => void;
   onBackToChat: () => void;
   onCloseMarketplace: () => void;
   onCloseWorkspace: () => void;

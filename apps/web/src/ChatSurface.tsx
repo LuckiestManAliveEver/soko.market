@@ -36,6 +36,7 @@ import { ShopPresenceButtons } from "./ShopPresenceButtons";
 import { MarketplaceModeCard } from "./MarketplaceModeCard";
 import { StorefrontPreviewCard } from "./StorefrontPreviewCard";
 import { ContextualBusinessCards } from "./ContextualBusinessCards";
+import { MerchantWorkspaceDashboard } from "./MerchantWorkspaceDashboard";
 import { NetworkSyncNestedCard } from "./NetworkSyncNestedCard";
 import { CatalogueNestedCard } from "./CatalogueNestedCard";
 import { StackedModule } from "./StackedModule";
@@ -112,6 +113,7 @@ export function ChatSurface({
   onAddToCart,
   onRemoveFromCart,
   onCheckout,
+  onRefreshInvoices,
   onBackToChat,
   onCloseMarketplace,
   onCloseWorkspace,
@@ -245,7 +247,12 @@ export function ChatSurface({
     | "manageFields"
     | "networkSync"
     | "storefrontPreview"
+    | "businessDashboard"
   >("cards");
+  function openBusinessDashboard() {
+    setWorkspaceCardView("businessDashboard");
+    onRefreshInvoices();
+  }
   const showMessageThread = true;
   const activeModuleView = activeView === "chat" || activeView === "home" ? null : activeView;
   const isSessionListView = activeView === "home";
@@ -602,6 +609,10 @@ export function ChatSurface({
                       setWorkspaceCardView("storefrontPreview");
                       onOpenWorkspace();
                     }}
+                    onOpenBusinessDashboard={() => {
+                      openBusinessDashboard();
+                      onOpenWorkspace();
+                    }}
                     onNavigate={onNavigate}
                   />
                 ) : null}
@@ -909,7 +920,13 @@ export function ChatSurface({
         </StackedModule>
         <StackedModule
           moduleId="workspace"
-          className={mode === "seller" ? "sell-module" : "buy-module"}
+          className={
+            workspaceCardView === "businessDashboard"
+              ? "merchant-dashboard-module"
+              : mode === "seller"
+                ? "sell-module"
+                : "buy-module"
+          }
           open={workspaceOpen}
           title={workspacePanelTitle(workspaceCardView)}
           onClose={onCloseWorkspace}
@@ -925,10 +942,23 @@ export function ChatSurface({
               onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
               onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
               onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
+              onOpenBusinessDashboard={openBusinessDashboard}
               onNavigate={(nextView) => {
                 onNavigate(nextView);
                 onCloseWorkspace();
               }}
+            />
+          ) : workspaceCardView === "businessDashboard" ? (
+            <MerchantWorkspaceDashboard
+              businessName={businessName}
+              invoices={invoices}
+              products={products}
+              onBack={() => setWorkspaceCardView("cards")}
+              onOpenInvoices={() => {
+                onNavigate("invoices");
+                onCloseWorkspace();
+              }}
+              onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
             />
           ) : workspaceCardView === "networkSync" ? (
             <NetworkSyncNestedCard
@@ -1107,9 +1137,14 @@ export function workspacePanelTitle(
     | "manageFields"
     | "networkSync"
     | "storefrontPreview"
+    | "businessDashboard"
 ): string {
   if (view === "cards") {
     return "Workspace";
+  }
+
+  if (view === "businessDashboard") {
+    return "Business workspace";
   }
 
   if (view === "networkSync") {
