@@ -329,6 +329,75 @@ test("workspace dialog traps focus, restores dismissed cards, and closes with Es
   await expect(workspaceButton).toBeFocused();
 });
 
+test("the Business workspace dashboard reflows on a small screen and stays keyboard-reachable", async ({
+  page
+}) => {
+  // Audit A27 ("Merchant workspace"): MerchantWorkspaceDashboard is new markup rendered inside
+  // the existing Workspace StackedModule, switching its content without remounting the module -
+  // so the focus trap's initial-focus effect never re-fires for this nested view. This proves the
+  // Tab-trap keydown handler still adapts to the swapped content instead of assuming stale
+  // elements, and that the new stats/orders/catalogue layout reflows at a small width.
+  // The header "Workspace" launcher is deliberately hidden below 760px (styles.css); on mobile the
+  // dashboard is reached through the inline owner-controls card instead. Open it at desktop width
+  // first, then shrink the viewport to check the new content's own reflow.
+  await page.goto("/sell");
+  const workspaceButton = page.getByRole("button", { name: "Workspace", exact: true });
+  await workspaceButton.click();
+  // Scoped by the Workspace module's own id, not accessible name: the dialog's title (and so its
+  // aria-labelledby text) changes from "Workspace" to "Business workspace" once the dashboard
+  // opens, a name-filtered locator would stop matching after that transition, and a bare
+  // role="dialog" locator collides with the separate Messages module mounted alongside it.
+  const dialog = page.locator('[data-module-id="workspace"] [role="dialog"]');
+  await expect(dialog).toBeVisible();
+  const closeButton = dialog.locator(".stacked-module-heading button");
+
+  await dialog.getByRole("button", { name: "Business workspace", exact: true }).click();
+  const backButton = dialog.getByRole("button", { name: "Back" });
+  await expect(backButton).toBeVisible();
+  await expect(dialog.getByText("No orders yet.")).toBeVisible();
+  await expect(dialog.getByText("No products yet.")).toBeVisible();
+
+  // Small-screen reflow of the dashboard's own content - the real "small-screen layout" contract
+  // for this new markup, independent of the header chrome that's hidden below 760px (mobile
+  // reaches this dashboard through the inline owner-controls card instead, not this launcher).
+  // Below 760px the conversation inbox also becomes its own StackedModule alongside this one
+  // (ChatSurface.tsx's isCompactViewport branch), so this also exercises the fix for
+  // stacked-module-stack.ts: two simultaneously-open modules used to each install their own
+  // document-level Tab/Escape handler, and Tab from this dialog's last control jumped into the
+  // Messages module instead of wrapping (see tests/stacked-module-focus-stack.test.tsx for the
+  // isolated regression coverage of that fix).
+  await page.setViewportSize({ width: 320, height: 700 });
+  await expect(dialog.getByText("No orders yet.")).toBeVisible();
+  await expectNoViewportOverflow(page);
+  await expectInteractiveControlsInsideViewport(page, dialog);
+  const messagesDialog = page.locator('[data-module-id="messenger-inbox"] [role="dialog"]');
+  await expect(messagesDialog).toBeVisible();
+
+  // Tab-trap wraps around the dashboard's own controls (close, Back, then the two "See all"
+  // buttons - empty state renders no other focusable rows), not the Messages module's, even
+  // though it's also open right now.
+  const lastSeeAll = dialog.getByRole("button", { name: "See all" }).nth(1);
+  await lastSeeAll.focus();
+  await page.keyboard.press("Tab");
+  await expect(closeButton).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(lastSeeAll).toBeFocused();
+
+  // Back is reachable and operable by keyboard alone, returning to the card grid without closing
+  // the dialog. Also proves the pointer-blocking half of the same fix: before it, the Messages
+  // module (painted with the same base z-index, later in DOM order) covered this dialog and ate
+  // the click - Playwright's actionability check made that failure explicit instead of silently
+  // clicking through.
+  await backButton.focus();
+  await page.keyboard.press("Enter");
+  await expect(dialog.getByRole("button", { name: "Business workspace", exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Business workspace", exact: true }).click();
+  await expect(dialog.getByText("No orders yet.")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});
+
 test("existing shops keep cards out of the chat until the launcher opens them", async ({
   page
 }) => {

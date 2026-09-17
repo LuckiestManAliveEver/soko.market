@@ -2,6 +2,13 @@ import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNo
 import { createPortal } from "react-dom";
 
 import { shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
+import {
+  isFocusInsideAnotherStackedModule,
+  isTopmostStackedModule,
+  promoteStackedModule,
+  registerStackedModule,
+  unregisterStackedModule
+} from "./stacked-module-stack";
 
 export { shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
 
@@ -23,6 +30,7 @@ export function StackedModule({
   onClose
 }: StackedModuleProps) {
   const panelRef = useRef<HTMLElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const swipeStartYRef = useRef<number | null>(null);
   const onCloseRef = useRef(onClose);
@@ -35,11 +43,46 @@ export function StackedModule({
     const previousAriaHidden = appRoot?.getAttribute("aria-hidden") ?? null;
     appRoot?.setAttribute("inert", "");
     appRoot?.setAttribute("aria-hidden", "true");
+    const activeElementBeforeMount = document.activeElement;
     returnFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const frameId = window.requestAnimationFrame(() => panelRef.current?.focus());
+      activeElementBeforeMount instanceof HTMLElement ? activeElementBeforeMount : null;
+    registerStackedModule(moduleId, () => panelRef.current);
+
+    // A module that mounts while focus is already inside a *different* open module (e.g. the
+    // conversation inbox silently becoming its own StackedModule on a resize, while the user is
+    // still working in the already-open Workspace dialog) must not yank focus or Tab/Escape
+    // ownership away from where the user actually is - see stacked-module-stack.ts. It still
+    // becomes topmost the moment something inside it is genuinely focused (the focusin listener
+    // below), just not automatically on mount.
+    const canStealInitialFocus = !isFocusInsideAnotherStackedModule(
+      moduleId,
+      activeElementBeforeMount
+    );
+    let frameId: number | null = null;
+    if (canStealInitialFocus) {
+      if (backdropRef.current !== null) {
+        backdropRef.current.style.zIndex = String(promoteStackedModule(moduleId));
+      } else {
+        promoteStackedModule(moduleId);
+      }
+      frameId = window.requestAnimationFrame(() => panelRef.current?.focus());
+    }
+
+    function handleFocusIn(event: FocusEvent) {
+      if (event.target instanceof Node && panelRef.current?.contains(event.target) === true) {
+        if (backdropRef.current !== null) {
+          backdropRef.current.style.zIndex = String(promoteStackedModule(moduleId));
+        } else {
+          promoteStackedModule(moduleId);
+        }
+      }
+    }
 
     function handleKeyDown(event: KeyboardEvent) {
+      // Only the module that currently owns focus traps keys - see stacked-module-stack.ts.
+      // Without this, two simultaneously-open modules each install a listener here, and both act
+      // on the same keypress.
+      if (!isTopmostStackedModule(moduleId)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         onCloseRef.current();
@@ -79,15 +122,18 @@ export function StackedModule({
     }
 
     document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("focusin", handleFocusIn);
     return () => {
-      window.cancelAnimationFrame(frameId);
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
       document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("focusin", handleFocusIn);
+      unregisterStackedModule(moduleId);
       if (!rootWasInert) appRoot?.removeAttribute("inert");
       if (previousAriaHidden === null) appRoot?.removeAttribute("aria-hidden");
       else appRoot?.setAttribute("aria-hidden", previousAriaHidden);
       returnFocusRef.current?.focus();
     };
-  }, [open]);
+  }, [open, moduleId]);
 
   if (!open) return null;
 
@@ -118,6 +164,7 @@ export function StackedModule({
     <div
       className="stacked-module-backdrop"
       data-module-id={moduleId}
+      ref={backdropRef}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
