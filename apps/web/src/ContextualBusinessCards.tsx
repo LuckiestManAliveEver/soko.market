@@ -16,6 +16,7 @@ export interface ContextualBusinessCardsProps {
   onOpenCatalogue: () => void;
   onOpenNetworkSync: () => void;
   onPreviewStorefront: () => void;
+  onOpenBusinessDashboard: () => void;
   onNavigate: (view: ShellView) => void;
 }
 
@@ -29,6 +30,7 @@ export function ContextualBusinessCards({
   onOpenCatalogue,
   onOpenNetworkSync,
   onPreviewStorefront,
+  onOpenBusinessDashboard,
   onNavigate
 }: ContextualBusinessCardsProps) {
   const activeQueueCount =
@@ -40,6 +42,12 @@ export function ContextualBusinessCards({
     onClick: () => void;
     value: string;
   }> = [
+    {
+      title: "Business workspace",
+      body: "Today's orders, revenue and catalogue in one screen",
+      onClick: onOpenBusinessDashboard,
+      value: "Open"
+    },
     {
       title: "Catalogue",
       body: "Stock, SKUs, units and adjustments",

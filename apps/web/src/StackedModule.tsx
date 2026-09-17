@@ -1,9 +1,20 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
+import {
+  nextFocusTargetForTab,
+  shouldCloseStackedModuleFromSwipe
+} from "./stacked-module-behavior";
+import {
+  isFocusInsideAnotherStackedModule,
+  isTopmostStackedModule,
+  promoteStackedModuleAndBackdrop,
+  registerStackedModule,
+  unregisterStackedModule
+} from "./stacked-module-stack";
 
-export { shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
+const focusableSelector =
+  'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export interface StackedModuleProps {
   children: ReactNode;
@@ -23,6 +34,7 @@ export function StackedModule({
   onClose
 }: StackedModuleProps) {
   const panelRef = useRef<HTMLElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const swipeStartYRef = useRef<number | null>(null);
   const onCloseRef = useRef(onClose);
@@ -35,11 +47,38 @@ export function StackedModule({
     const previousAriaHidden = appRoot?.getAttribute("aria-hidden") ?? null;
     appRoot?.setAttribute("inert", "");
     appRoot?.setAttribute("aria-hidden", "true");
+    const activeElementBeforeMount = document.activeElement;
     returnFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const frameId = window.requestAnimationFrame(() => panelRef.current?.focus());
+      activeElementBeforeMount instanceof HTMLElement ? activeElementBeforeMount : null;
+    registerStackedModule(moduleId, () => panelRef.current);
+
+    // A module that mounts while focus is already inside a *different* open module (e.g. the
+    // conversation inbox silently becoming its own StackedModule on a resize, while the user is
+    // still working in the already-open Workspace dialog) must not yank focus or Tab/Escape
+    // ownership away from where the user actually is - see stacked-module-stack.ts. It still
+    // becomes topmost the moment something inside it is genuinely focused (the focusin listener
+    // below), just not automatically on mount.
+    const canStealInitialFocus = !isFocusInsideAnotherStackedModule(
+      moduleId,
+      activeElementBeforeMount
+    );
+    let frameId: number | null = null;
+    if (canStealInitialFocus) {
+      promoteStackedModuleAndBackdrop(moduleId, backdropRef.current);
+      frameId = window.requestAnimationFrame(() => panelRef.current?.focus());
+    }
+
+    function handleFocusIn(event: FocusEvent) {
+      if (event.target instanceof Node && panelRef.current?.contains(event.target) === true) {
+        promoteStackedModuleAndBackdrop(moduleId, backdropRef.current);
+      }
+    }
 
     function handleKeyDown(event: KeyboardEvent) {
+      // Only the module that currently owns focus traps keys - see stacked-module-stack.ts.
+      // Without this, two simultaneously-open modules each install a listener here, and both act
+      // on the same keypress.
+      if (!isTopmostStackedModule(moduleId)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         onCloseRef.current();
@@ -47,47 +86,33 @@ export function StackedModule({
       }
       if (event.key !== "Tab" || panelRef.current === null) return;
       const focusable = Array.from(
-        panelRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        )
+        panelRef.current.querySelectorAll<HTMLElement>(focusableSelector)
       );
-      if (focusable.length === 0) {
+      const target = nextFocusTargetForTab(
+        focusable,
+        document.activeElement,
+        panelRef.current,
+        event.shiftKey
+      );
+      if (target !== null) {
         event.preventDefault();
-        panelRef.current.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const activeElement = document.activeElement;
-      if (
-        event.shiftKey &&
-        (activeElement === first ||
-          activeElement === panelRef.current ||
-          !panelRef.current.contains(activeElement))
-      ) {
-        event.preventDefault();
-        last?.focus();
-      } else if (
-        !event.shiftKey &&
-        (activeElement === last ||
-          activeElement === panelRef.current ||
-          !panelRef.current.contains(activeElement))
-      ) {
-        event.preventDefault();
-        first?.focus();
+        target.focus();
       }
     }
 
     document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("focusin", handleFocusIn);
     return () => {
-      window.cancelAnimationFrame(frameId);
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
       document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("focusin", handleFocusIn);
+      unregisterStackedModule(moduleId);
       if (!rootWasInert) appRoot?.removeAttribute("inert");
       if (previousAriaHidden === null) appRoot?.removeAttribute("aria-hidden");
       else appRoot?.setAttribute("aria-hidden", previousAriaHidden);
       returnFocusRef.current?.focus();
     };
-  }, [open]);
+  }, [open, moduleId]);
 
   if (!open) return null;
 
@@ -118,6 +143,7 @@ export function StackedModule({
     <div
       className="stacked-module-backdrop"
       data-module-id={moduleId}
+      ref={backdropRef}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}

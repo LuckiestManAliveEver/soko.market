@@ -1946,6 +1946,9 @@ export function OwnerApp() {
                 onAddToCart={handleAddToCart}
                 onRemoveFromCart={handleRemoveFromCart}
                 onCheckout={() => void handleCheckout()}
+                onRefreshInvoices={() => {
+                  if (business !== null) void loadInvoices(business.id);
+                }}
                 onBackToChat={returnToChat}
                 onConfirm={(token) =>
                   void runAction("runtime-confirm", () => confirmRuntimeAction(token))
