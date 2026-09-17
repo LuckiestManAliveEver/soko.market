@@ -39,6 +39,16 @@ export function promoteStackedModule(moduleId: string): number {
   return nextPromotedZIndex++;
 }
 
+// Promotes and paints the given backdrop on top in one call - the two call sites in
+// StackedModule.tsx (initial mount, and a later genuine focus) both need this exact pairing.
+export function promoteStackedModuleAndBackdrop(
+  moduleId: string,
+  backdrop: HTMLElement | null
+): void {
+  const zIndex = promoteStackedModule(moduleId);
+  if (backdrop !== null) backdrop.style.zIndex = String(zIndex);
+}
+
 export function isTopmostStackedModule(moduleId: string): boolean {
   return topmostModuleId === moduleId;
 }

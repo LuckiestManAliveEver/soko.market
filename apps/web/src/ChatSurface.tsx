@@ -36,6 +36,7 @@ import { ShopPresenceButtons } from "./ShopPresenceButtons";
 import { MarketplaceModeCard } from "./MarketplaceModeCard";
 import { StorefrontPreviewCard } from "./StorefrontPreviewCard";
 import { ContextualBusinessCards } from "./ContextualBusinessCards";
+import { workspaceModuleClassName, workspacePanelTitle } from "./workspace-panel-title";
 import { MerchantWorkspaceDashboard } from "./MerchantWorkspaceDashboard";
 import { NetworkSyncNestedCard } from "./NetworkSyncNestedCard";
 import { CatalogueNestedCard } from "./CatalogueNestedCard";
@@ -920,13 +921,7 @@ export function ChatSurface({
         </StackedModule>
         <StackedModule
           moduleId="workspace"
-          className={
-            workspaceCardView === "businessDashboard"
-              ? "merchant-dashboard-module"
-              : mode === "seller"
-                ? "sell-module"
-                : "buy-module"
-          }
+          className={workspaceModuleClassName(workspaceCardView, mode)}
           open={workspaceOpen}
           title={workspacePanelTitle(workspaceCardView)}
           onClose={onCloseWorkspace}
@@ -1127,33 +1122,3 @@ export function ChatSurface({
   );
 }
 
-export function workspacePanelTitle(
-  view:
-    | "cards"
-    | "catalogue"
-    | "addProduct"
-    | "editProduct"
-    | "deleteProduct"
-    | "manageFields"
-    | "networkSync"
-    | "storefrontPreview"
-    | "businessDashboard"
-): string {
-  if (view === "cards") {
-    return "Workspace";
-  }
-
-  if (view === "businessDashboard") {
-    return "Business workspace";
-  }
-
-  if (view === "networkSync") {
-    return "My Network";
-  }
-
-  if (view === "storefrontPreview") {
-    return "Public shop view";
-  }
-
-  return "Catalogue";
-}

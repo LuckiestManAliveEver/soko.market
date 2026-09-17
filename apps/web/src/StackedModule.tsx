@@ -1,14 +1,17 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
+import { nextFocusTargetForTab, shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
 import {
   isFocusInsideAnotherStackedModule,
   isTopmostStackedModule,
-  promoteStackedModule,
+  promoteStackedModuleAndBackdrop,
   registerStackedModule,
   unregisterStackedModule
 } from "./stacked-module-stack";
+
+const focusableSelector =
+  'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export { shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
 
@@ -60,21 +63,13 @@ export function StackedModule({
     );
     let frameId: number | null = null;
     if (canStealInitialFocus) {
-      if (backdropRef.current !== null) {
-        backdropRef.current.style.zIndex = String(promoteStackedModule(moduleId));
-      } else {
-        promoteStackedModule(moduleId);
-      }
+      promoteStackedModuleAndBackdrop(moduleId, backdropRef.current);
       frameId = window.requestAnimationFrame(() => panelRef.current?.focus());
     }
 
     function handleFocusIn(event: FocusEvent) {
       if (event.target instanceof Node && panelRef.current?.contains(event.target) === true) {
-        if (backdropRef.current !== null) {
-          backdropRef.current.style.zIndex = String(promoteStackedModule(moduleId));
-        } else {
-          promoteStackedModule(moduleId);
-        }
+        promoteStackedModuleAndBackdrop(moduleId, backdropRef.current);
       }
     }
 
@@ -89,35 +84,16 @@ export function StackedModule({
         return;
       }
       if (event.key !== "Tab" || panelRef.current === null) return;
-      const focusable = Array.from(
-        panelRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        )
+      const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(focusableSelector));
+      const target = nextFocusTargetForTab(
+        focusable,
+        document.activeElement,
+        panelRef.current,
+        event.shiftKey
       );
-      if (focusable.length === 0) {
+      if (target !== null) {
         event.preventDefault();
-        panelRef.current.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const activeElement = document.activeElement;
-      if (
-        event.shiftKey &&
-        (activeElement === first ||
-          activeElement === panelRef.current ||
-          !panelRef.current.contains(activeElement))
-      ) {
-        event.preventDefault();
-        last?.focus();
-      } else if (
-        !event.shiftKey &&
-        (activeElement === last ||
-          activeElement === panelRef.current ||
-          !panelRef.current.contains(activeElement))
-      ) {
-        event.preventDefault();
-        first?.focus();
+        target.focus();
       }
     }
 
