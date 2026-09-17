@@ -414,10 +414,11 @@ test("existing shops keep cards out of the chat until the launcher opens them", 
 
   await dialog.getByRole("button", { name: "Close Catalogue card" }).click();
   await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toHaveCount(0);
-  // 18 workspace cards total (10 original + 8 added when PrimaryNavigation was removed and its
-  // destinations moved into this hub - see docs/frontend/frontend.md's Phase 6), minus the one
-  // just closed above.
-  await expect(dialog.locator(".generated-card-close")).toHaveCount(17);
+  // 19 workspace cards total (10 original + 8 added when PrimaryNavigation was removed and its
+  // destinations moved into this hub - see docs/frontend/frontend.md's Phase 6 - plus the
+  // "Business workspace" entry for MerchantWorkspaceDashboard, audit A27), minus the one just
+  // closed above.
+  await expect(dialog.locator(".generated-card-close")).toHaveCount(18);
 
   await dialog.getByRole("button", { name: "Close Workspace" }).click();
   await expect(page.getByLabel("Workspace cards")).toHaveCount(0);
