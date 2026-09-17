@@ -1579,8 +1579,14 @@ export function OwnerApp() {
             ) : null}
             {business === null ? (
               <div className="auth-brand-title">
-                <AppIcon className="auth-header-icon" />
-                <span>soko.market</span>
+                {isAuthScreen ? (
+                  <AppIcon className="auth-header-icon" />
+                ) : (
+                  <span className="home-brand-mark" aria-hidden="true">
+                    S
+                  </span>
+                )}
+                <span>Soko</span>
               </div>
             ) : (
               <button
@@ -1594,9 +1600,11 @@ export function OwnerApp() {
                 onPointerEnter={() => prefetchOwnerView("agent", business.id)}
                 onFocus={() => prefetchOwnerView("agent", business.id)}
               >
-                <AppIcon className="logo-mark" />
+                <span className="home-brand-mark" aria-hidden="true">
+                  S
+                </span>
                 <span>
-                  <strong>SOKO</strong>
+                  <strong>Soko</strong>
                   <span>{business.name}</span>
                   <small>{shouldShowAuth ? "Saved workspace loaded" : agentSettings.name}</small>
                   <small>{business.sokoId}</small>
@@ -1614,32 +1622,47 @@ export function OwnerApp() {
               </button>
             ) : null}
             {!isAuthScreen ? (
-              <button
-                className={
-                  business === null
-                    ? "icon-button shell-agent-button shop-entry-button"
-                    : "icon-button shell-agent-button"
-                }
-                type="button"
-                data-testid={business === null ? "shop-entry-button" : "agent-profile-link"}
-                onClick={() => {
-                  if (business === null) {
-                    switchMode("seller");
-                  } else {
-                    setAgentProfileInitialSection(null);
-                    openAgentProfile();
+              <>
+                <button
+                  className={`header-action-button shell-capability-trace-button${
+                    isCapabilityTraceOpen ? " on" : ""
+                  }`}
+                  type="button"
+                  aria-pressed={isCapabilityTraceOpen}
+                  aria-label={
+                    isCapabilityTraceOpen ? "Hide capability calls" : "Show capability calls"
                   }
-                }}
-                aria-label={business === null ? "Open your shop" : "Account and agent settings"}
-                onPointerEnter={() => prefetchOwnerView("agent", business?.id ?? null)}
-                onFocus={() => prefetchOwnerView("agent", business?.id ?? null)}
-              >
-                {business === null ? (
-                  <span className="shop-entry-icon" aria-hidden="true" />
-                ) : (
-                  <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
-                )}
-              </button>
+                  onClick={() => setIsCapabilityTraceOpen((open) => !open)}
+                >
+                  <span className="capability-trace-icon" aria-hidden="true" />
+                </button>
+                <button
+                  className={
+                    business === null
+                      ? "icon-button shell-agent-button shop-entry-button"
+                      : "icon-button shell-agent-button"
+                  }
+                  type="button"
+                  data-testid={business === null ? "shop-entry-button" : "agent-profile-link"}
+                  onClick={() => {
+                    if (business === null) {
+                      switchMode("seller");
+                    } else {
+                      setAgentProfileInitialSection(null);
+                      openAgentProfile();
+                    }
+                  }}
+                  aria-label={business === null ? "Open your shop" : "Account and agent settings"}
+                  onPointerEnter={() => prefetchOwnerView("agent", business?.id ?? null)}
+                  onFocus={() => prefetchOwnerView("agent", business?.id ?? null)}
+                >
+                  {business === null ? (
+                    <span className="shop-entry-icon" aria-hidden="true" />
+                  ) : (
+                    <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
+                  )}
+                </button>
+              </>
             ) : null}
           </header>
           {!isAuthScreen ? (
@@ -1647,6 +1670,12 @@ export function OwnerApp() {
               open={isMenuDrawerOpen}
               hasBusiness={business !== null}
               onClose={() => setIsMenuDrawerOpen(false)}
+              onBrowse={() => {
+                setIsMenuDrawerOpen(false);
+                if (mode !== "marketplace") switchMode("marketplace");
+                if (view !== "chat" && view !== "home") returnToChat();
+                setIsMarketplaceShortcutOpen(true);
+              }}
               onMessageHistory={() => {
                 setIsMenuDrawerOpen(false);
                 if (view !== "chat" && view !== "home") returnToChat();
@@ -1731,19 +1760,6 @@ export function OwnerApp() {
                 </button>
               ) : null}
               <div className="shell-secondary-actions">
-                <button
-                  className={`header-action-button shell-capability-trace-button${
-                    isCapabilityTraceOpen ? " on" : ""
-                  }`}
-                  type="button"
-                  aria-pressed={isCapabilityTraceOpen}
-                  aria-label={
-                    isCapabilityTraceOpen ? "Hide capability calls" : "Show capability calls"
-                  }
-                  onClick={() => setIsCapabilityTraceOpen((open) => !open)}
-                >
-                  <span className="capability-trace-icon" aria-hidden="true" />
-                </button>
                 {installPrompt.canInstall ? (
                   <button
                     className="header-action-button workspace"

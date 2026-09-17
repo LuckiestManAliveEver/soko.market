@@ -7,6 +7,7 @@ import { PerformancePanel } from "./PerformancePanel";
 import { recordReadiness, startPerformanceMonitoring } from "./performance";
 import { registerAppServiceWorker } from "./service-worker";
 import "./styles.css";
+import "./home-reference.css";
 
 function App() {
   useEffect(() => {
