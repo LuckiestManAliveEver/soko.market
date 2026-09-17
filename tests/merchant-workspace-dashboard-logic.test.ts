@@ -27,7 +27,15 @@ function invoice(overrides: Partial<InvoiceSummary> = {}): InvoiceSummary {
     customerId: "customer-1",
     customerName: "Grace W.",
     items: [
-      { id: "item-1", invoiceId: "invoice-1", productId: "p1", productName: "beans", quantity: 1, unitPrice: 100, lineTotal: 100 }
+      {
+        id: "item-1",
+        invoiceId: "invoice-1",
+        productId: "p1",
+        productName: "beans",
+        quantity: 1,
+        unitPrice: 100,
+        lineTotal: 100
+      }
     ],
     confirmedAt: "2026-09-17T09:00:00.000Z",
     createdAt: "2026-09-17T09:00:00.000Z",
@@ -64,8 +72,19 @@ describe("ordersToday (audit A27)", () => {
 describe("revenueToday (audit A27)", () => {
   it("only counts confirmed invoices confirmed today, excluding drafts and other days", () => {
     const invoices = [
-      invoice({ id: "1", status: "confirmed", confirmedAt: "2026-09-17T08:00:00.000Z", total: 4200 }),
-      invoice({ id: "2", status: "draft", createdAt: "2026-09-17T09:00:00.000Z", confirmedAt: null, total: 1650 }),
+      invoice({
+        id: "1",
+        status: "confirmed",
+        confirmedAt: "2026-09-17T08:00:00.000Z",
+        total: 4200
+      }),
+      invoice({
+        id: "2",
+        status: "draft",
+        createdAt: "2026-09-17T09:00:00.000Z",
+        confirmedAt: null,
+        total: 1650
+      }),
       invoice({ id: "3", status: "confirmed", confirmedAt: yesterday, total: 9999 })
     ];
     expect(revenueToday(invoices, today)).toBe(4200);
@@ -73,7 +92,13 @@ describe("revenueToday (audit A27)", () => {
 
   it("falls back to createdAt when confirmedAt is missing but the invoice is confirmed", () => {
     const invoices = [
-      invoice({ id: "1", status: "confirmed", confirmedAt: null, createdAt: "2026-09-17T08:00:00.000Z", total: 500 })
+      invoice({
+        id: "1",
+        status: "confirmed",
+        confirmedAt: null,
+        createdAt: "2026-09-17T08:00:00.000Z",
+        total: 500
+      })
     ];
     expect(revenueToday(invoices, today)).toBe(500);
   });
@@ -105,9 +130,33 @@ describe("recentOrders (audit A27)", () => {
   it("summarizes multiple line items as the first item plus a count", () => {
     const multiItem = invoice({
       items: [
-        { id: "i1", invoiceId: "invoice-1", productId: "p1", productName: "beans", quantity: 2, unitPrice: 100, lineTotal: 200 },
-        { id: "i2", invoiceId: "invoice-1", productId: "p2", productName: "maize", quantity: 1, unitPrice: 50, lineTotal: 50 },
-        { id: "i3", invoiceId: "invoice-1", productId: "p3", productName: "rice", quantity: 1, unitPrice: 60, lineTotal: 60 }
+        {
+          id: "i1",
+          invoiceId: "invoice-1",
+          productId: "p1",
+          productName: "beans",
+          quantity: 2,
+          unitPrice: 100,
+          lineTotal: 200
+        },
+        {
+          id: "i2",
+          invoiceId: "invoice-1",
+          productId: "p2",
+          productName: "maize",
+          quantity: 1,
+          unitPrice: 50,
+          lineTotal: 50
+        },
+        {
+          id: "i3",
+          invoiceId: "invoice-1",
+          productId: "p3",
+          productName: "rice",
+          quantity: 1,
+          unitPrice: 60,
+          lineTotal: 60
+        }
       ]
     });
     expect(recentOrders([multiItem], 1)[0]!.itemSummary).toBe("2 beans +2 more");
@@ -138,12 +187,49 @@ describe("catalogue stock status/label (audit A27)", () => {
 describe("catalogueForDashboard (audit A27)", () => {
   it("surfaces out-of-stock and low-stock products before well-stocked ones", () => {
     const products = [
-      { id: "1", businessId: "b1", name: "Well stocked", sku: null, unit: "kg", quantity: 50, buyingPrice: null, sellingPrice: 100, createdAt: "", updatedAt: "" },
-      { id: "2", businessId: "b1", name: "Out of stock", sku: null, unit: "kg", quantity: 0, buyingPrice: null, sellingPrice: 100, createdAt: "", updatedAt: "" },
-      { id: "3", businessId: "b1", name: "Low stock", sku: null, unit: "kg", quantity: 1, buyingPrice: null, sellingPrice: 100, createdAt: "", updatedAt: "" }
+      {
+        id: "1",
+        businessId: "b1",
+        name: "Well stocked",
+        sku: null,
+        unit: "kg",
+        quantity: 50,
+        buyingPrice: null,
+        sellingPrice: 100,
+        createdAt: "",
+        updatedAt: ""
+      },
+      {
+        id: "2",
+        businessId: "b1",
+        name: "Out of stock",
+        sku: null,
+        unit: "kg",
+        quantity: 0,
+        buyingPrice: null,
+        sellingPrice: 100,
+        createdAt: "",
+        updatedAt: ""
+      },
+      {
+        id: "3",
+        businessId: "b1",
+        name: "Low stock",
+        sku: null,
+        unit: "kg",
+        quantity: 1,
+        buyingPrice: null,
+        sellingPrice: 100,
+        createdAt: "",
+        updatedAt: ""
+      }
     ];
     const result = catalogueForDashboard(products, 3);
-    expect(result.map((product) => product.name)).toEqual(["Out of stock", "Low stock", "Well stocked"]);
+    expect(result.map((product) => product.name)).toEqual([
+      "Out of stock",
+      "Low stock",
+      "Well stocked"
+    ]);
   });
 
   it("respects the limit", () => {

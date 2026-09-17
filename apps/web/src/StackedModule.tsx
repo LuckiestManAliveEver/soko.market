@@ -1,7 +1,10 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { nextFocusTargetForTab, shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
+import {
+  nextFocusTargetForTab,
+  shouldCloseStackedModuleFromSwipe
+} from "./stacked-module-behavior";
 import {
   isFocusInsideAnotherStackedModule,
   isTopmostStackedModule,
@@ -12,8 +15,6 @@ import {
 
 const focusableSelector =
   'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-export { shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
 
 export interface StackedModuleProps {
   children: ReactNode;
@@ -84,7 +85,9 @@ export function StackedModule({
         return;
       }
       if (event.key !== "Tab" || panelRef.current === null) return;
-      const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(focusableSelector));
+      const focusable = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(focusableSelector)
+      );
       const target = nextFocusTargetForTab(
         focusable,
         document.activeElement,

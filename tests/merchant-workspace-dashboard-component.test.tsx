@@ -4,10 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MerchantWorkspaceDashboard } from "../apps/web/src/MerchantWorkspaceDashboard";
-import type {
-  InvoiceSummary,
-  ProductSummary
-} from "../apps/web/src/soko-application-shared";
+import type { InvoiceSummary, ProductSummary } from "../apps/web/src/soko-application-shared";
 
 // Regression coverage for audit A27 ("Merchant workspace",
 // docs/audits/soko-home-2026-09-17/audit.md): the reference is a single screen combining today's

@@ -91,6 +91,10 @@ const stockUrgency: Record<CatalogueStockStatus, number> = {
  * rather than an arbitrary or purely chronological slice. */
 export function catalogueForDashboard(products: ProductSummary[], limit = 3): ProductSummary[] {
   return [...products]
-    .sort((a, b) => stockUrgency[catalogueStockStatus(a.quantity)] - stockUrgency[catalogueStockStatus(b.quantity)])
+    .sort(
+      (a, b) =>
+        stockUrgency[catalogueStockStatus(a.quantity)] -
+        stockUrgency[catalogueStockStatus(b.quantity)]
+    )
     .slice(0, limit);
 }

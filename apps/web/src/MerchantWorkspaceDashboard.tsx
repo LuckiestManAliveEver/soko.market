@@ -44,12 +44,7 @@ export function MerchantWorkspaceDashboard({
 
   return (
     <div className="merchant-dashboard">
-      <button
-        type="button"
-        className="merchant-dashboard-back"
-        onClick={onBack}
-        aria-label="Back"
-      >
+      <button type="button" className="merchant-dashboard-back" onClick={onBack} aria-label="Back">
         <span aria-hidden="true">←</span>
       </button>
       <header className="merchant-dashboard-heading">
@@ -123,7 +118,9 @@ export function MerchantWorkspaceDashboard({
                   </span>
                 </div>
                 <strong>
-                  {product.sellingPrice === null ? "No price set" : formatMoney(product.sellingPrice)}
+                  {product.sellingPrice === null
+                    ? "No price set"
+                    : formatMoney(product.sellingPrice)}
                 </strong>
               </li>
             ))}

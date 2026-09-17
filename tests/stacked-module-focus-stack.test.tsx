@@ -13,7 +13,13 @@ import { StackedModule } from "../apps/web/src/StackedModule";
 // same keypress and whichever mounted last won - Tab from the first module's last control jumped
 // into the second module instead of wrapping, and Escape could close the wrong one. Only the most
 // recently opened module should react.
-function TwoModules({ onCloseFirst, onCloseSecond }: { onCloseFirst: () => void; onCloseSecond: () => void }) {
+function TwoModules({
+  onCloseFirst,
+  onCloseSecond
+}: {
+  onCloseFirst: () => void;
+  onCloseSecond: () => void;
+}) {
   return (
     <>
       <StackedModule moduleId="module-a" open title="Module A" onClose={onCloseFirst}>
@@ -110,9 +116,7 @@ describe("StackedModule with two instances open at once", () => {
       );
     });
 
-    const bClose = document.body.querySelector<HTMLButtonElement>(
-      '[aria-label="Close Module B"]'
-    )!;
+    const bClose = document.body.querySelector<HTMLButtonElement>('[aria-label="Close Module B"]')!;
     expect(document.activeElement).toBe(bClose);
   });
 
@@ -142,12 +146,7 @@ describe("StackedModule with two instances open at once", () => {
             <button type="button">A first</button>
             <button type="button">A last</button>
           </StackedModule>
-          <StackedModule
-            moduleId="module-b"
-            open={secondOpen}
-            title="Module B"
-            onClose={vi.fn()}
-          >
+          <StackedModule moduleId="module-b" open={secondOpen} title="Module B" onClose={vi.fn()}>
             <button type="button">B first</button>
           </StackedModule>
         </>
@@ -177,9 +176,7 @@ describe("StackedModule with two instances open at once", () => {
       );
     });
 
-    const aClose = document.body.querySelector<HTMLButtonElement>(
-      '[aria-label="Close Module A"]'
-    )!;
+    const aClose = document.body.querySelector<HTMLButtonElement>('[aria-label="Close Module A"]')!;
     expect(document.activeElement).toBe(aClose);
   });
 });

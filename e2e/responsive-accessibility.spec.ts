@@ -390,7 +390,9 @@ test("the Business workspace dashboard reflows on a small screen and stays keybo
   // clicking through.
   await backButton.focus();
   await page.keyboard.press("Enter");
-  await expect(dialog.getByRole("button", { name: "Business workspace", exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Business workspace", exact: true })
+  ).toBeVisible();
   await dialog.getByRole("button", { name: "Business workspace", exact: true }).click();
   await expect(dialog.getByText("No orders yet.")).toBeVisible();
 
