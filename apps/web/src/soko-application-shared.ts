@@ -213,6 +213,10 @@ export interface SessionResponse {
     id: string;
     expiresAt: string;
   };
+  /** Only present on /auth/continue and /auth/device/recover responses (services/api/src/cp2/
+   * domains/device-bootstrap) - the recovery credential id to persist via
+   * commitDeviceRecoveryCredential so a later visit recovers instead of bootstrapping again. */
+  deviceRecoveryCredentialId?: string;
 }
 
 export interface PasskeyRegistrationOptionsResponse {

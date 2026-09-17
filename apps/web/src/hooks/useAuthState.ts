@@ -28,7 +28,11 @@ import {
   applySessionContextPatchWithConflictRetry,
   shellViewForSurface
 } from "../cross-device-session-context";
-import { recoverDeviceAccount } from "../device-recovery";
+import {
+  commitDeviceRecoveryCredential,
+  prepareDeviceRecoveryCredential,
+  recoverDeviceAccount
+} from "../device-recovery";
 import { apiFetch, isDefinitiveAuthenticationError, isRetryableApiRequestError } from "../lib/api";
 import {
   createDefaultAgent,
@@ -339,16 +343,27 @@ export function useAuthState(deps: UseAuthStateDeps) {
    * phone/email/PIN form, so browsing and chat work immediately. Identity is requested later,
    * progressively, only when an action actually needs it (order/pay/save) - see
    * docs/authentication/progressive-identity.md.
+   *
+   * For a genuinely fresh visitor (no session cookie at all) the server requires a real device
+   * public key - services/api/src/cp2/domains/device-bootstrap/shared.ts's
+   * normalizeDeviceRecoveryPublicKey throws 400 device_recovery_key_required on an empty body.
+   * prepareDeviceRecoveryCredential/commitDeviceRecoveryCredential already existed for this but
+   * had no caller (audit A01, docs/audits/soko-home-2026-09-17/audit.md): this was the missing
+   * wiring, not a new capability.
    */
   async function continueToSoko(): Promise<SessionResponse | null> {
     const idempotencyKey = readDeviceContinueAttemptKey();
     try {
+      const { publicKeyJwk } = await prepareDeviceRecoveryCredential();
       const response = await apiFetch<SessionResponse>("/auth/continue", {
         method: "POST",
-        body: {},
+        body: { devicePublicKeyJwk: publicKeyJwk },
         idempotencyKey
       });
       localStorage.removeItem(deviceContinueAttemptStorageKey);
+      if (response.deviceRecoveryCredentialId !== undefined) {
+        await commitDeviceRecoveryCredential(response.deviceRecoveryCredentialId);
+      }
       logAuthenticationLifecycle("device_account_continued", response);
       acceptAuthenticatedSession(response);
       await loadMarketplaceIntroState();
