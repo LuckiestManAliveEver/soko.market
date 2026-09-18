@@ -22,6 +22,8 @@
     "build:package": "pnpm clean && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "dev": "vercel dev",
+    "dev:server": "tsx src/server.ts",
+    "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

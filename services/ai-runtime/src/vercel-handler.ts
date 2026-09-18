@@ -327,7 +327,7 @@ function parseArtifact(value: Record<string, unknown>): ResolvedModelArtifact {
   };
 }
 
-function validBearer(header: string | null, expected: string): boolean {
+export function validBearer(header: string | null, expected: string): boolean {
   if (header === null || !header.startsWith("Bearer ")) return false;
   const actual = Buffer.from(header.slice(7), "utf8");
   const target = Buffer.from(expected, "utf8");

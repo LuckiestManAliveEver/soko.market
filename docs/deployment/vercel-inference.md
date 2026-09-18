@@ -1,5 +1,7 @@
 # Deploy inference on Vercel
 
+For the container hosting migration, see [Move Vercel inference to DigitalOcean](digitalocean-inference.md).
+
 ## Topology
 
 `services/ai-runtime` is a standalone Vercel project, deployed independently from the Render API
