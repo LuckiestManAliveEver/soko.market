@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { AiModelSummary } from "@soko/shared-types";
 
 import { getJson, postJson } from "./api-helpers";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { TemplateVocabularyPanel } from "./TemplateVocabularyPanel";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
 // Model Templates recursive expertise flywheel (see docs/frontend/frontend.md) shipped a full
@@ -38,6 +39,9 @@ interface ModelTemplateVersionSummary {
   state: TemplateVersionState;
   baseModelId: string;
   createdAt: string;
+  manifest: {
+    vocabularySnapshot: { id: string };
+  };
 }
 
 interface EvaluationSuiteSummary {
@@ -93,6 +97,12 @@ interface TemplateDraft {
   prompt: string;
   instructions: string;
   changeSummary: string;
+  validationDistributionId: string;
+  validationDescription: string;
+  validationSuiteIds: string;
+  minimumCapabilityTier: string;
+  requiredModelCapabilities: string;
+  minimumContextWindow: string;
 }
 
 const emptyTemplateDraft: TemplateDraft = {
@@ -105,10 +115,14 @@ const emptyTemplateDraft: TemplateDraft = {
   capabilities: "",
   prompt: "",
   instructions: "",
-  changeSummary: "Initial version"
+  changeSummary: "Initial version",
+  validationDistributionId: "manual-validation",
+  validationDescription: "Manual validation distribution",
+  validationSuiteIds: "manual-validation",
+  minimumCapabilityTier: "declared-runtime",
+  requiredModelCapabilities: "chat",
+  minimumContextWindow: ""
 };
-const emptyVocabularySnapshotId =
-  "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945";
 
 interface CaseDraft {
   name: string;
@@ -159,6 +173,10 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
   const [templates, setTemplates] = useState<ModelTemplateSummary[] | null>(null);
   const [models, setModels] = useState<AiModelSummary[]>([]);
   const [message, setMessage] = useState("");
+  const [vocabularySnapshotId, setVocabularySnapshotId] = useState<string | null>(null);
+  const handleVocabularySnapshot = useCallback((snapshotId: string) => {
+    setVocabularySnapshotId(snapshotId);
+  }, []);
 
   const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
   const [templateDraft, setTemplateDraft] = useState<TemplateDraft>(emptyTemplateDraft);
@@ -248,6 +266,30 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
       );
       return;
     }
+    if (vocabularySnapshotId === null) {
+      setMessage("Wait for the approved vocabulary snapshot to load.");
+      return;
+    }
+    if (
+      templateDraft.validationDistributionId.trim().length === 0 ||
+      templateDraft.validationDescription.trim().length === 0 ||
+      splitList(templateDraft.validationSuiteIds).length === 0 ||
+      templateDraft.minimumCapabilityTier.trim().length === 0 ||
+      splitList(templateDraft.requiredModelCapabilities).length === 0
+    ) {
+      setMessage("Complete the validation distribution and minimum model capability fields.");
+      return;
+    }
+    const minimumContextWindow = templateDraft.minimumContextWindow.trim();
+    const parsedContextWindow =
+      minimumContextWindow === "" ? null : Number.parseInt(minimumContextWindow, 10);
+    if (
+      parsedContextWindow !== null &&
+      (!Number.isInteger(parsedContextWindow) || parsedContextWindow < 1)
+    ) {
+      setMessage("Minimum context window must be a positive whole number.");
+      return;
+    }
     const manifestId = generateManifestId();
     const nowIso = new Date().toISOString();
     const created = await postJson<{
@@ -269,17 +311,17 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
         },
         tasks,
         validatedTaskDistribution: {
-          id: `${domain}.manual`,
-          description: `Manual validation distribution for ${name}.`,
-          suiteIds: ["manual-validation"]
+          id: templateDraft.validationDistributionId.trim(),
+          description: templateDraft.validationDescription.trim(),
+          suiteIds: splitList(templateDraft.validationSuiteIds)
         },
         minimumModelCapability: {
-          tier: "declared-runtime",
-          requiredCapabilities: ["chat"],
-          minimumContextWindow: null
+          tier: templateDraft.minimumCapabilityTier.trim(),
+          requiredCapabilities: splitList(templateDraft.requiredModelCapabilities),
+          minimumContextWindow: parsedContextWindow
         },
         vocabularySnapshot: {
-          id: emptyVocabularySnapshotId,
+          id: vocabularySnapshotId,
           algorithm: "APPROVED_VOCABULARY_SHA256_V1"
         },
         capabilities: splitList(templateDraft.capabilities),
@@ -311,8 +353,8 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
         evaluation: {
           suiteIds: [],
           baselineMetrics: {},
-          templateVocabularySnapshot: emptyVocabularySnapshotId,
-          currentVocabularySnapshot: emptyVocabularySnapshotId
+          templateVocabularySnapshot: vocabularySnapshotId,
+          currentVocabularySnapshot: vocabularySnapshotId
         },
         lineage: {
           parentVersionId: null,
@@ -454,6 +496,11 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
         </p>
       ) : null}
 
+      <TemplateVocabularyPanel
+        businessId={businessId}
+        onSnapshotChange={handleVocabularySnapshot}
+      />
+
       <div className="row-actions">
         <button type="button" onClick={() => setIsCreatingTemplate((open) => !open)}>
           {isCreatingTemplate ? "Cancel" : "New template"}
@@ -523,6 +570,80 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
               placeholder="support.answer-question"
               onChange={(event) =>
                 setTemplateDraft((current) => ({ ...current, tasks: event.target.value }))
+              }
+            />
+          </label>
+          <label>
+            Validated distribution ID
+            <input
+              value={templateDraft.validationDistributionId}
+              onChange={(event) =>
+                setTemplateDraft((current) => ({
+                  ...current,
+                  validationDistributionId: event.target.value
+                }))
+              }
+            />
+          </label>
+          <label>
+            Validation description
+            <input
+              value={templateDraft.validationDescription}
+              onChange={(event) =>
+                setTemplateDraft((current) => ({
+                  ...current,
+                  validationDescription: event.target.value
+                }))
+              }
+            />
+          </label>
+          <label>
+            Validation suite IDs (comma separated)
+            <input
+              value={templateDraft.validationSuiteIds}
+              onChange={(event) =>
+                setTemplateDraft((current) => ({
+                  ...current,
+                  validationSuiteIds: event.target.value
+                }))
+              }
+            />
+          </label>
+          <label>
+            Minimum capability tier
+            <input
+              value={templateDraft.minimumCapabilityTier}
+              onChange={(event) =>
+                setTemplateDraft((current) => ({
+                  ...current,
+                  minimumCapabilityTier: event.target.value
+                }))
+              }
+            />
+          </label>
+          <label>
+            Required model capabilities (comma separated)
+            <input
+              value={templateDraft.requiredModelCapabilities}
+              onChange={(event) =>
+                setTemplateDraft((current) => ({
+                  ...current,
+                  requiredModelCapabilities: event.target.value
+                }))
+              }
+            />
+          </label>
+          <label>
+            Minimum context window (optional)
+            <input
+              type="number"
+              min="1"
+              value={templateDraft.minimumContextWindow}
+              onChange={(event) =>
+                setTemplateDraft((current) => ({
+                  ...current,
+                  minimumContextWindow: event.target.value
+                }))
               }
             />
           </label>
@@ -624,9 +745,22 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
             <p className="shell-note">No versions yet.</p>
           ) : (
             versions.map((version) => (
-              <p key={version.id}>
-                {version.version} · {version.state} · base {version.baseModelId}
-              </p>
+              <div className="template-version-row" key={version.id}>
+                <p>
+                  {version.version} · {version.state} · base {version.baseModelId}
+                </p>
+                <span
+                  className={
+                    vocabularySnapshotId === version.manifest.vocabularySnapshot.id
+                      ? "model-badge status-ready"
+                      : "model-badge status-warning"
+                  }
+                >
+                  {vocabularySnapshotId === version.manifest.vocabularySnapshot.id
+                    ? "Vocabulary current"
+                    : "Vocabulary drift"}
+                </span>
+              </div>
             ))
           )}
 

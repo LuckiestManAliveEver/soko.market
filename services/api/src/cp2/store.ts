@@ -6536,8 +6536,8 @@ export class Cp2Store {
     return this.vocabularyDomain.reviewVocabularyEntry(...args);
   }
 
-  currentVocabularySnapshotId(): string {
-    return this.vocabularyDomain.currentVocabularySnapshotId();
+  currentVocabularySnapshotId(businessId: string): string {
+    return this.vocabularyDomain.currentVocabularySnapshotId(businessId);
   }
 
   deleteNetworkSource(

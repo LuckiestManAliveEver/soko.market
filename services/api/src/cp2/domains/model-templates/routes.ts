@@ -48,7 +48,7 @@ export function registerModelTemplateRoutes(app: FastifyInstance, store: Cp2Stor
             sessionId: readSessionCookie(request.headers.cookie),
             businessId: request.params.businessId
           }),
-          currentVocabularySnapshot: store.currentVocabularySnapshotId()
+          currentVocabularySnapshot: store.currentVocabularySnapshotId(request.params.businessId)
         };
       } catch (error) {
         return sendCp2Error(reply, error);

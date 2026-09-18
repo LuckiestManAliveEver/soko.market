@@ -25,7 +25,10 @@ describe("template vocabulary canonicalization", () => {
       observedCanonicalTerm: "maize flour"
     });
 
-    expect(vocabulary.resolveVocabulary("unga")).toEqual({ resolved: false, raw: "unga" });
+    expect(vocabulary.resolveVocabulary("shop-1", "unga")).toEqual({
+      resolved: false,
+      raw: "unga"
+    });
 
     vocabulary.reviewVocabularyEntry({
       sessionId: "admin-session",
@@ -35,7 +38,7 @@ describe("template vocabulary canonicalization", () => {
       canonicalTerm: "maize flour"
     });
 
-    expect(vocabulary.resolveVocabulary("unga")).toEqual({
+    expect(vocabulary.resolveVocabulary("shop-1", "unga")).toEqual({
       resolved: true,
       raw: "unga",
       canonicalTerm: "maize flour"
@@ -64,11 +67,11 @@ describe("template vocabulary canonicalization", () => {
       action: "REJECT"
     });
 
-    expect(vocabulary.resolveVocabulary(candidate.surfaceForm)).toEqual({
+    expect(vocabulary.resolveVocabulary("shop-1", candidate.surfaceForm)).toEqual({
       resolved: false,
       raw: candidate.surfaceForm
     });
-    expect(vocabulary.resolveVocabulary(rejected.surfaceForm)).toEqual({
+    expect(vocabulary.resolveVocabulary("shop-1", rejected.surfaceForm)).toEqual({
       resolved: false,
       raw: rejected.surfaceForm
     });
@@ -90,7 +93,10 @@ describe("template vocabulary canonicalization", () => {
       canonicalTerm: "maize flour"
     });
 
-    expect(vocabulary.resolveVocabulary("ungaa")).toEqual({ resolved: false, raw: "ungaa" });
+    expect(vocabulary.resolveVocabulary("shop-1", "ungaa")).toEqual({
+      resolved: false,
+      raw: "ungaa"
+    });
   });
 
   it("logs repeated unknown terms as occurrence evidence without duplicate entries", () => {
@@ -133,17 +139,17 @@ describe("template vocabulary canonicalization", () => {
       canonicalTerm: "maize flour"
     });
 
-    expect(vocabulary.resolveVocabulary("unga").resolved).toBe(true);
+    expect(vocabulary.resolveVocabulary("shop-1", "unga").resolved).toBe(true);
   });
 
   it("distinguishes cache load failure from an empty approved dictionary", () => {
     const empty = domain();
-    expect(empty.resolveVocabulary("unga")).toEqual({ resolved: false, raw: "unga" });
+    expect(empty.resolveVocabulary("shop-1", "unga")).toEqual({ resolved: false, raw: "unga" });
 
     const failed = domain();
     failed.markCacheLoadFailed(new Error("database unavailable"));
 
-    expect(() => failed.resolveVocabulary("unga")).toThrow(Cp2Error);
+    expect(() => failed.resolveVocabulary("shop-1", "unga")).toThrow(Cp2Error);
   });
 
   it("computes stable snapshot identity from approved resolver mappings only", () => {
@@ -161,5 +167,30 @@ describe("template vocabulary canonicalization", () => {
 
     expect(first).toBe(second);
     expect(first).not.toBe(changed);
+  });
+
+  it("isolates approved resolution and snapshot identity by business", () => {
+    const vocabulary = domain();
+    const entry = vocabulary.recordUnknownTerm({
+      sessionId: "admin-session",
+      businessId: "shop-1",
+      surfaceForm: "unga"
+    });
+    vocabulary.reviewVocabularyEntry({
+      sessionId: "admin-session",
+      businessId: "shop-1",
+      vocabularyEntryId: entry.id,
+      action: "APPROVE",
+      canonicalTerm: "flour"
+    });
+
+    expect(vocabulary.resolveVocabulary("shop-1", "unga")).toMatchObject({ resolved: true });
+    expect(vocabulary.resolveVocabulary("shop-2", "unga")).toEqual({
+      resolved: false,
+      raw: "unga"
+    });
+    expect(vocabulary.currentVocabularySnapshotId("shop-1")).not.toBe(
+      vocabulary.currentVocabularySnapshotId("shop-2")
+    );
   });
 });

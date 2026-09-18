@@ -58,7 +58,7 @@ export interface VocabularyDomainDeps {
 export class VocabularyDomain {
   private readonly entries = new Map<string, VocabularyEntryRecord>();
   private readonly occurrences = new Map<string, VocabularyOccurrenceRecord>();
-  private approvedCache = new Map<string, string>();
+  private approvedCache = new Map<string, Map<string, string>>();
   private loadState: { loaded: true } | { loaded: false; error: Error | null } = {
     loaded: false,
     error: null
@@ -105,7 +105,7 @@ export class VocabularyDomain {
     this.loadState = { loaded: false, error };
   }
 
-  resolveVocabulary(term: string): VocabResolution {
+  resolveVocabulary(businessId: string, term: string): VocabResolution {
     if (!this.loadState.loaded) {
       throw new Cp2Error(
         503,
@@ -113,19 +113,22 @@ export class VocabularyDomain {
         this.loadState.error?.message ?? "Approved vocabulary cache has not been initialized."
       );
     }
-    const canonicalTerm = this.approvedCache.get(term);
+    const canonicalTerm = this.approvedCache.get(businessId)?.get(term);
     return canonicalTerm === undefined
       ? { resolved: false, raw: term }
       : { resolved: true, raw: term, canonicalTerm };
   }
 
-  mapVocabularyText(text: string): {
+  mapVocabularyText(
+    businessId: string,
+    text: string
+  ): {
     mappedText: string;
     resolutions: VocabResolution[];
   } {
     const resolutions: VocabResolution[] = [];
     const mappedText = text.replace(/\S+/gu, (token) => {
-      const resolution = this.resolveVocabulary(token);
+      const resolution = this.resolveVocabulary(businessId, token);
       resolutions.push(resolution);
       return resolution.resolved ? resolution.canonicalTerm : `[UNK:${resolution.raw}]`;
     });
@@ -212,19 +215,22 @@ export class VocabularyDomain {
       const canonicalTerm = requireSurface(input.canonicalTerm ?? entry.canonicalTerm ?? "");
       entry.status = "APPROVED";
       entry.canonicalTerm = canonicalTerm;
-      this.approvedCache.set(entry.surfaceForm, canonicalTerm);
+      const businessCache = this.approvedCache.get(entry.businessId) ?? new Map<string, string>();
+      businessCache.set(entry.surfaceForm, canonicalTerm);
+      this.approvedCache.set(entry.businessId, businessCache);
     } else {
       entry.status = "REJECTED";
-      this.approvedCache.delete(entry.surfaceForm);
+      this.approvedCache.get(entry.businessId)?.delete(entry.surfaceForm);
     }
     entry.reviewedAt = now.toISOString();
     entry.reviewedBy = actor.user.id;
     return cloneEntry(entry);
   }
 
-  currentVocabularySnapshotId(): string {
+  currentVocabularySnapshotId(businessId: string): string {
     return computeVocabularySnapshotId(
       [...this.entries.values()]
+        .filter((entry) => entry.businessId === businessId)
         .filter(isApprovedMapping)
         .map((entry) => ({ surfaceForm: entry.surfaceForm, canonicalTerm: entry.canonicalTerm }))
     );
@@ -255,11 +261,12 @@ export class VocabularyDomain {
   }
 
   private rebuildApprovedCache(): void {
-    this.approvedCache = new Map(
-      [...this.entries.values()]
-        .filter((entry) => entry.status === "APPROVED" && entry.canonicalTerm !== null)
-        .map((entry) => [entry.surfaceForm, entry.canonicalTerm as string])
-    );
+    this.approvedCache.clear();
+    for (const entry of [...this.entries.values()].filter(isApprovedMapping)) {
+      const businessCache = this.approvedCache.get(entry.businessId) ?? new Map<string, string>();
+      businessCache.set(entry.surfaceForm, entry.canonicalTerm);
+      this.approvedCache.set(entry.businessId, businessCache);
+    }
   }
 
   private requireRead(sessionId: string | null, businessId: string, now: Date): AuthorizedActor {
