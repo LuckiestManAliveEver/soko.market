@@ -57,6 +57,7 @@ import { registerNetworkRoutes } from "./domains/network/routes.js";
 import { registerCommercialRecordsRoutes } from "./domains/commercial-records/routes.js";
 import { registerSuppliersRoutes } from "./domains/suppliers/routes.js";
 import { registerDocumentImportsRoutes } from "./domains/document-imports/routes.js";
+import { registerCatalogueSharingRoutes } from "./domains/catalogue-sharing/routes.js";
 import { registerCommerceRoutes } from "./domains/commerce/routes.js";
 import { registerOAuthRoutes } from "./domains/oauth/routes.js";
 import { registerExternalConnectionsRoutes } from "./domains/external-connections/routes.js";
@@ -224,6 +225,7 @@ interface PublicStorefrontSearchQuery {
 
 interface ShopPresenceBody {
   status?: string;
+  catalogueShareable?: boolean;
 }
 
 interface NetworkInviteContactBody {
@@ -1789,10 +1791,15 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/businesses/:businessId/presence",
     async (request: FastifyRequest<{ Params: BusinessParams; Body: ShopPresenceBody }>, reply) => {
       try {
+        const catalogueShareable =
+          request.body.catalogueShareable === undefined
+            ? undefined
+            : parseBoolean(request.body.catalogueShareable, "catalogueShareable");
         return store.setShopPresence({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
-          status: parseShopPresenceStatus(request.body.status)
+          status: parseShopPresenceStatus(request.body.status),
+          ...(catalogueShareable === undefined ? {} : { catalogueShareable })
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1841,6 +1848,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   registerSalesRoutes(app, store);
+  registerCatalogueSharingRoutes(app, store);
   registerOfflineRuntimeRoutes(app, store);
 
   registerSuppliersRoutes(app, store, binaryUploadPipeline, ocrProcessor);

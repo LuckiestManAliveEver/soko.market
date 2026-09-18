@@ -1500,6 +1500,21 @@ button:disabled {
   resize: vertical;
 }
 
+.toggle-field,
+.catalogue-browse-item {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+}
+
+.toggle-field input[type="checkbox"],
+.catalogue-browse-item input[type="checkbox"] {
+  height: 18px;
+  min-height: 0;
+  width: 18px;
+}
+
 .template-vocabulary-panel {
   border-block: 1px solid #344139;
   display: grid;

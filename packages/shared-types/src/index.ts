@@ -2398,11 +2398,35 @@ export type ShopPresenceStatus = "online" | "private" | "offline";
 export interface ShopPresenceSummary {
   businessId: string;
   status: ShopPresenceStatus;
+  /** Owner opt-in: when true, other shops can browse and duplicate this shop's catalogue. */
+  catalogueShareable: boolean;
   updatedBy: string;
   updatedAt: string;
 }
 
 export type PublicShopPresenceSummary = Pick<ShopPresenceSummary, "status" | "updatedAt">;
+
+/** A shop whose owner opted its catalogue in to being browsed and duplicated by other shops. */
+export interface ShareableCatalogueSummary {
+  businessId: string;
+  sokoId: string;
+  businessName: string;
+  productCount: number;
+  updatedAt: string;
+}
+
+/**
+ * A product's shareable projection for catalogue duplication - deliberately as narrow as
+ * PublicStorefrontProductSummary (no sku, buyingPrice, aliases, or fieldValues) since it is
+ * another shop's private inventory data, not this shop's own.
+ */
+export interface ShareableCatalogueProductSummary {
+  id: string;
+  name: string;
+  unit: string;
+  sellingPrice: number | null;
+  image: string | null;
+}
 
 export type NetworkInviteChannel = "phone" | "email";
 export type NetworkInviteStatus = "queued" | "sent" | "failed";

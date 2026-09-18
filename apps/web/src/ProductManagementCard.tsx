@@ -5,6 +5,8 @@ import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { deleteJson, getJson, patchJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import type { StockAdjustmentResponse } from "./soko-application-shared";
+import CatalogueBrowsePanel from "./CatalogueBrowsePanel";
+import CatalogueShareSettingsCard from "./CatalogueShareSettingsCard";
 
 interface ProductDraft {
   name: string;
@@ -54,6 +56,7 @@ export default function ProductManagementCard(props: { businessId: string; produ
   const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [addDraft, setAddDraft] = useState<ProductDraft>(emptyDraft);
+  const [isBrowsingCatalogues, setIsBrowsingCatalogues] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,10 +183,41 @@ export default function ProductManagementCard(props: { businessId: string; produ
       </div>
       {message.length > 0 ? <p className="shell-note">{message}</p> : null}
       <div className="row-actions">
-        <button type="button" onClick={() => setIsAdding((open) => !open)}>
+        <button
+          type="button"
+          onClick={() => {
+            setIsAdding((open) => !open);
+            setIsBrowsingCatalogues(false);
+          }}
+        >
           {isAdding ? "Cancel" : "Add product"}
         </button>
+        <button
+          className="secondary"
+          type="button"
+          onClick={() => {
+            setIsBrowsingCatalogues((open) => !open);
+            setIsAdding(false);
+          }}
+        >
+          {isBrowsingCatalogues ? "Cancel" : "Browse shared catalogues"}
+        </button>
       </div>
+      {isBrowsingCatalogues ? (
+        <CatalogueBrowsePanel
+          businessId={props.businessId}
+          onDuplicated={(duplicated) => {
+            setProducts((current) => [...duplicated, ...(current ?? [])]);
+            setDrafts((current) => ({
+              ...current,
+              ...Object.fromEntries(
+                duplicated.map((product) => [product.id, draftFromProduct(product)])
+              )
+            }));
+          }}
+          onClose={() => setIsBrowsingCatalogues(false)}
+        />
+      ) : null}
       {isAdding ? (
         <div className="product-management-item">
           <label>
@@ -422,6 +456,7 @@ export default function ProductManagementCard(props: { businessId: string; produ
           </div>
         );
       })}
+      <CatalogueShareSettingsCard businessId={props.businessId} />
     </section>
   );
 }

@@ -113,6 +113,7 @@ import {
 } from "./account-ai-asset-store.js";
 import { SalesDomain } from "./domains/sales/store.js";
 import { type ProductMediaRecord } from "./domains/sales/shared.js";
+import { CatalogueSharingDomain } from "./domains/catalogue-sharing/store.js";
 import { McpTokensDomain } from "./domains/mcp-tokens/store.js";
 import { type McpAccessTokenRecord } from "./domains/mcp-tokens/shared.js";
 import { ExternalConnectionsDomain } from "./domains/external-connections/store.js";
@@ -979,6 +980,19 @@ export class Cp2Store {
       recordPurchasePriceMutation: (input) =>
         this.commercialRecordsDomain.recordProductPriceMutation(input)
     });
+    this.catalogueSharing = new CatalogueSharingDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      businesses: this.businesses,
+      quarantinedBusinessIds: this.quarantinedBusinessIds,
+      shopPresenceForBusiness: (businessId) => this.shopPresenceForBusiness(businessId),
+      productsForBusiness: (businessId) => this.salesDomain.productsForBusiness(businessId),
+      requireProduct: (businessId, productId) =>
+        this.salesDomain.requireProduct(businessId, productId),
+      publicProductImage: (product) => this.salesDomain.publicProductImage(product),
+      createProduct: (input) => this.salesDomain.createProduct(input)
+    });
     this.mcpTokensDomain = new McpTokensDomain({
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
       recordAuditEvent: (input) => this.recordAuditEvent(input),
@@ -1510,6 +1524,9 @@ export class Cp2Store {
   // (services/api/src/cp2/domains/sales/store.ts) - accessed via its map getters for the generic
   // snapshot/restore/Postgres-persistence/account-deletion sweeps below.
   private readonly salesDomain: SalesDomain;
+  // Reads businesses/shopPresences/products live off the maps above and delegates every product
+  // creation back to salesDomain.createProduct - it persists nothing of its own.
+  private readonly catalogueSharing: CatalogueSharingDomain;
   // productCaptureJobs/statusBroadcasts/buyOrders/statusOrders/unifiedCheckouts now live inside
   // `commerce` (services/api/src/cp2/domains/commerce/store.ts) - accessed via its map getters for
   // the generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
@@ -4077,6 +4094,7 @@ export class Cp2Store {
     sessionId: string | null;
     businessId: string;
     status: ShopPresenceStatus;
+    catalogueShareable?: boolean;
     now?: Date;
   }): ShopPresenceSummary {
     const now = input.now ?? new Date();
@@ -4087,9 +4105,12 @@ export class Cp2Store {
       now
     );
     this.requireOwnerMembership(input.businessId, session.user.id);
+    const catalogueShareable =
+      input.catalogueShareable ?? this.shopPresenceForBusiness(input.businessId).catalogueShareable;
     const presence: ShopPresenceSummary = {
       businessId: input.businessId,
       status: input.status,
+      catalogueShareable,
       updatedBy: session.user.id,
       updatedAt: now.toISOString()
     };
@@ -4100,9 +4121,27 @@ export class Cp2Store {
       aggregateId: input.businessId,
       actorId: session.user.id,
       occurredAt: now.toISOString(),
-      payload: { status: input.status }
+      payload: { status: input.status, catalogueShareable }
     });
     return presence;
+  }
+
+  listShareableCatalogues(
+    ...args: Parameters<CatalogueSharingDomain["listShareableCatalogues"]>
+  ): ReturnType<CatalogueSharingDomain["listShareableCatalogues"]> {
+    return this.catalogueSharing.listShareableCatalogues(...args);
+  }
+
+  listShareableCatalogueProducts(
+    ...args: Parameters<CatalogueSharingDomain["listCatalogueProducts"]>
+  ): ReturnType<CatalogueSharingDomain["listCatalogueProducts"]> {
+    return this.catalogueSharing.listCatalogueProducts(...args);
+  }
+
+  duplicateCatalogueProducts(
+    ...args: Parameters<CatalogueSharingDomain["duplicateProducts"]>
+  ): ReturnType<CatalogueSharingDomain["duplicateProducts"]> {
+    return this.catalogueSharing.duplicateProducts(...args);
   }
 
   createNetworkInvites(input: {
@@ -7078,7 +7117,10 @@ export class Cp2Store {
     }
 
     for (const presence of snapshot.shopPresences ?? []) {
-      this.shopPresences.set(presence.businessId, presence);
+      this.shopPresences.set(presence.businessId, {
+        ...presence,
+        catalogueShareable: presence.catalogueShareable ?? false
+      });
     }
 
     for (const invite of snapshot.networkInvites ?? []) {
@@ -8990,6 +9032,7 @@ export class Cp2Store {
       this.shopPresences.get(businessId) ?? {
         businessId,
         status: "online",
+        catalogueShareable: false,
         updatedBy: "system",
         updatedAt: new Date(0).toISOString()
       }

@@ -156,6 +156,7 @@ export function ChatSurface({
   onProductRemove,
   onProductReset,
   onProductSave,
+  onProductsDuplicated,
   onNetworkDisconnectSource,
   onNetworkPhoneContactsSync,
   onNetworkInviteContacts,
@@ -982,6 +983,7 @@ export function ChatSurface({
             />
           ) : (
             <CatalogueNestedCard
+              businessId={businessId}
               form={productForm}
               fields={productFields}
               products={products}
@@ -992,6 +994,7 @@ export function ChatSurface({
               onChangeForm={onProductFormChange}
               onDeleteProduct={onProductRemove}
               onEditProduct={onProductEdit}
+              onProductsDuplicated={onProductsDuplicated}
               onOpenAdd={() => {
                 onProductReset();
                 setWorkspaceCardView("addProduct");

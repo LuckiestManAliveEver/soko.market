@@ -119,6 +119,7 @@ export interface ChatSurfaceProps {
   onProductRemove: (productId: string) => void;
   onProductReset: () => void;
   onProductSave: () => Promise<boolean>;
+  onProductsDuplicated: () => void;
   onNetworkDisconnectSource: (sourceId: string) => void;
   onNetworkPhoneContactsSync: (
     selectedContacts: ContactPickerContact[]

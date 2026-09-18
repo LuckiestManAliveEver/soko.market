@@ -1,4 +1,4 @@
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 
 import {
   ProductCapturePanel,
@@ -7,6 +7,8 @@ import {
 } from "./soko-application-shared";
 
 import { formatOptionalMoney } from "./formatters";
+import CatalogueBrowsePanel from "./CatalogueBrowsePanel";
+import CatalogueShareSettingsCard from "./CatalogueShareSettingsCard";
 
 export interface ProductSurfaceProps {
   businessId: string;
@@ -29,6 +31,7 @@ export interface ProductSurfaceProps {
 }
 
 export function ProductSurface(props: ProductSurfaceProps) {
+  const [isBrowsingCatalogues, setIsBrowsingCatalogues] = useState(false);
   return (
     <div className="records-surface product-business-card-surface">
       <Suspense fallback={<div className="inline-loading-card">Opening quick capture…</div>}>
@@ -38,6 +41,22 @@ export function ProductSurface(props: ProductSurfaceProps) {
           onPublished={props.onPublished}
         />
       </Suspense>
+      <div className="row-actions">
+        <button
+          className="secondary"
+          type="button"
+          onClick={() => setIsBrowsingCatalogues((open) => !open)}
+        >
+          {isBrowsingCatalogues ? "Cancel" : "Browse shared catalogues"}
+        </button>
+      </div>
+      {isBrowsingCatalogues ? (
+        <CatalogueBrowsePanel
+          businessId={props.businessId}
+          onDuplicated={() => void props.onPublished()}
+          onClose={() => setIsBrowsingCatalogues(false)}
+        />
+      ) : null}
       <section className="record-form business-card-editor" aria-label="Product form">
         <div className="business-card-editor-header">
           <div className="section-heading">
@@ -210,6 +229,8 @@ export function ProductSurface(props: ProductSurfaceProps) {
           Record movement
         </button>
       </section>
+
+      <CatalogueShareSettingsCard businessId={props.businessId} />
     </div>
   );
 }

@@ -2045,6 +2045,9 @@ export function OwnerApp() {
                 }
                 onProductReset={() => setProductForm(emptyProductForm)}
                 onProductSave={async () => (await runAction("product-save", saveProduct)) ?? false}
+                onProductsDuplicated={() => {
+                  if (business !== null) void loadProducts(business.id);
+                }}
                 onNetworkDisconnectSource={(sourceId) =>
                   void runAction("network-disconnect", () => disconnectNetworkSource(sourceId))
                 }

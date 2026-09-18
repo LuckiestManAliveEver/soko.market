@@ -11,8 +11,11 @@ import {
 import { formatOptionalMoney } from "./formatters";
 
 import { createProductFieldDraft } from "./owner-app-bootstrap";
+import CatalogueBrowsePanel from "./CatalogueBrowsePanel";
+import CatalogueShareSettingsCard from "./CatalogueShareSettingsCard";
 
 export function CatalogueNestedCard({
+  businessId,
   fields,
   form,
   products,
@@ -27,8 +30,10 @@ export function CatalogueNestedCard({
   onOpenFields,
   onOpenProduct,
   onSaveFields,
-  onSaveProduct
+  onSaveProduct,
+  onProductsDuplicated
 }: {
+  businessId: string | null;
   fields: ProductFieldDefinition[];
   form: ProductFormState;
   products: ProductSummary[];
@@ -44,7 +49,9 @@ export function CatalogueNestedCard({
   onOpenProduct: (product: ProductSummary) => void;
   onSaveFields: (fields: ProductFieldDraft[]) => void;
   onSaveProduct: () => Promise<void>;
+  onProductsDuplicated: () => void;
 }) {
+  const [isBrowsingCatalogues, setIsBrowsingCatalogues] = useState(false);
   const [managedFields, setManagedFields] = useState<ProductFieldDraft[]>(() =>
     fields.map((field) => ({ ...field, value: "" }))
   );
@@ -143,6 +150,27 @@ export function CatalogueNestedCard({
               </button>
             ))}
           </div>
+        )}
+        {businessId === null ? null : (
+          <>
+            <div className="row-actions">
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => setIsBrowsingCatalogues((open) => !open)}
+              >
+                {isBrowsingCatalogues ? "Cancel" : "Browse shared catalogues"}
+              </button>
+            </div>
+            {isBrowsingCatalogues ? (
+              <CatalogueBrowsePanel
+                businessId={businessId}
+                onDuplicated={onProductsDuplicated}
+                onClose={() => setIsBrowsingCatalogues(false)}
+              />
+            ) : null}
+            <CatalogueShareSettingsCard businessId={businessId} />
+          </>
         )}
       </div>
     );
