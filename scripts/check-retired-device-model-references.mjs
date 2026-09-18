@@ -29,11 +29,13 @@ export const retiredDeviceModelReferences = [
   "getOrCreateDeviceModelScopeId"
 ];
 
-export const retiredBrowserInferencePackages = [
-  "@huggingface/transformers",
-  "@mlc-ai/web-llm",
-  "@wllama/wllama"
-];
+export const retiredBrowserInferencePackages = ["@huggingface/transformers", "@wllama/wllama"];
+
+export const permittedOfflineInferencePackage = "@mlc-ai/web-llm";
+export const permittedWebLlmFiles = new Set([
+  "apps/web/src/webllm-runtime.ts",
+  "apps/web/src/webllm-model-manifest.ts"
+]);
 
 export const productionScanRoots = [
   "apps/web/src",
@@ -65,7 +67,9 @@ export function checkRetiredDeviceModelReferences({
   rootDirectory = process.cwd(),
   scanRoots = productionScanRoots,
   forbiddenReferences = retiredDeviceModelReferences,
-  forbiddenPackages = retiredBrowserInferencePackages
+  forbiddenPackages = retiredBrowserInferencePackages,
+  offlineInferencePackage = permittedOfflineInferencePackage,
+  permittedOfflineInferenceFiles = permittedWebLlmFiles
 } = {}) {
   const violations = [];
 
@@ -82,6 +86,16 @@ export function checkRetiredDeviceModelReferences({
         if (source.includes(reference)) {
           violations.push({ file: relativePath, reference });
         }
+      }
+      if (
+        relativePath.startsWith("apps/web/src/") &&
+        source.includes(offlineInferencePackage) &&
+        !permittedOfflineInferenceFiles.has(relativePath)
+      ) {
+        violations.push({
+          file: relativePath,
+          reference: `${offlineInferencePackage} outside explicit offline runtime`
+        });
       }
     }
   }
