@@ -36,7 +36,9 @@ export default function CatalogueBrowsePanel({
   useEffect(() => {
     let cancelled = false;
     const query =
-      appliedSearch.trim().length === 0 ? "" : `?search=${encodeURIComponent(appliedSearch.trim())}`;
+      appliedSearch.trim().length === 0
+        ? ""
+        : `?search=${encodeURIComponent(appliedSearch.trim())}`;
     void getJson<ShareableCatalogueSummary[]>(
       `/businesses/${businessId}/catalogue-marketplace/shops${query}`
     )
@@ -115,9 +117,7 @@ export default function CatalogueBrowsePanel({
           {shops === null ? (
             <p className="shell-note">Loading shared catalogues…</p>
           ) : shops.length === 0 ? (
-            <p className="shell-note">
-              No shops have shared their catalogue for duplication yet.
-            </p>
+            <p className="shell-note">No shops have shared their catalogue for duplication yet.</p>
           ) : (
             <div className="marketplace-directory" aria-label="Shops sharing their catalogue">
               {shops.map((shop) => (
@@ -185,7 +185,9 @@ export default function CatalogueBrowsePanel({
               <div className="row-actions">
                 <button
                   type="button"
-                  disabled={selectedProductIds.size === 0 || isPending("catalogue-browse-duplicate")}
+                  disabled={
+                    selectedProductIds.size === 0 || isPending("catalogue-browse-duplicate")
+                  }
                   onClick={() =>
                     void runAction("catalogue-browse-duplicate", async () => {
                       try {

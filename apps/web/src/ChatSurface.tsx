@@ -1001,9 +1001,7 @@ export function ChatSurface({
               }}
               onOpenDelete={() => setWorkspaceCardView("deleteProduct")}
               onOpenEdit={() => {
-                if (products[0] !== undefined) {
-                  onProductEdit(products[0]);
-                }
+                if (products[0] !== undefined) onProductEdit(products[0]);
                 setWorkspaceCardView("editProduct");
               }}
               onOpenFields={() => setWorkspaceCardView("manageFields")}

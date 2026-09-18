@@ -136,7 +136,10 @@ export class CatalogueSharingDomain {
     );
 
     const uniqueProductIds = [...new Set(input.productIds)];
-    if (uniqueProductIds.length === 0 || uniqueProductIds.length > maximumDuplicateProductsPerRequest) {
+    if (
+      uniqueProductIds.length === 0 ||
+      uniqueProductIds.length > maximumDuplicateProductsPerRequest
+    ) {
       throw new Cp2Error(
         400,
         "duplicate_product_ids_invalid",
@@ -204,11 +207,7 @@ export class CatalogueSharingDomain {
     viewerBusinessId: string
   ): BusinessSummary {
     if (sourceBusinessId === viewerBusinessId) {
-      throw new Cp2Error(
-        400,
-        "catalogue_self_duplicate",
-        "You already own this catalogue."
-      );
+      throw new Cp2Error(400, "catalogue_self_duplicate", "You already own this catalogue.");
     }
 
     const business = this.deps.businesses.get(sourceBusinessId);

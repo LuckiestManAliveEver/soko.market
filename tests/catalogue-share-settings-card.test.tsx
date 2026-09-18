@@ -13,9 +13,8 @@ vi.mock("../apps/web/src/api-helpers", () => ({
   patchJson: (...args: unknown[]) => patchJson(...args)
 }));
 
-const { default: CatalogueShareSettingsCard } = await import(
-  "../apps/web/src/CatalogueShareSettingsCard"
-);
+const { default: CatalogueShareSettingsCard } =
+  await import("../apps/web/src/CatalogueShareSettingsCard");
 
 const presence: ShopPresenceSummary = {
   businessId: "shop-a",

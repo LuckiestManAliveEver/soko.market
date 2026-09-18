@@ -261,7 +261,12 @@ describe("catalogue sharing", () => {
     // Simulate a Postgres row persisted before catalogueShareable existed: a status toggle
     // (setShopPresence) always wrote the field going forward, so strip it back off to reproduce
     // the pre-migration shape the jsonb column actually held.
-    await patchJson(app, `/businesses/${owner.business.id}/presence`, { status: "online" }, owner.sessionCookie);
+    await patchJson(
+      app,
+      `/businesses/${owner.business.id}/presence`,
+      { status: "online" },
+      owner.sessionCookie
+    );
     const legacySnapshot = store.snapshot();
     const legacyPresence = legacySnapshot.shopPresences?.find(
       (presence) => presence.businessId === owner.business.id

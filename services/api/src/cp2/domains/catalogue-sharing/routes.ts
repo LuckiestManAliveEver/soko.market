@@ -25,7 +25,10 @@ export function registerCatalogueSharingRoutes(app: FastifyInstance, store: Cp2S
   app.get(
     "/businesses/:businessId/catalogue-marketplace/shops",
     async (
-      request: FastifyRequest<{ Params: BusinessParams; Querystring: CatalogueMarketplaceSearchQuery }>,
+      request: FastifyRequest<{
+        Params: BusinessParams;
+        Querystring: CatalogueMarketplaceSearchQuery;
+      }>,
       reply
     ) => {
       try {
