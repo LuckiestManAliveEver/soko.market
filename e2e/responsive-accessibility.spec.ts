@@ -725,13 +725,65 @@ for (const viewport of viewportMatrix) {
   });
 }
 
+for (const viewport of viewportMatrix) {
+  test(`${viewport.name}: the seller chat home reflows without clipped controls`, async ({
+    page
+  }) => {
+    // The primary screen ("conversation is the app," docs/frontend/frontend.md) only had spot
+    // checks at 2-3 widths before this. Every other surface in this file's viewportMatrix sweep is
+    // a secondary dialog (model library); this closes that gap for the screen sellers actually land
+    // on first.
+    await page.setViewportSize(viewport);
+    await page.goto("/sell");
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+    await expectNoViewportOverflow(page);
+    await expectInteractiveControlsInsideViewport(page, page.locator("body"));
+  });
+}
+
+for (const viewport of viewportMatrix) {
+  test(`${viewport.name}: the customer marketplace home reflows without clipped controls`, async ({
+    page
+  }) => {
+    // "/" is the other primary entry point - the marketplace/customer-facing shell, structurally
+    // different chrome from "/sell" (no Buy/Messages pills; navigation lives behind the hamburger
+    // menu, see "the status notice never covers the customer home's header buttons" above). Same
+    // gap as the seller sweep above: only ever spot-checked at one width before this.
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: "Open menu", exact: true })).toBeVisible({
+      timeout: 15_000
+    });
+    await expectNoViewportOverflow(page);
+    // .home-suggestion-chips (home-reference.css) is a deliberate single-row, swipeable chip strip
+    // - flex-wrap: nowrap + overflow-x: auto + a hidden scrollbar, the same pattern as a native
+    // mobile "stories" row - so its own buttons legitimately sit outside the initial viewport at
+    // narrow widths and are excluded from the page-wide clipping sweep below. Verified separately:
+    // scrollable by touch/mouse (its own scrollWidth exceeds clientWidth) and reachable by keyboard
+    // (a focused off-screen chip scrolls into view, standard browser behavior for overflow: auto).
+    await expectInteractiveControlsInsideViewport(page, page.locator("body"), [
+      ".home-suggestion-chips button"
+    ]);
+    const chipStrip = page.locator(".home-suggestion-chips");
+    if ((await chipStrip.count()) > 0) {
+      const overflowsRow = await chipStrip.evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+      if (overflowsRow) {
+        const lastChip = chipStrip.getByRole("button").last();
+        await lastChip.focus();
+        await expect(lastChip).toBeInViewport();
+      }
+    }
+  });
+}
+
 test("activating a backend model preserves the previous model when activation fails", async ({
   page
 }) => {
   // Scoped to this test only, rather than added to the shared `modelCatalog` fixture: a second
-  // backend-configured entry in the shared catalog surfaces an unrelated, pre-existing clipping
-  // bug in the cloud-model-connection card at the 280px viewport (the other reflow tests share
-  // that catalog). That layout bug is real but out of scope here - track it separately.
+  // backend-configured entry changes which action buttons render per card (Test model / Use with
+  // agent / an inline activation-failure status), a combination the shared-catalog reflow tests
+  // below don't otherwise exercise.
   const secondModelId = "responsive-second-backend-model";
   await page.route("**/v1/ai-models", (route) =>
     route.fulfill({
@@ -781,6 +833,69 @@ test("activating a backend model preserves the previous model when activation fa
     "Activation failed. The previous working model remains active - try again or pick a different model."
   );
   await expect(page.locator(".agent-model-current h4")).toHaveText("OpenAI fast");
+});
+
+test("a second backend-configured model does not clip the model library at 280px", async ({
+  page
+}) => {
+  // Regression coverage for a bug once tracked separately (a second backend-configured entry was
+  // suspected of clipping the model library card at the narrowest supported viewport). Re-audited:
+  // does not reproduce against today's `.model-lab-grid` (styles.css), whose
+  // `grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr))` already collapses to a
+  // single fluid column at 280px. This test pins that fixed state so a future regression is caught
+  // instead of silently reintroduced.
+  const secondModelId = "responsive-second-backend-model";
+  await page.route("**/v1/ai-models", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        models: [
+          modelCatalog[0],
+          {
+            id: secondModelId,
+            label: "Second Backend Model",
+            provider: "openai",
+            description: "A second backend-hosted model for activation-failure coverage.",
+            capabilities: ["chat"],
+            available: true,
+            source: "hosted",
+            format: "remote",
+            license: null,
+            licenseUrl: null,
+            modelCardUrl: null,
+            downloadUrl: null,
+            fileName: null,
+            fileSizeBytes: null,
+            minimumMemoryGb: null,
+            recommended: false,
+            contextWindow: 32_000,
+            runtimeAvailability: { backend: "configured" }
+          }
+        ]
+      })
+    })
+  );
+  await page.setExtraHTTPHeaders({
+    "x-soko-test-seed-active-model": "openai-fast",
+    "x-soko-test-failing-activation-model": secondModelId
+  });
+  await openModelLibrary(page, { width: 280, height: 653 });
+
+  await expect(page.locator(".agent-model-current h4")).toHaveText("OpenAI fast");
+  const secondModelCard = page
+    .locator(".ai-model-card")
+    .filter({ hasText: "Second Backend Model" });
+  await secondModelCard.getByRole("button", { name: "Use with agent" }).click();
+  await expect(secondModelCard.getByRole("status")).toHaveText(
+    "Activation failed. The previous working model remains active - try again or pick a different model."
+  );
+
+  await expectNoViewportOverflow(page);
+  await expectInteractiveControlsInsideViewport(
+    page,
+    page.getByRole("dialog", { name: "Account and agent settings" })
+  );
 });
 
 test("WCAG 2.2 A/AA automated accessibility scan", async ({ page }) => {
@@ -935,12 +1050,17 @@ async function expectNoViewportOverflow(page: Page): Promise<void> {
   );
 }
 
-async function expectInteractiveControlsInsideViewport(page: Page, root: Locator): Promise<void> {
+async function expectInteractiveControlsInsideViewport(
+  page: Page,
+  root: Locator,
+  excludeSelectors: string[] = []
+): Promise<void> {
   const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);
   const clipped = await root.locator("button, a[href], input, select, textarea").evaluateAll(
-    (elements, width) =>
+    (elements, { width, excludeSelectors }) =>
       elements.flatMap((element) => {
         const node = element as HTMLElement;
+        if (excludeSelectors.some((selector) => node.matches(selector))) return [];
         const rect = node.getBoundingClientRect();
         const style = getComputedStyle(node);
         if (style.visibility === "hidden" || style.display === "none" || rect.width === 0)
@@ -955,7 +1075,7 @@ async function expectInteractiveControlsInsideViewport(page: Page, root: Locator
             ]
           : [];
       }),
-    viewportWidth
+    { width: viewportWidth, excludeSelectors }
   );
   expect(clipped).toEqual([]);
 }
