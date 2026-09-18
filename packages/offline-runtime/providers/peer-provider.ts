@@ -43,8 +43,10 @@ export function createPeerOutbox(db: LocalDatabase, scope: Scope): PeerOutbox {
     }
   };
 }
-const FRAME_VERSION = 1;
-const HEADER_BYTES = 23; // version(1) + hop(1) + kind(1) + id(16) + index(2) + count(2)
+const LEGACY_FRAME_VERSION = 1;
+const FRAME_VERSION = 2;
+const LEGACY_HEADER_BYTES = 23; // version(1) + hop(1) + kind(1) + id(16) + index(2) + count(2)
+const HEADER_BYTES = 27; // v1 header + CRC32(4); TTL is intentionally excluded from the checksum.
 const KIND_CONVERSATION_MESSAGE = 0;
 const KIND_CATALOGUE_DIGEST = 1;
 const KIND_ORDER_INTENT = 2;
@@ -66,6 +68,7 @@ export class PeerProvider implements SokoProvider {
   >();
   private seen = new Map<string, number>();
   private seenFrames = new Map<string, number>();
+  private pendingRelays = new Map<string, ReturnType<typeof setTimeout>>();
   private unsubscribe: () => void;
   constructor(
     private transport: PeerTransport,
@@ -240,6 +243,8 @@ export class PeerProvider implements SokoProvider {
     this.orderIntentDeliveryFailedHandlers.clear();
     this.catalogueDigestHandlers.clear();
     this.fragments.clear();
+    for (const timer of this.pendingRelays.values()) clearTimeout(timer);
+    this.pendingRelays.clear();
   }
   private async transmitBytes(kind: number, bytes: Uint8Array): Promise<void> {
     const chunkSize = this.transport.mtu - HEADER_BYTES;
@@ -257,17 +262,23 @@ export class PeerProvider implements SokoProvider {
       view.setUint16(19, index);
       view.setUint16(21, count);
       frame.set(payload, HEADER_BYTES);
+      view.setUint32(23, frameChecksum(frame, HEADER_BYTES));
       await this.transport.broadcast(frame);
     }
   }
   private receive(frame: Uint8Array): void {
+    const version = frame[0];
+    const headerBytes = version === FRAME_VERSION ? HEADER_BYTES : LEGACY_HEADER_BYTES;
     if (
-      frame.length < HEADER_BYTES + 1 ||
+      frame.length < headerBytes + 1 ||
       frame.length > this.transport.mtu ||
-      frame[0] !== FRAME_VERSION ||
+      (version !== FRAME_VERSION && version !== LEGACY_FRAME_VERSION) ||
       !frame[1] ||
       frame[1] > 7
     )
+      return;
+    const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+    if (version === FRAME_VERSION && view.getUint32(23) !== frameChecksum(frame, headerBytes))
       return;
     const kind = frame[2];
     if (
@@ -280,18 +291,24 @@ export class PeerProvider implements SokoProvider {
     for (const [key, value] of this.fragments) if (value.expires <= now) this.fragments.delete(key);
     for (const [key, value] of this.seen) if (value <= now) this.seen.delete(key);
     for (const [key, value] of this.seenFrames) if (value <= now) this.seenFrames.delete(key);
-    const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
     const id = [...frame.slice(3, 19)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     const index = view.getUint16(19);
     const count = view.getUint16(21);
     if (
       !count ||
       index >= count ||
-      count * (this.transport.mtu - HEADER_BYTES) > MAX_ENVELOPE_BYTES + this.transport.mtu
+      count * (this.transport.mtu - headerBytes) > MAX_ENVELOPE_BYTES + this.transport.mtu
     )
       return;
     const frameKey = `${id}:${index}`;
-    if (this.seenFrames.has(frameKey)) return;
+    if (this.seenFrames.has(frameKey)) {
+      const pendingRelay = this.pendingRelays.get(frameKey);
+      if (pendingRelay) {
+        clearTimeout(pendingRelay);
+        this.pendingRelays.delete(frameKey);
+      }
+      return;
+    }
     if (this.seenFrames.size >= 8_192) return;
     this.seenFrames.set(frameKey, now + 60_000);
     if (!this.fragments.has(id) && this.fragments.size >= 32) return;
@@ -303,12 +320,21 @@ export class PeerProvider implements SokoProvider {
     };
     if (entry.count !== count || entry.kind !== kind) return;
     const duplicate = entry.parts.has(index);
-    entry.parts.set(index, frame.slice(HEADER_BYTES));
+    entry.parts.set(index, frame.slice(headerBytes));
     this.fragments.set(id, entry);
     if (!duplicate && frame[1] > 1) {
       const relay = frame.slice();
       relay[1]!--;
-      void this.transport.broadcast(relay).catch(() => undefined);
+      // BitChat-style jitter gives another relay time to win. Hearing the same fragment before
+      // this timer fires cancels our copy above, reducing redundant flood traffic.
+      const timer = setTimeout(
+        () => {
+          this.pendingRelays.delete(frameKey);
+          void this.transport.broadcast(relay).catch(() => undefined);
+        },
+        10 + Math.floor(Math.random() * 211)
+      );
+      this.pendingRelays.set(frameKey, timer);
     }
     if (entry.parts.size !== count) return;
     this.fragments.delete(id);
@@ -360,6 +386,17 @@ export class PeerProvider implements SokoProvider {
     if (this.seen.size >= 1_024) this.seen.delete(this.seen.keys().next().value!);
     this.seen.set(key, now + 24 * 60 * 60 * 1000);
   }
+}
+
+function frameChecksum(frame: Uint8Array, headerBytes: number): number {
+  let crc = 0xffffffff;
+  for (let index = 0; index < frame.length; index++) {
+    // TTL changes at each hop and bytes 23..26 contain the checksum itself.
+    if (index === 1 || (index >= 23 && index < headerBytes)) continue;
+    crc ^= frame[index]!;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 function validateEnvelope(value: ConversationMessageSummary): void {
   if (

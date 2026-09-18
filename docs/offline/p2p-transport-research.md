@@ -6,7 +6,7 @@ Web Bluetooth exposes selected GATT peripherals and requires browser support and
 
 ## Envelope and framing
 
-Soko's existing `ConversationMessageSummary` in packages/shared-types/src/index.ts carries id, conversationId, clientMessageId, idempotencyKey, author, authorId, content and delivery metadata. A full JSON envelope cannot be assumed to fit a BLE packet. The adapter serializes UTF-8 JSON once, fragments bytes into transport-MTU-sized frames and reassembles them without altering the canonical object. The 22-byte binary header contains protocol version, hop budget, a random transfer ID, fragment index and fragment count. Payloads are limited to 64 KiB; files need another transport.
+Soko's existing `ConversationMessageSummary` in packages/shared-types/src/index.ts carries id, conversationId, clientMessageId, idempotencyKey, author, authorId, content and delivery metadata. A full JSON envelope cannot be assumed to fit a BLE packet. The adapter serializes UTF-8 JSON once, fragments bytes into transport-MTU-sized frames and reassembles them without altering the canonical object. Version 2 uses a 27-byte binary header containing protocol version, hop budget, message kind, a random transfer ID, fragment index/count and CRC32. The checksum deliberately excludes TTL so relays can decrement it. Receivers continue to accept the 23-byte v1 header during rollout. Payloads are limited to 64 KiB; files need another transport.
 
 The prototype supports discovery and authenticated connection through an injected native transport. Its persistent outbox interface retains messages until explicit application acknowledgement, with a 24-hour expiry and a 100-message cap. Incomplete incoming transfers expire after 60 seconds, with bounded reassembly/deduplication tables and a seven-hop budget. No invoice, catalogue or payment operation is peer-capable. The resolver can accept this provider only for `conversations.message.send`.
 
@@ -15,6 +15,27 @@ The prototype supports discovery and authenticated connection through an injecte
 The current web Settings clearly reports nearby messaging as unavailable. There is no simulated browser radio and no production BLE binding. A native host must implement radio permissions, advertising, discovery, encrypted authenticated sessions and an outbox protected at rest. Peer identity must come from that authenticated transport, never a display name. Message content is still untrusted application input after transport decoding. The prototype's envelope validation is structural, not cryptographic verification or participant authorization.
 
 Proceed with native-device experiments only. Keep PWA rollout limited to local business storage; do not claim production mesh support. Unit tests cover framing, UTF-8 reconstruction, duplicate suppression, disconnect queuing and acknowledgement. Real Android/iOS radios, adversarial peer authentication, battery drain and background relay require separate device testing before enabling peer calls in the application.
+
+## BitChat reliability review (September 2026)
+
+The current BitChat protocol was reviewed at the repository and whitepaper level. Its BLE layer
+uses TTL-bounded controlled flooding, short randomized relay jitter, duplicate-triggered relay
+cancellation, bounded fragment assembly, persistent sender outboxes, delivery receipts and
+authenticated Noise sessions. Soko now adopts the pieces that fit its existing transport boundary:
+
+- v2 frames carry a per-fragment CRC32, so corrupted headers or payloads are rejected before
+  reassembly or application parsing;
+- relays wait 10-220 ms and cancel their pending copy when the same fragment arrives first,
+  reducing broadcast storms while retaining the seven-hop fallback;
+- Web Bluetooth writes are serialized, preventing overlapping GATT operations from causing
+  platform-dependent frame loss; and
+- v1 decoding remains covered by a compatibility test, avoiding a flag-day upgrade.
+
+BitChat's dual central/peripheral topology, adaptive fanout, source routes, Noise XX sessions and
+courier storage were not transplanted. Web Bluetooth cannot advertise as a peripheral, and Soko's
+`PeerTransport` contract already requires the native transport to authenticate and encrypt peers.
+Implementing cryptography above that boundary would duplicate responsibilities and could imply
+security guarantees the browser adapter cannot provide.
 
 ## Status: optional Bluetooth channel shipped (browser, GATT-central only)
 

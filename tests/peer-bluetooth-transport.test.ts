@@ -11,11 +11,18 @@ import {
 class FakeCharacteristic extends EventTarget {
   value: DataView | null = null;
   writes: Uint8Array[] = [];
+  activeWrites = 0;
+  maxConcurrentWrites = 0;
+  writeGate: Promise<void> | null = null;
   async startNotifications(): Promise<this> {
     return this;
   }
   async writeValueWithoutResponse(data: ArrayBuffer): Promise<void> {
+    this.activeWrites++;
+    this.maxConcurrentWrites = Math.max(this.maxConcurrentWrites, this.activeWrites);
     this.writes.push(new Uint8Array(data));
+    await this.writeGate;
+    this.activeWrites--;
   }
   emit(bytes: Uint8Array): void {
     this.value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -151,5 +158,28 @@ describe("WebBluetoothPeerTransport", () => {
     await transport.broadcast(view);
     const tx = device.gatt.service.characteristics.get(SOKO_NEARBY_TX_CHARACTERISTIC_UUID)!;
     expect([...tx.writes[0]!]).toEqual([3, 4]);
+  });
+
+  it("serializes writes so the BLE stack never receives overlapping operations", async () => {
+    const device = new FakeDevice("device-1");
+    const transport = new WebBluetoothPeerTransport(fakeBluetooth(device));
+    await transport.connect("device-1");
+    const tx = device.gatt.service.characteristics.get(SOKO_NEARBY_TX_CHARACTERISTIC_UUID)!;
+    let release!: () => void;
+    tx.writeGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const first = transport.broadcast(new Uint8Array([1]));
+    const second = transport.broadcast(new Uint8Array([2]));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(tx.writes).toHaveLength(1);
+    expect(tx.maxConcurrentWrites).toBe(1);
+
+    release();
+    await Promise.all([first, second]);
+    expect(tx.writes.map((write) => [...write])).toEqual([[1], [2]]);
+    expect(tx.maxConcurrentWrites).toBe(1);
   });
 });

@@ -39,6 +39,7 @@ export class WebBluetoothPeerTransport implements PeerTransport {
   private tx: BluetoothRemoteGATTCharacteristic | null = null;
   private rx: BluetoothRemoteGATTCharacteristic | null = null;
   private handlers = new Set<(frame: Uint8Array) => void>();
+  private writeTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly bluetooth: Bluetooth | undefined = navigator.bluetooth) {}
 
@@ -91,9 +92,19 @@ export class WebBluetoothPeerTransport implements PeerTransport {
     if (!this.tx) throw new Error("Not connected to a nearby device.");
     // Copy just this view's bytes - `frame.buffer` may be a larger backing buffer than the
     // frame itself when the caller handed us a subarray.
-    await this.tx.writeValueWithoutResponse(
-      frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer
-    );
+    const bytes = frame.buffer.slice(
+      frame.byteOffset,
+      frame.byteOffset + frame.byteLength
+    ) as ArrayBuffer;
+    const write = this.writeTail.then(async () => {
+      const characteristic = this.tx;
+      if (!characteristic) throw new Error("Not connected to a nearby device.");
+      await characteristic.writeValueWithoutResponse(bytes);
+    });
+    // BLE stacks commonly reject overlapping writes. Keep the queue usable after one failure,
+    // while returning that failure to the caller so its durable outbox can retry later.
+    this.writeTail = write.catch(() => undefined);
+    await write;
   }
 
   subscribe(handler: (frame: Uint8Array) => void): () => void {

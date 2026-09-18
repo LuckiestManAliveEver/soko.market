@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   PeerProvider,
   PEER_OUTBOX_RESEND_CAP,
@@ -149,6 +149,129 @@ describe("Prototype nearby transport", () => {
       expect(failed).toEqual([envelope]);
     } finally {
       provider.close();
+    }
+  });
+
+  it("rejects a corrupted v2 fragment instead of parsing damaged application data", async () => {
+    const listeners = new Set<(frame: Uint8Array) => void>();
+    const sent: Uint8Array[] = [];
+    const transport: PeerTransport = {
+      mtu: 256,
+      available: async () => true,
+      discover: async () => ["peer"],
+      connect: async () => undefined,
+      broadcast: async (frame) => {
+        sent.push(frame.slice());
+      },
+      subscribe: (handler) => {
+        listeners.add(handler);
+        return () => listeners.delete(handler);
+      }
+    };
+    const sender = new PeerProvider(transport, memoryOutbox());
+    const receiver = new PeerProvider(transport, memoryOutbox());
+    const received: ConversationMessageSummary[] = [];
+    receiver.onReceive((message) => received.push(message));
+    try {
+      await sender.send({
+        id: "corruption-check",
+        conversationId: "conversation",
+        clientMessageId: "client",
+        idempotencyKey: "dedupe",
+        author: "user",
+        authorId: "account",
+        content: { type: "text", text: "hello" }
+      } as ConversationMessageSummary);
+      expect(sent[0]?.[0]).toBe(2);
+      const corrupted = sent.map((frame) => frame.slice());
+      corrupted[0]![corrupted[0]!.length - 1] ^= 0xff;
+      for (const frame of corrupted) for (const listener of listeners) listener(frame);
+      expect(received).toEqual([]);
+    } finally {
+      sender.close();
+      receiver.close();
+    }
+  });
+
+  it("keeps accepting legacy v1 frames during the protocol rollout", () => {
+    const listeners = new Set<(frame: Uint8Array) => void>();
+    const transport: PeerTransport = {
+      mtu: 256,
+      available: async () => true,
+      discover: async () => ["peer"],
+      connect: async () => undefined,
+      broadcast: async () => undefined,
+      subscribe: (handler) => {
+        listeners.add(handler);
+        return () => listeners.delete(handler);
+      }
+    };
+    const receiver = new PeerProvider(transport, memoryOutbox());
+    const message = {
+      id: "legacy-message",
+      conversationId: "conversation",
+      clientMessageId: "client",
+      idempotencyKey: "dedupe",
+      author: "user",
+      authorId: "account",
+      content: { type: "text", text: "hello" }
+    } as ConversationMessageSummary;
+    const payload = new TextEncoder().encode(JSON.stringify(message));
+    const frame = new Uint8Array(23 + payload.length);
+    const view = new DataView(frame.buffer);
+    frame[0] = 1;
+    frame[1] = 1;
+    frame[2] = 0;
+    view.setUint16(19, 0);
+    view.setUint16(21, 1);
+    frame.set(payload, 23);
+    const received: ConversationMessageSummary[] = [];
+    receiver.onReceive((value) => received.push(value));
+    try {
+      for (const listener of listeners) listener(frame);
+      expect(received).toEqual([message]);
+    } finally {
+      receiver.close();
+    }
+  });
+
+  it("cancels redundant jittered relays after another peer forwards the fragment", async () => {
+    vi.useFakeTimers();
+    const listeners = new Set<(frame: Uint8Array) => void>();
+    let broadcasts = 0;
+    const transport: PeerTransport = {
+      mtu: 256,
+      available: async () => true,
+      discover: async () => ["peer"],
+      connect: async () => undefined,
+      broadcast: async (frame) => {
+        broadcasts++;
+        for (const listener of listeners) listener(frame);
+      },
+      subscribe: (handler) => {
+        listeners.add(handler);
+        return () => listeners.delete(handler);
+      }
+    };
+    const peers = [
+      new PeerProvider(transport, memoryOutbox()),
+      new PeerProvider(transport, memoryOutbox()),
+      new PeerProvider(transport, memoryOutbox())
+    ];
+    try {
+      await peers[0]!.broadcastCatalogueDigest({
+        storeId: "shop-1",
+        productListHash: "deadbeef",
+        lastSyncSequence: 42,
+        issuedAt: new Date().toISOString()
+      });
+      expect(broadcasts).toBe(1);
+      await vi.runAllTimersAsync();
+      // One peer wins the jitter race; its duplicate cancels every other scheduled relay.
+      expect(broadcasts).toBe(2);
+    } finally {
+      for (const peer of peers) peer.close();
+      vi.useRealTimers();
     }
   });
 });
