@@ -102,11 +102,11 @@ describe("store subdomain redirect (Host: {handle}.soko.market)", () => {
     await app.close();
   });
 
-  it("routes normally for the apex domain and www subdomain", async () => {
+  it("routes normally for the apex and fixed api/www subdomains", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store, webPublicUrl: "https://soko.market" } });
 
-    for (const host of ["soko.market", "www.soko.market"]) {
+    for (const host of ["soko.market", "api.soko.market", "www.soko.market"]) {
       const response = await app.inject({
         method: "GET",
         url: "/health/ready",

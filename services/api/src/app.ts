@@ -19,6 +19,7 @@ const defaultAllowedCorsOrigins = ["http://127.0.0.1:5173", "http://localhost:51
 const defaultRateLimitMax = 300;
 const authRateLimitMax = 60;
 const rateLimitWindowMs = 60_000;
+const reservedStorefrontSubdomains = new Set(["api", "www"]);
 export const interactiveResponseBudgetMs = 150;
 
 export interface BuildApiOptions {
@@ -99,19 +100,15 @@ export function buildApi(options: BuildApiOptions = {}) {
   // Host: {handle}.soko.market resolves to that business's canonical storefront and redirects
   // there. Without the wildcard domain/DNS record actually pointed at this service, no such
   // request ever reaches it, so this hook is inert (and does nothing at all) until that one
-  // infrastructure step is done. www.soko.market is excluded because it is this deployment's
-  // fixed alias, not a store handle.
+  // infrastructure step is done. Fixed infrastructure aliases are reserved and never interpreted
+  // as store handles; api.soko.market temporarily keeps cached pre-migration clients working.
   app.addHook("onRequest", async (request, reply) => {
     if (cp2Store === undefined) return;
     const requestHostname = request.hostname;
-    if (
-      !requestHostname.endsWith(`.${storefrontApexHostname}`) ||
-      requestHostname === `www.${storefrontApexHostname}`
-    ) {
-      return;
-    }
+    if (!requestHostname.endsWith(`.${storefrontApexHostname}`)) return;
     const handle = requestHostname.slice(0, -(storefrontApexHostname.length + 1));
-    if (handle.length === 0 || handle.includes(".")) return;
+    if (handle.length === 0 || handle.includes(".") || reservedStorefrontSubdomains.has(handle))
+      return;
 
     const resolution = cp2Store.resolveBusinessBySokoId(`soko.${handle}`);
     if (resolution === null) {

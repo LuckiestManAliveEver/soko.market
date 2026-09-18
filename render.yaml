@@ -30,9 +30,12 @@ services:
         - vendor/**
     domains:
       - soko.market
+      # Temporary compatibility alias for installed PWAs and cached bundles compiled before the
+      # same-origin migration. Keep it until access logs show no meaningful legacy API traffic.
+      - api.soko.market
       # Store subdomain resolution (docs/architecture/soko-id-slug-system.md §4): this service's
       # onRequest hook (services/api/src/app.ts) already resolves {handle}.soko.market and
-      # 302-redirects to the real storefront, excluding www. and the bare apex.
+      # 302-redirects to the real storefront, excluding api./www. and the bare apex.
       # This line registers the wildcard domain in Render; it stays unverified/inert until a
       # matching wildcard DNS record (e.g. a CNAME for *.soko.market) is added at whatever
       # registrar manages soko.market's DNS, pointed at this service per Render's custom-domain

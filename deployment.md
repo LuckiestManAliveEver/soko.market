@@ -9,6 +9,7 @@ process serves both the API and the built Vite application from `https://soko.ma
 - Branch: `main`
 - Public service: `soko-market` (`runtime: node`)
 - Public domain: `soko.market`
+- Legacy API alias: `api.soko.market` (temporary cached-client compatibility)
 - Storefront wildcard: `*.soko.market`
 - API metadata: `https://soko.market/api`
 - Liveness: `https://soko.market/health/live`
@@ -35,7 +36,8 @@ security headers.
 5. Confirm `soko-market` can reach `soko-market-ocr-worker` and
    `soko-market-rate-limit-cache` through the Blueprint references.
 6. Deploy `soko-market` and wait for `/health/ready` to return `200` before changing DNS.
-7. Move the `soko.market` and `*.soko.market` custom domains to `soko-market` in Render.
+7. Move the `soko.market`, `api.soko.market`, and `*.soko.market` custom domains to `soko-market`
+   in Render.
 8. In Cloudflare, point the apex and wildcard records at the DNS target Render shows for
    `soko-market`. Keep records DNS-only while Render verifies certificates.
 9. Update the workspace Render webhook endpoint to
@@ -90,6 +92,11 @@ Then verify in a browser:
 5. A storefront wildcard hostname redirects to its canonical `/agent/soko.<handle>` route.
 6. The service worker, manifest, icons, and hashed assets return successfully.
 7. A successful Render deploy produces one update notification for service `soko-market`.
+8. `https://api.soko.market/health/ready` reaches the API rather than storefront resolution.
+
+Keep the `api.soko.market` alias while installed PWAs or cached bundles still call it. Remove the
+alias and its DNS record only after service access logs show no meaningful legacy traffic across a
+full client-update window.
 
 ## Rollback
 

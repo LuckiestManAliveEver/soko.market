@@ -70,10 +70,10 @@ prefix is stripped here specifically - `soko.mama-mboga` becomes `mama-mboga.sok
 `soko.mama-mboga.soko.market`). `services/api/src/app.ts` has a root-level `onRequest` hook that
 resolves that Host to a business via the same `resolveBusinessBySokoId` every channel uses and
 302-redirects to the real storefront (`https://soko.market/agent/{sokoId}`), 404ing for a handle
-that never existed. It excludes `soko.market`/`www.soko.market`, this deployment's own fixed
-domains. Tests: `tests/store-subdomain-redirect.test.ts`, simulating the eventual real traffic by
+that never existed. It excludes `soko.market`, `api.soko.market`, and `www.soko.market`, this
+deployment's fixed domains. Tests: `tests/store-subdomain-redirect.test.ts`, simulating the real traffic by
 setting the `Host` header directly on `app.inject()` calls (active handle, retired/in-cooldown
-handle, never-existed handle, and confirming the apex/`www`/unrelated hosts are left alone).
+handle, never-existed handle, and confirming the apex/`api`/`www`/unrelated hosts are left alone).
 
 **What still doesn't work in production, and why it's not something this repo can fix alone**:
 `render.yaml` registers both `soko.market` and `*.soko.market` on `soko-market`. The remaining
