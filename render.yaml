@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: soko-market-api
+    name: soko-market
     runtime: node
     branch: main
     autoDeployTrigger: commit
@@ -24,14 +24,15 @@ services:
         - render.yaml
         - infra/db/**
         - packages/**
+        - apps/web/**
         - services/api/**
         - scripts/**
         - vendor/**
     domains:
-      - api.soko.market
+      - soko.market
       # Store subdomain resolution (docs/architecture/soko-id-slug-system.md §4): this service's
       # onRequest hook (services/api/src/app.ts) already resolves {handle}.soko.market and
-      # 302-redirects to the real storefront, excluding api./www. subdomains and the bare apex.
+      # 302-redirects to the real storefront, excluding www. and the bare apex.
       # This line registers the wildcard domain in Render; it stays unverified/inert until a
       # matching wildcard DNS record (e.g. a CNAME for *.soko.market) is added at whatever
       # registrar manages soko.market's DNS, pointed at this service per Render's custom-domain
@@ -42,6 +43,14 @@ services:
         value: production
       - key: NODE_VERSION
         value: 22.19.0
+      - key: VITE_API_BASE_URL
+        value: https://soko.market
+      - key: VITE_DEPLOYMENT_ENV
+        value: production
+      - key: VITE_INFERENCE_OWNER_NODE_ENABLED
+        value: "true"
+      - key: VITE_INFERENCE_MAX_FALLBACKS
+        value: "3"
       - key: API_HOST
         value: 0.0.0.0
       - key: WEB_ORIGINS
@@ -104,6 +113,11 @@ services:
         value: "10000"
       - key: DB_SLOW_QUERY_MS
         value: "500"
+      # Gates GET /metrics (docs/observability.md). Set the same value on whatever scrapes it
+      # (its `x-metrics-token` header) - metrics expose pool sizing, queue depth, and per-route
+      # latency, which should not be reachable by an unauthenticated request on the public internet.
+      - key: METRICS_AUTH_TOKEN
+        generateValue: true
       - key: GITHUB_TOKEN
         sync: false
       - key: HF_TOKEN
@@ -189,7 +203,7 @@ services:
     maxmemoryPolicy: allkeys-lru
 
   # Self-hosted PaddleOCR/Tesseract worker (docs/receipt-ocr.md, services/receipt-ocr-service/).
-  # Private, not public: only soko-market-api reaches it, over Render's private network at the
+  # Private, not public: only soko-market reaches it, over Render's private network at the
   # "hostport" wired into OCR_WORKER_URL above. This is unrelated to the LLM inference boundary
   # docs/deployment/render-inference.md describes - Render still never runs a chat model itself,
   # it hosts an OCR worker, which is a bounded image/PDF-to-text tool, not a model runtime.
@@ -233,78 +247,6 @@ services:
         value: "5"
       - key: OCR_CONCURRENCY
         value: "1"
-
-  - type: web
-    name: soko-market-web
-    runtime: static
-    branch: main
-    autoDeployTrigger: commit
-    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/web... build
-    staticPublishPath: apps/web/dist
-    buildFilter:
-      paths:
-        - package.json
-        - pnpm-lock.yaml
-        - pnpm-workspace.yaml
-        - render.yaml
-        - apps/web/**
-        - packages/**
-    domains:
-      - soko.market
-    headers:
-      - path: /*
-        name: Content-Security-Policy
-        value: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; manifest-src 'self'; worker-src 'self'; child-src 'self'; connect-src 'self' https://*.soko.market wss://*.soko.market; upgrade-insecure-requests"
-      - path: /*
-        name: Cross-Origin-Embedder-Policy
-        value: credentialless
-      - path: /*
-        name: Cross-Origin-Opener-Policy
-        value: same-origin
-      - path: /*
-        name: Referrer-Policy
-        value: strict-origin-when-cross-origin
-      - path: /*
-        name: X-Content-Type-Options
-        value: nosniff
-      - path: /
-        name: Cache-Control
-        value: no-cache, must-revalidate
-      - path: /index.html
-        name: Cache-Control
-        value: no-cache, must-revalidate
-      - path: /sw.js
-        name: Cache-Control
-        value: no-cache, must-revalidate
-      - path: /manifest.webmanifest
-        name: Cache-Control
-        value: no-cache, must-revalidate
-      - path: /favicon.ico
-        name: Cache-Control
-        value: no-cache, must-revalidate
-      - path: /icons/*
-        name: Cache-Control
-        value: no-cache, must-revalidate
-      - path: /assets/*
-        name: Cache-Control
-        value: public, max-age=31536000, immutable
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NODE_VERSION
-        value: 22.19.0
-      - key: VITE_API_BASE_URL
-        value: https://api.soko.market
-      - key: VITE_DEPLOYMENT_ENV
-        value: production
-      - key: VITE_INFERENCE_OWNER_NODE_ENABLED
-        value: "true"
-      - key: VITE_INFERENCE_MAX_FALLBACKS
-        value: "3"
 
   - type: web
     name: soko-market-web-staging

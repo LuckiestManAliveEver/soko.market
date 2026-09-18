@@ -26,21 +26,21 @@ After the package is registered in Play Console, `android.applicationId` is trea
 
 ## Decision register
 
-| Decision               | Proposed value            | State                       | Basis and consequence                                                     |
-| ---------------------- | ------------------------- | --------------------------- | ------------------------------------------------------------------------- |
-| Product name           | `Soko.market`             | established                 | Matches the web application and PWA manifest.                             |
-| Launcher name          | `Soko`                    | established                 | Matches `short_name` and fits launcher surfaces.                          |
-| Production origin      | `https://soko.market`     | established                 | Declared by the Render production blueprint.                              |
-| Production API         | `https://api.soko.market` | established                 | Declared by the Render production blueprint.                              |
-| Android wrapper        | Trusted Web Activity      | proposed                    | Shortest path that preserves the existing PWA runtime.                    |
-| Application ID         | `market.soko.app`         | proposed—approval required  | Valid, brand-specific namespace; permanent after Play registration.       |
-| Developer account type | organization              | proposed—approval required  | Keeps the listing and signing authority with the operating entity.        |
-| First Play track       | internal                  | proposed                    | Allows artifact and reviewer-access validation before broader testing.    |
-| Version name           | `0.1.0`                   | established for first build | Matches the workspace package version.                                    |
-| Version code           | `1`                       | proposed                    | First Play artifact; every later upload must use a larger integer.        |
-| Minimum SDK            | 23                        | proposed                    | Preserves low-end Android reach while setting a defined support floor.    |
-| Target/compile SDK     | 35                        | policy baseline             | Meets the policy verified on 2026-07-15; must be rechecked before upload. |
-| Play App Signing       | enabled                   | proposed                    | Google holds the app-signing key; Soko controls a separate upload key.    |
+| Decision               | Proposed value        | State                       | Basis and consequence                                                     |
+| ---------------------- | --------------------- | --------------------------- | ------------------------------------------------------------------------- |
+| Product name           | `Soko.market`         | established                 | Matches the web application and PWA manifest.                             |
+| Launcher name          | `Soko`                | established                 | Matches `short_name` and fits launcher surfaces.                          |
+| Production origin      | `https://soko.market` | established                 | Declared by the Render production blueprint.                              |
+| Production API         | `https://soko.market` | established                 | Declared by the Render production blueprint.                              |
+| Android wrapper        | Trusted Web Activity  | proposed                    | Shortest path that preserves the existing PWA runtime.                    |
+| Application ID         | `market.soko.app`     | proposed—approval required  | Valid, brand-specific namespace; permanent after Play registration.       |
+| Developer account type | organization          | proposed—approval required  | Keeps the listing and signing authority with the operating entity.        |
+| First Play track       | internal              | proposed                    | Allows artifact and reviewer-access validation before broader testing.    |
+| Version name           | `0.1.0`               | established for first build | Matches the workspace package version.                                    |
+| Version code           | `1`                   | proposed                    | First Play artifact; every later upload must use a larger integer.        |
+| Minimum SDK            | 23                    | proposed                    | Preserves low-end Android reach while setting a defined support floor.    |
+| Target/compile SDK     | 35                    | policy baseline             | Meets the policy verified on 2026-07-15; must be rechecked before upload. |
+| Play App Signing       | enabled               | proposed                    | Google holds the app-signing key; Soko controls a separate upload key.    |
 
 ## Permanent identity rule
 

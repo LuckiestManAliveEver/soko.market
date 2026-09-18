@@ -2,7 +2,7 @@
 
 ## Topology
 
-`render.yaml`'s `soko-market-api` service is a standard `type: web`, `runtime: node` Render
+`render.yaml`'s `soko-market` service is a standard `type: web`, `runtime: node` Render
 service - no persistent disk, no private inference service alongside it. It builds with
 `pnpm build:production` (workspace build, then the production-boundary checks in
 [../runtime/vercel-inference-audit.md](../runtime/vercel-inference-audit.md)'s "Bugs found" list
@@ -19,7 +19,7 @@ The API talks to three external systems, none of them containing model weights:
 
 ## Required configuration
 
-The full set lives in `render.yaml`'s `soko-market-api` service block and `.env.example`. The
+The full set lives in `render.yaml`'s `soko-market` service block and `.env.example`. The
 inference-relevant subset:
 
 ```text

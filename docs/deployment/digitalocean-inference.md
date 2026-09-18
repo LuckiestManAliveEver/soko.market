@@ -93,7 +93,7 @@ References: [App specification](https://docs.digitalocean.com/products/app-platf
 
    ```sh
    VERCEL_INFERENCE_URL=https://YOUR-APP.ondigitalocean.app pnpm inference:health
-   SOKO_API_URL=https://api.soko.market pnpm inference:probe
+   SOKO_API_URL=https://soko.market pnpm inference:probe
    pnpm verify:production-runtime
    ```
 

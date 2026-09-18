@@ -79,10 +79,10 @@ describe("CP26 Android release identity", () => {
       scope: "https://soko.market/",
       manifestUrl: "https://soko.market/manifest.webmanifest",
       digitalAssetLinksUrl: "https://soko.market/.well-known/assetlinks.json",
-      apiOrigin: "https://api.soko.market"
+      apiOrigin: "https://soko.market"
     });
     expect(renderBlueprint).toContain("domains:\n      - soko.market");
-    expect(renderBlueprint).toContain("value: https://api.soko.market");
+    expect(renderBlueprint).toContain("value: https://soko.market");
     expect(identity.signing).toMatchObject({
       playAppSigning: true,
       privateKeysCommitted: false

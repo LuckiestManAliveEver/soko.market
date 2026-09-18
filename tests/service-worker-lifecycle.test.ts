@@ -386,7 +386,7 @@ describe("service worker: private/API traffic is never served from an app-shell 
     await runInstallAndActivate(sw);
 
     const { event, handled } = fetchEvent(
-      makeRequest("/v1/products", { originOverride: "https://api.soko.market" })
+      makeRequest("/v1/products", { originOverride: "https://soko.market" })
     );
     sw.listeners.get("fetch")?.(event);
 

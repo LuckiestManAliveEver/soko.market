@@ -23,7 +23,7 @@
     "android:legal:verify": "node scripts/verify-play-legal-readiness.mjs",
     "build": "pnpm -r --if-present build",
     "build:production": "pnpm check:esm-relative-imports && pnpm build:production:workspace && pnpm check:production-imports && pnpm check:retired-runtime-references && pnpm check:retired-device-model-references && pnpm check:render-inference-boundaries",
-    "build:production:workspace": "pnpm -r --filter \"./packages/**\" --if-present build && pnpm --filter @soko/ai-runtime build:package && pnpm --filter @soko/api build",
+    "build:production:workspace": "pnpm -r --filter \"./packages/**\" --if-present build && pnpm --filter @soko/ai-runtime build:package && pnpm --filter @soko/web build && pnpm --filter @soko/api build",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "check:esm-relative-imports": "node scripts/check-esm-relative-imports.mjs",
     "check:production-imports": "node scripts/check-production-imports.mjs",

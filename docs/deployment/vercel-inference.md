@@ -88,7 +88,7 @@ INFERENCE_MAX_OUTPUT_TOKENS=512
 INFERENCE_RUNTIME_CACHE_ENTRIES=1
 ```
 
-Render API environment (`render.yaml`'s `soko-market-api` service, `.env.example` at the repo
+Render API environment (`render.yaml`'s `soko-market` service, `.env.example` at the repo
 root):
 
 ```text
@@ -174,7 +174,7 @@ Roll out in this order:
 pnpm build:production
 SOKO_LIVE_GGUF_PATH=/path/to/model.gguf pnpm inference:live-probe
 VERCEL_INFERENCE_URL=https://<deployment>.vercel.app pnpm inference:health
-SOKO_API_URL=https://api.soko.market pnpm inference:probe
+SOKO_API_URL=https://soko.market pnpm inference:probe
 pnpm verify:production-runtime
 ```
 

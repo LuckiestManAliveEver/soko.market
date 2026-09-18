@@ -80,7 +80,6 @@ export function readApiBaseUrl(): string {
   }
 
   if (import.meta.env.PROD) {
-    console.error("Soko.market frontend is missing VITE_API_BASE_URL; backend requests will fail.");
     return "";
   }
 

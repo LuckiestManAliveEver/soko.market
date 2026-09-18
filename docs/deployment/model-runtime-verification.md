@@ -8,7 +8,7 @@ the Vercel inference deployment. Mocked tests do not satisfy live runtime verifi
 Keep secrets in the shell or secret manager:
 
 ```bash
-export SOKO_API_URL=https://api.soko.market
+export SOKO_API_URL=https://soko.market
 export VERCEL_INFERENCE_URL=https://<your-vercel-deployment>.vercel.app
 export SOKO_TEST_TOKEN=<authenticated-session-token-or-cookie>
 export SOKO_TEST_SHOP_ID=<shop-id>

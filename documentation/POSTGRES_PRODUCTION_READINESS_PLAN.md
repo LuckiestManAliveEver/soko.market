@@ -69,7 +69,7 @@ Production must never share a database with staging or local development.
 
 In Render:
 
-1. Open the `soko-market-api` service.
+1. Open the `soko-market` service.
 2. Go to Environment.
 3. Add secret:
 
@@ -394,7 +394,7 @@ Rules:
 Run after every production deployment:
 
 ```bash
-curl https://api.soko.market/health
+curl https://soko.market/health
 ```
 
 Manual smoke test:

@@ -2221,7 +2221,7 @@ function parseLanguage(value: string | undefined) {
 }
 
 /** Mirrors apps/web/src/routes.ts's `publicAgent`/`routeId` exactly (`/agent/${encodeURIComponent(id)}`)
- *  but as an absolute URL, since `GET /s/:slug` redirects across origins (api.soko.market ->
+ *  but as an absolute URL, since `GET /s/:slug` redirects across origins (soko.market ->
  *  the web app's own origin) rather than within one - services/api cannot import the web app's
  *  route module, so the same tiny path-building rule is replicated here rather than shared via a
  *  new cross-package dependency for one string template. */

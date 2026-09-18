@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Metrics } from "@soko/observability";
 import {
   ACCOUNT_SYNC_COLLECTIONS,
   isAccountSyncCollection,
@@ -425,6 +426,8 @@ const targetedPasskeyCeremonyMethodNames = new Set([
 
 export interface PostgresCp2StoreOptions extends Cp2StoreOptions {
   databaseUrl: string;
+  /** When set, both pg pools this store owns report query latency and connection-pool gauges. */
+  metrics?: Metrics;
 }
 
 export class AccountSyncPersistenceError extends Error {
@@ -511,6 +514,7 @@ export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
 ): Promise<PostgresCp2Store> {
   const pool = new Pool(poolConfig(options.databaseUrl));
+  options.metrics?.instrumentPgPool(pool, { poolName: "cp2_primary" });
   pool.on("error", (error) => {
     console.error("Unexpected PostgreSQL pool error.", error);
   });
@@ -581,6 +585,7 @@ export async function createPostgresCp2Store(
   }
 
   const realtimePool = new Pool({ ...poolConfig(options.databaseUrl), max: 1 });
+  options.metrics?.instrumentPgPool(realtimePool, { poolName: "cp2_realtime" });
   realtimePool.on("error", (error) => {
     console.error("Unexpected PostgreSQL realtime pool error.", error);
   });
@@ -1205,7 +1210,7 @@ function poolConfig(databaseUrl: string): PoolConfig {
     (connectionString.includes(".neon.tech") || connectionString.includes(".neon.database"));
 
   return {
-    application_name: process.env.DB_APPLICATION_NAME ?? "soko-market-api",
+    application_name: process.env.DB_APPLICATION_NAME ?? "soko-market",
     connectionString,
     connectionTimeoutMillis: positiveIntegerFromEnv("DB_CONNECTION_TIMEOUT_MS", 5000),
     idleTimeoutMillis: positiveIntegerFromEnv("DB_IDLE_TIMEOUT_MS", 30000),

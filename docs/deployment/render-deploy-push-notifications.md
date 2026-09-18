@@ -1,7 +1,7 @@
 # Push notification on Render deploy
 
-Every time `soko-market-api` (which runs `db:migrate` as part of its build, so this also covers
-schema deploys) or `soko-market-web` finishes deploying successfully, subscribed browsers get a
+Every time `soko-market` (which runs `db:migrate` and builds the frontend as part of its build,
+so this also covers schema and web deploys) finishes successfully, subscribed browsers get a
 web push notification telling them to refresh. This reuses the existing VAPID/web-push
 infrastructure (`services/api/src/cp2/push.ts`, `apps/web/public/sw.js`) — there is no separate
 notification channel to operate.
@@ -14,11 +14,11 @@ registration) and is not part of this feature.
 ## How it works
 
 1. Render sends a [Standard Webhooks](https://www.standardwebhooks.com/) `deploy_ended` event to
-   `POST https://api.soko.market/internal/render/deploy-webhook` whenever a deploy finishes.
+   `POST https://soko.market/internal/render/deploy-webhook` whenever a deploy finishes.
 2. `services/api/src/render-deploy-webhook.ts` verifies the `webhook-id` / `webhook-timestamp` /
    `webhook-signature` headers with the `standardwebhooks` library, using `RENDER_DEPLOY_WEBHOOK_SECRET`.
-3. It ignores anything that isn't `status: "succeeded"`, or isn't for `soko-market-api` /
-   `soko-market-web`, and deduplicates by `data.id` so a Render retry never double-notifies.
+3. It ignores anything that isn't `status: "succeeded"` or isn't for `soko-market`, and
+   deduplicates by `data.id` so a Render retry never double-notifies.
 4. On a match it calls `Cp2Store.broadcastAppUpdateAvailable`, which sends an
    `app.update_available` push payload to every stored push subscription
    (`services/api/src/cp2/domains/messaging/store.ts`), pruning subscriptions the push service
@@ -33,20 +33,20 @@ Render webhooks are workspace-level, not per-service, and can only be created by
 in the dashboard:
 
 1. Render Dashboard → your workspace → **Integrations → Webhooks → Add Webhook**.
-2. Endpoint URL: `https://api.soko.market/internal/render/deploy-webhook`.
+2. Endpoint URL: `https://soko.market/internal/render/deploy-webhook`.
 3. Events: select `deploy_ended` (and, if you also want it, `build_ended`; the handler ignores
    anything that isn't `deploy_ended`, so enabling extra events is harmless, just noisier in logs).
 4. Save, then open the new webhook's **Settings** page and copy its signing secret
    (`whsec_...`).
-5. Set that value as `RENDER_DEPLOY_WEBHOOK_SECRET` on the `soko-market-api` service's environment
+5. Set that value as `RENDER_DEPLOY_WEBHOOK_SECRET` on the `soko-market` service's environment
    (`render.yaml` already declares the key with `sync: false`, so it must be entered by hand in the
    dashboard — it is a secret and is never committed).
-6. Redeploy `soko-market-api` (or wait for the next deploy) so it picks up the env var. Until the
+6. Redeploy `soko-market` (or wait for the next deploy) so it picks up the env var. Until the
    var is set, `POST /internal/render/deploy-webhook` is never registered — `app.ts` only wires the
    route when `renderDeployWebhookSecret` is present — so an unconfigured environment is inert, not
    broken.
 
-Restart required: yes — `soko-market-api` needs a restart/redeploy after setting
+Restart required: yes — `soko-market` needs a restart/redeploy after setting
 `RENDER_DEPLOY_WEBHOOK_SECRET` for the first time.
 
 ## Verifying it end to end

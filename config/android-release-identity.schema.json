@@ -82,7 +82,7 @@
         "scope": { "type": "string", "format": "uri" },
         "manifestUrl": { "type": "string", "format": "uri" },
         "digitalAssetLinksUrl": { "type": "string", "format": "uri" },
-        "apiOrigin": { "const": "https://api.soko.market" }
+        "apiOrigin": { "const": "https://soko.market" }
       }
     },
     "developer": {

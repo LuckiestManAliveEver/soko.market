@@ -16,9 +16,9 @@ exists in this codebase. What actually exists:
   (`store.ts`, format `soko.<handle>`), with numeric-suffix collision handling already implemented
   (`soko.mama-mboga`, `soko.mama-mboga-2`, ...) - exactly the disambiguation strategy this task
   asked for.
-- The web app is a **static site** on Render (`render.yaml`, `soko-market-web`, `runtime: static`,
-  domain `soko.market` only, no wildcard) with all paths rewritten to `/index.html` client-side -
-  there is no server-side "web middleware" layer capable of reading a `Host` header today.
+- The web app and API share the **same Fastify service** on Render (`render.yaml`, `soko-market`,
+  `runtime: node`). Fastify can inspect `Host` before serving the SPA, and the service owns both
+  `soko.market` and `*.soko.market`.
 
 Building a parallel Prisma-shaped `slug`/`SlugHistory` system alongside `sokoId` would have left
 two competing canonical identifiers in the codebase - exactly what the original brief itself warned
@@ -70,22 +70,15 @@ prefix is stripped here specifically - `soko.mama-mboga` becomes `mama-mboga.sok
 `soko.mama-mboga.soko.market`). `services/api/src/app.ts` has a root-level `onRequest` hook that
 resolves that Host to a business via the same `resolveBusinessBySokoId` every channel uses and
 302-redirects to the real storefront (`https://soko.market/agent/{sokoId}`), 404ing for a handle
-that never existed. It excludes `api.soko.market`/`www.soko.market`, this deployment's own fixed
+that never existed. It excludes `soko.market`/`www.soko.market`, this deployment's own fixed
 domains. Tests: `tests/store-subdomain-redirect.test.ts`, simulating the eventual real traffic by
 setting the `Host` header directly on `app.inject()` calls (active handle, retired/in-cooldown
-handle, never-existed handle, and confirming the apex/`api`/`www`/unrelated hosts are left alone).
+handle, never-existed handle, and confirming the apex/`www`/unrelated hosts are left alone).
 
 **What still doesn't work in production, and why it's not something this repo can fix alone**:
-`soko-market-web` (the static site serving the actual SPA) has domain `soko.market` only in
-`render.yaml`; no wildcard custom domain is registered against `soko-market-api` either, so no
-`*.soko.market` request reaches this hook today. Closing that gap needs a wildcard custom domain
-added for `soko-market-api` and, at whatever registrar manages `soko.market`'s DNS, a wildcard
-record (`*.soko.market`) pointed at Render per its custom-domain instructions - both are real
-production domain/DNS changes outside this repository, not configuration this session can safely
-apply on its own judgment. `GET /s/:slug` (the universal fallback) is what actually resolves today
-using only the existing fixed domains - it remains the correct thing to hand out in QR codes/flyers
-until that infra step is done, at which point `getStoreLinks().web` starts resolving with no
-further code change.
+`render.yaml` registers both `soko.market` and `*.soko.market` on `soko-market`. The remaining
+cutover step is DNS: point the wildcard record at Render and complete custom-domain verification.
+Until that happens, `GET /s/:slug` remains the universal fallback for QR codes and flyers.
 
 ## 5. Rename flow and cooldown
 

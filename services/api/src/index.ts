@@ -1,4 +1,5 @@
 import { runtimeModels, type RuntimeModelProviderName } from "@soko/shared-types";
+import { createMetrics, type Metrics } from "@soko/observability";
 import { Pool } from "pg";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
@@ -49,12 +50,18 @@ import { createChannelGatewayFromEnvironment } from "./messaging/channel-gateway
 import { createEmailMailboxProviderClient } from "./messaging/email-provider-client.js";
 
 const config = readEnvironment();
+// First measure: memory, CPU, and event-loop lag come from prom-client's Node defaults for free;
+// HTTP/DB/model latency percentiles are computed at query time via histogram_quantile() over the
+// histograms instrumented below. See docs/observability.md and docs/single-instance-store-ceiling.md
+// ("monitor process RSS in production" - step 1 of that doc's recommended path).
+const metrics = createMetrics({ serviceName: "api" });
 const rateLimitRedisClient = createRateLimitRedisClient(config.redisUrl);
 const modelRuntimeAdapters = new Map<string, ModelRuntimeAdapter>();
 let primaryInferenceAdapter: ModelRuntimeAdapter | undefined;
 let artifactPool: Pool | undefined;
 if (config.vercelInferenceUrl !== "") {
   artifactPool = new Pool({ connectionString: config.databaseUrl, max: 2 });
+  metrics.instrumentPgPool(artifactPool, { poolName: "model_artifact_store" });
   const artifactStore = createNeonModelArtifactStore({
     database: artifactPool,
     endpoint: config.neonModelStorageEndpoint,
@@ -69,7 +76,10 @@ if (config.vercelInferenceUrl !== "") {
     timeoutMs: config.vercelInferenceTimeoutMs
   });
   for (const model of Object.values(runtimeModels).filter((candidate) => candidate.enabled)) {
-    const adapter = createVercelModelAdapter({ modelId: model.id, artifactStore, client });
+    const adapter = instrumentModelAdapter(
+      createVercelModelAdapter({ modelId: model.id, artifactStore, client }),
+      metrics
+    );
     modelRuntimeAdapters.set(`vercel:${model.id}`, adapter);
     if (model.id === config.platformDefaultRuntime.modelId) primaryInferenceAdapter = adapter;
   }
@@ -115,6 +125,7 @@ const shouldUsePostgresStore =
 const cp2StoreOptions = {
   channelGateway,
   emailMailboxProviderClient,
+  metrics,
   modelRuntimeAdapterResolver,
   platformDefaultRuntime: config.platformDefaultRuntime,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
@@ -139,6 +150,8 @@ const apiOptions = {
   ),
   inferenceRequired: config.inferenceRequired,
   rateLimitRedisClient,
+  metrics,
+  ...(config.metricsAuthToken === "" ? {} : { metricsAuthToken: config.metricsAuthToken }),
   ...(renderDeployWebhookSecret === "" ? {} : { renderDeployWebhookSecret }),
   cp2: {
     store: cp2Store,
@@ -343,6 +356,32 @@ async function createCp2StoreOrExplainSchemaFailure() {
     }
     throw error;
   }
+}
+
+// Wraps every call the adapter can make - canRun/healthCheck never throw (they catch internally
+// and return an unavailable result), only generate() can - so "outcome" here means "the request
+// completed" rather than "inference succeeded"; that distinction matters when reading the metric.
+function instrumentModelAdapter(
+  adapter: ModelRuntimeAdapter,
+  metrics: Metrics
+): ModelRuntimeAdapter {
+  const labels = { provider: adapter.provider, executionTarget: adapter.executionTarget };
+  return {
+    provider: adapter.provider,
+    executionTarget: adapter.executionTarget,
+    canRun: (context) =>
+      metrics.timeModelRequest({ ...labels, model: context.modelId }, () =>
+        adapter.canRun(context)
+      ),
+    healthCheck: (context) =>
+      metrics.timeModelRequest({ ...labels, model: context.modelId }, () =>
+        adapter.healthCheck(context)
+      ),
+    generate: (input) =>
+      metrics.timeModelRequest({ ...labels, model: input.context.modelId }, () =>
+        adapter.generate(input)
+      )
+  };
 }
 
 function isClosableStore(store: unknown): store is { close: () => Promise<void> } {

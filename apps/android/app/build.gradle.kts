@@ -4,7 +4,7 @@ plugins {
 }
 
 val sokoApiOrigin = providers.gradleProperty("SOKO_API_ORIGIN")
-    .orElse("https://api.soko.market")
+    .orElse("https://soko.market")
 
 android {
     namespace = "market.soko.app"

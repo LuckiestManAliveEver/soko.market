@@ -24,7 +24,7 @@ bytes are sent only after the API authenticates the business and the signed malw
 ## Production deployment
 
 `render.yaml` declares `soko-market-ocr-worker` as a `type: pserv` (private, not internet-facing)
-Docker service built from `services/receipt-ocr-service/Dockerfile`. `soko-market-api`'s
+Docker service built from `services/receipt-ocr-service/Dockerfile`. `soko-market`'s
 `OCR_WORKER_URL` is wired to it automatically via Render's `fromService`/`hostport` linking rather
 than a manually pasted value - `createOcrExtractionProcessorFromEnvironment`
 (`services/api/src/cp2/ocr-provider.ts`) normalizes the bare `host:port` Render provides into an

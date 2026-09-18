@@ -149,7 +149,7 @@ describe("CP21 offline client sync", () => {
     const result = await flushLocalSyncMutations({
       accountId: "account-1",
       repository,
-      apiBaseUrl: "https://api.soko.market/",
+      apiBaseUrl: "https://soko.market/",
       fetcher: async (input, init) => {
         const url = String(input);
         const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
@@ -171,9 +171,9 @@ describe("CP21 offline client sync", () => {
       remaining: 0
     });
     expect(requests.map((request) => request.url)).toEqual([
-      "https://api.soko.market/businesses/business-1/sync-queue",
-      "https://api.soko.market/businesses/business-1/sync-queue",
-      "https://api.soko.market/businesses/business-1/sync-queue/replay"
+      "https://soko.market/businesses/business-1/sync-queue",
+      "https://soko.market/businesses/business-1/sync-queue",
+      "https://soko.market/businesses/business-1/sync-queue/replay"
     ]);
     expect(requests.slice(0, 2).map((request) => request.body.mutationType)).toEqual([
       "product.create",

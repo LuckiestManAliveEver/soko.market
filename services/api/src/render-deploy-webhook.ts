@@ -27,8 +27,7 @@ export interface RenderDeployWebhookOptions {
 }
 
 const defaultNotifiedServiceNames: Record<string, string> = {
-  "soko-market-api": "The Soko API and database",
-  "soko-market-web": "Soko"
+  "soko-market": "Soko"
 };
 
 // Render retries a webhook delivery on any non-2xx response, replaying the identical

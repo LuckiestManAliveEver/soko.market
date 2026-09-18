@@ -16,7 +16,7 @@ import {
 
 const baseEnv = {
   OPENAI_API_KEY: "openai-test-secret",
-  SOKO_MCP_SERVER_URL: "https://api.soko.market/mcp?shopId=shop-one",
+  SOKO_MCP_SERVER_URL: "https://soko.market/mcp?shopId=shop-one",
   SOKO_MCP_TOKEN: "soko-test-secret",
   SOKO_SHOP_ID: "shop-one"
 };

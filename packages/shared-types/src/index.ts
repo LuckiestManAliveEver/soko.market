@@ -35,6 +35,8 @@ export interface EnvironmentConfig {
   workspaceRoot: string;
   redisUrl: string;
   platformDefaultRuntime: PlatformDefaultRuntimePolicy;
+  /** Shared-secret gate for GET /metrics; empty string means the endpoint is unauthenticated. */
+  metricsAuthToken: string;
 }
 
 /** Deployment policy selects defaults; runtime records and adapters remain independently swappable. */

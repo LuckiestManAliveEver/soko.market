@@ -33,6 +33,9 @@ describe("production workspace build pipeline", () => {
     expect(rootManifest.scripts["build:production:workspace"]).toContain(
       "pnpm --filter @soko/api build"
     );
+    expect(rootManifest.scripts["build:production:workspace"]).toContain(
+      "pnpm --filter @soko/web build"
+    );
     expect(rootManifest.scripts["build:production:workspace"]).toContain("--if-present build");
     expect(rootManifest.scripts["inference:build"]).toBe("pnpm --filter @soko/ai-runtime build");
     expect(runtimeManifest.main).toBe("./dist/index.js");
@@ -50,7 +53,7 @@ describe("production workspace build pipeline", () => {
 
   it("uses the same production command in the Render API service", async () => {
     const blueprint = await readFile("render.yaml", "utf8");
-    const apiStart = blueprint.indexOf("name: soko-market-api");
+    const apiStart = blueprint.indexOf("name: soko-market");
     const apiEnd = blueprint.indexOf("\n  - type:", apiStart);
     const apiService = blueprint.slice(apiStart, apiEnd);
 

@@ -57,7 +57,7 @@ export function isSokoStorefrontId(value: string): boolean {
  * (docs/architecture/soko-id-slug-system.md). Derived from what's actually in this monorepo today
  * - not a guessed list - so a change to real routing does not silently drift out of sync with
  * this constant:
- *   - `api` (services/api's own domain, render.yaml:23 `api.soko.market`) and `www` (an origin this
+ *   - `api` (services/api's own domain, render.yaml:23 `soko.market`) and `www` (an origin this
  *     app already treats as canonical - see WEB_ORIGINS/AUTH_ALLOWED_REDIRECT_ORIGINS in
  *     render.yaml/.env.example - even though no literal `www.soko.market` Render domain exists yet).
  *   - Every top-level API path segment (grep `app.(get|post|put|delete|patch)("/<segment>`,

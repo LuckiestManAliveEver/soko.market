@@ -31,7 +31,7 @@ describe("Cp2Store.broadcastAppUpdateAvailable", () => {
 
     const summary = await store.broadcastAppUpdateAvailable({
       deployId: "evt-happy-path",
-      service: "soko-market-api",
+      service: "soko-market",
       title: "Soko update available",
       body: "The Soko API and database just deployed a new version. Open Soko to refresh."
     });
@@ -42,7 +42,7 @@ describe("Cp2Store.broadcastAppUpdateAvailable", () => {
     expect(deliveries[0]?.payload).toEqual({
       type: "app.update_available",
       deployId: "evt-happy-path",
-      service: "soko-market-api",
+      service: "soko-market",
       title: "Soko update available",
       body: "The Soko API and database just deployed a new version. Open Soko to refresh."
     });
@@ -70,7 +70,7 @@ describe("Cp2Store.broadcastAppUpdateAvailable", () => {
 
     const summary = await store.broadcastAppUpdateAvailable({
       deployId: "evt-expired",
-      service: "soko-market-web",
+      service: "soko-market",
       title: "Soko update available",
       body: "Soko just deployed a new version. Open Soko to refresh."
     });
@@ -85,7 +85,7 @@ describe("Cp2Store.broadcastAppUpdateAvailable", () => {
     const store = createCp2Store();
     const summary = await store.broadcastAppUpdateAvailable({
       deployId: "evt-no-sender",
-      service: "soko-market-api",
+      service: "soko-market",
       title: "Soko update available",
       body: "Ignored."
     });
@@ -124,7 +124,7 @@ describe("POST /internal/render/deploy-webhook", () => {
       data: {
         id: `evt-${randomUUID()}`,
         serviceId: "srv-abc123",
-        serviceName: "soko-market-api",
+        serviceName: "soko-market",
         status: "succeeded"
       }
     });
@@ -134,7 +134,7 @@ describe("POST /internal/render/deploy-webhook", () => {
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0]).toMatchObject({
       type: "app.update_available",
-      service: "soko-market-api"
+      service: "soko-market"
     });
 
     await app.close();
@@ -148,7 +148,7 @@ describe("POST /internal/render/deploy-webhook", () => {
     const timestamp = new Date();
     const body = JSON.stringify({
       type: "deploy_ended",
-      data: { id: eventId, serviceName: "soko-market-api", status: "succeeded" }
+      data: { id: eventId, serviceName: "soko-market", status: "succeeded" }
     });
     const response = await app.inject({
       method: "POST",
@@ -182,7 +182,7 @@ describe("POST /internal/render/deploy-webhook", () => {
       type: "deploy_ended",
       data: {
         id: `evt-${randomUUID()}`,
-        serviceName: "soko-market-api",
+        serviceName: "soko-market",
         status: "failed"
       }
     });
@@ -245,7 +245,7 @@ describe("POST /internal/render/deploy-webhook", () => {
       type: "deploy_ended",
       data: {
         id: `evt-${randomUUID()}`,
-        serviceName: "soko-market-web",
+        serviceName: "soko-market",
         status: "succeeded"
       }
     };

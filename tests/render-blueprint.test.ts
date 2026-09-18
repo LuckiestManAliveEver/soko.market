@@ -8,7 +8,7 @@ describe("Render Blueprint", () => {
     expect(blueprint).not.toContain("\ndatabases:");
     expect(blueprint).not.toContain("fromDatabase:");
     expect(blueprint).toContain("CP2_STORE\n        value: postgres");
-    expect(blueprint).toContain("name: soko-market-api\n    runtime: node");
+    expect(blueprint).toContain("name: soko-market\n    runtime: node");
     expect(blueprint).toContain("plan: starter");
     // build:production runs (and gates on) a clean compile before db:migrate, not after: a
     // destructive migration must never commit against the shared production database ahead of a
@@ -30,7 +30,7 @@ describe("Render Blueprint", () => {
   it("declares authentication dependencies without SMS verification", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
     const api = blueprint.slice(
-      blueprint.indexOf("name: soko-market-api"),
+      blueprint.indexOf("name: soko-market"),
       blueprint.indexOf("name: soko-market-rate-limit-cache")
     );
 
@@ -56,11 +56,11 @@ describe("Render Blueprint", () => {
     ) as { scripts: Record<string, string> };
     const staging = blueprint.slice(blueprint.indexOf("name: soko-market-web-staging"));
     const production = blueprint.slice(
-      blueprint.indexOf("name: soko-market-web"),
-      blueprint.indexOf("name: soko-market-web-staging")
+      blueprint.indexOf("name: soko-market"),
+      blueprint.indexOf("name: soko-market-rate-limit-cache")
     );
     const api = blueprint.slice(
-      blueprint.indexOf("name: soko-market-api"),
+      blueprint.indexOf("name: soko-market"),
       blueprint.indexOf("name: soko-market-rate-limit-cache")
     );
 
@@ -68,7 +68,9 @@ describe("Render Blueprint", () => {
     expect(staging).toContain("Content-Security-Policy");
     expect(staging).toContain("Cross-Origin-Embedder-Policy");
     expect(staging).toContain("Cross-Origin-Opener-Policy");
-    expect(production).toContain("Content-Security-Policy");
+    expect(production).toContain("VITE_API_BASE_URL\n        value: https://soko.market");
+    expect(production).toContain("apps/web/**");
+    expect(blueprint).not.toMatch(/name: soko-market-web\n\s+runtime: static/u);
     // Browser-local inference was retired (see
     // docs/adr/ADR-device-independent-runtime-and-registry-discovery.md): the browser never talks
     // to GitHub/Hugging Face or runs WASM directly, so neither the client-inference feature flags
@@ -129,7 +131,7 @@ describe("Render Blueprint", () => {
   it("deploys the OCR worker as a private service and wires the API to it", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
     const api = blueprint.slice(
-      blueprint.indexOf("name: soko-market-api"),
+      blueprint.indexOf("name: soko-market"),
       blueprint.indexOf("name: soko-market-rate-limit-cache")
     );
     // The API's fromService reference to this worker (asserted below) textually precedes the

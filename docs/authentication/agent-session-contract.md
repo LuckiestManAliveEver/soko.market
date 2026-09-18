@@ -74,13 +74,13 @@ tokens, prompts, and message bodies are never logged.
 ## Production configuration
 
 Current production is a Render static frontend at `https://soko.market` and a Render API at
-`https://api.soko.market`. These hosts are same-site, so secure `SameSite=Lax` host-only cookies are
+`https://soko.market`. These hosts are same-site, so secure `SameSite=Lax` host-only cookies are
 appropriate.
 
 Frontend build:
 
 ```dotenv
-VITE_API_BASE_URL=https://api.soko.market
+VITE_API_BASE_URL=https://soko.market
 ```
 
 Render API:
@@ -110,7 +110,7 @@ INFERENCE_SERVICE_TOKEN=<same secret configured on the inference service>
 This repository has no Vercel deployment configuration. If a separate Vercel preview or production
 frontend is introduced, set `VITE_API_BASE_URL` in that project and add its exact HTTPS origin to
 `WEB_ORIGINS` and the relevant WebAuthn/OAuth origin lists. A `*.vercel.app` frontend is cross-site
-from `api.soko.market`; supporting that topology requires `COOKIE_SAME_SITE=none` with
+from `soko.market`; supporting that topology requires `COOKIE_SAME_SITE=none` with
 `COOKIE_SECURE=true`. Prefer the same-site `soko.market` custom domain for production.
 
 ## Verification checklist

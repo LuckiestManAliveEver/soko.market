@@ -116,7 +116,7 @@ exception rather than a loophole.
 
 ## 3. Migration ordering: compile-and-verify before migrate
 
-Render's `soko-market-api` `buildCommand` now runs, in order:
+Render's `soko-market` `buildCommand` now runs, in order:
 
 ```
 pnpm install
@@ -153,7 +153,7 @@ present, and now also fails if any native runtime table, its required columns, i
 into the rest of the graph, or its uniqueness guards are missing (§5) - so an incomplete or
 half-migrated schema is caught before the API is allowed to start, in either direction.
 
-`render.yaml`'s `buildFilter.paths` for `soko-market-api` now also includes `scripts/**` (it
+`render.yaml`'s `buildFilter.paths` for `soko-market` now also includes `scripts/**` (it
 previously did not) - the retired-runtime gate and the other `pnpm check:*` scripts it calls live
 there, so a change to them now correctly triggers an API rebuild/redeploy.
 

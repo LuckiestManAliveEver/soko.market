@@ -63,7 +63,7 @@ check(
 );
 check(renderBlueprint.includes("domains:\n      - soko.market"), "Render must declare soko.market");
 check(
-  renderBlueprint.includes("value: https://api.soko.market"),
+  renderBlueprint.includes("value: https://soko.market"),
   "Render web API origin must match the release identity"
 );
 check(identity.signing?.playAppSigning === true, "Play App Signing must be enabled");

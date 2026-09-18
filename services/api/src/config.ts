@@ -15,6 +15,10 @@ export function readEnvironment(): EnvironmentConfig {
   if (vercelInferenceUrl !== "" && inferenceServiceToken.length < 32) {
     throw new Error("SOKO_INFERENCE_SERVICE_TOKEN must contain at least 32 characters.");
   }
+  const metricsAuthToken = stringFromEnv("METRICS_AUTH_TOKEN", "").trim();
+  if (metricsAuthToken !== "" && metricsAuthToken.length < 32) {
+    throw new Error("METRICS_AUTH_TOKEN must contain at least 32 characters.");
+  }
   const neonModelStorageEndpoint = stringFromEnv("NEON_MODEL_STORAGE_ENDPOINT", "").trim();
   const neonModelStorageAccessKeyId = stringFromEnv("NEON_MODEL_STORAGE_ACCESS_KEY_ID", "").trim();
   const neonModelStorageSecretAccessKey = stringFromEnv(
@@ -56,6 +60,7 @@ export function readEnvironment(): EnvironmentConfig {
     workspaceDeliveryMaxFileBytes: numberFromEnv("WORKSPACE_DELIVERY_MAX_FILE_BYTES", 10_000_000),
     workspaceRoot: stringFromEnv("SOKO_WORKSPACE_ROOT", "").trim(),
     redisUrl: readRedisUrl(),
+    metricsAuthToken,
     platformDefaultRuntime: {
       agentId: portableIdFromEnv(
         "PLATFORM_DEFAULT_AGENT_ID",

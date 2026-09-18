@@ -28,7 +28,7 @@ Consequences:
   snapshot and diverge from the first the moment either one accepts a write. Postgres `LISTEN`/
   `NOTIFY` (`realtimeChannel` in `postgres-store.ts`) fans out change _notifications_ between
   instances for the sync protocol, but does not make two in-memory copies of the same mutable
-  state consistent. Do not add a second `soko-market-api` instance (or Render autoscaling) until
+  state consistent. Do not add a second `soko-market` instance (or Render autoscaling) until
   this is resolved.
 - **Restart loses the persistence queue's in-flight tail**: writes are queued and flushed async;
   a hard crash between a completed HTTP response and the queued Postgres write landing can lose
@@ -163,10 +163,14 @@ horizontally scalable.
 
 ## Recommended path, in order
 
-1. **Now / cheap**: monitor process RSS in production and alert before it approaches the Render
-   plan's memory limit; treat "add a second API instance" as blocked until step 3 lands. (Today's
-   `starter` plan is single-instance already, so there's no accidental exposure yet - this is
-   about not reaching for horizontal scaling as the fix when load grows.)
+1. **Now / cheap - done**: `GET /metrics` (see [`docs/observability.md`](./observability.md))
+   exposes process RSS/heap, CPU, and event-loop lag for free via `@soko/observability`, plus
+   HTTP/Neon-query/model-request latency histograms and connection-pool saturation gauges for the
+   same pools this document is about. Nothing scrapes it yet and there's no alerting wired to it -
+   that's the remaining part of "now / cheap" - but the numbers are real and queryable today, not
+   blocked on this rewrite. Treat "add a second API instance" as blocked until step 3 lands.
+   (Today's `starter` plan is single-instance already, so there's no accidental exposure yet - this
+   is about not reaching for horizontal scaling as the fix when load grows.)
 2. **Scoped follow-up**: make `otpRequestHistory`, `failedPinAttempts`, and `authAttemptsByIp`
    Redis-backed (the Redis instance now exists - see above). Smaller surface than the full rewrite,
    directly removes the "resets on restart" and "wouldn't work with >1 instance" gaps for the most

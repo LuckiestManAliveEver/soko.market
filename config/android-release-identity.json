@@ -27,7 +27,7 @@
     "scope": "https://soko.market/",
     "manifestUrl": "https://soko.market/manifest.webmanifest",
     "digitalAssetLinksUrl": "https://soko.market/.well-known/assetlinks.json",
-    "apiOrigin": "https://api.soko.market"
+    "apiOrigin": "https://soko.market"
   },
   "developer": {
     "accountType": "organization",

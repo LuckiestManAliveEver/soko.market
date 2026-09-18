@@ -108,7 +108,7 @@ for (const forbidden of forbiddenBlueprintMarkers) {
   }
 }
 
-const apiStart = blueprint.indexOf("name: soko-market-api");
+const apiStart = blueprint.indexOf("name: soko-market");
 const nextService = blueprint.indexOf("\n  - type:", apiStart);
 const apiService = blueprint.slice(apiStart, nextService === -1 ? undefined : nextService);
 
@@ -122,7 +122,7 @@ for (const forbidden of ["LOCAL_MODEL_", "llama.cpp", ".gguf", "OLLAMA_BASE_URL"
 // not a bare `apiService.includes("type: pserv")`, because the API's envVars legitimately contain
 // that substring inside a `fromService: { type: pserv }` reference to another private service (the
 // OCR worker, docs/receipt-ocr.md), which is not this boundary's concern.
-if (!/-\s+type:\s*web\s*\n\s*name:\s*soko-market-api/u.test(blueprint)) {
+if (!/-\s+type:\s*web\s*\n\s*name:\s*soko-market/u.test(blueprint)) {
   violations.push("Render API service must declare `type: web`, not a private service (pserv).");
 }
 for (const required of ["key: VERCEL_INFERENCE_URL", "key: SOKO_INFERENCE_SERVICE_TOKEN"]) {

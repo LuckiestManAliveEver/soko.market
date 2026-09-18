@@ -1,7 +1,11 @@
 import Fastify, { type FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
+import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
+import type { Metrics } from "@soko/observability";
 import type { HealthResponse, RuntimeModelDiagnostic } from "@soko/shared-types";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { registerCp2Routes, type Cp2RouteOptions } from "./cp2/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
 import { registerRenderDeployWebhook } from "./render-deploy-webhook.js";
@@ -37,6 +41,21 @@ export interface BuildApiOptions {
    * Omitted (e.g. in tests or local dev), the route is not registered at all.
    */
   renderDeployWebhookSecret?: string;
+  webRoot?: string | false;
+  /**
+   * When set, GET /metrics serves this registry's Prometheus text exposition (memory, CPU,
+   * event-loop lag, HTTP/DB/model request latency - see docs/observability.md) and every request
+   * is timed into its http_request_duration_seconds histogram. Omitted entirely in tests that
+   * don't care about metrics, so /metrics is simply not registered.
+   */
+  metrics?: Metrics;
+  /**
+   * Shared-secret gate for GET /metrics (checked against the `x-metrics-token` header). Metrics
+   * expose internal infrastructure detail (queue depth, pool sizing, per-route latency), so this
+   * should be set in any deployment reachable from the public internet. Omitted, the endpoint is
+   * unauthenticated - acceptable for local dev, not for production.
+   */
+  metricsAuthToken?: string;
 }
 
 export function buildApi(options: BuildApiOptions = {}) {
@@ -66,7 +85,7 @@ export function buildApi(options: BuildApiOptions = {}) {
     timeWindow: rateLimitWindowMs,
     hook: "onRequest",
     keyGenerator: (request) => request.ip,
-    allowList: (request) => request.url.startsWith("/health"),
+    allowList: (request) => request.url.startsWith("/health") || request.url === "/metrics",
     skipOnError: true,
     ...(options.rateLimitRedisClient === undefined ? {} : { redis: options.rateLimitRedisClient }),
     errorResponseBuilder: (_request, context) => ({
@@ -80,14 +99,13 @@ export function buildApi(options: BuildApiOptions = {}) {
   // Host: {handle}.soko.market resolves to that business's canonical storefront and redirects
   // there. Without the wildcard domain/DNS record actually pointed at this service, no such
   // request ever reaches it, so this hook is inert (and does nothing at all) until that one
-  // infrastructure step is done. api.soko.market and www.soko.market are excluded because they
-  // are this deployment's own fixed domains, not a store handle.
+  // infrastructure step is done. www.soko.market is excluded because it is this deployment's
+  // fixed alias, not a store handle.
   app.addHook("onRequest", async (request, reply) => {
     if (cp2Store === undefined) return;
     const requestHostname = request.hostname;
     if (
       !requestHostname.endsWith(`.${storefrontApexHostname}`) ||
-      requestHostname === `api.${storefrontApexHostname}` ||
       requestHostname === `www.${storefrontApexHostname}`
     ) {
       return;
@@ -272,6 +290,12 @@ export function buildApi(options: BuildApiOptions = {}) {
     const elapsedMs = Math.max(0, reply.elapsedTime);
     const budgetClass = responseBudgetClass(request.method, request.url);
     reply.log.debug({ event: "http.response_timing", elapsedMs, budgetClass });
+    options.metrics?.httpRequestDuration({
+      method: request.method,
+      route: request.routeOptions.url ?? "unmatched",
+      statusCode: reply.statusCode,
+      durationSeconds: elapsedMs / 1000
+    });
     if (budgetClass === "interactive" && elapsedMs > interactiveResponseBudgetMs) {
       request.log.warn(
         {
@@ -346,7 +370,7 @@ export function buildApi(options: BuildApiOptions = {}) {
   });
 
   void app.register(async (routes) => {
-    routes.get("/", async () => ({
+    routes.get("/api", async () => ({
       service: "api" as const,
       status: "ok" as const,
       health: "/health" as const,
@@ -421,6 +445,21 @@ export function buildApi(options: BuildApiOptions = {}) {
       });
     }
 
+    if (options.metrics !== undefined) {
+      const metrics = options.metrics;
+      routes.get("/metrics", async (request, reply) => {
+        if (
+          options.metricsAuthToken !== undefined &&
+          request.headers["x-metrics-token"] !== options.metricsAuthToken
+        ) {
+          reply.code(401);
+          return { code: "unauthorized", message: "Missing or invalid metrics token." };
+        }
+        reply.header("content-type", metrics.contentType);
+        return metrics.metricsText();
+      });
+    }
+
     if (options.databaseHealth !== undefined) {
       routes.get("/health/db", async () => {
         const database = await options.databaseHealth?.();
@@ -448,6 +487,48 @@ export function buildApi(options: BuildApiOptions = {}) {
       });
     }
   });
+
+  const defaultWebRoot = fileURLToPath(new URL("../../../apps/web/dist/", import.meta.url));
+  const webRoot = options.webRoot === undefined ? defaultWebRoot : options.webRoot;
+  if (process.env.NODE_ENV === "production" && webRoot !== false && !existsSync(webRoot)) {
+    throw new Error(`Production web bundle is missing at ${webRoot}.`);
+  }
+  if (webRoot !== false && existsSync(webRoot)) {
+    void app.register(fastifyStatic, {
+      root: webRoot,
+      wildcard: false,
+      decorateReply: true,
+      cacheControl: false,
+      setHeaders(response, pathName) {
+        response.setHeader(
+          "Content-Security-Policy",
+          "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; " +
+            "form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; " +
+            "font-src 'self' data:; manifest-src 'self'; worker-src 'self'; child-src 'self'; " +
+            "connect-src 'self' https://*.soko.market wss://*.soko.market; upgrade-insecure-requests"
+        );
+        response.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+        response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+        response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+        response.setHeader(
+          "Cache-Control",
+          pathName.includes("/assets/")
+            ? "public, max-age=31536000, immutable"
+            : "no-cache, must-revalidate"
+        );
+      }
+    });
+    app.setNotFoundHandler((request, reply) => {
+      const acceptsHtml = request.headers.accept?.includes("text/html") === true;
+      if ((request.method === "GET" || request.method === "HEAD") && acceptsHtml) {
+        return reply.sendFile("index.html");
+      }
+      return reply.code(404).send({
+        code: "route_not_found",
+        message: "This API route does not exist."
+      });
+    });
+  }
 
   return app;
 }
