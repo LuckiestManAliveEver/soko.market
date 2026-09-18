@@ -12,6 +12,8 @@ const semanticVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-
 const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const taskPattern = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/u;
 const checksumPattern = /^sha256:[0-9a-f]{64}$/u;
+export const emptyVocabularySnapshotId =
+  "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945";
 
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -61,6 +63,48 @@ export function validateManifest(manifest: SokoModelTemplateManifestV1): void {
   }
   if (manifest.tasks.length === 0 || manifest.tasks.some((task) => !taskPattern.test(task))) {
     throw invalidManifest("At least one namespaced task contract is required.");
+  }
+  if (
+    manifest.validatedTaskDistribution.id.trim().length === 0 ||
+    manifest.validatedTaskDistribution.description.trim().length === 0 ||
+    manifest.validatedTaskDistribution.suiteIds.length === 0
+  ) {
+    throw invalidManifest("Manifest must declare the validated task distribution.");
+  }
+  assertUnique(manifest.validatedTaskDistribution.suiteIds, "validated task distribution suites");
+  if (
+    manifest.minimumModelCapability.tier.trim().length === 0 ||
+    manifest.minimumModelCapability.requiredCapabilities.length === 0
+  ) {
+    throw invalidManifest("Manifest must declare a minimum model capability.");
+  }
+  assertUnique(
+    manifest.minimumModelCapability.requiredCapabilities,
+    "minimum model capability requirements"
+  );
+  if (
+    manifest.minimumModelCapability.minimumContextWindow !== null &&
+    (!Number.isSafeInteger(manifest.minimumModelCapability.minimumContextWindow) ||
+      manifest.minimumModelCapability.minimumContextWindow < 128)
+  ) {
+    throw invalidManifest(
+      "Minimum model capability context window must be null or an integer of at least 128 tokens."
+    );
+  }
+  if (
+    manifest.vocabularySnapshot.algorithm !== "APPROVED_VOCABULARY_SHA256_V1" ||
+    !checksumPattern.test(manifest.vocabularySnapshot.id)
+  ) {
+    throw invalidManifest("Manifest must declare a reproducible approved-vocabulary snapshot.");
+  }
+  if (manifest.evaluation.templateVocabularySnapshot !== manifest.vocabularySnapshot.id) {
+    throw invalidManifest("Evaluation vocabulary snapshot must match the template snapshot.");
+  }
+  if (
+    manifest.evaluation.currentVocabularySnapshot !== null &&
+    !checksumPattern.test(manifest.evaluation.currentVocabularySnapshot)
+  ) {
+    throw invalidManifest("Current vocabulary snapshot must be null or a SHA-256 snapshot id.");
   }
   assertUnique(manifest.tasks, "task contracts");
   assertUnique(manifest.capabilities, "capabilities");

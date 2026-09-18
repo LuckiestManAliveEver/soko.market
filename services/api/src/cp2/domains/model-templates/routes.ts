@@ -34,8 +34,67 @@ interface ImprovementParams extends BusinessParams {
 interface VersionParams extends BusinessParams {
   versionId: string;
 }
+interface VocabularyEntryParams extends BusinessParams {
+  vocabularyEntryId: string;
+}
 
 export function registerModelTemplateRoutes(app: FastifyInstance, store: Cp2Store): void {
+  app.get(
+    "/businesses/:businessId/vocabulary/candidates",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return {
+          entries: store.listVocabularyCandidates({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: request.params.businessId
+          }),
+          currentVocabularySnapshot: store.currentVocabularySnapshotId()
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/vocabulary/unknown-terms",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return reply.code(201).send(
+          store.recordUnknownVocabularyTerm({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: request.params.businessId,
+            surfaceForm: requiredString(body.surfaceForm, "surfaceForm"),
+            sourceSessionId: nullableString(body.sourceSessionId),
+            observedCanonicalTerm: nullableString(body.observedCanonicalTerm),
+            context: nullableString(body.context)
+          })
+        );
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/vocabulary/candidates/:vocabularyEntryId/review",
+    async (request: FastifyRequest<{ Params: VocabularyEntryParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return store.reviewVocabularyEntry({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          vocabularyEntryId: request.params.vocabularyEntryId,
+          action: requiredVocabularyAction(body.action),
+          canonicalTerm: nullableString(body.canonicalTerm)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post(
     "/businesses/:businessId/model-templates",
     async (request: FastifyRequest<{ Params: BusinessParams; Body: unknown }>, reply) => {
@@ -513,6 +572,11 @@ function requiredStrategy(value: unknown): OptimizationStrategy {
     return value as OptimizationStrategy;
   }
   throw invalidInput("Unknown optimization strategy.");
+}
+
+function requiredVocabularyAction(value: unknown): "APPROVE" | "REJECT" {
+  if (value === "APPROVE" || value === "REJECT") return value;
+  throw invalidInput("action must be APPROVE or REJECT.");
 }
 
 function invalidInput(message: string): Cp2Error {

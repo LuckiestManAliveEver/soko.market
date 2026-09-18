@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 import { createModelTemplatesDomain } from "../store.js";
 import { executeDeterministicRuleExpertise } from "../strategies.js";
 import type { SokoModelTemplateManifestV1, TemplateTelemetryEvent } from "../types.js";
+import { emptyVocabularySnapshotId } from "../manifest.js";
 
 const businessId = "demo-retail-business";
 const accountId = "demo-retail-account";
@@ -202,6 +203,20 @@ function retailProductManifest(): SokoModelTemplateManifestV1 {
       agentId: "builtin:shopkeeper"
     },
     tasks: ["catalog.product-classify"],
+    validatedTaskDistribution: {
+      id: "demo.retail-product-classify",
+      description: "Demo retail product classification evaluation distribution.",
+      suiteIds: ["demo-suite"]
+    },
+    minimumModelCapability: {
+      tier: "local-chat-2048",
+      requiredCapabilities: ["chat"],
+      minimumContextWindow: 2048
+    },
+    vocabularySnapshot: {
+      id: emptyVocabularySnapshotId,
+      algorithm: "APPROVED_VOCABULARY_SHA256_V1"
+    },
     capabilities: ["structured-output", "offline"],
     baseModel: {
       mode: "compatible",
@@ -250,7 +265,12 @@ function retailProductManifest(): SokoModelTemplateManifestV1 {
         }
       }
     },
-    evaluation: { suiteIds: [], baselineMetrics: {} },
+    evaluation: {
+      suiteIds: [],
+      baselineMetrics: {},
+      templateVocabularySnapshot: emptyVocabularySnapshotId,
+      currentVocabularySnapshot: emptyVocabularySnapshotId
+    },
     lineage: {
       parentVersionId: null,
       improvementRunId: null,

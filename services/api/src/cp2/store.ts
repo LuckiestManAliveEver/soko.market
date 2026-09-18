@@ -297,6 +297,7 @@ import {
   ModelTemplatesDomain,
   type ModelTemplatesSnapshot
 } from "./domains/model-templates/store.js";
+import { VocabularyDomain, type VocabularySnapshot } from "./domains/model-templates/vocabulary.js";
 import type {
   JudgeEvaluator,
   TemplateExecutor,
@@ -593,7 +594,7 @@ export interface RoleCheckResult {
   permission: BusinessPermission;
 }
 
-export interface Cp2Snapshot extends ModelTemplatesSnapshot {
+export interface Cp2Snapshot extends ModelTemplatesSnapshot, VocabularySnapshot {
   accounts: AccountSummary[];
   users: UserSummary[];
   deviceAccountBootstraps?: DeviceAccountBootstrapRecord[];
@@ -1171,6 +1172,11 @@ export class Cp2Store {
           console.info(JSON.stringify(event));
         })
     });
+    this.vocabularyDomain = new VocabularyDomain({
+      requireAccess: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedActor(sessionId, businessId, permission, now)
+    });
+    this.vocabularyDomain.initializeApprovedCache();
     this.agentRuntimeDomain = new AgentRuntimeDomain({
       acquireRuntimeTurn: (...args) => this.runtimeHandoffDomain.acquireTurn(...args),
       checkpointRuntimeTurn: (...args) => this.runtimeHandoffDomain.checkpointAfterTurn(...args),
@@ -1464,6 +1470,7 @@ export class Cp2Store {
   // `mcpTokenIdByHash` deliberately stay here (see that domain's header comment for why).
   private readonly agentRuntimeDomain: AgentRuntimeDomain;
   private readonly modelTemplatesDomain: ModelTemplatesDomain;
+  private readonly vocabularyDomain: VocabularyDomain;
   private readonly nativeRuntimeBindings: NativeRuntimeBindingStore;
   // Runtime Handoff Protocol state (see docs/architecture/runtime-handoff-protocol.md) - lives in
   // its own domain rather than folded into `nativeRuntimeBindings` (which resolves/configures the
@@ -6505,6 +6512,34 @@ export class Cp2Store {
     return this.modelTemplatesDomain.verifyArtifact(...args);
   }
 
+  resolveVocabulary(
+    ...args: Parameters<VocabularyDomain["resolveVocabulary"]>
+  ): ReturnType<VocabularyDomain["resolveVocabulary"]> {
+    return this.vocabularyDomain.resolveVocabulary(...args);
+  }
+
+  recordUnknownVocabularyTerm(
+    ...args: Parameters<VocabularyDomain["recordUnknownTerm"]>
+  ): ReturnType<VocabularyDomain["recordUnknownTerm"]> {
+    return this.vocabularyDomain.recordUnknownTerm(...args);
+  }
+
+  listVocabularyCandidates(
+    ...args: Parameters<VocabularyDomain["listVocabularyCandidates"]>
+  ): ReturnType<VocabularyDomain["listVocabularyCandidates"]> {
+    return this.vocabularyDomain.listVocabularyCandidates(...args);
+  }
+
+  reviewVocabularyEntry(
+    ...args: Parameters<VocabularyDomain["reviewVocabularyEntry"]>
+  ): ReturnType<VocabularyDomain["reviewVocabularyEntry"]> {
+    return this.vocabularyDomain.reviewVocabularyEntry(...args);
+  }
+
+  currentVocabularySnapshotId(): string {
+    return this.vocabularyDomain.currentVocabularySnapshotId();
+  }
+
   deleteNetworkSource(
     ...args: Parameters<NetworkDomain["deleteNetworkSource"]>
   ): ReturnType<NetworkDomain["deleteNetworkSource"]> {
@@ -6613,6 +6648,13 @@ export class Cp2Store {
       templateRuntimeBindings: [
         ...this.modelTemplatesDomain.templateRuntimeBindingsMap.values()
       ].map(cloneSnapshotValue),
+      vocabularyEntries: [...this.vocabularyDomain.vocabularyEntriesMap.values()].map(
+        cloneSnapshotValue
+      ),
+      vocabularyOccurrences: [...this.vocabularyDomain.vocabularyOccurrencesMap.values()].map(
+        cloneSnapshotValue
+      ),
+      cacheLoaded: true,
       nativeRuntimeAgents: [...this.nativeRuntimeBindings.agentsMap.values()],
       nativeRuntimeModels: [...this.nativeRuntimeBindings.modelsMap.values()],
       nativeExecutionHosts: [...this.nativeRuntimeBindings.hostsMap.values()],
@@ -6735,6 +6777,7 @@ export class Cp2Store {
     this.marketplaceIntroStates.clear();
     this.agentRuntimeDomain.clear();
     this.modelTemplatesDomain.clear();
+    this.vocabularyDomain.clear();
     this.nativeRuntimeBindings.clear();
     this.runtimeHandoffDomain.clear();
     this.modelCatalog.clear();
@@ -6830,6 +6873,7 @@ export class Cp2Store {
     this.messagingDomain.restore(snapshot);
     this.agentRuntimeDomain.restore(snapshot);
     this.modelTemplatesDomain.restore(snapshot);
+    this.vocabularyDomain.restore(snapshot);
     this.nativeRuntimeBindings.restore(snapshot);
     this.runtimeHandoffDomain.restore(snapshot);
     this.salesDomain.restore(snapshot);
@@ -9810,6 +9854,7 @@ export class Cp2Store {
 
   private deleteShopOwnedData(businessId: string, accountId: string, now: Date): void {
     this.modelTemplatesDomain.deleteBusinessData(businessId);
+    this.vocabularyDomain.deleteBusinessData(businessId);
     this.recordSyncChange({
       accountId,
       collection: "shops",
@@ -10066,6 +10111,7 @@ export class Cp2Store {
     while (previousScopeSize !== scope.size) {
       previousScopeSize = scope.size;
       deletedRecordCount += this.modelTemplatesDomain.deleteBusinessesInScope(scope);
+      deletedRecordCount += this.vocabularyDomain.deleteBusinessesInScope(scope);
       deletedRecordCount += deleteScopedMapRecords(this.accounts, scope);
       deletedRecordCount += deleteScopedMapRecords(this.users, scope);
       deletedRecordCount += deleteScopedMapRecords(

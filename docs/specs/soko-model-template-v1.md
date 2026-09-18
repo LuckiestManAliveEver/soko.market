@@ -34,20 +34,23 @@ objects when policy and size permit.
 `SokoModelTemplateManifestV1` in `model-templates/types.ts` is the executable contract. Required
 top-level fields are:
 
-| Field           | Requirement                                                                               |
-| --------------- | ----------------------------------------------------------------------------------------- |
-| `format`        | Literal `soko-template`                                                                   |
-| `formatVersion` | Integer `1`                                                                               |
-| `template`      | Stable ID, kebab-case slug, name, semantic version, domain, owning business, and agent ID |
-| `tasks`         | One or more namespaced task contracts such as `catalog.product-classify`                  |
-| `capabilities`  | Declared expertise/runtime capabilities; these do not grant permission                    |
-| `baseModel`     | Compatibility requirements, preferred/tested bases, and explicit incompatibilities        |
-| `expertise`     | Portable source expertise plus optional base-specific compiled artifacts                  |
-| `runtime`       | Prompt, registered Soko tools, output schemas, context requirements, constraints          |
-| `evaluation`    | Frozen suite references and baseline metric metadata                                      |
-| `lineage`       | Parent, improvement run, dataset version, actor, timestamp, and change summary            |
-| `ownership`     | Business and distribution visibility                                                      |
-| `checksums`     | Safe relative path to `sha256:<64 lowercase hex>`                                         |
+| Field                       | Requirement                                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------------- |
+| `format`                    | Literal `soko-template`                                                                   |
+| `formatVersion`             | Integer `1`                                                                               |
+| `template`                  | Stable ID, kebab-case slug, name, semantic version, domain, owning business, and agent ID |
+| `tasks`                     | One or more namespaced task contracts such as `catalog.product-classify`                  |
+| `validatedTaskDistribution` | The frozen task/benchmark distribution used to validate this recipe                       |
+| `minimumModelCapability`    | The lowest declared capability tier for which the recipe was validated                    |
+| `vocabularySnapshot`        | Reproducible identity of the approved vocabulary dictionary used during evaluation        |
+| `capabilities`              | Declared expertise/runtime capabilities; these do not grant permission                    |
+| `baseModel`                 | Compatibility requirements, preferred/tested bases, and explicit incompatibilities        |
+| `expertise`                 | Portable source expertise plus optional base-specific compiled artifacts                  |
+| `runtime`                   | Prompt, registered Soko tools, output schemas, context requirements, constraints          |
+| `evaluation`                | Frozen suite references and baseline metric metadata                                      |
+| `lineage`                   | Parent, improvement run, dataset version, actor, timestamp, and change summary            |
+| `ownership`                 | Business and distribution visibility                                                      |
+| `checksums`                 | Safe relative path to `sha256:<64 lowercase hex>`                                         |
 
 Unknown tool IDs are invalid. Tool declarations are requests to the existing Soko tool and policy
 pipeline, never authority to invoke arbitrary shell, network, filesystem, or provider tools.
@@ -76,6 +79,21 @@ Compiled artifacts are replaceable products of a strategy. `PROMPT` and vocabula
 be base-neutral. `ADAPTER` and `DELTA` artifacts must specify `baseModelId` and
 `baseArchitecture`. Runtime resolution rejects an architecture-free adapter; it never pretends an
 adapter is universally portable.
+
+## Vocabulary Canonicalization
+
+Approved vocabulary is authoritative in Neon/CP2 storage and projected into an in-process runtime
+cache. Runtime resolution is exact-match only: no fuzzy matching, typo correction, embeddings,
+stemming, edit distance, or model-assisted lookup may participate in deterministic canonicalization.
+Only `APPROVED` entries can resolve input; `CANDIDATE` and `REJECTED` entries remain review/audit
+state. Repeated unknown terms are deduped by business and surface form while preserving each sighting
+as occurrence evidence.
+
+The vocabulary snapshot identity is `APPROVED_VOCABULARY_SHA256_V1`: sort approved
+`surfaceForm -> canonicalTerm` mappings by `surfaceForm`, serialize canonically, and SHA-256 hash
+that effective resolver mapping. Audit timestamps and rejected/candidate evidence do not affect the
+snapshot. Template invocation records both the template snapshot and the current runtime snapshot so
+dictionary drift is observable without freezing production vocabulary.
 
 ## Versioning
 
@@ -162,6 +180,20 @@ enter a training dataset. Secret-shaped keys are redacted before observation per
     "agentId": "shop-agent-id"
   },
   "tasks": ["inventory.reorder"],
+  "validatedTaskDistribution": {
+    "id": "inventory.reorder.v1",
+    "description": "Frozen reorder benchmark distribution.",
+    "suiteIds": ["suite:inventory-reorder-v1"]
+  },
+  "minimumModelCapability": {
+    "tier": "chat-2048",
+    "requiredCapabilities": ["chat"],
+    "minimumContextWindow": 2048
+  },
+  "vocabularySnapshot": {
+    "id": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "algorithm": "APPROVED_VOCABULARY_SHA256_V1"
+  },
   "capabilities": ["structured-output"],
   "baseModel": {
     "mode": "compatible",
@@ -184,7 +216,12 @@ enter a training dataset. Secret-shaped keys are redacted before observation per
     "contextRequirements": [],
     "constraints": {}
   },
-  "evaluation": { "suiteIds": [], "baselineMetrics": {} },
+  "evaluation": {
+    "suiteIds": [],
+    "baselineMetrics": {},
+    "templateVocabularySnapshot": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "currentVocabularySnapshot": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  },
   "lineage": {
     "parentVersionId": null,
     "improvementRunId": null,

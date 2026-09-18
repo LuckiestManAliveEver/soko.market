@@ -61,6 +61,20 @@ export interface SokoModelTemplateManifestV1 {
     agentId: string;
   };
   tasks: string[];
+  validatedTaskDistribution: {
+    id: string;
+    description: string;
+    suiteIds: string[];
+  };
+  minimumModelCapability: {
+    tier: string;
+    requiredCapabilities: string[];
+    minimumContextWindow: number | null;
+  };
+  vocabularySnapshot: {
+    id: string;
+    algorithm: "APPROVED_VOCABULARY_SHA256_V1";
+  };
   capabilities: string[];
   baseModel: {
     mode: "compatible";
@@ -80,6 +94,8 @@ export interface SokoModelTemplateManifestV1 {
   evaluation: {
     suiteIds: string[];
     baselineMetrics: Record<string, number | null>;
+    templateVocabularySnapshot: string;
+    currentVocabularySnapshot: string | null;
   };
   lineage: {
     parentVersionId: string | null;

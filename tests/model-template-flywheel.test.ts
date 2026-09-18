@@ -4,7 +4,10 @@ import type { RuntimeModelPrompt, RuntimeModelProvider } from "../packages/share
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 import { runRetailProductExpertDemo } from "../services/api/src/cp2/domains/model-templates/demo/demo-run";
-import { validateManifest } from "../services/api/src/cp2/domains/model-templates/manifest";
+import {
+  emptyVocabularySnapshotId,
+  validateManifest
+} from "../services/api/src/cp2/domains/model-templates/manifest";
 import { createModelTemplatesDomain } from "../services/api/src/cp2/domains/model-templates/store";
 import { executeDeterministicRuleExpertise } from "../services/api/src/cp2/domains/model-templates/strategies";
 import type {
@@ -559,6 +562,20 @@ function manifest(businessId: string, agentId: string): SokoModelTemplateManifes
       agentId
     },
     tasks: ["catalog.product-classify"],
+    validatedTaskDistribution: {
+      id: "test.retail-product-classify",
+      description: "Retail product classification test distribution.",
+      suiteIds: ["suite:test"]
+    },
+    minimumModelCapability: {
+      tier: "local-chat-2048",
+      requiredCapabilities: ["chat"],
+      minimumContextWindow: 2048
+    },
+    vocabularySnapshot: {
+      id: emptyVocabularySnapshotId,
+      algorithm: "APPROVED_VOCABULARY_SHA256_V1"
+    },
     capabilities: ["structured-output"],
     baseModel: {
       mode: "compatible",
@@ -593,7 +610,12 @@ function manifest(businessId: string, agentId: string): SokoModelTemplateManifes
       contextRequirements: [],
       constraints: { defaultOutput: product("unknown", "unknown", 1, "unit") }
     },
-    evaluation: { suiteIds: [], baselineMetrics: {} },
+    evaluation: {
+      suiteIds: [],
+      baselineMetrics: {},
+      templateVocabularySnapshot: emptyVocabularySnapshotId,
+      currentVocabularySnapshot: emptyVocabularySnapshotId
+    },
     lineage: {
       parentVersionId: null,
       improvementRunId: null,

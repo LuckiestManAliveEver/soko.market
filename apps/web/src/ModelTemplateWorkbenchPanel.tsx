@@ -107,6 +107,8 @@ const emptyTemplateDraft: TemplateDraft = {
   instructions: "",
   changeSummary: "Initial version"
 };
+const emptyVocabularySnapshotId =
+  "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945";
 
 interface CaseDraft {
   name: string;
@@ -266,6 +268,20 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
           agentId: businessId
         },
         tasks,
+        validatedTaskDistribution: {
+          id: `${domain}.manual`,
+          description: `Manual validation distribution for ${name}.`,
+          suiteIds: ["manual-validation"]
+        },
+        minimumModelCapability: {
+          tier: "declared-runtime",
+          requiredCapabilities: ["chat"],
+          minimumContextWindow: null
+        },
+        vocabularySnapshot: {
+          id: emptyVocabularySnapshotId,
+          algorithm: "APPROVED_VOCABULARY_SHA256_V1"
+        },
         capabilities: splitList(templateDraft.capabilities),
         baseModel: {
           mode: "compatible",
@@ -292,7 +308,12 @@ export function ModelTemplateWorkbenchPanel({ businessId }: { businessId: string
           contextRequirements: [],
           constraints: {}
         },
-        evaluation: { suiteIds: [], baselineMetrics: {} },
+        evaluation: {
+          suiteIds: [],
+          baselineMetrics: {},
+          templateVocabularySnapshot: emptyVocabularySnapshotId,
+          currentVocabularySnapshot: emptyVocabularySnapshotId
+        },
         lineage: {
           parentVersionId: null,
           improvementRunId: null,

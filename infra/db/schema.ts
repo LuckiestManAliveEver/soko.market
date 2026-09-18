@@ -1053,3 +1053,45 @@ export const cp2StoreSnapshots = pgTable("cp2_store_snapshots", {
   data: jsonb("data").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
 });
+
+export const cp2VocabularyEntries = pgTable(
+  "cp2_vocabulary_entries",
+  {
+    entityId: text("entity_id").primaryKey(),
+    businessId: text("business_id").notNull(),
+    accountId: text("account_id").notNull(),
+    userId: text("user_id"),
+    record: jsonb("record").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    surfaceUnique: uniqueIndex("cp2_vocabulary_entries_surface_idx").on(
+      table.businessId,
+      sql`(${table.record} ->> 'surfaceForm')`
+    ),
+    review: index("cp2_vocabulary_entries_review_idx").on(
+      table.businessId,
+      sql`(${table.record} ->> 'status')`,
+      sql`(${table.record} ->> 'createdAt')`
+    )
+  })
+);
+
+export const cp2VocabularyOccurrences = pgTable(
+  "cp2_vocabulary_occurrences",
+  {
+    entityId: text("entity_id").primaryKey(),
+    businessId: text("business_id").notNull(),
+    accountId: text("account_id").notNull(),
+    userId: text("user_id"),
+    parentId: text("parent_id").notNull(),
+    record: jsonb("record").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    entry: index("cp2_vocabulary_occurrences_entry_idx").on(
+      table.parentId,
+      sql`(${table.record} ->> 'createdAt')`
+    )
+  })
+);
