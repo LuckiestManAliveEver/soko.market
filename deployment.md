@@ -28,6 +28,8 @@ security headers.
 3. Copy all secret values from the old `soko-market-api` service into the matching `sync: false`
    variables on `soko-market`. Do not generate new authentication, encryption, VAPID, inference,
    or webhook secrets during the move.
+   At minimum, preserve `OTP_HMAC_SECRET`, `PASSWORD_HASH_SECRET`, `AUTH_AUDIT_HMAC_SECRET`,
+   `PIN_HASH_SECRET`, `AUTH_TOKEN_ENCRYPTION_KEY`, and `SOKO_INFERENCE_SERVICE_TOKEN` exactly.
 4. Point `DATABASE_URL` and `DIRECT_DATABASE_URL` at the existing production Neon database. This
    moves the application process, not the merchant data.
 5. Confirm `soko-market` can reach `soko-market-ocr-worker` and
@@ -63,6 +65,9 @@ Every `sync: false` value must be supplied in the Render dashboard. Preserve exi
 moving from the old service, especially database URLs, hash/encryption secrets, VAPID keys,
 `SOKO_INFERENCE_SERVICE_TOKEN`, model-storage credentials, provider tokens, and
 `RENDER_DEPLOY_WEBHOOK_SECRET`.
+
+Before deploying, verify `SOKO_INFERENCE_SERVICE_TOKEN` has the exact same value in the Vercel
+inference project. A mismatch makes every proxied inference request fail authentication.
 
 ## Verification
 

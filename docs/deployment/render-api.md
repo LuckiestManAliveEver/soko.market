@@ -27,7 +27,7 @@ PLATFORM_DEFAULT_EXECUTION_TARGET=vercel
 VERCEL_INFERENCE_URL=<generated per environment, sync: false>
 VERCEL_INFERENCE_TIMEOUT_MS=300000
 INFERENCE_REQUIRED=true
-SOKO_INFERENCE_SERVICE_TOKEN=<generateValue: true - copy the same value into Vercel>
+SOKO_INFERENCE_SERVICE_TOKEN=<copy the existing shared value from the old API and Vercel>
 NEON_MODEL_STORAGE_ENDPOINT=<sync: false>
 NEON_MODEL_STORAGE_REGION=us-east-1
 NEON_MODEL_STORAGE_ACCESS_KEY_ID=<sync: false>
@@ -39,13 +39,13 @@ INFERENCE_JOB_TIMEOUT_MS=120000
 INFERENCE_JOB_SIGNING_SECRET=<generateValue: true>
 ```
 
-`VERCEL_INFERENCE_URL` and the `NEON_MODEL_STORAGE_*` credentials are `sync: false` in `render.yaml`
-
-- they must be set by hand in the Render dashboard, since they reference infrastructure Render does
-  not provision itself. `SOKO_INFERENCE_SERVICE_TOKEN` and `INFERENCE_JOB_SIGNING_SECRET` are
-  `generateValue: true`; copy the generated `SOKO_INFERENCE_SERVICE_TOKEN` into the Vercel project's
-  own environment variables (see [vercel-inference.md](./vercel-inference.md)) - Render cannot push it
-  there automatically, since Vercel is not a service declared in this Blueprint.
+`VERCEL_INFERENCE_URL`, `SOKO_INFERENCE_SERVICE_TOKEN`, and the `NEON_MODEL_STORAGE_*` credentials
+are `sync: false` in `render.yaml`; they must be set by hand in the Render dashboard because they
+reference infrastructure Render does not provision itself. Preserve the existing shared
+`SOKO_INFERENCE_SERVICE_TOKEN` during this service migration and verify Vercel has the exact same
+value (see [vercel-inference.md](./vercel-inference.md)). `INFERENCE_JOB_SIGNING_SECRET` remains
+Render-generated because it is internal to this service and does not authenticate another
+provider.
 
 ## What the API does and does not do
 

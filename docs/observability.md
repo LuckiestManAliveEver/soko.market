@@ -50,7 +50,7 @@ Connection-pool saturation as a ratio:
 ```bash
 curl -s http://127.0.0.1:4000/metrics
 # or, in production, with the auth token set:
-curl -s -H "x-metrics-token: $METRICS_AUTH_TOKEN" https://api.soko.market/metrics
+curl -s -H "x-metrics-token: $METRICS_AUTH_TOKEN" https://soko.market/metrics
 ```
 
 `METRICS_AUTH_TOKEN` (render.yaml, `generateValue: true`) gates the endpoint in any

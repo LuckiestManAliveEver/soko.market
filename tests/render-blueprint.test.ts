@@ -34,17 +34,18 @@ describe("Render Blueprint", () => {
       blueprint.indexOf("name: soko-market-rate-limit-cache")
     );
 
-    for (const generatedSecret of [
+    for (const continuitySecret of [
       "PASSWORD_HASH_SECRET",
       "AUTH_AUDIT_HMAC_SECRET",
       "OTP_HMAC_SECRET",
-      "AUTH_TOKEN_ENCRYPTION_KEY"
+      "PIN_HASH_SECRET",
+      "AUTH_TOKEN_ENCRYPTION_KEY",
+      "SOKO_INFERENCE_SERVICE_TOKEN"
     ]) {
-      expect(api).toContain(`${generatedSecret}\n        generateValue: true`);
+      expect(api).toContain(`${continuitySecret}\n        sync: false`);
+      expect(api).not.toContain(`${continuitySecret}\n        generateValue: true`);
     }
-    for (const configuredSecret of ["RESEND_API_KEY"]) {
-      expect(api).toContain(`${configuredSecret}\n        sync: false`);
-    }
+    expect(api).toContain("RESEND_API_KEY\n        sync: false");
     expect(api).not.toMatch(/AUTH_SMS|SMS_GATEWAY|ANDROID_SMS|LOCAL_SMS/u);
     expect(api).toContain('SOKO_EMAIL_FROM\n        value: "Soko <messages@soko.market>"');
   });
@@ -114,7 +115,7 @@ describe("Render Blueprint", () => {
     expect(api).not.toContain(".gguf");
     expect(api).toContain("key: VERCEL_INFERENCE_URL");
     expect(api).toContain("key: SOKO_INFERENCE_SERVICE_TOKEN");
-    expect(api).toContain("SOKO_INFERENCE_SERVICE_TOKEN\n        generateValue: true");
+    expect(api).toContain("SOKO_INFERENCE_SERVICE_TOKEN\n        sync: false");
     expect(api).toContain("key: NEON_MODEL_STORAGE_ENDPOINT");
     expect(api).toContain("key: NEON_MODEL_STORAGE_ACCESS_KEY_ID");
     expect(api).toContain("key: NEON_MODEL_STORAGE_SECRET_ACCESS_KEY");

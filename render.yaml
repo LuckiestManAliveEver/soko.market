@@ -82,15 +82,15 @@ services:
       - key: SESSION_REUSE_DETECTION_ENABLED
         value: "true"
       - key: OTP_HMAC_SECRET
-        generateValue: true
+        sync: false
       - key: PASSWORD_HASH_SECRET
-        generateValue: true
+        sync: false
       - key: AUTH_AUDIT_HMAC_SECRET
-        generateValue: true
+        sync: false
       - key: PIN_HASH_SECRET
-        generateValue: true
+        sync: false
       - key: AUTH_TOKEN_ENCRYPTION_KEY
-        generateValue: true
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: SOKO_EMAIL_FROM
@@ -143,11 +143,10 @@ services:
       - key: INFERENCE_REQUIRED
         value: "true"
       # Shared bearer secret between this service and services/ai-runtime's Vercel deployment.
-      # Render and Vercel are separate platforms, so this cannot use Render's fromService linking
-      # (docs/deployment/vercel-inference.md) - generate a value here, then copy it into the
-      # Vercel project's SOKO_INFERENCE_SERVICE_TOKEN environment variable by hand.
+      # Preserve the existing value during the service migration and configure that exact value
+      # in both Render and Vercel; Blueprint sync cannot link secrets across providers.
       - key: SOKO_INFERENCE_SERVICE_TOKEN
-        generateValue: true
+        sync: false
       - key: NEON_MODEL_STORAGE_ENDPOINT
         sync: false
       - key: NEON_MODEL_STORAGE_REGION
