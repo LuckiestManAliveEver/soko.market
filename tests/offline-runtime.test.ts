@@ -499,6 +499,15 @@ describe("Offline runtime API integration", () => {
           body: { fileName: "tomatoes.png", contentType: "image/png", contentBase64: "!!!!" }
         })
       ).rejects.toThrow("invalid");
+      // Unpadded base64 (length % 4 of 2 or 3, not just the already-covered 1) must also be
+      // rejected rather than silently truncated by Buffer.from's lenient decoder.
+      for (const malformed of ["QUJDRA", "QUJDRQE"]) {
+        await expect(
+          local.call("productCaptures.ocr.create", {
+            body: { fileName: "tomatoes.png", contentType: "image/png", contentBase64: malformed }
+          })
+        ).rejects.toThrow("invalid");
+      }
       await expect(
         local.call("productCaptures.ocr.create", {
           body: {
@@ -547,6 +556,37 @@ describe("Offline runtime API integration", () => {
         `/businesses/${fixture.scope.storeId}/product-captures/${cloudId}`
       );
       expect(repeated.json().id).toBe(cloudId);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+  it("still enforces server-side fileName length limits on a product capture synced from offline, even with no image bytes to gate on", async () => {
+    const fixture = await serverFixture();
+    try {
+      const db = await database();
+      await install(db, fixture.scope);
+      const ocr = vi.fn(async () => ({
+        engine: "tesseract" as const,
+        engineVersion: "7.0.0",
+        modelVersion: "eng-4.0.0_best_int",
+        profile: "mobile" as const,
+        fallbackUsed: false,
+        blocks: [],
+        fullText: "Tomatoes\nKSh 150",
+        averageConfidence: 0.9,
+        warnings: []
+      }));
+      const local = new LocalProvider(db, fixture.scope, undefined, ocr);
+      await local.call("productCaptures.ocr.create", {
+        body: {
+          fileName: `${"a".repeat(300)}.jpg`,
+          contentType: "image/jpeg",
+          contentBase64: "Zm9v"
+        }
+      });
+      const sync = new SyncClient(db, fixture.scope, fixture.transport);
+      await sync.sync();
+      expect((await db.read(fixture.scope)).operations[0]?.syncStatus).toBe("REJECTED");
     } finally {
       await fixture.app.close();
     }

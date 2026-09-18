@@ -1325,6 +1325,15 @@ export interface ProductMediaSummary {
   createdAt: string;
 }
 
+/**
+ * The only image types camera product capture accepts, online or offline - one constant so the
+ * online route (services/api/src/cp2/domains/commerce/routes.ts) and the offline local provider
+ * (packages/offline-runtime/providers/local-provider.ts) can never silently drift apart on which
+ * types they accept.
+ */
+export const productCaptureImageContentTypes = ["image/jpeg", "image/png", "image/webp"] as const;
+export type ProductCaptureImageContentType = (typeof productCaptureImageContentTypes)[number];
+
 export type ProductCaptureStatus =
   | "CAPTURED"
   | "QUEUED"

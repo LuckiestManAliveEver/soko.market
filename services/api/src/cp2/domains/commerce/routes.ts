@@ -11,7 +11,12 @@
  */
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { BuyCheckoutItemInput, BuyResultSourceKind } from "@soko/shared-types";
+import {
+  productCaptureImageContentTypes,
+  type BuyCheckoutItemInput,
+  type BuyResultSourceKind,
+  type ProductCaptureImageContentType
+} from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
 import type { BinaryUploadPipeline } from "../../binary-upload-pipeline.js";
@@ -183,7 +188,7 @@ export function registerCommerceRoutes(
           );
         }
         const contentType = upload.contentType?.trim() || "application/octet-stream";
-        if (!["image/jpeg", "image/png", "image/webp"].includes(contentType)) {
+        if (!(productCaptureImageContentTypes as readonly string[]).includes(contentType)) {
           throw new Cp2Error(415, "product_capture_type_unsupported", "Use JPEG, PNG, or WebP.");
         }
         const binary = decodeReceiptBase64(upload.contentBase64);
@@ -220,7 +225,7 @@ export function registerCommerceRoutes(
           sessionId,
           businessId: request.params.businessId,
           sourceFileName: upload.fileName,
-          contentType: contentType as "image/jpeg" | "image/png" | "image/webp",
+          contentType: contentType as ProductCaptureImageContentType,
           contentBase64: binary.toString("base64"),
           sourceChecksum: createHash("sha256").update(binary).digest("hex"),
           extractedText,
@@ -564,13 +569,13 @@ export function registerCommerceRoutes(
  */
 export function parseProductCaptureOfflineBody(body: unknown): {
   fileName: string;
-  contentType: "image/jpeg" | "image/png" | "image/webp";
+  contentType: ProductCaptureImageContentType;
   extractedText: string;
   averageConfidence: number | null;
 } {
   const record = parseRequestBody(body);
   const contentType = parseString(record.contentType, "contentType");
-  if (!["image/jpeg", "image/png", "image/webp"].includes(contentType)) {
+  if (!(productCaptureImageContentTypes as readonly string[]).includes(contentType)) {
     throw new Cp2Error(
       400,
       "product_capture_type_unsupported",
@@ -579,7 +584,7 @@ export function parseProductCaptureOfflineBody(body: unknown): {
   }
   return {
     fileName: parseString(record.fileName, "fileName"),
-    contentType: contentType as "image/jpeg" | "image/png" | "image/webp",
+    contentType: contentType as ProductCaptureImageContentType,
     extractedText: typeof record.extractedText === "string" ? record.extractedText : "",
     averageConfidence:
       record.averageConfidence === null || record.averageConfidence === undefined

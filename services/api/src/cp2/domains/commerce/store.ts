@@ -170,6 +170,7 @@ export class CommerceDomain {
       input.averageConfidence === null || input.averageConfidence === undefined
         ? null
         : Math.min(1, Math.max(0, input.averageConfidence));
+    const sourceFileName = normalizeRequiredBoundedText(input.sourceFileName, "fileName", 255);
     const mediaId = input.contentBase64 ? randomUUID() : null;
     if (mediaId !== null) {
       const byteLength = Buffer.from(input.contentBase64 as string, "base64").byteLength;
@@ -178,7 +179,7 @@ export class CommerceDomain {
         businessId: input.businessId,
         productId: null,
         contentType: input.contentType,
-        fileName: normalizeRequiredBoundedText(input.sourceFileName, "fileName", 255),
+        fileName: sourceFileName,
         checksum: input.sourceChecksum ?? "",
         byteLength,
         publicUrl: `/public/product-media/${mediaId}`,
@@ -218,29 +219,25 @@ export class CommerceDomain {
             query: title,
             limit: 5
           }).products.map((product) => product.productId);
+    const fields = {
+      title: captureField(title, confidence),
+      category: captureField<string>(null, null),
+      description: captureField(text.length > 0 ? text.slice(0, 1000) : null, confidence),
+      visiblePrice: captureField(visiblePrice, visiblePrice === null ? null : confidence)
+    };
     const job: ProductCaptureJobSummary = {
       id: randomUUID(),
       businessId: input.businessId,
       uploadedBy: auth.user.id,
       status: text.length > 0 ? "REVIEW_REQUIRED" : "EXTRACTION_FAILED",
       statusHistory,
-      sourceFileName: input.sourceFileName,
+      sourceFileName,
       contentType: input.contentType,
       sourceChecksum: input.sourceChecksum ?? "",
       temporaryMediaId: mediaId,
-      fields: {
-        title: captureField(title, confidence),
-        category: captureField<string>(null, null),
-        description: captureField(text.length > 0 ? text.slice(0, 1000) : null, confidence),
-        visiblePrice: captureField(visiblePrice, visiblePrice === null ? null : confidence)
-      },
+      fields,
       detectionAvailable: false,
-      items: productCaptureItemsFromFields({
-        title: captureField(title, confidence),
-        category: captureField<string>(null, null),
-        description: captureField(text.length > 0 ? text.slice(0, 1000) : null, confidence),
-        visiblePrice: captureField(visiblePrice, visiblePrice === null ? null : confidence)
-      }),
+      items: productCaptureItemsFromFields(fields),
       possibleDuplicateProductIds: duplicates,
       failureCode: text.length > 0 ? null : "product_capture_text_missing",
       failureMessage:
@@ -368,25 +365,18 @@ export class CommerceDomain {
         { status: "REVIEW_REQUIRED", at: now.toISOString() }
       );
     } else statusHistory.push({ status: "EXTRACTION_FAILED", at: now.toISOString() });
+    const retriedFields = {
+      title: captureField(title, confidence),
+      category: captureField<string>(null, null),
+      description: captureField(text.length > 0 ? text.slice(0, 1000) : null, confidence),
+      visiblePrice: captureField(price, price === null ? null : confidence)
+    };
     const updated: ProductCaptureJobSummary = {
       ...current,
       status: finalStatus,
       statusHistory,
-      fields: {
-        title: captureField(title, confidence),
-        category: captureField<string>(null, null),
-        description: captureField(text.length > 0 ? text.slice(0, 1000) : null, confidence),
-        visiblePrice: captureField(price, price === null ? null : confidence)
-      },
-      items: productCaptureItemsFromFields(
-        {
-          title: captureField(title, confidence),
-          category: captureField<string>(null, null),
-          description: captureField(text.length > 0 ? text.slice(0, 1000) : null, confidence),
-          visiblePrice: captureField(price, price === null ? null : confidence)
-        },
-        current.items
-      ),
+      fields: retriedFields,
+      items: productCaptureItemsFromFields(retriedFields, current.items),
       possibleDuplicateProductIds:
         title === null
           ? []

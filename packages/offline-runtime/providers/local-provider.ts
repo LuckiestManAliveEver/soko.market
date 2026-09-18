@@ -11,7 +11,12 @@ import {
   type StockAdjustmentInput,
   type InvoiceInput
 } from "@soko/business-core";
-import type { ProductSummary, CustomerSummary } from "@soko/shared-types";
+import {
+  productCaptureImageContentTypes,
+  type ProductCaptureImageContentType,
+  type ProductSummary,
+  type CustomerSummary
+} from "@soko/shared-types";
 import type { LocalDatabase } from "../db/client.js";
 import { recordOperation } from "../sync/writer.js";
 import {
@@ -238,44 +243,13 @@ export class LocalProvider implements SokoProvider {
           "OCR_NOT_INSTALLED",
           "The on-device receipt scanner is not installed on this device."
         );
-      const capture = body as unknown as {
-        fileName?: string;
-        contentType?: string;
-        contentBase64?: string;
-      };
-      if (
-        typeof capture.fileName !== "string" ||
-        !capture.fileName.trim() ||
-        typeof capture.contentType !== "string" ||
-        !capture.contentType.trim() ||
-        typeof capture.contentBase64 !== "string" ||
-        !capture.contentBase64.trim()
-      )
-        throw new OfflineError("VALIDATION_FAILED", "A receipt photo is required.");
-      if (capture.contentType === "application/pdf")
-        throw new OfflineError(
-          "OPERATION_UNAVAILABLE",
+      const capture = validateOfflineImageCapture(body, {
+        subject: "receipt photo",
+        rejectPdfMessage:
           "PDF receipts need an online connection. Photograph the receipt instead, or reconnect."
-        );
-      if (!["image/jpeg", "image/png", "image/webp"].includes(capture.contentType))
-        throw new OfflineError(
-          "OPERATION_UNAVAILABLE",
-          "Use a JPEG, PNG or WebP receipt photo offline. This file type needs an online connection."
-        );
-      if (capture.contentBase64.length > 4 * Math.ceil((10 * 1024 * 1024) / 3))
-        throw new OfflineError("VALIDATION_FAILED", "Receipt photos must be 10 MB or smaller.");
-      if (
-        !/^[A-Za-z0-9+/]+={0,2}$/.test(capture.contentBase64) ||
-        capture.contentBase64.length % 4 === 1
-      )
-        throw new OfflineError("VALIDATION_FAILED", "The receipt photo content is invalid.");
-      const fileName = capture.fileName;
-      const contentType = capture.contentType;
-      const extraction = await this.ocr({
-        fileName,
-        contentType,
-        contentBase64: capture.contentBase64
       });
+      const { fileName, contentType } = capture;
+      const extraction = await this.ocr(capture);
       return (await recordOperation(
         this.db,
         this.scope,
@@ -303,39 +277,9 @@ export class LocalProvider implements SokoProvider {
           "OCR_NOT_INSTALLED",
           "The on-device scanner is not installed on this device."
         );
-      const capture = body as unknown as {
-        fileName?: string;
-        contentType?: string;
-        contentBase64?: string;
-      };
-      if (
-        typeof capture.fileName !== "string" ||
-        !capture.fileName.trim() ||
-        typeof capture.contentType !== "string" ||
-        !capture.contentType.trim() ||
-        typeof capture.contentBase64 !== "string" ||
-        !capture.contentBase64.trim()
-      )
-        throw new OfflineError("VALIDATION_FAILED", "A product photo is required.");
-      if (!["image/jpeg", "image/png", "image/webp"].includes(capture.contentType))
-        throw new OfflineError(
-          "OPERATION_UNAVAILABLE",
-          "Use a JPEG, PNG or WebP product photo offline. This file type needs an online connection."
-        );
-      if (capture.contentBase64.length > 4 * Math.ceil((10 * 1024 * 1024) / 3))
-        throw new OfflineError("VALIDATION_FAILED", "Product photos must be 10 MB or smaller.");
-      if (
-        !/^[A-Za-z0-9+/]+={0,2}$/.test(capture.contentBase64) ||
-        capture.contentBase64.length % 4 === 1
-      )
-        throw new OfflineError("VALIDATION_FAILED", "The product photo content is invalid.");
-      const fileName = capture.fileName;
-      const contentType = capture.contentType;
-      const extraction = await this.ocr({
-        fileName,
-        contentType,
-        contentBase64: capture.contentBase64
-      });
+      const capture = validateOfflineImageCapture(body, { subject: "product photo" });
+      const { fileName, contentType } = capture;
+      const extraction = await this.ocr(capture);
       return (await recordOperation(
         this.db,
         this.scope,
@@ -407,6 +351,55 @@ export class LocalProvider implements SokoProvider {
 }
 function validate(result: { ok: boolean; errors: string[] }): void {
   if (!result.ok) throw new OfflineError("VALIDATION_FAILED", result.errors.join(" "));
+}
+/**
+ * Shared presence/type/size/encoding validation for both receipts.ocr.create and
+ * productCaptures.ocr.create - the two offline image-capture ops differ only in their subject
+ * noun for error copy and whether PDF gets a dedicated redirect-to-online message (receipts) or
+ * falls into the generic unsupported-type message (product capture, which never accepted PDF even
+ * online). Kept as one function so a validation fix (the size bound, the base64 charset) never has
+ * to be applied to two near-identical copies by hand.
+ */
+function validateOfflineImageCapture(
+  body: unknown,
+  options: { subject: string; rejectPdfMessage?: string }
+): { fileName: string; contentType: ProductCaptureImageContentType; contentBase64: string } {
+  const capture = body as unknown as {
+    fileName?: string;
+    contentType?: string;
+    contentBase64?: string;
+  };
+  if (
+    typeof capture.fileName !== "string" ||
+    !capture.fileName.trim() ||
+    typeof capture.contentType !== "string" ||
+    !capture.contentType.trim() ||
+    typeof capture.contentBase64 !== "string" ||
+    !capture.contentBase64.trim()
+  )
+    throw new OfflineError("VALIDATION_FAILED", `A ${options.subject} is required.`);
+  if (options.rejectPdfMessage && capture.contentType === "application/pdf")
+    throw new OfflineError("OPERATION_UNAVAILABLE", options.rejectPdfMessage);
+  if (!(productCaptureImageContentTypes as readonly string[]).includes(capture.contentType))
+    throw new OfflineError(
+      "OPERATION_UNAVAILABLE",
+      `Use a JPEG, PNG or WebP ${options.subject} offline. This file type needs an online connection.`
+    );
+  if (capture.contentBase64.length > 4 * Math.ceil((10 * 1024 * 1024) / 3))
+    throw new OfflineError(
+      "VALIDATION_FAILED",
+      `${options.subject[0]!.toUpperCase()}${options.subject.slice(1)}s must be 10 MB or smaller.`
+    );
+  if (
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(capture.contentBase64) ||
+    capture.contentBase64.length % 4 !== 0
+  )
+    throw new OfflineError("VALIDATION_FAILED", `The ${options.subject} content is invalid.`);
+  return {
+    fileName: capture.fileName,
+    contentType: capture.contentType as ProductCaptureImageContentType,
+    contentBase64: capture.contentBase64
+  };
 }
 /** A referenced id may be a local placeholder (not yet synced) or the real cloud id, exactly like
  *  recordOperation's own existing-row lookup - so every cross-entity reference must check both. */

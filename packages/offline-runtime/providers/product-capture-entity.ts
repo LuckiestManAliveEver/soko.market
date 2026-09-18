@@ -53,10 +53,16 @@ export function productCaptureJobEntity(
     businessId,
     uploadedBy,
     status: text.length > 0 ? "REVIEW_REQUIRED" : "EXTRACTION_FAILED",
+    // Mirrors createProductCaptureJob's historyStatuses in
+    // services/api/src/cp2/domains/commerce/store.ts exactly, so a job's status history looks the
+    // same whether it was captured online or offline - there is no separate QUEUED/VALIDATING step
+    // to skip on-device, the local OCR call already did that work synchronously.
     statusHistory:
       text.length > 0
         ? [
             { status: "CAPTURED", at: now },
+            { status: "QUEUED", at: now },
+            { status: "VALIDATING", at: now },
             { status: "PREPROCESSING", at: now },
             { status: "EXTRACTION_RUNNING", at: now },
             { status: "FIELDS_EXTRACTED", at: now },
@@ -65,6 +71,8 @@ export function productCaptureJobEntity(
           ]
         : [
             { status: "CAPTURED", at: now },
+            { status: "QUEUED", at: now },
+            { status: "VALIDATING", at: now },
             { status: "PREPROCESSING", at: now },
             { status: "EXTRACTION_RUNNING", at: now },
             { status: "EXTRACTION_FAILED", at: now }
