@@ -225,7 +225,9 @@ export function OfflineRuntimeSettings({
           </li>
           <li>
             <strong>Offline receipt scanning</strong> (optional): any modern browser. One-time ~14
-            MB download (tesseract.js, runs entirely on-device).
+            MB download (tesseract.js, runs entirely on-device). The same download also reads camera
+            product photos offline for Camera catalogue capture - there is nothing separate to
+            install for that.
           </li>
           <li>
             <strong>On-device AI assistant</strong> (optional): needs a WebGPU-capable browser and
@@ -247,6 +249,10 @@ export function OfflineRuntimeSettings({
             Confirming a scanned receipt into a supplier and purchase record - text extraction
             itself runs offline, but confirming needs supplier and sales-agent data this device
             hasn't downloaded yet.
+          </li>
+          <li>
+            Reviewing and publishing a captured product photo into the catalogue - the photo is read
+            and its fields extracted offline, but review, publish and retry need a connection.
           </li>
           <li>
             Confirming an invoice checks stock against this device's last sync, not live stock on
@@ -333,8 +339,8 @@ export function OfflineRuntimeSettings({
         <div>
           <p>
             {ocrCached
-              ? "Offline receipt scanning is ready. Photos are read on this device; confirming a scan still needs a connection."
-              : "Offline receipt scanning is off. Enable it to read receipt photos on this device while offline (about 14 MB)."}
+              ? "Offline receipt and product-photo scanning is ready. Photos are read on this device; confirming a scan or a capture still needs a connection."
+              : "Offline receipt and product-photo scanning is off. Enable it to read photos on this device while offline (about 14 MB)."}
           </p>
           {!ocrCached && (
             <button

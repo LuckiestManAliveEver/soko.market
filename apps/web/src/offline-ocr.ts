@@ -14,11 +14,13 @@ import {
 } from "./offline-ocr-assets";
 
 /**
- * On-device receipt OCR (packages/offline-runtime's LocalProvider calls into this as its injected
- * `ocr` callback, the same pattern apps/web already uses to inject agent/model inference). Runs
- * entirely in-browser via tesseract.js/WASM so a receipt can be scanned with no connection at all;
- * everything past text extraction (supplier/sales-agent matching) still happens server-side once
- * the capture syncs, matching what apps/web/src/OfflineRuntimeSettings.tsx discloses.
+ * On-device OCR, shared by receipt scanning and camera product capture
+ * (packages/offline-runtime's LocalProvider calls into this as its injected `ocr` callback for
+ * both `receipts.ocr.create` and `productCaptures.ocr.create`, the same pattern apps/web already
+ * uses to inject agent/model inference). Runs entirely in-browser via tesseract.js/WASM so a photo
+ * can be scanned with no connection at all; everything the server alone can do (receipt
+ * supplier/sales-agent matching, the authoritative re-parse of a captured product's fields) still
+ * happens once the capture syncs, matching what apps/web/src/OfflineRuntimeSettings.tsx discloses.
  */
 const cacheName = "soko-ocr-engine-v1";
 const enginePath = "/tesseract";
@@ -177,7 +179,7 @@ export function runLocalOcr(input: OcrInput): Promise<ReceiptOcrExtraction> {
 async function recognizeReceipt(input: OcrInput): Promise<ReceiptOcrExtraction> {
   if (!(await isOcrEngineCached()))
     throw new Error(
-      "The on-device receipt scanner is not installed on this device. Enable it from Settings."
+      "The on-device scanner is not installed on this device. Enable it from Settings."
     );
   const worker = await getOcrWorker();
   let result: Awaited<ReturnType<Worker["recognize"]>>;
@@ -192,7 +194,7 @@ async function recognizeReceipt(input: OcrInput): Promise<ReceiptOcrExtraction> 
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
           () =>
-            reject(new Error("Reading this receipt took too long. Try a smaller, clearer photo.")),
+            reject(new Error("Reading this photo took too long. Try a smaller, clearer photo.")),
           60_000
         );
       })
@@ -205,7 +207,7 @@ async function recognizeReceipt(input: OcrInput): Promise<ReceiptOcrExtraction> 
         ? error.message
         : typeof error === "string"
           ? error
-          : "Could not read this receipt photo. Try a clearer JPEG or PNG."
+          : "Could not read this photo. Try a clearer JPEG or PNG."
     );
   } finally {
     clearTimeout(timer);

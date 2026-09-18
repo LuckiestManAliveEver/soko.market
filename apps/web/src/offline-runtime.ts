@@ -142,7 +142,7 @@ export async function routeOfflineRequest<T>(
   const scope = currentOfflineScope();
   if (!scope) throw new Error("The offline account is no longer signed in.");
   const match =
-    /^\/businesses\/([^/]+)\/(products|customers|invoices|storefront\/orders|receipt-ocr\/jobs)(?:\/([^/]+))?(?:\/(stock-adjustments|confirm))?$/.exec(
+    /^\/businesses\/([^/]+)\/(products|customers|invoices|storefront\/orders|receipt-ocr\/jobs|product-captures)(?:\/([^/]+))?(?:\/(stock-adjustments|confirm))?$/.exec(
       path
     );
   const resource = match?.[2];
@@ -157,7 +157,8 @@ export async function routeOfflineRequest<T>(
           customers: "customers.list",
           invoices: "invoices.list",
           "storefront/orders": "orders.list",
-          "receipt-ocr/jobs": "receipts.ocr.list"
+          "receipt-ocr/jobs": "receipts.ocr.list",
+          "product-captures": "productCaptures.ocr.list"
         } as Record<string, string>
       )[resource!]!;
     if (method === "GET" && resource === "products" && id === "fields") op = "catalogue.fields";
@@ -167,6 +168,8 @@ export async function routeOfflineRequest<T>(
       op = "inventory.adjust";
     if (method === "POST" && resource === "customers" && !id) op = "customers.create";
     if (method === "POST" && resource === "receipt-ocr/jobs" && !id) op = "receipts.ocr.create";
+    if (method === "POST" && resource === "product-captures" && !id)
+      op = "productCaptures.ocr.create";
     if (method === "POST" && resource === "invoices" && !id) op = "orders.createInvoice";
     if (method === "PATCH" && resource === "invoices" && id && !subAction)
       op = "orders.updateInvoice";

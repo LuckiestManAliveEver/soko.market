@@ -555,6 +555,39 @@ export function registerCommerceRoutes(
   );
 }
 
+/**
+ * Parses the payload of an offline `productCaptures.ocr.create` sync operation
+ * (services/api/src/cp2/store.ts's pushOfflineOperation). Deliberately narrower than
+ * parseDocumentImportBody/ProductCaptureBody above: an offline capture never carries image bytes
+ * (packages/offline-runtime/providers/local-provider.ts never queues them, same rule as
+ * receipts.ocr.create), only the on-device OCR result.
+ */
+export function parseProductCaptureOfflineBody(body: unknown): {
+  fileName: string;
+  contentType: "image/jpeg" | "image/png" | "image/webp";
+  extractedText: string;
+  averageConfidence: number | null;
+} {
+  const record = parseRequestBody(body);
+  const contentType = parseString(record.contentType, "contentType");
+  if (!["image/jpeg", "image/png", "image/webp"].includes(contentType)) {
+    throw new Cp2Error(
+      400,
+      "product_capture_type_unsupported",
+      "This device's product photo type is not supported."
+    );
+  }
+  return {
+    fileName: parseString(record.fileName, "fileName"),
+    contentType: contentType as "image/jpeg" | "image/png" | "image/webp",
+    extractedText: typeof record.extractedText === "string" ? record.extractedText : "",
+    averageConfidence:
+      record.averageConfidence === null || record.averageConfidence === undefined
+        ? null
+        : parseNumber(record.averageConfidence, "averageConfidence")
+  };
+}
+
 function bearerToken(header: string | undefined): string {
   if (header === undefined || !header.startsWith("Bearer ") || header.slice(7).trim() === "") {
     throw new Cp2Error(401, "shop_system_token_required", "A shop system token is required.");

@@ -25,6 +25,7 @@ import {
   type MirrorRow
 } from "../types.js";
 import { receiptOcrJobEntity } from "./receipt-ocr-entity.js";
+import { productCaptureJobEntity } from "./product-capture-entity.js";
 import type { SokoProvider } from "./types.js";
 
 export const localReads: Record<string, Collection> = {
@@ -33,7 +34,8 @@ export const localReads: Record<string, Collection> = {
   "invoices.list": "invoices",
   "orders.list": "orders",
   "catalogue.fields": "productFields",
-  "receipts.ocr.list": "receiptOcrJobs"
+  "receipts.ocr.list": "receiptOcrJobs",
+  "productCaptures.ocr.list": "productCaptureJobs"
 };
 const writes = [
   "catalogue.create",
@@ -62,7 +64,8 @@ export class LocalProvider implements SokoProvider {
       Object.hasOwn(localReads, op) ||
       writes.includes(op) ||
       (op === "agent.infer" && !!this.infer) ||
-      (op === "receipts.ocr.create" && !!this.ocr)
+      (op === "receipts.ocr.create" && !!this.ocr) ||
+      (op === "productCaptures.ocr.create" && !!this.ocr)
     );
   }
   async isAvailable(): Promise<boolean> {
@@ -290,6 +293,75 @@ export class LocalProvider implements SokoProvider {
             fileName,
             contentType,
             extraction,
+            operation.createdAtLocal
+          )
+      )) as T;
+    }
+    if (op === "productCaptures.ocr.create") {
+      if (!this.ocr)
+        throw new OfflineError(
+          "OCR_NOT_INSTALLED",
+          "The on-device scanner is not installed on this device."
+        );
+      const capture = body as unknown as {
+        fileName?: string;
+        contentType?: string;
+        contentBase64?: string;
+      };
+      if (
+        typeof capture.fileName !== "string" ||
+        !capture.fileName.trim() ||
+        typeof capture.contentType !== "string" ||
+        !capture.contentType.trim() ||
+        typeof capture.contentBase64 !== "string" ||
+        !capture.contentBase64.trim()
+      )
+        throw new OfflineError("VALIDATION_FAILED", "A product photo is required.");
+      if (!["image/jpeg", "image/png", "image/webp"].includes(capture.contentType))
+        throw new OfflineError(
+          "OPERATION_UNAVAILABLE",
+          "Use a JPEG, PNG or WebP product photo offline. This file type needs an online connection."
+        );
+      if (capture.contentBase64.length > 4 * Math.ceil((10 * 1024 * 1024) / 3))
+        throw new OfflineError("VALIDATION_FAILED", "Product photos must be 10 MB or smaller.");
+      if (
+        !/^[A-Za-z0-9+/]+={0,2}$/.test(capture.contentBase64) ||
+        capture.contentBase64.length % 4 === 1
+      )
+        throw new OfflineError("VALIDATION_FAILED", "The product photo content is invalid.");
+      const fileName = capture.fileName;
+      const contentType = capture.contentType;
+      const extraction = await this.ocr({
+        fileName,
+        contentType,
+        contentBase64: capture.contentBase64
+      });
+      return (await recordOperation(
+        this.db,
+        this.scope,
+        {
+          opType: op,
+          collection: "productCaptureJobs",
+          entityLocalId: id,
+          payload: {
+            fileName,
+            contentType,
+            extractedText: extraction.fullText,
+            averageConfidence: extraction.averageConfidence
+          }
+        },
+        (current, operation) =>
+          productCaptureJobEntity(
+            id,
+            this.scope.storeId,
+            this.scope.accountId,
+            fileName,
+            contentType,
+            extraction.fullText,
+            extraction.averageConfidence,
+            current.rows
+              .filter((row) => row.collection === "products")
+              .map((row) => row.payload as unknown as ProductSummary),
             operation.createdAtLocal
           )
       )) as T;

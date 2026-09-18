@@ -456,6 +456,101 @@ describe("Offline runtime API integration", () => {
       await fixture.app.close();
     }
   });
+  it("captures a product photo offline with the same on-device OCR engine, extracting real fields and duplicates against the local catalogue", async () => {
+    const fixture = await serverFixture();
+    try {
+      const existingProduct = await fixture.request(
+        "POST",
+        `/businesses/${fixture.scope.storeId}/products`,
+        { name: "Tomatoes", unit: "crate", quantity: 3, sellingPrice: 140 }
+      );
+      const snapshot = fixture.store.getOfflineRuntimeSnapshot(
+        fixture.sessionId,
+        fixture.scope.storeId
+      );
+      const db = await database();
+      await install(db, fixture.scope, snapshot.collections);
+      const ocr = vi.fn(async () => ({
+        engine: "tesseract" as const,
+        engineVersion: "7.0.0",
+        modelVersion: "eng-4.0.0_best_int",
+        profile: "mobile" as const,
+        fallbackUsed: false,
+        blocks: [],
+        fullText: "Tomatoes\nKSh 150",
+        averageConfidence: 0.92,
+        warnings: []
+      }));
+      const local = new LocalProvider(db, fixture.scope, undefined, ocr);
+      await expect(
+        new LocalProvider(db, fixture.scope).call("productCaptures.ocr.create", {
+          body: { fileName: "tomatoes.jpg", contentType: "image/jpeg", contentBase64: "Zm9v" }
+        })
+      ).rejects.toThrow("not installed");
+      for (const contentType of ["application/pdf", "image/heic", "text/plain"]) {
+        await expect(
+          local.call("productCaptures.ocr.create", {
+            body: { fileName: "tomatoes", contentType, contentBase64: "Zm9v" }
+          })
+        ).rejects.toThrow("online connection");
+      }
+      await expect(
+        local.call("productCaptures.ocr.create", {
+          body: { fileName: "tomatoes.png", contentType: "image/png", contentBase64: "!!!!" }
+        })
+      ).rejects.toThrow("invalid");
+      await expect(
+        local.call("productCaptures.ocr.create", {
+          body: {
+            fileName: "tomatoes.png",
+            contentType: "image/png",
+            contentBase64: "A".repeat(4 * Math.ceil((10 * 1024 * 1024) / 3) + 4)
+          }
+        })
+      ).rejects.toThrow("10 MB");
+      expect((await db.read(fixture.scope)).operations).toHaveLength(0);
+      expect(ocr).not.toHaveBeenCalled();
+      const captured = await local.call<Entity>("productCaptures.ocr.create", {
+        body: { fileName: "tomatoes.jpg", contentType: "image/jpeg", contentBase64: "Zm9v" }
+      });
+      expect(ocr).toHaveBeenCalledTimes(1);
+      expect(captured).toMatchObject({
+        status: "REVIEW_REQUIRED",
+        fields: { title: { value: "Tomatoes" }, visiblePrice: { value: 150 } },
+        temporaryMediaId: null,
+        possibleDuplicateProductIds: [existingProduct.json().id]
+      });
+      const sync = new SyncClient(db, fixture.scope, fixture.transport);
+      await sync.sync();
+      expect((await db.read(fixture.scope)).operations[0]?.syncStatus).toBe("ACKED");
+      const operation = (await db.read(fixture.scope)).operations[0]!;
+      expect(JSON.stringify(operation)).not.toContain("contentBase64");
+      const cloudId = (await db.read(fixture.scope)).rows.find(
+        (row) => row.collection === "productCaptureJobs"
+      )?.cloud_id;
+      expect(cloudId).not.toBe(captured.id);
+      const cloudJob = await fixture.request(
+        "GET",
+        `/businesses/${fixture.scope.storeId}/product-captures/${cloudId}`
+      );
+      expect(cloudJob.json()).toMatchObject({
+        status: "REVIEW_REQUIRED",
+        fields: { title: { value: "Tomatoes" }, visiblePrice: { value: 150 } },
+        possibleDuplicateProductIds: [existingProduct.json().id]
+      });
+      // No image bytes were ever sent, so no product media record was created for this job.
+      expect(fixture.store.snapshot().productMedia).toEqual([]);
+      // Replay the queued operation: delivery retries must not create another capture job.
+      await fixture.transport.push([operation]);
+      const repeated = await fixture.request(
+        "GET",
+        `/businesses/${fixture.scope.storeId}/product-captures/${cloudId}`
+      );
+      expect(repeated.json().id).toBe(cloudId);
+    } finally {
+      await fixture.app.close();
+    }
+  });
   it("rejects a tampered offline OCR extraction instead of trusting client-supplied confidence", async () => {
     const fixture = await serverFixture();
     try {

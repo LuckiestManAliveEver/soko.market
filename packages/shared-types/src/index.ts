@@ -1326,7 +1326,7 @@ export interface ProductMediaSummary {
 }
 
 export type ProductCaptureStatus =
-  | "UPLOADED"
+  | "CAPTURED"
   | "QUEUED"
   | "VALIDATING"
   | "PREPROCESSING"

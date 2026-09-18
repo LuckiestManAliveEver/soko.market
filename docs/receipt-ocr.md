@@ -51,6 +51,13 @@ receipt parsing is a consumer on top of the same capability, not a separate inte
 A future extractor (identity documents, invoices, and so on) should be a new consumer of this same
 `OcrExtractionProcessor`, not a new OCR worker integration.
 
+Title/price extraction and duplicate-catalogue matching for camera product capture are pure,
+deterministic functions (`captureField`, `firstProductCaptureTitle`, `visibleProductCapturePrice`,
+`productCaptureItemsFromFields`, `queryCatalogueProducts` in `@soko/business-core`). The online
+route and the offline capture path below both import the same functions rather than each keeping
+their own copy, so a photo produces the same title/price whether it was scanned server-side or
+on-device.
+
 ## Supported inputs
 
 The API validates the declared MIME type, file size, and file signature where the browser can provide one.
@@ -222,3 +229,31 @@ Tesseract assets, service worker and local database. It requires Playwright Chro
 `OCR_BROWSER_CHANNEL=chrome` to use installed Chrome) and a local listening port. It tests scanning
 with networking disabled after reload, concurrent scans, invalid/blank images, persistence, and
 cache eviction without scan-time network fallback.
+
+## Offline camera product capture
+
+Camera product capture reuses the exact same on-device Tesseract engine as offline receipt
+scanning (`apps/web/src/offline-ocr.ts`'s `runLocalOcr` is generic - it is the injected `ocr`
+callback for both `receipts.ocr.create` and `productCaptures.ocr.create` in
+`packages/offline-runtime/providers/local-provider.ts`). There is no separate "enable offline
+product capture" install step: once **Enable offline receipt scanning** has installed the shared
+Tesseract assets and explicit offline mode is active, `POST /businesses/:businessId/product-captures`
+transparently routes through the local provider instead of the network
+(`apps/web/src/offline-runtime.ts`'s `routeOfflineRequest`), so the existing `ProductCapturePanel`
+UI needs no changes to work offline.
+
+Unlike receipt OCR, product-capture title/price extraction and duplicate-catalogue matching are
+cheap, deterministic functions (see above), so the on-device review card shows real extracted
+fields and real duplicate suggestions against the locally cached catalogue snapshot immediately -
+not a placeholder pending sync. The job still syncs like any other offline mutation: no image bytes
+are ever queued or synced (same bandwidth rule as receipts - only `extractedText` and
+`averageConfidence` travel), and the server recomputes the same fields from that text as the
+authoritative source rather than trusting the device's copy.
+
+Offline scope matches receipts: capture works fully offline (photo → local OCR → reviewable job
+with a locally-assigned id); review, confirm, retry and cancel need an online connection, since
+those call server endpoints the offline routing table does not map. A capture made offline and not
+yet synced is not restorable after a page reload while still offline (there is no local "read one
+job by id" op, only sync-and-create) - the existing draft-restore code in `ProductCapturePanel`
+degrades honestly in that case (it clears its saved capture id rather than crashing) instead of
+showing stale or fabricated data.

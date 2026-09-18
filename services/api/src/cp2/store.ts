@@ -26,6 +26,7 @@ import {
 import { parseContactRecordBody as parseOfflineCustomer } from "./route-helpers.js";
 import { parseReceiptOCRBody as parseOfflineReceiptOcr } from "./domains/suppliers/routes.js";
 import { parseExtractionResult as parseOfflineReceiptOcrExtraction } from "./ocr-provider.js";
+import { parseProductCaptureOfflineBody as parseOfflineProductCapture } from "./domains/commerce/routes.js";
 import {
   createHash,
   createHmac,
@@ -5856,7 +5857,8 @@ export class Cp2Store {
         ? "customer:write"
         : operation.opType === "inventory.adjust"
           ? "inventory:adjust"
-          : operation.opType === "receipts.ocr.create"
+          : operation.opType === "receipts.ocr.create" ||
+              operation.opType === "productCaptures.ocr.create"
             ? "import:write"
             : operation.opType === "orders.confirmInvoice"
               ? "invoice:confirm"
@@ -5989,6 +5991,18 @@ export class Cp2Store {
                 fileSizeBytes: receipt.fileSizeBytes,
                 fileSignature: receipt.fileSignature,
                 ...(extraction === undefined ? {} : { extraction })
+              })
+            };
+          }
+          case "productCaptures.ocr.create": {
+            const capture = parseOfflineProductCapture(payload);
+            return {
+              ...this.createProductCaptureJob({
+                ...input,
+                sourceFileName: capture.fileName,
+                contentType: capture.contentType,
+                extractedText: capture.extractedText,
+                averageConfidence: capture.averageConfidence
               })
             };
           }

@@ -157,6 +157,9 @@ describe("camera catalogue publication", () => {
       status: "REVIEW_REQUIRED",
       fields: { title: { value: "Tomatoes" }, visiblePrice: { value: 150 } }
     });
+    expect(
+      (capture as unknown as { statusHistory: Array<{ status: string }> }).statusHistory[0]
+    ).toMatchObject({ status: "CAPTURED" });
     expect(store.snapshot().products).toEqual([]);
 
     await patchJson(

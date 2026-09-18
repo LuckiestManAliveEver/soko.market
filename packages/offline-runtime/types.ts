@@ -1,12 +1,19 @@
 export type Entity = Record<string, unknown> & { id: string; businessId?: string };
 export type Collection =
-  "products" | "customers" | "invoices" | "orders" | "productFields" | "receiptOcrJobs";
+  | "products"
+  | "customers"
+  | "invoices"
+  | "orders"
+  | "productFields"
+  | "receiptOcrJobs"
+  | "productCaptureJobs";
 export type Mutation =
   | "catalogue.create"
   | "catalogue.update"
   | "inventory.adjust"
   | "customers.create"
   | "receipts.ocr.create"
+  | "productCaptures.ocr.create"
   | "orders.createInvoice"
   | "orders.updateInvoice"
   | "orders.confirmInvoice";

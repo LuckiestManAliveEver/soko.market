@@ -150,8 +150,11 @@ export class CommerceDomain {
     businessId: string;
     sourceFileName: string;
     contentType: ProductMediaRecord["contentType"];
-    contentBase64: string;
-    sourceChecksum: string;
+    /** Absent for a capture synced from offline mode: image bytes are never queued or synced
+     *  (bandwidth-saving, same rule as receipt OCR) - the job is created with no product media,
+     *  same as if the seller later chooses not to keep the photo. */
+    contentBase64?: string | null;
+    sourceChecksum?: string | null;
     extractedText: string;
     averageConfidence?: number | null;
     now?: Date;
@@ -167,26 +170,28 @@ export class CommerceDomain {
       input.averageConfidence === null || input.averageConfidence === undefined
         ? null
         : Math.min(1, Math.max(0, input.averageConfidence));
-    const mediaId = randomUUID();
-    const byteLength = Buffer.from(input.contentBase64, "base64").byteLength;
-    this.deps.productMedia.set(mediaId, {
-      id: mediaId,
-      businessId: input.businessId,
-      productId: null,
-      contentType: input.contentType,
-      fileName: normalizeRequiredBoundedText(input.sourceFileName, "fileName", 255),
-      checksum: input.sourceChecksum,
-      byteLength,
-      publicUrl: `/public/product-media/${mediaId}`,
-      createdBy: auth.user.id,
-      createdAt: now.toISOString(),
-      contentBase64: input.contentBase64
-    });
+    const mediaId = input.contentBase64 ? randomUUID() : null;
+    if (mediaId !== null) {
+      const byteLength = Buffer.from(input.contentBase64 as string, "base64").byteLength;
+      this.deps.productMedia.set(mediaId, {
+        id: mediaId,
+        businessId: input.businessId,
+        productId: null,
+        contentType: input.contentType,
+        fileName: normalizeRequiredBoundedText(input.sourceFileName, "fileName", 255),
+        checksum: input.sourceChecksum ?? "",
+        byteLength,
+        publicUrl: `/public/product-media/${mediaId}`,
+        createdBy: auth.user.id,
+        createdAt: now.toISOString(),
+        contentBase64: input.contentBase64 as string
+      });
+    }
     const text = input.extractedText.trim();
     const title = firstProductCaptureTitle(text);
     const visiblePrice = visibleProductCapturePrice(text);
     const historyStatuses = [
-      "UPLOADED",
+      "CAPTURED",
       "QUEUED",
       "VALIDATING",
       "PREPROCESSING",
@@ -221,7 +226,7 @@ export class CommerceDomain {
       statusHistory,
       sourceFileName: input.sourceFileName,
       contentType: input.contentType,
-      sourceChecksum: input.sourceChecksum,
+      sourceChecksum: input.sourceChecksum ?? "",
       temporaryMediaId: mediaId,
       fields: {
         title: captureField(title, confidence),

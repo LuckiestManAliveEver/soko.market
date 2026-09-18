@@ -120,6 +120,7 @@ function parseOperation(raw: unknown): Operation {
       "inventory.adjust",
       "customers.create",
       "receipts.ocr.create",
+      "productCaptures.ocr.create",
       "orders.createInvoice",
       "orders.updateInvoice",
       "orders.confirmInvoice"
@@ -135,11 +136,13 @@ function parseOperation(raw: unknown): Operation {
       ? "customers"
       : record.opType === "receipts.ocr.create"
         ? "receiptOcrJobs"
-        : record.opType === "orders.createInvoice" ||
-            record.opType === "orders.updateInvoice" ||
-            record.opType === "orders.confirmInvoice"
-          ? "invoices"
-          : "products";
+        : record.opType === "productCaptures.ocr.create"
+          ? "productCaptureJobs"
+          : record.opType === "orders.createInvoice" ||
+              record.opType === "orders.updateInvoice" ||
+              record.opType === "orders.confirmInvoice"
+            ? "invoices"
+            : "products";
   if (record.collection !== expected)
     throw new Cp2Error(
       400,
