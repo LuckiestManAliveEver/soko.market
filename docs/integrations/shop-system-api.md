@@ -14,6 +14,10 @@ revoked from the same screen.
 The token cannot access another shop. Customer checkout still goes through Soko Chat's explicit
 confirmation gate before an order becomes visible to the connected system.
 
+These endpoints are classified as interactive and carry a 150 ms server-response budget. Responses
+include `Server-Timing`, `X-Soko-Response-Budget-Class`, and `X-Soko-Response-Budget-Ms` headers;
+production logs emit `http.response_budget_exceeded` whenever the server misses that budget.
+
 ## Synchronize catalogue
 
 `PUT /v1/shop-system/catalogue`

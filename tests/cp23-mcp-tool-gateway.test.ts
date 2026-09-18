@@ -52,6 +52,7 @@ describe("CP23 MCP tool gateway", () => {
       }
     });
     expect(sync.statusCode).toBe(200);
+    expectInteractiveBudget(sync);
 
     const buyerCookie = await createSession(app, "254700000238");
     const search = await app.inject({
@@ -76,6 +77,7 @@ describe("CP23 MCP tool gateway", () => {
       url: "/v1/shop-system/orders",
       headers: { authorization }
     });
+    expectInteractiveBudget(orders);
     expect(orders.json().orders[0]).toMatchObject({
       businessId: shop.business.id,
       status: "requested",
@@ -89,6 +91,7 @@ describe("CP23 MCP tool gateway", () => {
       payload: { status: "accepted" }
     });
     expect(accepted.json()).toMatchObject({ status: "accepted" });
+    expectInteractiveBudget(accepted);
     await app.close();
   });
 
@@ -687,6 +690,16 @@ describe("CP23 MCP tool gateway", () => {
     await app.close();
   });
 });
+
+function expectInteractiveBudget(response: {
+  headers: Record<string, string | string[] | undefined>;
+}): void {
+  expect(response.headers["x-soko-response-budget-class"]).toBe("interactive");
+  expect(response.headers["x-soko-response-budget-ms"]).toBe("150");
+  const timing = String(response.headers["server-timing"]);
+  const duration = Number(timing.match(/dur=([\d.]+)/u)?.[1]);
+  expect(duration).toBeLessThanOrEqual(150);
+}
 
 function initializeRequest() {
   return {

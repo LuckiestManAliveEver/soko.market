@@ -15,6 +15,7 @@ const defaultAllowedCorsOrigins = ["http://127.0.0.1:5173", "http://localhost:51
 const defaultRateLimitMax = 300;
 const authRateLimitMax = 60;
 const rateLimitWindowMs = 60_000;
+export const interactiveResponseBudgetMs = 150;
 
 export interface BuildApiOptions {
   allowedCorsOrigins?: string[];
@@ -118,6 +119,10 @@ export function buildApi(options: BuildApiOptions = {}) {
       reply.header(
         "access-control-allow-headers",
         "content-type,x-request-id,idempotency-key,x-soko-device-id,x-soko-device-name,x-soko-platform,x-soko-client"
+      );
+      reply.header(
+        "access-control-expose-headers",
+        "server-timing,x-soko-response-budget-ms,x-soko-response-budget-class"
       );
     }
 
@@ -264,6 +269,21 @@ export function buildApi(options: BuildApiOptions = {}) {
   });
 
   app.addHook("onResponse", async (request, reply) => {
+    const elapsedMs = Math.max(0, reply.elapsedTime);
+    const budgetClass = responseBudgetClass(request.method, request.url);
+    reply.log.debug({ event: "http.response_timing", elapsedMs, budgetClass });
+    if (budgetClass === "interactive" && elapsedMs > interactiveResponseBudgetMs) {
+      request.log.warn(
+        {
+          event: "http.response_budget_exceeded",
+          elapsedMs,
+          budgetMs: interactiveResponseBudgetMs,
+          method: request.method,
+          route: request.routeOptions.url
+        },
+        "Interactive response exceeded its latency budget."
+      );
+    }
     if (
       request.routeOptions.url === "/auth/pin/login" &&
       reply.statusCode < 400 &&
@@ -278,6 +298,17 @@ export function buildApi(options: BuildApiOptions = {}) {
         "PIN login session cookie returned."
       );
     }
+  });
+
+  app.addHook("onSend", async (request, reply, payload) => {
+    const budgetClass = responseBudgetClass(request.method, request.url);
+    const elapsedMs = Math.max(0, reply.elapsedTime);
+    reply.header("server-timing", `app;dur=${elapsedMs.toFixed(1)}`);
+    reply.header("x-soko-response-budget-class", budgetClass);
+    if (budgetClass === "interactive") {
+      reply.header("x-soko-response-budget-ms", String(interactiveResponseBudgetMs));
+    }
+    return payload;
   });
 
   app.setErrorHandler((error, request, reply) => {
@@ -419,6 +450,24 @@ export function buildApi(options: BuildApiOptions = {}) {
   });
 
   return app;
+}
+
+export function responseBudgetClass(method: string, url: string): "interactive" | "long-running" {
+  const pathname = url.split("?")[0] ?? url;
+  if (
+    pathname.startsWith("/v1/inference") ||
+    pathname.startsWith("/v1/runtime/") ||
+    pathname.startsWith("/auth/") ||
+    pathname.startsWith("/v1/webhooks/") ||
+    pathname.includes("/imports") ||
+    pathname.includes("/product-captures") ||
+    pathname.includes("/improvement-runs") ||
+    pathname.includes("/evaluations") ||
+    method === "OPTIONS"
+  ) {
+    return "long-running";
+  }
+  return "interactive";
 }
 
 function readOAuthAllowedRedirectOrigins(fallback: string[]): string[] {
