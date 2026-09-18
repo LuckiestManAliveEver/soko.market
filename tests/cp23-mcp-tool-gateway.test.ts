@@ -15,6 +15,83 @@ interface McpTokenResponse {
 }
 
 describe("CP23 MCP tool gateway", () => {
+  it("connects an existing system catalogue to confirmed Soko Chat orders", async () => {
+    const app = buildApi();
+    const ownerCookie = await createSession(app, "254700000239");
+    const shop = await postJson<{ business: { id: string } }>(
+      app,
+      "/businesses",
+      { name: "API Millers", language: "en" },
+      ownerCookie
+    );
+    const token = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      {
+        name: "ERP connection",
+        scopes: ["mcp:read", "mcp:act"],
+        shopId: shop.business.id
+      },
+      ownerCookie
+    );
+    const authorization = `Bearer ${token.accessToken}`;
+    const sync = await app.inject({
+      method: "PUT",
+      url: "/v1/shop-system/catalogue",
+      headers: { authorization },
+      payload: {
+        products: [
+          {
+            sku: "FLOUR-2KG",
+            name: "Maize flour 2kg",
+            unit: "bag",
+            quantity: 20,
+            sellingPrice: 240
+          }
+        ]
+      }
+    });
+    expect(sync.statusCode).toBe(200);
+
+    const buyerCookie = await createSession(app, "254700000238");
+    const search = await app.inject({
+      method: "GET",
+      url: "/buy/search?query=maize%20flour",
+      headers: { cookie: buyerCookie }
+    });
+    const result = search.json().results[0];
+    expect(result).toMatchObject({ title: "Maize flour 2kg", sourceKind: "catalogue" });
+
+    const checkout = await app.inject({
+      method: "POST",
+      url: "/buy/checkout",
+      headers: { cookie: buyerCookie },
+      payload: { items: [{ ...result, quantity: 2 }] }
+    });
+    expect(checkout.statusCode).toBe(200);
+    expect(checkout.json().handoffs[0]).toMatchObject({ kind: "catalogue", status: "requested" });
+
+    const orders = await app.inject({
+      method: "GET",
+      url: "/v1/shop-system/orders",
+      headers: { authorization }
+    });
+    expect(orders.json().orders[0]).toMatchObject({
+      businessId: shop.business.id,
+      status: "requested",
+      items: [{ productName: "Maize flour 2kg", quantity: 2 }]
+    });
+
+    const accepted = await app.inject({
+      method: "PATCH",
+      url: `/v1/shop-system/orders/${orders.json().orders[0].id}`,
+      headers: { authorization },
+      payload: { status: "accepted" }
+    });
+    expect(accepted.json()).toMatchObject({ status: "accepted" });
+    await app.close();
+  });
+
   it("authenticates scoped tokens and preserves runtime confirmation gates", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

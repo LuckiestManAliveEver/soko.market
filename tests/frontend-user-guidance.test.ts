@@ -496,7 +496,9 @@ describe("frontend user guidance", () => {
     expect(mcpAccessTokensPanel).toContain(
       'getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")'
     );
-    expect(mcpAccessTokensPanel).toContain("Connect your shop to a major AI lab");
+    expect(mcpAccessTokensPanel).toContain("Connect your existing system");
+    expect(mcpAccessTokensPanel).toContain("Existing business system");
+    expect(mcpAccessTokensPanel).toContain("/v1/shop-system");
     expect(mcpAccessTokensPanel).toContain("OpenAI API");
     expect(mcpAccessTokensPanel).toContain("Anthropic API");
     expect(mcpAccessTokensPanel).toContain("Gemini API");

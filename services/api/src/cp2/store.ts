@@ -4508,6 +4508,99 @@ export class Cp2Store {
     return this.commerce.createUnifiedCheckout(...args);
   }
 
+  syncShopSystemCatalogue(input: { accessToken: string; products: unknown[]; now?: Date }): {
+    products: ProductSummary[];
+  } {
+    const now = input.now ?? new Date();
+    const principal = this.authenticateMcpAccessToken({
+      accessToken: input.accessToken,
+      requiredScope: "mcp:act",
+      now
+    });
+    if (principal.shopId === null) {
+      throw new Cp2Error(403, "shop_system_shop_required", "Token must be bound to a shop.");
+    }
+    const shopId = principal.shopId;
+    if (input.products.length > 1_000) {
+      throw new Cp2Error(
+        400,
+        "shop_system_catalogue_too_large",
+        "A sync can contain at most 1,000 products."
+      );
+    }
+    const synced = input.products.map((raw) => {
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+        throw new Cp2Error(400, "shop_system_product_invalid", "Every product must be an object.");
+      }
+      const record = raw as Record<string, unknown>;
+      const sku = requiredSystemText(record.sku, "sku", 120);
+      const name = requiredSystemText(record.name, "name", 200);
+      const unit = requiredSystemText(record.unit, "unit", 80);
+      const quantity = nonNegativeSystemNumber(record.quantity, "quantity");
+      const sellingPrice = nullableNonNegativeSystemNumber(record.sellingPrice, "sellingPrice");
+      const existing = [...this.salesDomain.productsMap.values()].find(
+        (product) => product.businessId === shopId && product.sku === sku
+      );
+      const product: ProductSummary = {
+        id: existing?.id ?? randomUUID(),
+        businessId: shopId,
+        name,
+        sku,
+        aliases: Array.isArray(record.aliases)
+          ? record.aliases
+              .filter((value): value is string => typeof value === "string")
+              .slice(0, 20)
+          : (existing?.aliases ?? []),
+        primaryMediaId: existing?.primaryMediaId ?? null,
+        unit,
+        quantity,
+        buyingPrice: existing?.buyingPrice ?? null,
+        sellingPrice,
+        fieldValues: existing?.fieldValues ?? {},
+        createdAt: existing?.createdAt ?? now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.salesDomain.productsMap.set(product.id, product);
+      return product;
+    });
+    return { products: synced };
+  }
+
+  listShopSystemOrders(input: { accessToken: string; now?: Date }): BuyOrderSummary[] {
+    const principal = this.authenticateMcpAccessToken({
+      accessToken: input.accessToken,
+      requiredScope: "mcp:read",
+      ...(input.now === undefined ? {} : { now: input.now })
+    });
+    if (principal.shopId === null) {
+      throw new Cp2Error(403, "shop_system_shop_required", "Token must be bound to a shop.");
+    }
+    return [...this.commerce.buyOrdersMap.values()]
+      .filter((order) => order.businessId === principal.shopId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  updateShopSystemOrder(input: {
+    accessToken: string;
+    orderId: string;
+    status: "accepted" | "rejected" | "completed" | "cancelled";
+    now?: Date;
+  }): BuyOrderSummary {
+    const now = input.now ?? new Date();
+    const principal = this.authenticateMcpAccessToken({
+      accessToken: input.accessToken,
+      requiredScope: "mcp:act",
+      now
+    });
+    const order = this.commerce.buyOrdersMap.get(input.orderId);
+    if (principal.shopId === null || order === undefined || order.businessId !== principal.shopId) {
+      throw new Cp2Error(404, "shop_system_order_not_found", "Order was not found.");
+    }
+    const updated = { ...order, status: input.status, updatedAt: now.toISOString() };
+    this.commerce.buyOrdersMap.set(updated.id, updated);
+    return updated;
+  }
+
   getUnifiedCheckout(
     ...args: Parameters<CommerceDomain["getUnifiedCheckout"]>
   ): ReturnType<CommerceDomain["getUnifiedCheckout"]> {
@@ -11313,6 +11406,36 @@ function cloneAgentCatalogEntry(agent: AgentDefinition): AgentDefinition {
 
 function invalidBoundedText(value: unknown, maximumLength: number): boolean {
   return typeof value !== "string" || value.trim().length === 0 || value.length > maximumLength;
+}
+
+function requiredSystemText(value: unknown, field: string, maximumLength: number): string {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.trim().length > maximumLength
+  ) {
+    throw new Cp2Error(400, "shop_system_product_invalid", `${field} is required.`);
+  }
+  return value.trim();
+}
+
+function nonNegativeSystemNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Cp2Error(
+      400,
+      "shop_system_product_invalid",
+      `${field} must be a non-negative integer.`
+    );
+  }
+  return value;
+}
+
+function nullableNonNegativeSystemNumber(value: unknown, field: string): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Cp2Error(400, "shop_system_product_invalid", `${field} must be non-negative.`);
+  }
+  return value;
 }
 
 function invalidNullableNonNegativeInteger(value: number | null): boolean {

@@ -12,6 +12,7 @@ import { formatDate } from "./formatters";
 import { readApiBaseUrl } from "./lib/api";
 
 const modelLabOptions = [
+  { id: "business_system", label: "Existing business system" },
   { id: "openai", label: "OpenAI API" },
   { id: "anthropic", label: "Anthropic API" },
   { id: "google", label: "Gemini API" },
@@ -25,6 +26,23 @@ function modelLabSetup(
   shopConnectionUrl: string,
   accessToken: string
 ): { configuration: string; instructions: string } {
+  if (modelLabId === "business_system") {
+    const apiBaseUrl = shopConnectionUrl.replace(/\/mcp\?shopId=.*$/u, "/v1/shop-system");
+    return {
+      instructions:
+        "Use the token as a Bearer credential. PUT catalogue updates, GET incoming Soko Chat orders, and PATCH order status after your system accepts or fulfils them.",
+      configuration: JSON.stringify(
+        {
+          catalogue: { method: "PUT", url: `${apiBaseUrl}/catalogue` },
+          orders: { method: "GET", url: `${apiBaseUrl}/orders` },
+          updateOrder: { method: "PATCH", url: `${apiBaseUrl}/orders/{orderId}` },
+          headers: { Authorization: `Bearer ${accessToken}` }
+        },
+        null,
+        2
+      )
+    };
+  }
   if (modelLabId === "openai") {
     return {
       instructions:
@@ -112,8 +130,8 @@ export function McpAccessTokensPanel({
   copyStorefrontValue
 }: McpAccessTokensPanelProps) {
   const [mcpTokens, setMcpTokens] = useState<McpAccessTokenSummary[]>([]);
-  const [modelLabId, setModelLabId] = useState<ModelLabId>("openai");
-  const [mcpTokenName, setMcpTokenName] = useState("OpenAI API shop connection");
+  const [modelLabId, setModelLabId] = useState<ModelLabId>("business_system");
+  const [mcpTokenName, setMcpTokenName] = useState("Existing system shop connection");
   const [mcpReadEnabled, setMcpReadEnabled] = useState(true);
   const [mcpActEnabled, setMcpActEnabled] = useState(false);
   const [mcpPin, setMcpPin] = useState("");
@@ -200,12 +218,12 @@ export function McpAccessTokensPanel({
   return (
     <div className="record-form cloud-model-connection">
       <div className="section-heading">
-        <p className="eyebrow">Cloud model account</p>
-        <h4>Connect your shop to a major AI lab</h4>
+        <p className="eyebrow">Shop API</p>
+        <h4>Connect your existing system</h4>
         <p>
-          Create a shop-bound remote MCP connection for the model-lab developer account you already
-          use. Soko generates the provider-ready API configuration and never asks for that account's
-          password or API key.
+          Create a shop-bound API connection for your current commerce system or AI platform. Synced
+          products can be bought through Soko Chat, and confirmed orders are available to your
+          system under the permissions you grant here.
         </p>
       </div>
       <div className="model-lab-grid" aria-label="Supported cloud AI accounts">
@@ -232,7 +250,7 @@ export function McpAccessTokensPanel({
             checked={mcpReadEnabled}
             onChange={(event) => setMcpReadEnabled(event.target.checked)}
           />
-          Let the model read this shop's catalogue and sync changes
+          Let the connected system read shop data and incoming orders
         </label>
         <label>
           <input
@@ -240,7 +258,7 @@ export function McpAccessTokensPanel({
             checked={mcpActEnabled}
             onChange={(event) => setMcpActEnabled(event.target.checked)}
           />
-          Let the model propose shop actions through Soko's confirmation gates
+          Let the connected system sync catalogue changes and update order status
         </label>
       </div>
       {mcpActEnabled ? (
@@ -265,7 +283,7 @@ export function McpAccessTokensPanel({
         }
         onClick={() => void runProfileAction("mcp-create", createMcpToken)}
       >
-        Create 30-day shop connection
+        Create 30-day API connection
       </button>
       {newMcpAccessToken.length > 0 ? (
         <div className="model-lab-connection-card" role="status">

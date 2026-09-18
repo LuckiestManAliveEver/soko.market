@@ -109,12 +109,59 @@ interface UnifiedCheckoutParams {
   unifiedCheckoutId: string;
 }
 
+interface SystemOrderParams {
+  orderId: string;
+}
+
 export function registerCommerceRoutes(
   app: FastifyInstance,
   store: Cp2Store,
   binaryUploadPipeline: BinaryUploadPipeline | undefined,
   ocrProcessor: OcrExtractionProcessor | undefined
 ): void {
+  app.put(
+    "/v1/shop-system/catalogue",
+    async (request: FastifyRequest<{ Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return store.syncShopSystemCatalogue({
+          accessToken: bearerToken(request.headers.authorization),
+          products: Array.isArray(body.products) ? body.products : []
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/v1/shop-system/orders", async (request, reply) => {
+    try {
+      return {
+        orders: store.listShopSystemOrders({
+          accessToken: bearerToken(request.headers.authorization)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.patch(
+    "/v1/shop-system/orders/:orderId",
+    async (request: FastifyRequest<{ Params: SystemOrderParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return store.updateShopSystemOrder({
+          accessToken: bearerToken(request.headers.authorization),
+          orderId: request.params.orderId,
+          status: parseSystemOrderStatus(body.status)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post(
     "/businesses/:businessId/product-captures",
     async (
@@ -506,6 +553,27 @@ export function registerCommerceRoutes(
       }
     }
   );
+}
+
+function bearerToken(header: string | undefined): string {
+  if (header === undefined || !header.startsWith("Bearer ") || header.slice(7).trim() === "") {
+    throw new Cp2Error(401, "shop_system_token_required", "A shop system token is required.");
+  }
+  return header.slice(7).trim();
+}
+
+function parseSystemOrderStatus(
+  value: unknown
+): "accepted" | "rejected" | "completed" | "cancelled" {
+  if (
+    value === "accepted" ||
+    value === "rejected" ||
+    value === "completed" ||
+    value === "cancelled"
+  ) {
+    return value;
+  }
+  throw new Cp2Error(400, "shop_system_order_status_invalid", "Order status is invalid.");
 }
 
 function parseBuySourceKind(value: unknown): BuyResultSourceKind {
