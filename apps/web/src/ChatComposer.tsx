@@ -131,224 +131,218 @@ export function ChatComposer({
     window.setTimeout(action, 0);
   }
 
+  void isAuthenticated;
+  void onRequireSignIn;
+
   return (
     <>
-      {!isAuthenticated ? (
-        <div className="composer composer-card-lock">
-          <span>Sign in to send and receive end-to-end encrypted messages.</span>
-          <button type="button" onClick={onRequireSignIn}>
-            Sign in to message
-          </button>
-        </div>
-      ) : (
-        <div className="composer">
-          {replyToMessageId ? (
-            <div className="composer-reply">
-              <span>Replying to a message</span>
-              <button type="button" onClick={onCancelReply}>
-                Cancel
-              </button>
-            </div>
-          ) : null}
-          {hashtagQuery !== null ? (
-            <ChatHashtagCapabilityPicker
-              capabilities={matchingHashtagCapabilities}
-              query={hashtagQuery}
-              onSelect={updateLiveDraft}
-            />
-          ) : null}
-          <small className="composer-agent-indicator">{activeAgentName} will answer</small>
+      <div className="composer">
+        {replyToMessageId ? (
+          <div className="composer-reply">
+            <span>Replying to a message</span>
+            <button type="button" onClick={onCancelReply}>
+              Cancel
+            </button>
+          </div>
+        ) : null}
+        {hashtagQuery !== null ? (
+          <ChatHashtagCapabilityPicker
+            capabilities={matchingHashtagCapabilities}
+            query={hashtagQuery}
+            onSelect={updateLiveDraft}
+          />
+        ) : null}
+        <small className="composer-agent-indicator">{activeAgentName} will answer</small>
+        <input
+          ref={fileInputRef}
+          className="chat-file-input"
+          type="file"
+          multiple
+          accept={chatAttachmentAccept}
+          onChange={onAttachmentChange}
+        />
+        {mode === "seller" ? (
           <input
-            ref={fileInputRef}
+            ref={sellerPhotoInputRef}
             className="chat-file-input"
             type="file"
-            multiple
-            accept={chatAttachmentAccept}
-            onChange={onAttachmentChange}
+            accept="image/jpeg,image/png,image/webp"
+            capture="environment"
+            data-testid="seller-photo-input"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file !== undefined) onSellerPhotoCapture(file);
+              event.target.value = "";
+            }}
           />
-          {mode === "seller" ? (
-            <input
-              ref={sellerPhotoInputRef}
-              className="chat-file-input"
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              capture="environment"
-              data-testid="seller-photo-input"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file !== undefined) onSellerPhotoCapture(file);
-                event.target.value = "";
-              }}
-            />
-          ) : null}
-          <ComposerAttachmentWorkbench
-            pendingAttachments={pendingAttachments}
-            onRemoveAttachment={onRemoveAttachment}
-            onCommitDraft={commitDraft}
-          />
-          {selectedProvider === "email" ? (
-            <>
-              <label className="composer-input">
-                <span>Subject</span>
-                <input
-                  aria-label="Email subject"
-                  required
-                  maxLength={200}
-                  value={emailSubject}
-                  onChange={(event) => setEmailSubject(event.target.value)}
-                  placeholder="Required for email"
-                />
-              </label>
-              <label className="composer-input">
-                <span>Trusted attachment</span>
-                <select
-                  aria-label="Attach a confirmed invoice"
-                  value={emailInvoiceId}
-                  onChange={(event) => setEmailInvoiceId(event.target.value)}
-                >
-                  <option value="">No attachment</option>
-                  {invoices
-                    .filter(
-                      (invoice) =>
-                        invoice.status === "confirmed" &&
-                        invoice.customerId === selectedEmailCustomerId
-                    )
-                    .map((invoice) => (
-                      <option value={invoice.id} key={invoice.id}>
-                        Invoice {invoice.invoiceNumber} · {invoice.customerName ?? "Customer"}
-                      </option>
-                    ))}
-                </select>
-              </label>
-            </>
-          ) : null}
-          <label className="composer-input">
-            <span>Message</span>
-            <textarea
-              ref={messageInputRef}
-              aria-label="Message"
-              rows={1}
-              value={liveDraft}
-              onChange={(event) => updateLiveDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !isSending) {
-                  event.preventDefault();
-                  sendLiveDraft();
-                }
-              }}
-              placeholder={
-                mode === "seller" ? "Ask your agent, or type # to call a capability" : "Ask Soko..."
-              }
-            />
-          </label>
-          <div className="composer-bottom-row">
-            <button
-              className="icon-button composer-icon-button composer-more-button"
-              type="button"
-              aria-label="Open message actions"
-              aria-haspopup="dialog"
-              aria-expanded={messageActionsOpen}
-              onClick={openMessageActions}
-            >
-              <span className="attach-icon" aria-hidden="true" />
-              <span className="visually-hidden">More</span>
-            </button>
-            <ComposerModelSwitcher
-              agent={agent}
-              business={business}
-              onAgentChange={onAgentChange}
-              onOpenAgentProfile={onOpenAgentProfile}
-              onBeforeOpen={() => messageInputRef.current?.blur()}
-            />
-            <div className="composer-bottom-row-trailing">
-              {isBrowserGenerating ? (
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={onCancelGeneration}
-                  aria-label="Cancel on-device generation"
-                >
-                  Cancel
-                </button>
-              ) : null}
-              {liveDraft.trim().length === 0 ? (
-                <button
-                  className="icon-button composer-icon-button composer-mic-button"
-                  type="button"
-                  aria-label="Record voice"
-                  onClick={() => startVoiceInput(commitDraft)}
-                >
-                  <span className="mic-icon" aria-hidden="true" />
-                  <span className="visually-hidden">Voice</span>
-                </button>
-              ) : null}
-              <button
-                className="send-button"
-                type="button"
-                onClick={sendLiveDraft}
-                disabled={
-                  isSending ||
-                  (sendViaBluetooth && bluetoothBusy) ||
-                  (selectedProvider === "email" && emailSubject.trim().length === 0) ||
-                  (liveDraft.trim().length === 0 && pendingAttachments.length === 0)
-                }
-                aria-busy={isSending || (sendViaBluetooth && bluetoothBusy)}
+        ) : null}
+        <ComposerAttachmentWorkbench
+          pendingAttachments={pendingAttachments}
+          onRemoveAttachment={onRemoveAttachment}
+          onCommitDraft={commitDraft}
+        />
+        {selectedProvider === "email" ? (
+          <>
+            <label className="composer-input">
+              <span>Subject</span>
+              <input
+                aria-label="Email subject"
+                required
+                maxLength={200}
+                value={emailSubject}
+                onChange={(event) => setEmailSubject(event.target.value)}
+                placeholder="Required for email"
+              />
+            </label>
+            <label className="composer-input">
+              <span>Trusted attachment</span>
+              <select
+                aria-label="Attach a confirmed invoice"
+                value={emailInvoiceId}
+                onChange={(event) => setEmailInvoiceId(event.target.value)}
               >
-                <span className="send-icon" aria-hidden="true" />
-                <span className="visually-hidden">Send</span>
+                <option value="">No attachment</option>
+                {invoices
+                  .filter(
+                    (invoice) =>
+                      invoice.status === "confirmed" &&
+                      invoice.customerId === selectedEmailCustomerId
+                  )
+                  .map((invoice) => (
+                    <option value={invoice.id} key={invoice.id}>
+                      Invoice {invoice.invoiceNumber} · {invoice.customerName ?? "Customer"}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          </>
+        ) : null}
+        <label className="composer-input">
+          <span>Message</span>
+          <textarea
+            ref={messageInputRef}
+            aria-label="Message"
+            rows={1}
+            value={liveDraft}
+            onChange={(event) => updateLiveDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !isSending) {
+                event.preventDefault();
+                sendLiveDraft();
+              }
+            }}
+            placeholder={
+              mode === "seller" ? "Ask your agent, or type # to call a capability" : "Ask Soko..."
+            }
+          />
+        </label>
+        <div className="composer-bottom-row">
+          <button
+            className="icon-button composer-icon-button composer-more-button"
+            type="button"
+            aria-label="Open message actions"
+            aria-haspopup="dialog"
+            aria-expanded={messageActionsOpen}
+            onClick={openMessageActions}
+          >
+            <span className="attach-icon" aria-hidden="true" />
+            <span className="visually-hidden">More</span>
+          </button>
+          <ComposerModelSwitcher
+            agent={agent}
+            business={business}
+            onAgentChange={onAgentChange}
+            onOpenAgentProfile={onOpenAgentProfile}
+            onBeforeOpen={() => messageInputRef.current?.blur()}
+          />
+          <div className="composer-bottom-row-trailing">
+            {isBrowserGenerating ? (
+              <button
+                className="secondary"
+                type="button"
+                onClick={onCancelGeneration}
+                aria-label="Cancel on-device generation"
+              >
+                Cancel
               </button>
-            </div>
+            ) : null}
+            {liveDraft.trim().length === 0 ? (
+              <button
+                className="icon-button composer-icon-button composer-mic-button"
+                type="button"
+                aria-label="Record voice"
+                onClick={() => startVoiceInput(commitDraft)}
+              >
+                <span className="mic-icon" aria-hidden="true" />
+                <span className="visually-hidden">Voice</span>
+              </button>
+            ) : null}
+            <button
+              className="send-button"
+              type="button"
+              onClick={sendLiveDraft}
+              disabled={
+                isSending ||
+                (sendViaBluetooth && bluetoothBusy) ||
+                (selectedProvider === "email" && emailSubject.trim().length === 0) ||
+                (liveDraft.trim().length === 0 && pendingAttachments.length === 0)
+              }
+              aria-busy={isSending || (sendViaBluetooth && bluetoothBusy)}
+            >
+              <span className="send-icon" aria-hidden="true" />
+              <span className="visually-hidden">Send</span>
+            </button>
           </div>
-          {externalShareNotice !== null ? (
-            <small className="external-share-notice" role="status">
-              {externalShareNotice}
-              {pendingAttachments.length > 0
-                ? " Attachments remain in Soko and were not shared."
-                : " External messages are not covered by Soko end-to-end encryption."}
-            </small>
-          ) : null}
-          {sendViaBluetooth && bluetoothError !== null ? (
-            <small className="external-share-notice" role="status">
-              {bluetoothError}
-            </small>
-          ) : null}
-          <ChatComposerActions
-            draftHasText={liveDraft.trim().length > 0}
-            mode={mode}
-            open={messageActionsOpen}
-            sendViaLabel={sendViaLabel}
-            onClose={() => setMessageActionsOpen(false)}
-            onAttachFiles={() => runMessageAction(() => fileInputRef.current?.click())}
-            onOpenCommand={() => runMessageAction(() => updateLiveDraft("#"))}
-            onSendSms={() =>
-              runMessageAction(() =>
-                openSmsHandoff(
-                  selectedConversationTitle,
-                  selectedConversationTitle || "SMS recipient"
-                )
-              )
-            }
-            onSendVia={() => runMessageAction(() => setChannelPickerOpen(true))}
-            onShareApps={() =>
-              runMessageAction(() => void openPlatformHandoff(selectedConversationTitle))
-            }
-            onTakePhoto={() => runMessageAction(() => sellerPhotoInputRef.current?.click())}
-          />
-          <ChatChannelPicker
-            bluetoothAvailable={bluetoothAvailable}
-            bluetoothBusy={bluetoothBusy}
-            bluetoothError={bluetoothError}
-            bluetoothSelected={sendViaBluetooth}
-            bluetoothStatus={bluetoothStatus}
-            channelEndpoints={channelEndpoints}
-            open={channelPickerOpen}
-            selectedProvider={selectedProvider}
-            onClose={() => setChannelPickerOpen(false)}
-            onSelect={setSelectedProvider}
-            onSelectBluetooth={selectBluetooth}
-          />
         </div>
-      )}
+        {externalShareNotice !== null ? (
+          <small className="external-share-notice" role="status">
+            {externalShareNotice}
+            {pendingAttachments.length > 0
+              ? " Attachments remain in Soko and were not shared."
+              : " External messages are not covered by Soko end-to-end encryption."}
+          </small>
+        ) : null}
+        {sendViaBluetooth && bluetoothError !== null ? (
+          <small className="external-share-notice" role="status">
+            {bluetoothError}
+          </small>
+        ) : null}
+        <ChatComposerActions
+          draftHasText={liveDraft.trim().length > 0}
+          mode={mode}
+          open={messageActionsOpen}
+          sendViaLabel={sendViaLabel}
+          onClose={() => setMessageActionsOpen(false)}
+          onAttachFiles={() => runMessageAction(() => fileInputRef.current?.click())}
+          onOpenCommand={() => runMessageAction(() => updateLiveDraft("#"))}
+          onSendSms={() =>
+            runMessageAction(() =>
+              openSmsHandoff(
+                selectedConversationTitle,
+                selectedConversationTitle || "SMS recipient"
+              )
+            )
+          }
+          onSendVia={() => runMessageAction(() => setChannelPickerOpen(true))}
+          onShareApps={() =>
+            runMessageAction(() => void openPlatformHandoff(selectedConversationTitle))
+          }
+          onTakePhoto={() => runMessageAction(() => sellerPhotoInputRef.current?.click())}
+        />
+        <ChatChannelPicker
+          bluetoothAvailable={bluetoothAvailable}
+          bluetoothBusy={bluetoothBusy}
+          bluetoothError={bluetoothError}
+          bluetoothSelected={sendViaBluetooth}
+          bluetoothStatus={bluetoothStatus}
+          channelEndpoints={channelEndpoints}
+          open={channelPickerOpen}
+          selectedProvider={selectedProvider}
+          onClose={() => setChannelPickerOpen(false)}
+          onSelect={setSelectedProvider}
+          onSelectBluetooth={selectBluetooth}
+        />
+      </div>
     </>
   );
 }

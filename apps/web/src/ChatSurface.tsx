@@ -123,7 +123,6 @@ export function ChatSurface({
   onCreateConversation,
   onCreateAgentSession,
   onRequireSignIn,
-  onBrowseAsGuest,
   onSignUp,
   onLogIn,
   recognizedDeviceLabel,
@@ -622,24 +621,6 @@ export function ChatSurface({
                   businessId,
                   onStatusBroadcastPosted
                 })}
-                {message.id === "welcome" && !isAuthenticated ? (
-                  <div className="welcome-auth-actions" aria-label="Account access">
-                    <button type="button" data-testid="welcome-signup-button" onClick={onSignUp}>
-                      Sign up
-                    </button>
-                    <button
-                      className="secondary"
-                      type="button"
-                      data-testid="welcome-login-button"
-                      onClick={onLogIn}
-                    >
-                      Log in
-                    </button>
-                    <button className="secondary" type="button" onClick={onBrowseAsGuest}>
-                      Browse as guest
-                    </button>
-                  </div>
-                ) : null}
                 {message.attachments !== undefined && message.attachments.length > 0 ? (
                   <div className="message-attachments" aria-label="Message attachments">
                     {message.attachments.map((attachment) => (

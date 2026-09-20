@@ -254,6 +254,13 @@ describe("Soko Home: suggested requests and capability trace", () => {
     expect(appShell).toContain("What do you need?");
   });
 
+  it("keeps first-load auth out of the customer chat body and composer", () => {
+    const chatComposer = readFileSync("apps/web/src/ChatComposer.tsx", "utf8");
+    expect(chatSurface).not.toContain("welcome-auth-actions");
+    expect(chatComposer).not.toContain("composer-card-lock");
+    expect(chatComposer).not.toContain("Sign in to message");
+  });
+
   it("never tells the customer welcome message to tap a removed Sell button", () => {
     // app-shell.ts's welcome copy predates the Buy/Sell toggle removal (see "Soko Home: merchant
     // entry point" above) and still said "Tap Sell" - dangling copy pointing at UI that no longer

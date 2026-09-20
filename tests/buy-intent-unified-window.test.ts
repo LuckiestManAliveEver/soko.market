@@ -6,9 +6,8 @@ import { describe, expect, it } from "vitest";
  * browsing all live in one window now: the standard ChatSurface shell. Guests used to be diverted
  * to a separate, stripped-down GuestMarketplaceChat screen the moment they had no session - that
  * duplicated the search UX and dropped storefront browsing, cart, and quick prompts. ChatSurface
- * already gated every session-only affordance behind isAuthenticated (composer, new
- * session/conversation, notifications) and already carried a "Browse as guest" welcome action and
- * onSignUp/onLogIn wiring, so removing the diversion is enough to give guests the full buy-intent
+ * keeps account-only affordances behind progressive authentication while allowing the composer to
+ * bootstrap a temporary device session. Removing the diversion gives guests the full buy-intent
  * experience inside the same shell everyone else uses.
  */
 describe("buy intent, marketplace, and guest browsing share one window", () => {
@@ -55,14 +54,16 @@ describe("buy intent, marketplace, and guest browsing share one window", () => {
     expect(statusResultCard).toContain("onClick={props.onSignUp}");
   });
 
-  it("locks the shared composer for guests instead of giving them a second, cut-down composer", () => {
-    expect(chatComposer).toContain("!isAuthenticated");
-    expect(chatComposer).toContain("Sign in to send and receive end-to-end encrypted messages.");
-    expect(chatComposer).toContain("Sign in to message");
+  it("keeps the shared composer available for progressive guest entry", () => {
+    expect(chatComposer).not.toContain("composer-card-lock");
+    expect(chatComposer).not.toContain(
+      "Sign in to send and receive end-to-end encrypted messages."
+    );
+    expect(chatComposer).not.toContain("Sign in to message");
   });
 
-  it("still offers the guest entry point from the shared welcome message", () => {
-    expect(chatSurface).toContain("Browse as guest");
-    expect(chatSurface).toContain("onClick={onBrowseAsGuest}");
+  it("does not put an account-choice wall in the shared welcome message", () => {
+    expect(chatSurface).not.toContain("welcome-auth-actions");
+    expect(chatSurface).not.toContain("Browse as guest");
   });
 });
