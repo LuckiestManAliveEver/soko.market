@@ -93,7 +93,8 @@ export function QuickRuntimeSwitcher({
           ...(change.agentRuntimeAdapterId === undefined
             ? {}
             : { agentRuntimeAdapterId: change.agentRuntimeAdapterId }),
-          permissions: { allowInstalledApp: false, allowRemoteShopDevice: false }
+          permissions: { allowInstalledApp: false, allowRemoteShopDevice: false },
+          ...(modelId === "smollm2-360m" ? {} : { costResponsibility: "merchant" })
         }
       );
       setSelectedModelId(result.binding.modelId);

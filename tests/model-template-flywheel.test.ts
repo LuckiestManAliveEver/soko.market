@@ -278,6 +278,16 @@ describe("Soko Model Templates expertise flywheel", () => {
       message: "Classify 2kg Pishori rice"
     });
     expect(prompts.at(-1)?.message.toLowerCase()).toContain("pishori rice =>");
+    expect(prompts.at(-1)?.modelTemplate).toMatchObject({
+      templateId: created.template.id,
+      templateVersionId: improvement.candidateVersionId,
+      task: "catalog.product-classify",
+      allowedTools: [],
+      constraints: { defaultOutput: product("unknown", "unknown", 1, "unit") },
+      templateVocabularySnapshot: emptyVocabularySnapshotId,
+      currentVocabularySnapshot: emptyVocabularySnapshotId
+    });
+    expect(prompts.at(-1)?.allowedTools).toEqual([]);
 
     const portable = await api<{
       manifest: SokoModelTemplateManifestV1;

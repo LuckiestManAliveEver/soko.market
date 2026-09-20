@@ -5,6 +5,7 @@ import type {
   RuntimeModelCompletionResult,
   RuntimeModelConversationMessage,
   RuntimeModelProvider,
+  RuntimeModelTemplateRecipe,
   RuntimeModelTrace,
   RuntimePlannedAction,
   RuntimeTelemetryEvent,
@@ -61,6 +62,7 @@ export async function createRuntimeModelRoute(
     retrievedContext: ReturnType<typeof retrieveAgentContext>;
     memory: string[];
     intent: RuntimeTurnSummary["parserIntent"];
+    modelTemplate?: RuntimeModelTemplateRecipe;
     now: Date;
     agent: NativeRuntimeAgentSummary;
     signal?: AbortSignal;
@@ -160,11 +162,14 @@ export async function createRuntimeModelRoute(
     };
   }
 
+  const templateTools =
+    input.modelTemplate === undefined ? null : new Set(input.modelTemplate.allowedTools);
   const allowedTools = input.shopRuntime.skills
     .filter(
       (binding) =>
         binding.enabled &&
-        !input.shopRuntime.instructions.restrictedActions.includes(binding.skillId)
+        !input.shopRuntime.instructions.restrictedActions.includes(binding.skillId) &&
+        (templateTools === null || templateTools.has(binding.skillId))
     )
     .map((binding) => binding.skillId);
   const assembled = assembleAgentInferenceMessage({
@@ -183,7 +188,8 @@ export async function createRuntimeModelRoute(
       runtimeVersion: input.shopRuntime.version,
       compiledInstructions: assembled.compiled,
       retrievedContext: input.retrievedContext,
-      allowedTools
+      allowedTools,
+      ...(input.modelTemplate === undefined ? {} : { modelTemplate: input.modelTemplate })
     }
   );
   input.appendTelemetry("model.prompt_built", "completed", null, null, {
@@ -200,7 +206,11 @@ export async function createRuntimeModelRoute(
     runtimeVersion: input.shopRuntime.version,
     retrievedContextCount: input.retrievedContext.length,
     retrievedContextTypes: [...new Set(input.retrievedContext.map((item) => item.type))].join(","),
-    intent: input.intent
+    intent: input.intent,
+    modelTemplateId: input.modelTemplate?.templateId ?? null,
+    modelTemplateVersionId: input.modelTemplate?.templateVersionId ?? null,
+    templateVocabularySnapshot: input.modelTemplate?.templateVocabularySnapshot ?? null,
+    currentVocabularySnapshot: input.modelTemplate?.currentVocabularySnapshot ?? null
   });
 
   let completion: RuntimeModelCompletionResult;

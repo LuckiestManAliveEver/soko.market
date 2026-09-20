@@ -93,6 +93,7 @@ import type {
   RuntimeContextSummary,
   RuntimeModelConversationMessage,
   RuntimeModelProvider,
+  RuntimeModelTemplateRecipe,
   RuntimeModelTrace,
   RuntimePlannedAction,
   RuntimeSessionSummary,
@@ -105,7 +106,8 @@ import type {
 import {
   defaultAgentDefinitionId,
   isModelExecutionTarget,
-  modelExecutionTargets
+  modelExecutionTargets,
+  platformSharedModelId
 } from "@soko/shared-types";
 import {
   createRuntimeToolProposal,
@@ -338,6 +340,7 @@ export class AgentRuntimeDomain {
       .map((model) => ({
         ...model,
         capabilities: [...model.capabilities],
+        costResponsibility: model.id === platformSharedModelId ? "platform-included" : "merchant",
         // The "backend" key is the frontend's stable field name for "is a server-hosted adapter
         // configured for this model" (apps/web/src/AgentModelPanel.tsx, QuickRuntimeSwitcher.tsx)
         // - it does not mean the "backend" ModelExecutionTarget literal specifically. Query
@@ -587,6 +590,7 @@ export class AgentRuntimeDomain {
     executionTarget: ModelExecutionTarget;
     executionMode: PreferredExecutionMode;
     permissions: AgentModelBindingPermissions;
+    costResponsibility?: "merchant";
     // Absent keeps this shop's current harness (or the platform default, if none is set yet).
     agentRuntimeAdapterId?: string;
     signal?: AbortSignal;
@@ -615,6 +619,15 @@ export class AgentRuntimeDomain {
       );
     }
     const model = this.requireCanonicalAiModel(input.modelId);
+    if (model.id !== platformSharedModelId && input.costResponsibility !== "merchant") {
+      throw new Cp2Error(
+        402,
+        "CUSTOM_MODEL_COST_ACCEPTANCE_REQUIRED",
+        "Custom models are merchant-funded. Accept model usage and hosting costs before activation.",
+        false,
+        { modelId: model.id, costResponsibility: "merchant" }
+      );
+    }
     validateAgentModelBindingConfiguration(input, model);
     input.onStage?.("model_resolved", Date.now() - startedAt);
     const existingActive = this.deps.getActiveNativeRuntimeBinding(
@@ -808,7 +821,9 @@ export class AgentRuntimeDomain {
     }
     this.recordAgentModelBindingAudit(input.auditType, verified, input.actorId, {
       latencyMs: input.latencyMs,
-      nativeRuntimeBindingId: nativeBinding.id
+      nativeRuntimeBindingId: nativeBinding.id,
+      costResponsibility:
+        input.model.id === platformSharedModelId ? "platform-included" : "merchant"
     });
     return verified;
   }
@@ -2053,7 +2068,8 @@ export class AgentRuntimeDomain {
     const modelTemplate = this.deps.resolveProductionModelTemplate?.(
       input.businessId,
       storedAgentProfile.agentId,
-      runtimeModelId
+      runtimeModelId,
+      parseMerchantCommand(input.message).intent
     );
     if (modelTemplate !== undefined && modelTemplate !== null) {
       shopRuntime.instructions.generalOperatingRules = [
@@ -2258,7 +2274,25 @@ export class AgentRuntimeDomain {
             shopRuntime,
             retrievedContext,
             memory: runtimeMemory,
-            intent: parserResult.intent
+            intent: parserResult.intent,
+            ...(modelTemplate === undefined || modelTemplate === null
+              ? {}
+              : {
+                  modelTemplate: {
+                    templateId: modelTemplate.templateId,
+                    templateVersionId: modelTemplate.templateVersionId,
+                    version: modelTemplate.version,
+                    task: modelTemplate.task,
+                    allowedTools: modelTemplate.allowedTools as RuntimeToolName[],
+                    contextRequirements: modelTemplate.contextRequirements,
+                    ...(modelTemplate.outputSchema === undefined
+                      ? {}
+                      : { outputSchema: modelTemplate.outputSchema }),
+                    constraints: modelTemplate.constraints,
+                    templateVocabularySnapshot: modelTemplate.templateVocabularySnapshot,
+                    currentVocabularySnapshot: modelTemplate.currentVocabularySnapshot
+                  }
+                })
           })
         : {
             proposal: null,
@@ -3126,6 +3160,7 @@ export class AgentRuntimeDomain {
     retrievedContext: ReturnType<typeof retrieveAgentContext>;
     memory: string[];
     intent: RuntimeTurnSummary["parserIntent"];
+    modelTemplate?: RuntimeModelTemplateRecipe;
     now: Date;
     appendTelemetry: (
       state: RuntimeTelemetryEvent["state"],

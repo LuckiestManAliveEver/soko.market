@@ -63,4 +63,30 @@ describe("buildInferencePrompt few-shot wiring", () => {
     expect(examplesIndex).toBeGreaterThan(contractIndex);
     expect(prompt).toContain('"toolName":"product.create"');
   });
+
+  it("renders a bounded model-template recipe into the inference prompt", () => {
+    const prompt = buildInferencePrompt({
+      message: "find rice",
+      allowedTools: ["commerce.search"],
+      schemaVersion: "cp11-runtime-model-v1",
+      modelTemplate: {
+        templateId: "product-search",
+        templateVersionId: "version-7",
+        version: "1.2.0",
+        task: "commerce.search",
+        allowedTools: ["commerce.search"],
+        contextRequirements: ["catalogue"],
+        outputSchema: { type: "object" },
+        constraints: { maxResults: 5 },
+        templateVocabularySnapshot: "sha256:template",
+        currentVocabularySnapshot: "sha256:current"
+      }
+    });
+
+    expect(prompt).toContain("Template: product-search@1.2.0 (version-7)");
+    expect(prompt).toContain("Allowed template tools: commerce.search");
+    expect(prompt).toContain('Required output schema: {"type":"object"}');
+    expect(prompt).toContain('Execution constraints: {"maxResults":5}');
+    expect(prompt).toContain("template=sha256:template, current=sha256:current");
+  });
 });

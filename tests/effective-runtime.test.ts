@@ -73,6 +73,7 @@ describe("effective runtime API", () => {
           shopId: actor.businessId,
           executionTarget: "vercel",
           executionMode: "CLOUD_ONLY",
+          costResponsibility: "merchant",
           permissions: { allowRemoteShopDevice: false }
         })
       });
