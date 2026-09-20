@@ -347,7 +347,7 @@ describe("frontend user guidance", () => {
     expect(createBusinessRoute).toContain('app.put("/account/phone"');
   });
 
-  it("shows explicit signup and login actions connected to separate end-to-end flows", () => {
+  it("keeps signup and login in the header while preserving separate end-to-end flows", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const chatSurface = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
@@ -355,13 +355,13 @@ describe("frontend user guidance", () => {
     const welcomeMessage = readFileSync("apps/web/src/app-shell.ts", "utf8");
 
     expect(chatSurface).toContain('data-testid={message.id === "welcome"');
-    expect(chatSurface).toContain('<div className="welcome-auth-actions"');
-    expect(chatSurface).toContain('data-testid="welcome-signup-button"');
-    expect(chatSurface).toContain('data-testid="welcome-login-button"');
+    expect(chatSurface).not.toContain('<div className="welcome-auth-actions"');
+    expect(chatSurface).not.toContain('data-testid="welcome-signup-button"');
+    expect(chatSurface).not.toContain('data-testid="welcome-login-button"');
     expect(application).toContain('data-testid="header-signup-button"');
     expect(application).toContain('data-testid="header-login-button"');
-    expect(chatSurface).toContain("onClick={onSignUp}");
-    expect(chatSurface).toContain("onClick={onLogIn}");
+    expect(application).toContain('onSignUp={() => openAuth("signup")}');
+    expect(application).toContain('onLogIn={() => openAuth("login")}');
     expect(application).toContain("openAuth(target)");
     expect(application).toContain("<PhoneSignup");
     expect(application).toContain('authenticationView === "signup"');
@@ -376,7 +376,7 @@ describe("frontend user guidance", () => {
     expect(phoneFirst).not.toContain('"/auth/pin/continue"');
     // The welcome body itself no longer gates on signing in - browsing and chat work immediately
     // on a device account (docs/authentication/progressive-identity.md) - but the explicit
-    // signup/login buttons above are still rendered whenever a message thread has no session yet.
+    // signup/login buttons above remain available in the header without interrupting the thread.
     expect(welcomeMessage).toContain("What do you need?");
   });
 
@@ -430,9 +430,7 @@ describe("frontend user guidance", () => {
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const apiRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
 
-    const chatSurfaceForGuest = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
     expect(navigationState).toContain("function browseAsGuest()");
-    expect(chatSurfaceForGuest).toContain("Browse as guest");
     expect(navigationState).toContain("Browsing as a guest");
     expect(marketplaceState).toContain(
       'getJson<PublicStorefrontListResponse>("/public/storefronts?limit=24")'
