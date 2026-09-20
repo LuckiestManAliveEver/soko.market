@@ -124,6 +124,7 @@ interface AgentModelActivationBody extends AgentModelTestBody {
   executionMode?: unknown;
   permissions?: unknown;
   agentRuntimeAdapterId?: unknown;
+  costResponsibility?: unknown;
 }
 
 interface AiModelActivationBody {
@@ -710,6 +711,9 @@ export function registerAgentRuntimeRoutes(
           executionTarget,
           executionMode: parsePreferredExecutionMode(request.body.executionMode),
           permissions: parseAgentModelBindingPermissions(request.body.permissions),
+          ...(request.body.costResponsibility === "merchant"
+            ? { costResponsibility: "merchant" as const }
+            : {}),
           ...(agentRuntimeAdapterId === undefined ? {} : { agentRuntimeAdapterId }),
           signal: requestAbort.signal,
           onStage: (stage, elapsedMs) => {

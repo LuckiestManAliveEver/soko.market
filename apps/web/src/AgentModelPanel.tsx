@@ -399,7 +399,8 @@ export function AgentModelPanel({
           permissions: {
             allowInstalledApp: false,
             allowRemoteShopDevice: inferencePreferences.ownerNodeAllowed
-          }
+          },
+          ...(model.id === "smollm2-360m" ? {} : { costResponsibility: "merchant" })
         },
         { timeoutMs: backendModelProbeRequestTimeoutMs }
       );

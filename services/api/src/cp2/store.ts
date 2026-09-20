@@ -229,6 +229,7 @@ import type {
   RuntimeContextSummary,
   RuntimeModelCompletionResult,
   RuntimeModelProvider,
+  RuntimeModelTemplateRecipe,
   RuntimeSessionSummary,
   RuntimeTurnSummary,
   ReceiptLineItemSummary,
@@ -1317,8 +1318,14 @@ export class Cp2Store {
       },
       resolveAgentRuntimeAdapterId: (agentId) =>
         this.nativeRuntimeBindings.resolveAgentRuntimeAdapterId(agentId),
-      resolveProductionModelTemplate: (businessId, agentId, modelId) =>
-        this.modelTemplatesDomain.resolveProductionTemplate({ businessId, agentId, modelId }),
+      resolveProductionModelTemplate: (businessId, agentId, modelId, task) =>
+        this.modelTemplatesDomain.resolveProductionTemplate({
+          businessId,
+          agentId,
+          modelId,
+          ...(task === undefined ? {} : { task }),
+          currentVocabularySnapshot: this.vocabularyDomain.currentVocabularySnapshotId(businessId)
+        }),
       getActiveNativeRuntimeBinding: (businessId, agentId, accountId) =>
         this.nativeRuntimeBindings.getActiveBindingForAgent(businessId, agentId, accountId),
       ensureDefaultRuntimeBinding: (input) => {
@@ -4340,12 +4347,26 @@ export class Cp2Store {
       businessId,
       storedAgentProfile
     );
+    const parserResult = parseMerchantCommand(body);
+    const modelTemplate = this.modelTemplatesDomain.resolveProductionTemplate({
+      businessId,
+      agentId: storedAgentProfile.agentId,
+      modelId: activeModelId,
+      task: parserResult.intent,
+      currentVocabularySnapshot: this.vocabularyDomain.currentVocabularySnapshotId(businessId)
+    });
     const shopRuntime = this.agentRuntimeDomain.buildShopAgentRuntime(
       storedAgentProfile,
       now,
       "customer",
       activeModelId
     );
+    if (modelTemplate !== null) {
+      shopRuntime.instructions.generalOperatingRules = [
+        ...shopRuntime.instructions.generalOperatingRules,
+        ...modelTemplate.compiledInstructions
+      ];
+    }
     // resolveRuntimeModelProvider can throw (RUNTIME_NOT_CONFIGURED, NO_COMPATIBLE_EXECUTION_TARGET,
     // BROWSER_RUNTIME_DISABLED, BRIDGE_UNAVAILABLE, ...) rather than returning `provider: undefined`
     // whenever no execution target can be resolved for this business - every one of those is just
@@ -4363,7 +4384,6 @@ export class Cp2Store {
     }
     if (provider === undefined) return null;
 
-    const parserResult = parseMerchantCommand(body);
     const retrievedContext = retrieveAgentContext({
       sources: this.agentRuntimeDomain.contextSourcesForRuntime(storedAgentProfile),
       query: body,
@@ -4387,7 +4407,26 @@ export class Cp2Store {
       runtimeVersion: shopRuntime.version,
       compiledInstructions: assembled.compiled,
       retrievedContext,
-      allowedTools: []
+      allowedTools: [],
+      ...(modelTemplate === null
+        ? {}
+        : {
+            modelTemplate: {
+              templateId: modelTemplate.templateId,
+              templateVersionId: modelTemplate.templateVersionId,
+              version: modelTemplate.version,
+              task: modelTemplate.task,
+              allowedTools:
+                modelTemplate.allowedTools as RuntimeModelTemplateRecipe["allowedTools"],
+              contextRequirements: modelTemplate.contextRequirements,
+              ...(modelTemplate.outputSchema === undefined
+                ? {}
+                : { outputSchema: modelTemplate.outputSchema }),
+              constraints: modelTemplate.constraints,
+              templateVocabularySnapshot: modelTemplate.templateVocabularySnapshot,
+              currentVocabularySnapshot: modelTemplate.currentVocabularySnapshot
+            }
+          })
     });
 
     let completion: RuntimeModelCompletionResult;

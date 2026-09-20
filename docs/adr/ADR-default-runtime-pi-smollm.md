@@ -38,6 +38,11 @@ low-cost always-present baseline, not a claim that it is the best model for ever
 contract is chat generation; structured tool interpretation and protected execution belong to the
 agent/runtime and Soko policy respectively.
 
+The shared SmolLM runtime is included as the starting point. Store owners may replace it with a
+compatible custom model, but custom model usage, storage, and hosting are merchant-funded. The
+activation API requires explicit merchant cost responsibility and records it in the audit trail;
+the billing adapter remains responsible for collecting actual charges.
+
 Hosted-first avoids model/agent downloads, WebGPU requirements and device-specific setup on the
 first connected chat. Local targets remain available as explicit choices.
 

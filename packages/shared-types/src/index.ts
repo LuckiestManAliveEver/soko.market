@@ -933,6 +933,8 @@ export interface MarketplaceIntroStateSummary {
 
 /** Stable provider-registry key. Providers are runtime extensions, not a closed platform enum. */
 export type ModelProviderId = string;
+export const platformSharedModelId = "smollm2-360m" as const;
+export type ModelCostResponsibility = "platform-included" | "merchant";
 
 export interface AiModelSummary {
   id: string;
@@ -951,6 +953,8 @@ export interface AiModelSummary {
   fileSizeBytes: number | null;
   minimumMemoryGb: number | null;
   recommended: boolean;
+  /** The shared starter is included; all merchant-selected replacements are merchant-funded. */
+  costResponsibility?: ModelCostResponsibility;
   /**
    * Deployment-specific execution targets backed by a configured runtime adapter. Catalogue
    * availability alone does not imply that a model can run on every target.
@@ -3513,6 +3517,19 @@ export type RuntimeModelProviderName = ModelProviderId;
 export type RuntimeModelAdapterStatus =
   "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
 
+export interface RuntimeModelTemplateRecipe {
+  templateId: string;
+  templateVersionId: string;
+  version: string;
+  task: string | null;
+  allowedTools: RuntimeToolName[];
+  contextRequirements: string[];
+  outputSchema?: Record<string, unknown>;
+  constraints: Record<string, unknown>;
+  templateVocabularySnapshot: string;
+  currentVocabularySnapshot: string;
+}
+
 export interface RuntimeModelPrompt {
   message: string;
   conversationHistory?: RuntimeModelConversationMessage[];
@@ -3527,6 +3544,7 @@ export interface RuntimeModelPrompt {
   runtimeVersion?: number;
   compiledInstructions?: CompiledAgentInstructionSet;
   retrievedContext?: RetrievedAgentContextItem[];
+  modelTemplate?: RuntimeModelTemplateRecipe;
 }
 
 export interface RuntimeModelConversationMessage {

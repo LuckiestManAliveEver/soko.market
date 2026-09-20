@@ -806,6 +806,31 @@ describe("agent model activation runtime", () => {
 
     await app.close();
   });
+
+  it("requires merchant cost responsibility before activating a custom model", async () => {
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId }) => healthyAdapter(modelId)
+    });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700002008", "Cost Policy Shop");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/agents/${owner.businessId}/models/${primaryModelId}/activate`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({
+        ...activationPayload(owner.businessId),
+        costResponsibility: undefined
+      })
+    });
+
+    expect(response.statusCode).toBe(402);
+    expect(response.json()).toMatchObject({
+      code: "CUSTOM_MODEL_COST_ACCEPTANCE_REQUIRED",
+      details: { modelId: primaryModelId, costResponsibility: "merchant" }
+    });
+    await app.close();
+  });
 });
 
 describe("Vercel model adapter", () => {
@@ -1120,6 +1145,7 @@ function activationPayload(shopId: string) {
     shopId,
     executionTarget: "backend" as ModelExecutionTarget,
     executionMode: "LOCAL_FIRST",
+    costResponsibility: "merchant",
     permissions: {
       allowRemoteShopDevice: false
     }

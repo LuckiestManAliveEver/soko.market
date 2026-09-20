@@ -204,7 +204,11 @@ export function buildRuntimeModelPrompt(
   conversationHistory?: RuntimeModelConversationMessage[],
   runtime?: Pick<
     RuntimeModelPrompt,
-    "runtimeVersion" | "compiledInstructions" | "retrievedContext" | "allowedTools"
+    | "runtimeVersion"
+    | "compiledInstructions"
+    | "retrievedContext"
+    | "allowedTools"
+    | "modelTemplate"
   >
 ): RuntimeModelPrompt {
   return {
@@ -219,6 +223,7 @@ export function buildRuntimeModelPrompt(
     ...(runtime?.retrievedContext === undefined
       ? {}
       : { retrievedContext: runtime.retrievedContext }),
+    ...(runtime?.modelTemplate === undefined ? {} : { modelTemplate: runtime.modelTemplate }),
     schemaVersion: "cp11-runtime-model-v1"
   };
 }

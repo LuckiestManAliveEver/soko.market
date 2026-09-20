@@ -106,7 +106,8 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
   resolveProductionModelTemplate?: (
     businessId: string,
     agentId: string,
-    modelId: string
+    modelId: string,
+    task?: string
   ) => {
     templateId: string;
     templateVersionId: string;
@@ -114,6 +115,13 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
     compiledInstructions: string[];
     nativeRuntimeBindingId: string | null;
     baseModelId: string;
+    task: string | null;
+    allowedTools: string[];
+    contextRequirements: string[];
+    outputSchema?: Record<string, unknown>;
+    constraints: Record<string, unknown>;
+    templateVocabularySnapshot: string;
+    currentVocabularySnapshot: string;
   } | null;
   ensureDefaultRuntimeBinding: (
     input: NativeDefaultRuntimeProvisioningInput

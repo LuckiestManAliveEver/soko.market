@@ -1149,22 +1149,55 @@ export class ModelTemplatesDomain {
     return clone(rollback);
   }
 
-  resolveProductionTemplate(input: { businessId: string; agentId: string; modelId: string }): {
+  resolveProductionTemplate(input: {
+    businessId: string;
+    agentId: string;
+    modelId: string;
+    task?: string;
+    currentVocabularySnapshot?: string;
+  }): {
     templateId: string;
     templateVersionId: string;
     version: string;
     compiledInstructions: string[];
     nativeRuntimeBindingId: string | null;
     baseModelId: string;
+    task: string | null;
+    allowedTools: string[];
+    contextRequirements: string[];
+    outputSchema?: Record<string, JsonValue>;
+    constraints: Record<string, JsonValue>;
+    templateVocabularySnapshot: string;
+    currentVocabularySnapshot: string;
   } | null {
-    const template = [...this.modelTemplates.values()].find(
+    const promoted = [...this.modelTemplates.values()].filter(
       (item) =>
         item.businessId === input.businessId &&
         item.agentId === input.agentId &&
         item.productionVersionId !== null
     );
+    const taskMatches =
+      input.task === undefined ? [] : promoted.filter((item) => item.tasks.includes(input.task!));
+    if (taskMatches.length > 1) {
+      throw new Cp2Error(
+        409,
+        "TEMPLATE_TASK_AMBIGUOUS",
+        "More than one promoted model template handles this task."
+      );
+    }
+    const template =
+      taskMatches.length === 1 ? taskMatches[0] : promoted.length === 1 ? promoted[0] : undefined;
     if (template?.productionVersionId === null || template === undefined) return null;
     const version = this.requireVersion(input.businessId, template.productionVersionId);
+    const selectedTask =
+      input.task !== undefined && template.tasks.includes(input.task)
+        ? input.task
+        : template.tasks.length === 1
+          ? template.tasks[0]!
+          : (input.task ?? null);
+    const outputSchema = version.manifest.runtime.outputSchemas.find(
+      (schema) => schema.task === selectedTask
+    );
     assertCompatibleBaseModel(
       version.manifest.baseModel.requirements,
       this.deps.resolveBaseModel(input.modelId)
@@ -1178,7 +1211,17 @@ export class ModelTemplatesDomain {
         ...version.manifest.expertise.source.instructions
       ].filter(Boolean),
       nativeRuntimeBindingId: version.nativeRuntimeBindingId,
-      baseModelId: input.modelId
+      baseModelId: input.modelId,
+      task: selectedTask,
+      allowedTools: [...version.manifest.runtime.tools],
+      contextRequirements: [...version.manifest.runtime.contextRequirements],
+      ...(outputSchema === undefined ? {} : { outputSchema: structuredClone(outputSchema.schema) }),
+      constraints: structuredClone(version.manifest.runtime.constraints),
+      templateVocabularySnapshot: version.manifest.evaluation.templateVocabularySnapshot,
+      currentVocabularySnapshot:
+        input.currentVocabularySnapshot ??
+        version.manifest.evaluation.currentVocabularySnapshot ??
+        version.manifest.evaluation.templateVocabularySnapshot
     };
   }
 

@@ -354,12 +354,35 @@ export function buildInferencePrompt(prompt: RuntimeModelPrompt): string {
     .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.content}`)
     .join("\n");
   const fewShotExamples = renderRuntimeModelFewShotExamples(prompt.allowedTools);
+  const templateRecipe = renderModelTemplateRecipe(prompt);
   return [
     "You are the model behind the Soko agent runtime.",
     renderRuntimeModelOutputInstructions(prompt.allowedTools),
     ...(fewShotExamples === "" ? [] : [fewShotExamples]),
+    ...(templateRecipe === "" ? [] : [templateRecipe]),
     ...(history === "" ? [] : [`Recent conversation (oldest first):\n${history}`]),
     prompt.message
+  ].join("\n");
+}
+
+function renderModelTemplateRecipe(prompt: RuntimeModelPrompt): string {
+  const recipe = prompt.modelTemplate;
+  if (recipe === undefined) return "";
+  return [
+    "# Soko model template recipe",
+    `Template: ${recipe.templateId}@${recipe.version} (${recipe.templateVersionId})`,
+    ...(recipe.task === null ? [] : [`Task: ${recipe.task}`]),
+    `Allowed template tools: ${recipe.allowedTools.join(", ") || "none"}`,
+    ...(recipe.contextRequirements.length === 0
+      ? []
+      : [`Context requirements: ${recipe.contextRequirements.join(", ")}`]),
+    ...(recipe.outputSchema === undefined
+      ? []
+      : [`Required output schema: ${JSON.stringify(recipe.outputSchema)}`]),
+    ...(Object.keys(recipe.constraints).length === 0
+      ? []
+      : [`Execution constraints: ${JSON.stringify(recipe.constraints)}`]),
+    `Vocabulary snapshots: template=${recipe.templateVocabularySnapshot}, current=${recipe.currentVocabularySnapshot}`
   ].join("\n");
 }
 

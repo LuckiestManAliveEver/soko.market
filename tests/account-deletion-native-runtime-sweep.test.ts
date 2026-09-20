@@ -50,6 +50,7 @@ describe("account deletion sweeps native runtime state", () => {
       modelId,
       executionTarget: "backend",
       executionMode: "LOCAL_FIRST",
+      costResponsibility: "merchant",
       permissions: { allowRemoteShopDevice: false },
       now
     });

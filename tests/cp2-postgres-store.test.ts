@@ -702,6 +702,7 @@ describePostgres("CP2 Postgres store", () => {
         shopId: business.id,
         executionTarget: "vercel",
         executionMode: "LOCAL_FIRST",
+        costResponsibility: "merchant",
         permissions: {
           allowRemoteShopDevice: false
         }

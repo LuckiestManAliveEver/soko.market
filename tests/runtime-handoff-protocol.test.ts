@@ -516,6 +516,7 @@ async function activateModel(
       shopId: owner.businessId,
       executionTarget: "backend" as ModelExecutionTarget,
       executionMode: "LOCAL_FIRST",
+      costResponsibility: "merchant",
       permissions: { allowRemoteShopDevice: false }
     })
   });

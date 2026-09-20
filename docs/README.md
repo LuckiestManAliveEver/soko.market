@@ -4,6 +4,7 @@
 
 - [Repository audit](architecture/model-template-flywheel-audit.md)
 - [Expertise flywheel architecture](architecture/model-template-flywheel.md)
+- [Shared SmolLM template inference](architecture/shared-smollm-template-inference.md)
 - [`.soko` format v1](specs/soko-model-template-v1.md)
 - [Evaluation and report cards](architecture/model-template-evaluation.md)
 - [Lineage and reproducibility](architecture/model-template-lineage.md)
@@ -14,6 +15,7 @@
 ## Existing runtime foundations
 
 - [Inference runtime](architecture/inference-runtime.md)
+- [Shared SmolLM template inference](architecture/shared-smollm-template-inference.md)
 - [Native runtime bindings](architecture/native-runtime-bindings.md)
 - [Provider-neutral runtime](architecture/provider-neutral-runtime.md)
 - [Agent evaluation feedback loop](agent-evaluation-feedback-loop.md)

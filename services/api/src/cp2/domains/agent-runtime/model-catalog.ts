@@ -1,7 +1,7 @@
 import type { AiModelSummary } from "@soko/shared-types";
-import { resolveRuntimeModel } from "@soko/shared-types";
+import { platformSharedModelId, resolveRuntimeModel } from "@soko/shared-types";
 
-export const defaultAiModelId = "smollm2-360m";
+export const defaultAiModelId = platformSharedModelId;
 export const downloadableAiModelIdPattern =
   /^(?:custom:[a-z0-9][a-z0-9._-]{0,79}|github:[a-z0-9][a-z0-9._-]{0,149}|huggingface:[a-z0-9][a-z0-9._-]{0,167})$/;
 export const documentUploadContextScript = [
