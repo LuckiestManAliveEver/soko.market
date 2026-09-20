@@ -131,17 +131,12 @@ export function ChatComposer({
     window.setTimeout(action, 0);
   }
 
+  void isAuthenticated;
+  void onRequireSignIn;
+
   return (
     <>
-      {!isAuthenticated ? (
-        <div className="composer composer-card-lock">
-          <span>Sign in to send and receive end-to-end encrypted messages.</span>
-          <button type="button" onClick={onRequireSignIn}>
-            Sign in to message
-          </button>
-        </div>
-      ) : (
-        <div className="composer">
+      <div className="composer">
           {replyToMessageId ? (
             <div className="composer-reply">
               <span>Replying to a message</span>
@@ -347,8 +342,7 @@ export function ChatComposer({
             onSelect={setSelectedProvider}
             onSelectBluetooth={selectBluetooth}
           />
-        </div>
-      )}
+      </div>
     </>
   );
 }

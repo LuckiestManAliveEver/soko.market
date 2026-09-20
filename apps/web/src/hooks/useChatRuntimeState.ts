@@ -164,7 +164,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     agentSettings,
     setStatusMessage,
     navigateToView,
-    requireMessagingSignIn,
     loadProducts,
     loadSuppliers,
     loadCustomers,
@@ -217,14 +216,19 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     emailSubject?: string,
     emailInvoiceId?: string
   ) {
-    if (session === null) {
-      requireMessagingSignIn();
-      return;
+    let activeSession = session;
+    if (activeSession === null) {
+      const bootstrappedSession = await ensureAuthenticatedSession();
+      if (bootstrappedSession === null) {
+        setStatusMessage("This chat needs a temporary device session before it can send.");
+        return;
+      }
+      activeSession = bootstrappedSession;
     }
     if (
       business &&
       runtimeTransition({
-        accountId: session.account.id,
+        accountId: activeSession.account.id,
         storeId: business.id,
         deviceId: readStableDeviceId()
       })
@@ -232,7 +236,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       setStatusMessage("Wait for the runtime handoff to finish before sending another message.");
       return;
     }
-    let activeSession = session;
     if (navigator.onLine && !isExplicitOfflineMode() && authBootstrapState !== "authenticated") {
       const validatedSession = await ensureAuthenticatedSession();
       if (validatedSession === null) return;
@@ -263,7 +266,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       if (
         !activeConversationId ||
         business?.id !== offlineScope.storeId ||
-        isHumanDirectConversation(activeConversation, session) ||
+        isHumanDirectConversation(activeConversation, activeSession) ||
         isExternalChannelConversation(activeConversation) ||
         attachments.length
       ) {
@@ -333,7 +336,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     setPendingAttachments([]);
     setReplyToMessageId(null);
 
-    const hasAccountRecipient = isHumanDirectConversation(activeConversation, session);
+    const hasAccountRecipient = isHumanDirectConversation(activeConversation, activeSession);
     const hasExternalRecipient = isExternalChannelConversation(activeConversation);
     const hasHumanRecipient = hasAccountRecipient || hasExternalRecipient;
     const localModuleCommand =
@@ -452,7 +455,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     const inferencePreferences =
       business === null
         ? { ownerNodeAllowed: false }
-        : readClientInferencePreferences(session.account.id, business.id);
+        : readClientInferencePreferences(activeSession.account.id, business.id);
     const requiresServerTool = requestRequiresServerTool(runtimeMessage);
     const availableRuntimeTools = requiresServerTool
       ? (Object.keys(runtimeToolRegistry) as RuntimeToolName[])
@@ -595,7 +598,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
     const payload: Record<string, unknown> | null =
-      session !== null && activeConversationId !== null
+      activeConversationId !== null
         ? {
             conversationId: activeConversationId,
             clientMessageId,
@@ -626,7 +629,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         const persisted =
           !hasHumanRecipient && business !== null && shouldRequestServerInference
             ? await runtimeManager.runWithSession(
-                runtimeManagerKey(session.account.id, business.id),
+                runtimeManagerKey(activeSession.account.id, business.id),
                 createManagedRuntimeSession,
                 (managedRuntimeSessionId) =>
                   postJson<ProcessedConversationMessageResponse>("/v1/messages", {
@@ -638,13 +641,17 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
                   })
               )
             : await postJson<ProcessedConversationMessageResponse>("/v1/messages", payload);
-        if (activeConversation !== null && session !== null) {
+        if (activeConversation !== null) {
           setChatMessages((messages) => {
             const reconciled = messages.map((item) =>
               item.id === clientMessageId
                 ? persisted.content.type === "encrypted"
                   ? mergePersistedEncryptedMessage(item, persisted)
-                  : mapConversationMessage(persisted, activeConversation.participants, session)
+                  : mapConversationMessage(
+                      persisted,
+                      activeConversation.participants,
+                      activeSession
+                    )
                 : item
             );
             if (
@@ -658,7 +665,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
               mapConversationMessage(
                 persisted.agentMessage,
                 activeConversation.participants,
-                session
+                activeSession
               )
             ];
           });
@@ -671,7 +678,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         }
         if (persisted.processing?.status === "failed") {
           queueMessagingOutbox({
-            accountId: session.account.id,
+            accountId: activeSession.account.id,
             clientMessageId,
             payload
           });
@@ -687,7 +694,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           return;
         }
         queueMessagingOutbox({
-          accountId: session.account.id,
+          accountId: activeSession.account.id,
           clientMessageId,
           payload
         });
@@ -1229,7 +1236,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         attachments,
         business.id
       );
-      const key = runtimeManagerKey(session.account.id, business.id);
+      const key = runtimeManagerKey(activeSession.account.id, business.id);
       const result = await runtimeManager.runWithSession(
         key,
         createManagedRuntimeSession,
