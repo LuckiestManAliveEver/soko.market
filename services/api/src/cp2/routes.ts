@@ -1774,6 +1774,42 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.get(
+    "/public/commerce-identities/availability",
+    async (request: FastifyRequest<{ Querystring: { address?: string } }>, reply) => {
+      try {
+        return store.checkCommerceAddressAvailability(
+          parseString(request.query.address, "address")
+        );
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/public/commerce-identities/:address",
+    async (request: FastifyRequest<{ Params: { address: string } }>, reply) => {
+      try {
+        const resolution = store.resolveCommerceIdentity(
+          parseString(request.params.address, "address")
+        );
+        if (resolution === null) {
+          return reply.code(404).send({
+            code: "commerce_identity_not_found",
+            message: "Commerce identity was not found."
+          });
+        }
+        if (resolution.status === "stale") {
+          return reply.code(410).send(resolution);
+        }
+        return resolution;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
     "/businesses/:businessId/presence",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
       try {

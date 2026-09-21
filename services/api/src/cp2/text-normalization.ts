@@ -48,6 +48,23 @@ export function normalizeStorefrontLookupId(value: string): string {
   return value.trim().toLowerCase();
 }
 
+export function commerceAddressFromSokoId(sokoId: string): string {
+  const handle = normalizeStorefrontLookupId(sokoId).replace(/^soko\./u, "");
+  return `${handle}@soko.market`;
+}
+
+export function sokoIdFromCommerceAddress(address: string): string {
+  const normalized = address.trim().toLowerCase();
+  const handle = normalized.endsWith("@soko.market")
+    ? normalized.slice(0, -"@soko.market".length)
+    : normalized.replace(/^soko\./u, "");
+  return `soko.${handle}`;
+}
+
+export function normalizeCommerceAddress(address: string): string {
+  return commerceAddressFromSokoId(sokoIdFromCommerceAddress(address));
+}
+
 export function isSokoStorefrontId(value: string): boolean {
   return /^soko\.[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/iu.test(value.trim());
 }

@@ -256,6 +256,35 @@ export type SokoIdResolution =
   | { status: "active"; business: BusinessSummary }
   | { status: "stale"; business: BusinessSummary; redirectTo: string };
 
+export interface PublicCommerceIdentitySummary {
+  canonicalBusinessId: string;
+  displayName: string;
+  commerceAddress: string;
+  sokoId: string;
+  storefront: {
+    sokoId: string;
+    publicUrlPath: string;
+  };
+  catalogue: {
+    productCount: number;
+    searchable: boolean;
+  };
+  supportedInteractionTypes: Array<"conversation" | "catalogue" | "order">;
+  availability: "online" | "private" | "offline";
+  entryPoints: Array<{
+    type: "storefront" | "conversation";
+    href: string;
+  }>;
+}
+
+export type CommerceIdentityAvailability =
+  | { available: true; normalizedAddress: string }
+  | { available: false; normalizedAddress: string; reason: "invalid" | "reserved" | "taken" };
+
+export type CommerceIdentityResolution =
+  | { status: "active"; identity: PublicCommerceIdentitySummary }
+  | { status: "stale"; identity: PublicCommerceIdentitySummary; redirectTo: string };
+
 export interface MembershipSummary {
   id: string;
   businessId: string;
