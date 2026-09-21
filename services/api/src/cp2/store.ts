@@ -58,8 +58,11 @@ import {
   minimumSokoHandleLength,
   normalizeOptionalBoundedText,
   normalizeRequiredBoundedText,
+  commerceAddressFromSokoId,
   createSokoHandle,
+  normalizeCommerceAddress,
   normalizeStorefrontLookupId,
+  sokoIdFromCommerceAddress,
   pinAttemptTrackerMaximumEntries
 } from "./text-normalization.js";
 import { CommerceDomain } from "./domains/commerce/store.js";
@@ -162,6 +165,8 @@ import type {
   BusinessReportSummary,
   BusinessRole,
   BusinessSummary,
+  CommerceIdentityAvailability,
+  CommerceIdentityResolution,
   CatalogueQueryResult,
   CanonicalContactSummary,
   ComplianceRetentionSummary,
@@ -9080,6 +9085,39 @@ export class Cp2Store {
     };
   }
 
+  private publicCommerceIdentityForBusiness(
+    business: BusinessSummary
+  ): CommerceIdentityResolution["identity"] {
+    const storefront = this.publicStorefrontForBusiness(business);
+    return {
+      canonicalBusinessId: business.id,
+      displayName: business.name,
+      commerceAddress: commerceAddressFromSokoId(business.sokoId),
+      sokoId: business.sokoId,
+      storefront: {
+        sokoId: business.sokoId,
+        publicUrlPath: `/public/storefronts/${encodeURIComponent(business.sokoId)}`
+      },
+      catalogue: {
+        productCount: storefront.products.length,
+        searchable: true
+      },
+      supportedInteractionTypes: ["conversation", "catalogue", "order"],
+      availability:
+        storefront.presence.status === "private" ? "private" : storefront.presence.status,
+      entryPoints: [
+        {
+          type: "storefront",
+          href: `/public/storefronts/${encodeURIComponent(business.sokoId)}`
+        },
+        {
+          type: "conversation",
+          href: `/public/storefronts/${encodeURIComponent(business.sokoId)}/sessions`
+        }
+      ]
+    };
+  }
+
   private shopPresenceForBusiness(businessId: string): ShopPresenceSummary {
     return (
       this.shopPresences.get(businessId) ?? {
@@ -10774,6 +10812,43 @@ export class Cp2Store {
     const business = this.businesses.get(historical.businessId);
     if (business === undefined || this.quarantinedBusinessIds.has(business.id)) return null;
     return { status: "stale", business, redirectTo: business.sokoId };
+  }
+
+  checkCommerceAddressAvailability(address: string): CommerceIdentityAvailability {
+    let normalizedAddress: string;
+    try {
+      normalizedAddress = normalizeCommerceAddress(address);
+    } catch {
+      normalizedAddress = address.trim().toLowerCase();
+      return { available: false, normalizedAddress, reason: "invalid" };
+    }
+    const sokoId = sokoIdFromCommerceAddress(normalizedAddress);
+    if (!isSokoStorefrontId(sokoId)) {
+      return { available: false, normalizedAddress, reason: "invalid" };
+    }
+    const handle = sokoId.replace(/^soko\./u, "");
+    if (isReservedSokoHandle(handle)) {
+      return { available: false, normalizedAddress, reason: "reserved" };
+    }
+    if (this.hasGlobalShopId(sokoId)) {
+      return { available: false, normalizedAddress, reason: "taken" };
+    }
+    return { available: true, normalizedAddress };
+  }
+
+  resolveCommerceIdentity(address: string): CommerceIdentityResolution | null {
+    const sokoId = sokoIdFromCommerceAddress(address);
+    const resolution = this.resolveBusinessBySokoId(sokoId);
+    if (resolution === null) return null;
+    const identity = this.publicCommerceIdentityForBusiness(resolution.business);
+    if (resolution.status === "stale") {
+      return {
+        status: "stale",
+        identity,
+        redirectTo: commerceAddressFromSokoId(resolution.redirectTo)
+      };
+    }
+    return { status: "active", identity };
   }
 
   /**

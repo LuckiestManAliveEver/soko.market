@@ -7,6 +7,43 @@ const onePixelPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZCr8AAAAASUVORK5CYII=";
 
 describe("public chat commerce foundation", () => {
+  it("resolves commerce addresses through a public privacy-safe identity endpoint", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "254700000500", "Identity Shop", "1500");
+
+    const resolved = await getJson<{
+      status: string;
+      identity: {
+        canonicalBusinessId: string;
+        commerceAddress: string;
+        displayName: string;
+        entryPoints: Array<{ type: string; href: string }>;
+      };
+    }>(
+      app,
+      `/public/commerce-identities/${owner.business.sokoId.replace("soko.", "")}@soko.market`
+    );
+
+    expect(resolved).toMatchObject({
+      status: "active",
+      identity: {
+        canonicalBusinessId: owner.business.id,
+        commerceAddress: `${owner.business.sokoId.replace("soko.", "")}@soko.market`,
+        displayName: "Identity Shop",
+        entryPoints: expect.arrayContaining([expect.objectContaining({ type: "conversation" })])
+      }
+    });
+    expect(JSON.stringify(resolved)).not.toContain("owner");
+
+    const availability = await getJson<{ available: boolean; reason: string }>(
+      app,
+      `/public/commerce-identities/availability?address=${owner.business.sokoId.replace("soko.", "")}@soko.market`
+    );
+    expect(availability).toEqual(expect.objectContaining({ available: false, reason: "taken" }));
+    await app.close();
+  });
+
   it("uses a scoped customer principal and persists catalogue replies as canonical messages", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

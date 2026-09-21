@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createCp2Store } from "../services/api/src/cp2/store";
 import {
+  commerceAddressFromSokoId,
   createSokoHandle,
   isReservedSokoHandle,
   maximumSokoHandleLength,
   minimumSokoHandleLength,
+  normalizeCommerceAddress,
   reservedSokoHandles
 } from "../services/api/src/cp2/text-normalization";
 
@@ -151,6 +153,73 @@ describe("resolveBusinessBySokoId - the one shared resolver", () => {
 
     const resolution = store.resolveBusinessBySokoId(oldSokoId);
     expect(resolution).toEqual({ status: "active", business: claimed });
+  });
+});
+
+describe("commerce address resolver", () => {
+  it("normalizes the email-like address without changing the canonical business id", () => {
+    const store = createCp2Store();
+    const owner = seedOwner(store, 60, "Address Shop");
+    const address = commerceAddressFromSokoId(owner.business.sokoId);
+
+    expect(normalizeCommerceAddress(`  ${address.toUpperCase()}  `)).toBe(address);
+    expect(store.checkCommerceAddressAvailability(address)).toEqual({
+      available: false,
+      normalizedAddress: address,
+      reason: "taken"
+    });
+
+    const resolution = store.resolveCommerceIdentity(address);
+    expect(resolution).toEqual({
+      status: "active",
+      identity: expect.objectContaining({
+        canonicalBusinessId: owner.business.id,
+        displayName: "Address Shop",
+        commerceAddress: address,
+        sokoId: owner.business.sokoId,
+        supportedInteractionTypes: ["conversation", "catalogue", "order"]
+      })
+    });
+    expect(JSON.stringify(resolution)).not.toContain(owner.auth.account.id);
+  });
+
+  it("resolves a retired commerce address as stale after a safe address change", () => {
+    const store = createCp2Store();
+    const owner = seedOwner(store, 61, "Old Address Shop");
+    const oldAddress = commerceAddressFromSokoId(owner.business.sokoId);
+
+    const renamed = store.renameSokoId({
+      sessionId: owner.auth.session.id,
+      businessId: owner.business.id,
+      handle: "new-address-shop"
+    });
+
+    expect(store.resolveCommerceIdentity(oldAddress)).toEqual({
+      status: "stale",
+      identity: expect.objectContaining({
+        canonicalBusinessId: owner.business.id,
+        commerceAddress: commerceAddressFromSokoId(renamed.sokoId)
+      }),
+      redirectTo: "new-address-shop@soko.market"
+    });
+  });
+
+  it("checks invalid, reserved, and open commerce addresses", () => {
+    const store = createCp2Store();
+    expect(store.checkCommerceAddressAvailability("bad address@soko.market")).toEqual({
+      available: false,
+      normalizedAddress: "bad address@soko.market",
+      reason: "invalid"
+    });
+    expect(store.checkCommerceAddressAvailability("admin@soko.market")).toEqual({
+      available: false,
+      normalizedAddress: "admin@soko.market",
+      reason: "reserved"
+    });
+    expect(store.checkCommerceAddressAvailability("brand-new-shop@soko.market")).toEqual({
+      available: true,
+      normalizedAddress: "brand-new-shop@soko.market"
+    });
   });
 });
 
