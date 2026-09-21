@@ -1,4 +1,5 @@
 import type { ConnectedMailboxBackgroundSyncSummary, Cp2Store } from "./store.js";
+import { createIntervalRunner } from "./interval-runner.js";
 
 const defaultIntervalMs = 5 * 60_000;
 
@@ -13,42 +14,20 @@ export function startConnectedMailboxSyncRunner(options: {
   runOnStart?: boolean;
   onResult?: (result: ConnectedMailboxBackgroundSyncSummary) => void;
   onError?: (error: unknown) => void;
+  timeScheduledJob?: <R>(job: string, fn: () => Promise<R>) => Promise<R>;
 }): ConnectedMailboxSyncRunner {
   const intervalMs = normalizeInterval(options.intervalMs);
-  let stopped = false;
-  let inFlight: Promise<ConnectedMailboxBackgroundSyncSummary | null> | null = null;
-
-  const runNow = () => {
-    if (stopped) return Promise.resolve(null);
-    if (inFlight !== null) return inFlight;
-    inFlight = options.store
-      .syncDueConnectedMailboxes({ staleAfterMs: intervalMs })
-      .then((result) => {
-        options.onResult?.(result);
-        return result;
-      })
-      .catch((error: unknown) => {
-        options.onError?.(error);
-        return null;
-      })
-      .finally(() => {
-        inFlight = null;
-      });
-    return inFlight;
-  };
-
-  const timer = setInterval(() => void runNow(), intervalMs);
-  timer.unref();
-  if (options.runOnStart !== false) void runNow();
-
-  return {
-    runNow,
-    async stop() {
-      stopped = true;
-      clearInterval(timer);
-      await inFlight;
-    }
-  };
+  return createIntervalRunner({
+    job: "connected_mailbox_sync",
+    intervalMs,
+    run: () => options.store.syncDueConnectedMailboxes({ staleAfterMs: intervalMs }),
+    ...(options.runOnStart === undefined ? {} : { runOnStart: options.runOnStart }),
+    ...(options.onResult === undefined ? {} : { onResult: options.onResult }),
+    ...(options.onError === undefined ? {} : { onError: options.onError }),
+    ...(options.timeScheduledJob === undefined
+      ? {}
+      : { timeScheduledJob: options.timeScheduledJob })
+  });
 }
 
 function normalizeInterval(value: number | undefined): number {

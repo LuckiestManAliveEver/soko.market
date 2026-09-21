@@ -5,7 +5,17 @@
  * the same processor instance rather than each talking to the worker directly.
  */
 import type { OcrBlockSummary, OcrEngine, OcrProfile } from "@soko/shared-types";
+import {
+  type Bulkhead,
+  BulkheadRejectedError,
+  type CircuitBreaker,
+  CircuitOpenError,
+  createBulkhead,
+  createCircuitBreaker,
+  retryWithBackoff
+} from "@soko/resource-control";
 import { Cp2Error } from "./store.js";
+import type { ResourceControlEvent } from "../resource-control-events.js";
 
 export interface OcrExtractionInput {
   fileName: string;
@@ -32,10 +42,23 @@ export interface OcrExtractionProcessor {
 export interface HttpOcrExtractionProcessorOptions {
   endpoint: string;
   concurrency?: number;
+  /** Bounded wait-queue depth once `concurrency` is saturated (resource-isolation.md §7). */
+  queueDepth?: number;
   fetcher?: typeof fetch;
   maxRetries?: number;
+  retryInitialDelayMs?: number;
+  retryMaxDelayMs?: number;
   timeoutMs?: number;
+  circuitBreakerFailureThreshold?: number;
+  circuitBreakerResetTimeoutMs?: number;
+  onEvent?: (event: ResourceControlEvent) => void;
 }
+
+/** Marks a 5xx HTTP response from the worker as a distinct, retryable failure shape, separate
+ *  from a network-level throw - both are retryable, but they produce different final Cp2Error
+ *  messages once retries are exhausted (see the catch block in `process` below), matching the
+ *  behavior this module already had before it grew a shared retry/circuit-breaker/bulkhead. */
+class OcrWorkerHttpError extends Error {}
 
 export function createHttpOcrExtractionProcessor(
   options: HttpOcrExtractionProcessorOptions
@@ -44,64 +67,97 @@ export function createHttpOcrExtractionProcessor(
   const fetcher = options.fetcher ?? globalThis.fetch;
   const maxRetries = Math.max(0, options.maxRetries ?? 2);
   const timeoutMs = Math.max(1_000, options.timeoutMs ?? 120_000);
-  const semaphore = createSemaphore(Math.max(1, options.concurrency ?? 1));
+  const retryInitialDelayMs = Math.max(1, options.retryInitialDelayMs ?? 200);
+  const retryMaxDelayMs = Math.max(retryInitialDelayMs, options.retryMaxDelayMs ?? 5_000);
 
   if (endpoint.length === 0) {
     throw new Error("OCR worker endpoint is required.");
   }
 
+  // OCR is BACKGROUND work in resource-isolation.md's classification: even when a user is
+  // waiting on one receipt scan, it is never on the critical commerce path (auth/catalogue/
+  // orders) and manual entry remains available if it degrades - see resource-isolation.md §11.
+  const bulkhead: Bulkhead = createBulkhead({
+    name: "ocr",
+    workloadClass: "background",
+    maxConcurrency: Math.max(1, options.concurrency ?? 1),
+    maxQueue: Math.max(0, options.queueDepth ?? 10),
+    ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent })
+  });
+  const breaker: CircuitBreaker = createCircuitBreaker({
+    name: "ocr",
+    failureThreshold: Math.max(1, options.circuitBreakerFailureThreshold ?? 5),
+    resetTimeoutMs: Math.max(1, options.circuitBreakerResetTimeoutMs ?? 30_000),
+    ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent })
+  });
+
+  async function attemptOnce(input: OcrExtractionInput): Promise<OcrExtractionResult> {
+    const response = await fetcher(`${endpoint}/scan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (response.ok) {
+      return parseExtractionResult(await response.json());
+    }
+    const message = await readWorkerError(response);
+    if (response.status < 500) {
+      // Not retryable: the worker rejected this specific input, retrying it changes nothing.
+      throw new Cp2Error(422, "ocr_worker_failed", message);
+    }
+    throw new OcrWorkerHttpError(message);
+  }
+
   return {
     async process(input) {
-      const release = await semaphore.acquire();
-
       try {
-        let finalError: unknown;
-
-        for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-          try {
-            const response = await fetcher(`${endpoint}/scan`, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(input),
-              signal: AbortSignal.timeout(timeoutMs)
-            });
-
-            if (response.ok) {
-              return parseExtractionResult(await response.json());
-            }
-
-            const message = await readWorkerError(response);
-            if (response.status < 500 || attempt === maxRetries) {
-              throw new Cp2Error(response.status >= 500 ? 503 : 422, "ocr_worker_failed", message);
-            }
-            finalError = new Error(message);
-          } catch (error) {
-            if (error instanceof Cp2Error) {
-              throw error;
-            }
-            finalError = error;
-            if (attempt === maxRetries) {
-              break;
-            }
-          }
+        return await bulkhead.run(() =>
+          breaker.run(() =>
+            retryWithBackoff(() => attemptOnce(input), {
+              maxAttempts: maxRetries + 1,
+              initialDelayMs: retryInitialDelayMs,
+              maxDelayMs: retryMaxDelayMs,
+              isRetryable: (error) => !(error instanceof Cp2Error)
+            })
+          )
+        );
+      } catch (error) {
+        if (error instanceof BulkheadRejectedError) {
+          throw new Cp2Error(
+            503,
+            "ocr_worker_busy",
+            "OCR worker is at capacity; please retry shortly."
+          );
         }
-
+        if (error instanceof CircuitOpenError) {
+          throw new Cp2Error(
+            503,
+            "ocr_worker_unavailable",
+            "OCR worker is temporarily disabled after repeated failures."
+          );
+        }
+        if (error instanceof Cp2Error) {
+          throw error;
+        }
+        if (error instanceof OcrWorkerHttpError) {
+          throw new Cp2Error(503, "ocr_worker_failed", error.message);
+        }
         throw new Cp2Error(
           503,
           "ocr_worker_unavailable",
-          finalError instanceof Error
-            ? `OCR worker is unavailable: ${finalError.message}`
+          error instanceof Error
+            ? `OCR worker is unavailable: ${error.message}`
             : "OCR worker is unavailable."
         );
-      } finally {
-        release();
       }
     }
   };
 }
 
 export function createOcrExtractionProcessorFromEnvironment(
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  onEvent?: (event: ResourceControlEvent) => void
 ): OcrExtractionProcessor | undefined {
   const configured = env.OCR_WORKER_URL?.trim();
 
@@ -118,8 +174,20 @@ export function createOcrExtractionProcessorFromEnvironment(
   return createHttpOcrExtractionProcessor({
     endpoint,
     concurrency: readPositiveInteger(env.OCR_CONCURRENCY, 1),
+    queueDepth: readNonNegativeInteger(env.OCR_QUEUE_MAX, 10),
     maxRetries: readNonNegativeInteger(env.OCR_MAX_RETRIES, 2),
-    timeoutMs: readPositiveInteger(env.OCR_JOB_TIMEOUT_SECONDS, 120) * 1_000
+    retryInitialDelayMs: readPositiveInteger(env.OCR_RETRY_INITIAL_DELAY_MS, 200),
+    retryMaxDelayMs: readPositiveInteger(env.OCR_RETRY_MAX_DELAY_MS, 5_000),
+    timeoutMs: readPositiveInteger(env.OCR_JOB_TIMEOUT_SECONDS, 120) * 1_000,
+    circuitBreakerFailureThreshold: readPositiveInteger(
+      env.OCR_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+      5
+    ),
+    circuitBreakerResetTimeoutMs: readPositiveInteger(
+      env.OCR_CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
+      30_000
+    ),
+    ...(onEvent === undefined ? {} : { onEvent })
   });
 }
 
@@ -228,31 +296,6 @@ async function readWorkerError(response: Response): Promise<string> {
     // Fall through to the stable error below.
   }
   return `OCR worker failed with HTTP ${response.status}.`;
-}
-
-function createSemaphore(limit: number): {
-  acquire(): Promise<() => void>;
-} {
-  let active = 0;
-  const waiting: Array<() => void> = [];
-
-  return {
-    async acquire() {
-      if (active >= limit) {
-        await new Promise<void>((resolve) => waiting.push(resolve));
-      }
-      active += 1;
-      let released = false;
-      return () => {
-        if (released) {
-          return;
-        }
-        released = true;
-        active -= 1;
-        waiting.shift()?.();
-      };
-    }
-  };
 }
 
 function readPositiveInteger(value: string | undefined, fallback: number): number {

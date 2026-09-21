@@ -11,6 +11,12 @@ import {
   renderRuntimeModelFewShotExamples,
   renderRuntimeModelOutputInstructions
 } from "@soko/tool-core";
+import {
+  type Bulkhead,
+  BulkheadRejectedError,
+  type CircuitBreaker,
+  CircuitOpenError
+} from "@soko/resource-control";
 
 import type { ModelArtifactStore } from "./model-artifact-store.js";
 
@@ -284,6 +290,57 @@ export function createVercelModelAdapter(input: {
         ...(result.finishReason === null ? {} : { finishReason: result.finishReason }),
         inferenceRequestId: requestId
       };
+    }
+  };
+}
+
+/**
+ * Gates `generate()` behind a bulkhead (bounded concurrency + bounded wait queue) and a circuit
+ * breaker, both shared across every model adapter targeting the same execution host - see
+ * docs/architecture/resource-isolation.md §3/§7. This closes the highest-priority gap found in
+ * the resource-isolation audit: before this wrapper existed, services/api placed no bound at all
+ * on concurrent inference calls, relying entirely on ai-runtime's own single-generation-at-a-time
+ * `busy` flag (services/ai-runtime/src/http-server.ts) to reject overload - which produced a burst
+ * of user-visible failures under concurrent load instead of smooth, bounded queuing, and never
+ * stopped repeatedly hammering an `ai-runtime` instance that was clearly down.
+ *
+ * `canRun`/`healthCheck` are intentionally left unwrapped: they're lightweight diagnostic calls
+ * (health-check/model-artifact verification), not the expensive generation the budget protects,
+ * and health checks must keep working even while the generation bulkhead is fully saturated.
+ */
+export function boundModelRuntimeAdapter(
+  adapter: ModelRuntimeAdapter,
+  controls: { bulkhead: Bulkhead; breaker: CircuitBreaker }
+): ModelRuntimeAdapter {
+  return {
+    provider: adapter.provider,
+    executionTarget: adapter.executionTarget,
+    canRun: (context) => adapter.canRun(context),
+    healthCheck: (context) => adapter.healthCheck(context),
+    async generate(input) {
+      try {
+        return await controls.bulkhead.run(() =>
+          controls.breaker.run(() => adapter.generate(input))
+        );
+      } catch (error) {
+        if (error instanceof BulkheadRejectedError) {
+          throw new ModelRuntimeError(
+            "INFERENCE_BUSY",
+            "Inference is at capacity; please retry shortly.",
+            true,
+            { cause: error }
+          );
+        }
+        if (error instanceof CircuitOpenError) {
+          throw new ModelRuntimeError(
+            "INFERENCE_CIRCUIT_OPEN",
+            "Inference is temporarily disabled after repeated failures.",
+            true,
+            { cause: error }
+          );
+        }
+        throw error;
+      }
     }
   };
 }

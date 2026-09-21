@@ -1,4 +1,5 @@
 import type { Cp2Store } from "./store.js";
+import { createIntervalRunner } from "./interval-runner.js";
 
 /**
  * Frees retired sokoIds once their post-rename cooldown elapses
@@ -21,43 +22,20 @@ export function startSokoIdCooldownRunner(options: {
   runOnStart?: boolean;
   onResult?: (releasedCount: number) => void;
   onError?: (error: unknown) => void;
+  timeScheduledJob?: <R>(job: string, fn: () => Promise<R>) => Promise<R>;
 }): SokoIdCooldownRunner {
-  const intervalMs = normalizePositive(options.intervalMs, defaultIntervalMs, "interval");
   const cooldownMs = normalizePositive(options.cooldownMs, defaultCooldownMs, "cooldown");
-  let stopped = false;
-  let inFlight: Promise<number | null> | null = null;
-
-  const runNow = () => {
-    if (stopped) return Promise.resolve(null);
-    if (inFlight !== null) return inFlight;
-    inFlight = Promise.resolve()
-      .then(() => options.store.releaseExpiredSokoIds({ cooldownMs }))
-      .then((released) => {
-        options.onResult?.(released);
-        return released;
-      })
-      .catch((error: unknown) => {
-        options.onError?.(error);
-        return null;
-      })
-      .finally(() => {
-        inFlight = null;
-      });
-    return inFlight;
-  };
-
-  const timer = setInterval(() => void runNow(), intervalMs);
-  timer.unref();
-  if (options.runOnStart !== false) void runNow();
-
-  return {
-    runNow,
-    async stop() {
-      stopped = true;
-      clearInterval(timer);
-      await inFlight;
-    }
-  };
+  return createIntervalRunner({
+    job: "sokoid_cooldown",
+    intervalMs: normalizePositive(options.intervalMs, defaultIntervalMs, "interval"),
+    run: async () => options.store.releaseExpiredSokoIds({ cooldownMs }),
+    ...(options.runOnStart === undefined ? {} : { runOnStart: options.runOnStart }),
+    ...(options.onResult === undefined ? {} : { onResult: options.onResult }),
+    ...(options.onError === undefined ? {} : { onError: options.onError }),
+    ...(options.timeScheduledJob === undefined
+      ? {}
+      : { timeScheduledJob: options.timeScheduledJob })
+  });
 }
 
 function normalizePositive(value: number | undefined, fallback: number, label: string): number {
