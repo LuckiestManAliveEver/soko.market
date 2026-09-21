@@ -1,4 +1,5 @@
 import type { Cp2Store, MessageNotificationDeliveryRunSummary } from "./store.js";
+import { createIntervalRunner } from "./interval-runner.js";
 
 const defaultIntervalMs = 60_000;
 
@@ -13,42 +14,17 @@ export function startNotificationDeliveryRunner(options: {
   runOnStart?: boolean;
   onResult?: (result: MessageNotificationDeliveryRunSummary) => void;
   onError?: (error: unknown) => void;
+  timeScheduledJob?: <R>(job: string, fn: () => Promise<R>) => Promise<R>;
 }): NotificationDeliveryRunner {
-  const intervalMs = normalizeInterval(options.intervalMs);
-  let stopped = false;
-  let inFlight: Promise<MessageNotificationDeliveryRunSummary | null> | null = null;
-
-  const runNow = () => {
-    if (stopped) return Promise.resolve(null);
-    if (inFlight !== null) return inFlight;
-    inFlight = options.store
-      .deliverPendingMessageNotifications()
-      .then((result) => {
-        options.onResult?.(result);
-        return result;
-      })
-      .catch((error: unknown) => {
-        options.onError?.(error);
-        return null;
-      })
-      .finally(() => {
-        inFlight = null;
-      });
-    return inFlight;
-  };
-
-  const timer = setInterval(() => void runNow(), intervalMs);
-  timer.unref();
-  if (options.runOnStart !== false) void runNow();
-
-  return {
-    runNow,
-    async stop() {
-      stopped = true;
-      clearInterval(timer);
-      await inFlight;
-    }
-  };
+  return createIntervalRunner({
+    job: "notification_delivery",
+    intervalMs: normalizeInterval(options.intervalMs),
+    run: () => options.store.deliverPendingMessageNotifications(),
+    ...(options.runOnStart === undefined ? {} : { runOnStart: options.runOnStart }),
+    ...(options.onResult === undefined ? {} : { onResult: options.onResult }),
+    ...(options.onError === undefined ? {} : { onError: options.onError }),
+    ...(options.timeScheduledJob === undefined ? {} : { timeScheduledJob: options.timeScheduledJob })
+  });
 }
 
 function normalizeInterval(value: number | undefined): number {

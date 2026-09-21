@@ -47,6 +47,7 @@
     "@soko/event-core": "workspace:*",
     "@soko/observability": "workspace:*",
     "@soko/offline-runtime": "workspace:*",
+    "@soko/resource-control": "workspace:*",
     "@soko/shared-types": "workspace:*",
     "@soko/sync-core": "workspace:*",
     "@soko/tool-core": "workspace:*",

@@ -3,7 +3,11 @@ import { createMetrics, type Metrics } from "@soko/observability";
 import { Pool } from "pg";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
+import { buildPgPoolConfig } from "./db-pool-config.js";
+import { createBulkhead, createCircuitBreaker, positiveIntegerFromEnv } from "@soko/resource-control";
+import { resourceControlEventName, type ResourceControlEvent } from "./resource-control-events.js";
 import {
+  boundModelRuntimeAdapter,
   createVercelInferenceClient,
   createVercelModelAdapter,
   type ModelRuntimeAdapter
@@ -55,12 +59,33 @@ const config = readEnvironment();
 // histograms instrumented below. See docs/observability.md and docs/single-instance-store-ceiling.md
 // ("monitor process RSS in production" - step 1 of that doc's recommended path).
 const metrics = createMetrics({ serviceName: "api" });
+
+/**
+ * The one place every bounded workload's structured events land - console output (this process
+ * has no request context to attach a Fastify child logger to at module-init time) plus the
+ * Prometheus counters/gauges in @soko/observability. See
+ * docs/architecture/resource-isolation.md §17/§18 for the event/metric names this produces.
+ */
+function onResourceControlEvent(event: ResourceControlEvent): void {
+  metrics.recordResourceEvent(event);
+  const logLine = { event: resourceControlEventName(event), ...event };
+  if (event.type === "operation_rejected" || event.type === "opened") {
+    console.error(logLine);
+  } else {
+    console.log(logLine);
+  }
+}
+
 const rateLimitRedisClient = createRateLimitRedisClient(config.redisUrl);
 const modelRuntimeAdapters = new Map<string, ModelRuntimeAdapter>();
 let primaryInferenceAdapter: ModelRuntimeAdapter | undefined;
 let artifactPool: Pool | undefined;
 if (config.vercelInferenceUrl !== "") {
-  artifactPool = new Pool({ connectionString: config.databaseUrl, max: 2 });
+  artifactPool = new Pool(
+    buildPgPoolConfig(config.databaseUrl, {
+      max: positiveIntegerFromEnv("DB_ARTIFACT_POOL_MAX", 2)
+    })
+  );
   metrics.instrumentPgPool(artifactPool, { poolName: "model_artifact_store" });
   const artifactStore = createNeonModelArtifactStore({
     database: artifactPool,
@@ -75,9 +100,33 @@ if (config.vercelInferenceUrl !== "") {
     serviceToken: config.inferenceServiceToken,
     timeoutMs: config.vercelInferenceTimeoutMs
   });
+  // One bulkhead/breaker shared across every model on this execution target: ai-runtime itself
+  // enforces a single global "one generation at a time" budget regardless of which model is
+  // asked for (services/ai-runtime/src/http-server.ts), so per-model budgets here would just
+  // let one model starve another's share of the same underlying capacity for no benefit.
+  const inferenceBulkhead = metrics.instrumentBulkhead(
+    createBulkhead({
+      name: "inference",
+      workloadClass: "important",
+      maxConcurrency: positiveIntegerFromEnv("INFERENCE_MAX_CONCURRENCY", 4),
+      maxQueue: positiveIntegerFromEnv("INFERENCE_QUEUE_MAX", 8),
+      onEvent: onResourceControlEvent
+    })
+  );
+  const inferenceBreaker = metrics.instrumentCircuitBreaker(
+    createCircuitBreaker({
+      name: "inference",
+      failureThreshold: positiveIntegerFromEnv("INFERENCE_CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
+      resetTimeoutMs: positiveIntegerFromEnv("INFERENCE_CIRCUIT_BREAKER_RESET_TIMEOUT_MS", 30_000),
+      onEvent: onResourceControlEvent
+    })
+  );
   for (const model of Object.values(runtimeModels).filter((candidate) => candidate.enabled)) {
     const adapter = instrumentModelAdapter(
-      createVercelModelAdapter({ modelId: model.id, artifactStore, client }),
+      boundModelRuntimeAdapter(createVercelModelAdapter({ modelId: model.id, artifactStore, client }), {
+        bulkhead: inferenceBulkhead,
+        breaker: inferenceBreaker
+      }),
       metrics
     );
     modelRuntimeAdapters.set(`vercel:${model.id}`, adapter);
@@ -96,7 +145,7 @@ const pushNotificationSender =
 const emailProvider = createEmailProviderFromEnvironment();
 const messageWebBaseUrl = (process.env.WEB_PUBLIC_URL ?? "https://soko.market").trim();
 const accountDeletionProcessors = readAccountDeletionProcessors();
-const ocrProcessor = createOcrExtractionProcessorFromEnvironment();
+const ocrProcessor = createOcrExtractionProcessorFromEnvironment(process.env, onResourceControlEvent);
 const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
 const channelGateway = createChannelGatewayFromEnvironment();
@@ -228,6 +277,7 @@ app.addHook("onClose", async () => {
 if (process.env.ENABLE_CONNECTED_MAILBOX_SYNC_RUNNER !== "false") {
   connectedMailboxSyncRunner = startConnectedMailboxSyncRunner({
     store: cp2Store,
+    timeScheduledJob: metrics.timeScheduledJob,
     ...(connectedMailboxSyncIntervalMs === undefined
       ? {}
       : { intervalMs: connectedMailboxSyncIntervalMs }),
@@ -243,6 +293,7 @@ if (process.env.ENABLE_CONNECTED_MAILBOX_SYNC_RUNNER !== "false") {
 if (process.env.ENABLE_NOTIFICATION_DELIVERY_RUNNER !== "false") {
   notificationDeliveryRunner = startNotificationDeliveryRunner({
     store: cp2Store,
+    timeScheduledJob: metrics.timeScheduledJob,
     onResult: (result) => {
       if (result.checked > 0) {
         app.log.info({ result }, "Message notification delivery run completed.");
@@ -255,6 +306,7 @@ if (process.env.ENABLE_NOTIFICATION_DELIVERY_RUNNER !== "false") {
 if (process.env.ENABLE_CONVERSATION_RECYCLE_BIN_RUNNER !== "false") {
   conversationRecycleBinRunner = startConversationRecycleBinRunner({
     store: cp2Store,
+    timeScheduledJob: metrics.timeScheduledJob,
     onResult: (purged) => {
       if (purged > 0) {
         app.log.info(
@@ -270,6 +322,7 @@ if (process.env.ENABLE_CONVERSATION_RECYCLE_BIN_RUNNER !== "false") {
 if (process.env.ENABLE_AGENT_OWNER_CORRECTION_RETENTION_RUNNER !== "false") {
   agentOwnerCorrectionRetentionRunner = startAgentOwnerCorrectionRetentionRunner({
     store: cp2Store,
+    timeScheduledJob: metrics.timeScheduledJob,
     onResult: (disabled) => {
       if (disabled > 0) {
         app.log.info(
@@ -285,6 +338,7 @@ if (process.env.ENABLE_AGENT_OWNER_CORRECTION_RETENTION_RUNNER !== "false") {
 if (process.env.ENABLE_SOKO_ID_COOLDOWN_RUNNER !== "false") {
   sokoIdCooldownRunner = startSokoIdCooldownRunner({
     store: cp2Store,
+    timeScheduledJob: metrics.timeScheduledJob,
     ...(sokoIdCooldownIntervalMs === undefined ? {} : { intervalMs: sokoIdCooldownIntervalMs }),
     ...(sokoIdCooldownMs === undefined ? {} : { cooldownMs: sokoIdCooldownMs }),
     onResult: (released) => {
@@ -335,6 +389,7 @@ process.once("SIGINT", shutdown);
 if (process.env.ENABLE_ACCOUNT_DELETION_RUNNER === "true") {
   accountDeletionRunner = startAccountDeletionRunner({
     store: cp2Store,
+    timeScheduledJob: metrics.timeScheduledJob,
     onResult: (result) => app.log.info({ result }, "Account deletion purge completed."),
     onError: (error) => app.log.error({ error }, "Account deletion purge failed.")
   });

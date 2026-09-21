@@ -6,7 +6,9 @@ import {
   type AccountSyncCollection,
   type SyncRealtimeChangesAvailableEvent
 } from "@soko/shared-types";
-import { Pool, type PoolClient, type PoolConfig, type QueryResultRow } from "pg";
+import { Pool, type PoolClient, type QueryResultRow } from "pg";
+import { positiveIntegerFromEnv } from "@soko/resource-control";
+import { buildPgPoolConfig } from "../db-pool-config.js";
 import {
   createCp2Store,
   type Cp2Snapshot,
@@ -502,6 +504,13 @@ const realtimeChannel = "soko_sync_changes";
 const defaultPersistenceQueueWarningThresholdMs = 10_000;
 const defaultPersistenceRetryInitialDelayMs = 2_000;
 const defaultPersistenceRetryMaxDelayMs = 60_000;
+// health()'s Phase 1 relational/compatibility parity check does a count(*) + md5(string_agg(...))
+// full-table scan across 6 table pairs (12 scans total). Render polls /health/ready repeatedly
+// (it's the service's healthCheckPath), so running that on every call competes with live traffic
+// for the same cp2_primary pool and gets strictly worse as these tables grow - see
+// docs/architecture/resource-isolation-audit.md §2. Refreshed on this interval in the background
+// and cached instead; every health() / /health/ready call reads the cache, never re-runs the scans.
+const defaultParityCheckIntervalMs = 60_000;
 
 type PersistenceOperationName = "snapshot" | "passkey_ceremony";
 
@@ -513,7 +522,7 @@ interface PasskeyCeremonyMutation {
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
 ): Promise<PostgresCp2Store> {
-  const pool = new Pool(poolConfig(options.databaseUrl));
+  const pool = new Pool(buildPgPoolConfig(options.databaseUrl));
   options.metrics?.instrumentPgPool(pool, { poolName: "cp2_primary" });
   pool.on("error", (error) => {
     console.error("Unexpected PostgreSQL pool error.", error);
@@ -584,7 +593,7 @@ export async function createPostgresCp2Store(
     throw error;
   }
 
-  const realtimePool = new Pool({ ...poolConfig(options.databaseUrl), max: 1 });
+  const realtimePool = new Pool(buildPgPoolConfig(options.databaseUrl, { max: 1 }));
   options.metrics?.instrumentPgPool(realtimePool, { poolName: "cp2_realtime" });
   realtimePool.on("error", (error) => {
     console.error("Unexpected PostgreSQL realtime pool error.", error);
@@ -618,8 +627,15 @@ export async function createPostgresCp2Store(
     "DB_PERSISTENCE_RETRY_MAX_MS",
     defaultPersistenceRetryMaxDelayMs
   );
+  const parityCheckIntervalMs = positiveIntegerFromEnv(
+    "DB_HEALTH_PARITY_CHECK_INTERVAL_MS",
+    defaultParityCheckIntervalMs
+  );
+  let cachedParity: PostgresStoreHealth["phase1Parity"] = [];
+  let parityCheckInFlight: Promise<void> | null = null;
   let persistenceRetryDelayMs = persistenceRetryInitialDelayMs;
   let persistenceRetryTimer: NodeJS.Timeout | null = null;
+  let parityCheckTimer: NodeJS.Timeout | null = null;
   let snapshotSaveQueued = false;
   let snapshotSaveRunning = false;
   let snapshotSaveRequestedWhileRunning = false;
@@ -836,6 +852,10 @@ export async function createPostgresCp2Store(
       clearTimeout(persistenceRetryTimer);
       persistenceRetryTimer = null;
     }
+    if (parityCheckTimer !== null) {
+      clearInterval(parityCheckTimer);
+      parityCheckTimer = null;
+    }
     try {
       await flush();
     } finally {
@@ -855,36 +875,140 @@ export async function createPostgresCp2Store(
     }
   }
 
+  /**
+   * The expensive half of what used to be health()'s single query - 6 table pairs, each a
+   * count(*) plus a md5(string_agg(...)) full-table scan. Runs on `parityCheckIntervalMs`
+   * (default 60s), never inline with a caller's health() / /health/ready request. A failure here
+   * leaves `cachedParity` at its last-known-good value rather than throwing - a transient parity
+   * refresh failure must not flip readiness, the same principle already applied to persistence
+   * save failures above.
+   */
+  async function refreshParityCache(): Promise<void> {
+    if (parityCheckInFlight !== null) return parityCheckInFlight;
+    parityCheckInFlight = (async () => {
+      try {
+        const result = await pool.query<{
+          otp_relational_count: string;
+          otp_compatibility_count: string;
+          otp_relational_checksum: string;
+          otp_compatibility_checksum: string;
+          sessions_relational_count: string;
+          sessions_compatibility_count: string;
+          sessions_relational_checksum: string;
+          sessions_compatibility_checksum: string;
+          user_identities_relational_count: string;
+          user_identities_compatibility_count: string;
+          user_identities_relational_checksum: string;
+          user_identities_compatibility_checksum: string;
+          oauth_sessions_relational_count: string;
+          oauth_sessions_compatibility_count: string;
+          oauth_sessions_relational_checksum: string;
+          oauth_sessions_compatibility_checksum: string;
+          account_pin_hashes_relational_count: string;
+          account_pin_hashes_compatibility_count: string;
+          account_pin_hashes_relational_checksum: string;
+          account_pin_hashes_compatibility_checksum: string;
+          device_trust_relational_count: string;
+          device_trust_compatibility_count: string;
+          device_trust_relational_checksum: string;
+          device_trust_compatibility_checksum: string;
+        }>(
+          `
+            select
+              (select count(*) from otp_challenges)::text as otp_relational_count,
+              (select count(*) from cp2_otp_challenges)::text as otp_compatibility_count,
+              (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from otp_challenges) as otp_relational_checksum,
+              (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_otp_challenges) as otp_compatibility_checksum,
+              (select count(*) from sessions)::text as sessions_relational_count,
+              (select count(*) from cp2_sessions)::text as sessions_compatibility_count,
+              (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from sessions) as sessions_relational_checksum,
+              (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_sessions) as sessions_compatibility_checksum,
+              (select count(*) from user_identities)::text as user_identities_relational_count,
+              (select count(*) from cp2_user_identities)::text as user_identities_compatibility_count,
+              (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from user_identities) as user_identities_relational_checksum,
+              (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_user_identities) as user_identities_compatibility_checksum,
+              (select count(*) from oauth_sessions)::text as oauth_sessions_relational_count,
+              (select count(*) from cp2_oauth_sessions)::text as oauth_sessions_compatibility_count,
+              (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from oauth_sessions) as oauth_sessions_relational_checksum,
+              (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_oauth_sessions) as oauth_sessions_compatibility_checksum,
+              (select count(*) from account_pin_hashes)::text as account_pin_hashes_relational_count,
+              (select count(*) from cp2_account_pin_hashes)::text as account_pin_hashes_compatibility_count,
+              (select md5(coalesce(string_agg(account_id::text, ',' order by account_id::text), '')) from account_pin_hashes) as account_pin_hashes_relational_checksum,
+              (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_account_pin_hashes) as account_pin_hashes_compatibility_checksum,
+              (select count(*) from device_trust)::text as device_trust_relational_count,
+              (select count(*) from cp2_device_trust)::text as device_trust_compatibility_count,
+              (
+                select md5(coalesce(string_agg(
+                  business_id::text || ':' || user_id::text || ':' || device_id,
+                  ','
+                  order by business_id::text, user_id::text, device_id
+                ), ''))
+                from device_trust
+              ) as device_trust_relational_checksum,
+              (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_device_trust) as device_trust_compatibility_checksum
+          `
+        );
+        const row = result.rows[0];
+        if (row === undefined) return;
+        cachedParity = [
+          phase1Parity(
+            "otp_challenges",
+            row.otp_relational_count,
+            row.otp_compatibility_count,
+            row.otp_relational_checksum,
+            row.otp_compatibility_checksum
+          ),
+          phase1Parity(
+            "sessions",
+            row.sessions_relational_count,
+            row.sessions_compatibility_count,
+            row.sessions_relational_checksum,
+            row.sessions_compatibility_checksum
+          ),
+          phase1Parity(
+            "user_identities",
+            row.user_identities_relational_count,
+            row.user_identities_compatibility_count,
+            row.user_identities_relational_checksum,
+            row.user_identities_compatibility_checksum
+          ),
+          phase1Parity(
+            "oauth_sessions",
+            row.oauth_sessions_relational_count,
+            row.oauth_sessions_compatibility_count,
+            row.oauth_sessions_relational_checksum,
+            row.oauth_sessions_compatibility_checksum
+          ),
+          phase1Parity(
+            "account_pin_hashes",
+            row.account_pin_hashes_relational_count,
+            row.account_pin_hashes_compatibility_count,
+            row.account_pin_hashes_relational_checksum,
+            row.account_pin_hashes_compatibility_checksum
+          ),
+          phase1Parity(
+            "device_trust",
+            row.device_trust_relational_count,
+            row.device_trust_compatibility_count,
+            row.device_trust_relational_checksum,
+            row.device_trust_compatibility_checksum
+          )
+        ];
+      } catch (error) {
+        console.error("Phase 1 parity check refresh failed; keeping last-known-good result.", error);
+      }
+    })().finally(() => {
+      parityCheckInFlight = null;
+    });
+    return parityCheckInFlight;
+  }
+
   async function health(): Promise<PostgresStoreHealth> {
     const startedAt = Date.now();
     const lastRealtimeError = lastRealtimeListenerError ?? lastRealtimePublishError;
     const result = await pool.query<{
       latest_migration: string | null;
       sync_change_count: string;
-      otp_relational_count: string;
-      otp_compatibility_count: string;
-      otp_relational_checksum: string;
-      otp_compatibility_checksum: string;
-      sessions_relational_count: string;
-      sessions_compatibility_count: string;
-      sessions_relational_checksum: string;
-      sessions_compatibility_checksum: string;
-      user_identities_relational_count: string;
-      user_identities_compatibility_count: string;
-      user_identities_relational_checksum: string;
-      user_identities_compatibility_checksum: string;
-      oauth_sessions_relational_count: string;
-      oauth_sessions_compatibility_count: string;
-      oauth_sessions_relational_checksum: string;
-      oauth_sessions_compatibility_checksum: string;
-      account_pin_hashes_relational_count: string;
-      account_pin_hashes_compatibility_count: string;
-      account_pin_hashes_relational_checksum: string;
-      account_pin_hashes_compatibility_checksum: string;
-      device_trust_relational_count: string;
-      device_trust_compatibility_count: string;
-      device_trust_relational_checksum: string;
-      device_trust_compatibility_checksum: string;
     }>(
       `
         select
@@ -894,38 +1018,7 @@ export async function createPostgresCp2Store(
             order by filename desc
             limit 1
           ) as latest_migration,
-          (select count(*) from account_sync_changes)::text as sync_change_count,
-          (select count(*) from otp_challenges)::text as otp_relational_count,
-          (select count(*) from cp2_otp_challenges)::text as otp_compatibility_count,
-          (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from otp_challenges) as otp_relational_checksum,
-          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_otp_challenges) as otp_compatibility_checksum,
-          (select count(*) from sessions)::text as sessions_relational_count,
-          (select count(*) from cp2_sessions)::text as sessions_compatibility_count,
-          (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from sessions) as sessions_relational_checksum,
-          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_sessions) as sessions_compatibility_checksum,
-          (select count(*) from user_identities)::text as user_identities_relational_count,
-          (select count(*) from cp2_user_identities)::text as user_identities_compatibility_count,
-          (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from user_identities) as user_identities_relational_checksum,
-          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_user_identities) as user_identities_compatibility_checksum,
-          (select count(*) from oauth_sessions)::text as oauth_sessions_relational_count,
-          (select count(*) from cp2_oauth_sessions)::text as oauth_sessions_compatibility_count,
-          (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from oauth_sessions) as oauth_sessions_relational_checksum,
-          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_oauth_sessions) as oauth_sessions_compatibility_checksum,
-          (select count(*) from account_pin_hashes)::text as account_pin_hashes_relational_count,
-          (select count(*) from cp2_account_pin_hashes)::text as account_pin_hashes_compatibility_count,
-          (select md5(coalesce(string_agg(account_id::text, ',' order by account_id::text), '')) from account_pin_hashes) as account_pin_hashes_relational_checksum,
-          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_account_pin_hashes) as account_pin_hashes_compatibility_checksum,
-          (select count(*) from device_trust)::text as device_trust_relational_count,
-          (select count(*) from cp2_device_trust)::text as device_trust_compatibility_count,
-          (
-            select md5(coalesce(string_agg(
-              business_id::text || ':' || user_id::text || ':' || device_id,
-              ','
-              order by business_id::text, user_id::text, device_id
-            ), ''))
-            from device_trust
-          ) as device_trust_relational_checksum,
-          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_device_trust) as device_trust_compatibility_checksum
+          (select count(*) from account_sync_changes)::text as sync_change_count
       `
     );
     const row = result.rows[0];
@@ -993,53 +1086,9 @@ export async function createPostgresCp2Store(
                   : "PostgreSQL realtime fan-out failed."
             },
       syncChangeCount: Number(row?.sync_change_count ?? 0),
-      phase1Parity:
-        row === undefined
-          ? []
-          : [
-              phase1Parity(
-                "otp_challenges",
-                row.otp_relational_count,
-                row.otp_compatibility_count,
-                row.otp_relational_checksum,
-                row.otp_compatibility_checksum
-              ),
-              phase1Parity(
-                "sessions",
-                row.sessions_relational_count,
-                row.sessions_compatibility_count,
-                row.sessions_relational_checksum,
-                row.sessions_compatibility_checksum
-              ),
-              phase1Parity(
-                "user_identities",
-                row.user_identities_relational_count,
-                row.user_identities_compatibility_count,
-                row.user_identities_relational_checksum,
-                row.user_identities_compatibility_checksum
-              ),
-              phase1Parity(
-                "oauth_sessions",
-                row.oauth_sessions_relational_count,
-                row.oauth_sessions_compatibility_count,
-                row.oauth_sessions_relational_checksum,
-                row.oauth_sessions_compatibility_checksum
-              ),
-              phase1Parity(
-                "account_pin_hashes",
-                row.account_pin_hashes_relational_count,
-                row.account_pin_hashes_compatibility_count,
-                row.account_pin_hashes_relational_checksum,
-                row.account_pin_hashes_compatibility_checksum
-              ),
-              phase1Parity(
-                "device_trust",
-                row.device_trust_relational_count,
-                row.device_trust_compatibility_count,
-                row.device_trust_relational_checksum,
-                row.device_trust_compatibility_checksum
-              )
-            ],
+      // Sourced from the background-refreshed cache (see refreshParityCache above), never
+      // computed inline - this call never runs the 12-table-scan parity query itself.
+      phase1Parity: cachedParity,
       pool: {
         idleCount: pool.idleCount,
         totalCount: pool.totalCount,
@@ -1047,6 +1096,16 @@ export async function createPostgresCp2Store(
       }
     };
   }
+
+  // Deliberately not awaited: this is the same expensive parity query this cache exists to keep
+  // off every caller's hot path (see the constant's doc comment above and
+  // docs/architecture/resource-isolation-audit.md §2) - blocking store *creation* on it would
+  // just move the cost from "every /health/ready poll" to "every process boot / every test that
+  // creates a store," which is exactly as bad. `cachedParity` starts empty and is filled in by
+  // this first background run, same as any other cache with a cold-start gap.
+  void refreshParityCache();
+  parityCheckTimer = setInterval(() => void refreshParityCache(), parityCheckIntervalMs);
+  parityCheckTimer.unref();
 
   return new Proxy(store, {
     get(target, property, receiver) {
@@ -1201,30 +1260,6 @@ function parseRealtimeNotification(payload: string): {
     sourceInstanceId: record.sourceInstanceId,
     event: event as SyncRealtimeChangesAvailableEvent
   };
-}
-
-function poolConfig(databaseUrl: string): PoolConfig {
-  const connectionString = normalizeDatabaseSslMode(databaseUrl);
-  const sslRequired =
-    !/[?&]sslmode=/i.test(connectionString) &&
-    (connectionString.includes(".neon.tech") || connectionString.includes(".neon.database"));
-
-  return {
-    application_name: process.env.DB_APPLICATION_NAME ?? "soko-market",
-    connectionString,
-    connectionTimeoutMillis: positiveIntegerFromEnv("DB_CONNECTION_TIMEOUT_MS", 5000),
-    idleTimeoutMillis: positiveIntegerFromEnv("DB_IDLE_TIMEOUT_MS", 30000),
-    max: positiveIntegerFromEnv("DB_POOL_MAX", 5),
-    query_timeout: positiveIntegerFromEnv("DB_QUERY_TIMEOUT_MS", 15000),
-    statement_timeout: positiveIntegerFromEnv("DB_STATEMENT_TIMEOUT_MS", 15000),
-    ...(sslRequired ? { ssl: true } : {})
-  };
-}
-
-function normalizeDatabaseSslMode(connectionString: string): string {
-  return connectionString
-    .trim()
-    .replace(/([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi, "$1sslmode=verify-full");
 }
 
 function requireAccountSyncCollection(accountId: string, value: unknown): AccountSyncCollection {
@@ -4374,22 +4409,6 @@ function logSlowQuery(operation: string, startedAt: number): void {
   if (elapsedMs >= thresholdMs) {
     console.warn(`[db] slow operation "${operation}" took ${elapsedMs}ms`);
   }
-}
-
-function positiveIntegerFromEnv(name: string, fallback: number): number {
-  const value = process.env[name];
-
-  if (value === undefined || value.trim() === "") {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer.`);
-  }
-
-  return parsed;
 }
 
 function timestampToIso(value: Date | string): string {

@@ -1,4 +1,5 @@
 import type { AccountDeletionPurgeRunSummary, Cp2Store } from "./store.js";
+import { createIntervalRunner } from "./interval-runner.js";
 
 const defaultIntervalMs = 24 * 60 * 60 * 1000;
 
@@ -9,6 +10,7 @@ export interface AccountDeletionRunnerOptions {
   now?: () => Date;
   onResult?: (result: DeletionPurgeRunSummary) => void;
   onError?: (error: unknown) => void;
+  timeScheduledJob?: <R>(job: string, fn: () => Promise<R>) => Promise<R>;
 }
 
 export interface AccountDeletionRunner {
@@ -24,50 +26,22 @@ export interface DeletionPurgeRunSummary {
 export function startAccountDeletionRunner(
   options: AccountDeletionRunnerOptions
 ): AccountDeletionRunner {
-  const intervalMs = normalizeInterval(options.intervalMs);
-  let stopped = false;
-  let inFlight: Promise<DeletionPurgeRunSummary | null> | null = null;
-
-  const runNow = (): Promise<DeletionPurgeRunSummary | null> => {
-    if (stopped) return Promise.resolve(null);
-    if (inFlight !== null) return inFlight;
-
-    inFlight = (async () => {
-      try {
-        const now = options.now?.() ?? new Date();
-        const result: DeletionPurgeRunSummary = {
-          shopsPurged: options.store.purgeExpiredShopDeletions(now),
-          accounts: await options.store.purgeExpiredAccountDeletions(now)
-        };
-        options.onResult?.(result);
-        return result;
-      } catch (error) {
-        options.onError?.(error);
-        return null;
-      } finally {
-        inFlight = null;
-      }
-    })();
-    return inFlight;
-  };
-
-  const timer = setInterval(() => {
-    void runNow();
-  }, intervalMs);
-  timer.unref();
-
-  if (options.runOnStart !== false) {
-    void runNow();
-  }
-
-  return {
-    runNow,
-    async stop() {
-      stopped = true;
-      clearInterval(timer);
-      await inFlight;
-    }
-  };
+  return createIntervalRunner({
+    job: "account_deletion_purge",
+    intervalMs: normalizeInterval(options.intervalMs),
+    run: async () => {
+      const now = options.now?.() ?? new Date();
+      const result: DeletionPurgeRunSummary = {
+        shopsPurged: options.store.purgeExpiredShopDeletions(now),
+        accounts: await options.store.purgeExpiredAccountDeletions(now)
+      };
+      return result;
+    },
+    ...(options.runOnStart === undefined ? {} : { runOnStart: options.runOnStart }),
+    ...(options.onResult === undefined ? {} : { onResult: options.onResult }),
+    ...(options.onError === undefined ? {} : { onError: options.onError }),
+    ...(options.timeScheduledJob === undefined ? {} : { timeScheduledJob: options.timeScheduledJob })
+  });
 }
 
 function normalizeInterval(value: number | undefined): number {
