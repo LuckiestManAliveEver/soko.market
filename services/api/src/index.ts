@@ -306,6 +306,32 @@ try {
   process.exit(1);
 }
 
+const shutdownGraceMs = readOptionalPositiveInteger(process.env.SHUTDOWN_GRACE_MS) ?? 25_000;
+let shutdownPromise: Promise<void> | undefined;
+const shutdown = (signal: NodeJS.Signals) => {
+  if (shutdownPromise !== undefined) return;
+  app.log.info({ signal, shutdownGraceMs }, "Shutdown signal received; draining API server.");
+  const forceExitTimer = setTimeout(() => {
+    app.log.error({ signal, shutdownGraceMs }, "Graceful shutdown timed out; exiting.");
+    process.exit(1);
+  }, shutdownGraceMs);
+  forceExitTimer.unref();
+  shutdownPromise = app
+    .close()
+    .then(() => {
+      clearTimeout(forceExitTimer);
+      app.log.info({ signal }, "API server drained and closed.");
+      process.exit(0);
+    })
+    .catch((error: unknown) => {
+      clearTimeout(forceExitTimer);
+      app.log.error({ error, signal }, "API server shutdown failed.");
+      process.exit(1);
+    });
+};
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);
+
 if (process.env.ENABLE_ACCOUNT_DELETION_RUNNER === "true") {
   accountDeletionRunner = startAccountDeletionRunner({
     store: cp2Store,
