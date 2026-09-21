@@ -149,6 +149,7 @@ import type {
   AgentEvaluationEvent,
   AgentOwnerCorrection,
   AgentRuntimeVersion,
+  RuntimeExperience,
   ActiveAiModelSummary,
   AccountDeletionRequestSummary,
   AuthChannel,
@@ -639,6 +640,7 @@ export interface Cp2Snapshot extends ModelTemplatesSnapshot, VocabularySnapshot 
   agentContextSources?: AgentContextSource[];
   agentEvaluationEvents?: AgentEvaluationEvent[];
   agentOwnerCorrections?: AgentOwnerCorrection[];
+  runtimeExperiences?: RuntimeExperience[];
   installedAgentModels?: InstalledAgentModelSummary[];
   nativeRuntimeAgents?: NativeRuntimeAgentSummary[];
   nativeRuntimeModels?: NativeRuntimeModelSummary[];
@@ -3909,6 +3911,16 @@ export class Cp2Store {
   ): ReturnType<AgentRuntimeDomain["purgeExpiredAgentOwnerCorrections"]> {
     return this.agentRuntimeDomain.purgeExpiredAgentOwnerCorrections(...args);
   }
+  validatedRuntimeExperiencesForBusiness(
+    ...args: Parameters<AgentRuntimeDomain["validatedRuntimeExperiencesForBusiness"]>
+  ): ReturnType<AgentRuntimeDomain["validatedRuntimeExperiencesForBusiness"]> {
+    return this.agentRuntimeDomain.validatedRuntimeExperiencesForBusiness(...args);
+  }
+  purgeExpiredRuntimeExperiences(
+    ...args: Parameters<AgentRuntimeDomain["purgeExpiredRuntimeExperiences"]>
+  ): ReturnType<AgentRuntimeDomain["purgeExpiredRuntimeExperiences"]> {
+    return this.agentRuntimeDomain.purgeExpiredRuntimeExperiences(...args);
+  }
   submitAgentFeedback(
     ...args: Parameters<AgentRuntimeDomain["submitAgentFeedback"]>
   ): ReturnType<AgentRuntimeDomain["submitAgentFeedback"]> {
@@ -6811,6 +6823,13 @@ export class Cp2Store {
       agentOwnerCorrections: [...this.agentRuntimeDomain.agentOwnerCorrectionsMap.values()].map(
         (correction) => ({
           ...correction
+        })
+      ),
+      runtimeExperiences: [...this.agentRuntimeDomain.runtimeExperiencesMap.values()].map(
+        (experience) => ({
+          ...experience,
+          evidenceRefs: [...experience.evidenceRefs],
+          toolSequence: [...experience.toolSequence]
         })
       ),
       installedAgentModels: [...this.agentRuntimeDomain.installedAgentModelsMap.values()].map(

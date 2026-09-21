@@ -82,6 +82,7 @@ import type {
   AgentModelBindingSummary,
   AgentOwnerCorrection,
   AgentRuntimeReadiness,
+  ContextRecipe,
   EffectiveRuntimeSummary,
   AgentRuntimeVersion,
   AiModelSummary,
@@ -91,6 +92,7 @@ import type {
   NativeRuntimeAgentSummary,
   PreferredExecutionMode,
   RuntimeContextSummary,
+  RuntimeParserIntent,
   RuntimeModelConversationMessage,
   RuntimeModelProvider,
   RuntimeModelTemplateRecipe,
@@ -99,6 +101,7 @@ import type {
   RuntimeSessionSummary,
   RuntimeTelemetryEvent,
   RuntimeExecutionEventType,
+  RuntimeExperience,
   RuntimeToolName,
   RuntimeTurnResult,
   RuntimeTurnSummary,
@@ -188,6 +191,7 @@ import {
   isUnavailableRuntimeCode,
   maxRuntimeTurnsPerSession,
   modelHealthError,
+  nextRuntimeExperienceState,
   normalizeBusinessAgentProfile,
   normalizeInstalledAgentModel,
   normalizeModelCatalogSearch,
@@ -266,6 +270,7 @@ export class AgentRuntimeDomain {
   private readonly agentContextSources = new Map<string, AgentContextSource>();
   private readonly agentEvaluationEvents = new Map<string, AgentEvaluationEvent>();
   private readonly agentOwnerCorrections = new Map<string, AgentOwnerCorrection>();
+  private readonly runtimeExperiences = new Map<string, RuntimeExperience>();
   private readonly installedAgentModels = new Map<string, InstalledAgentModelSummary>();
   private readonly agentModelActivationLocks = new Set<string>();
   private readonly runtimeSessions = new Map<string, RuntimeSessionSummary>();
@@ -298,6 +303,10 @@ export class AgentRuntimeDomain {
     return this.agentOwnerCorrections;
   }
 
+  get runtimeExperiencesMap(): Map<string, RuntimeExperience> {
+    return this.runtimeExperiences;
+  }
+
   get installedAgentModelsMap(): Map<string, InstalledAgentModelSummary> {
     return this.installedAgentModels;
   }
@@ -321,6 +330,7 @@ export class AgentRuntimeDomain {
     this.agentContextSources.clear();
     this.agentEvaluationEvents.clear();
     this.agentOwnerCorrections.clear();
+    this.runtimeExperiences.clear();
     this.installedAgentModels.clear();
     this.agentModelActivationLocks.clear();
     this.runtimeSessions.clear();
@@ -357,6 +367,14 @@ export class AgentRuntimeDomain {
 
     for (const correction of snapshot.agentOwnerCorrections ?? []) {
       this.agentOwnerCorrections.set(correction.id, { ...correction });
+    }
+
+    for (const experience of snapshot.runtimeExperiences ?? []) {
+      this.runtimeExperiences.set(experience.id, {
+        ...experience,
+        evidenceRefs: [...experience.evidenceRefs],
+        toolSequence: [...experience.toolSequence]
+      });
     }
 
     for (const model of snapshot.installedAgentModels ?? []) {
@@ -1651,6 +1669,98 @@ export class AgentRuntimeDomain {
     return updated;
   }
 
+  /**
+   * Structured experience extraction (brief-adoption §8/§9/§15), scoped to the one deterministic,
+   * already-documented trigger: `context/agent/recall.md`'s own spec ("small, validated, shop-scoped
+   * lessons distilled after an attempted local inference failed and an authorized cloud fallback
+   * succeeded"). Never stores the model's raw reasoning or conversation content - only the
+   * structured fact that this task type, at this shop, needed a fallback for this reason, and that
+   * the fallback succeeded. A new lesson starts as "candidate" and is never surfaced into a prompt;
+   * `runtimeExperienceValidationThreshold` independent corroborations promote it to "validated" (see
+   * docs/architecture/experience-memory.md), so one execution can never poison recall.
+   */
+  private recordFallbackExperience(input: {
+    businessId: string;
+    agentId: string;
+    turnId: string;
+    intent: RuntimeParserIntent;
+    recipe: ContextRecipe | undefined;
+    evidenceRefs: string[];
+    toolName: RuntimeToolName;
+    fallbackReason: string;
+    now: Date;
+    appendTelemetry: (
+      state: RuntimeTelemetryEvent["state"],
+      status: RuntimeTelemetryEvent["status"],
+      toolName: RuntimeToolName | null,
+      risk: RuntimePlannedAction["risk"] | null,
+      metadata?: RuntimeTelemetryEvent["metadata"]
+    ) => void;
+  }): void {
+    const lessonKey = `fallback:${input.intent}:${input.fallbackReason}`;
+    const existing =
+      [...this.runtimeExperiences.values()].find(
+        (experience) =>
+          experience.shopId === input.businessId &&
+          experience.lessonKey === lessonKey &&
+          experience.validationState !== "deprecated"
+      ) ?? null;
+    const { experience, telemetryEvents } = nextRuntimeExperienceState(existing, {
+      id: existing?.id ?? randomUUID(),
+      businessId: input.businessId,
+      agentId: input.agentId,
+      turnId: input.turnId,
+      intent: input.intent,
+      recipeId: input.recipe?.id ?? null,
+      recipeVersion: input.recipe?.version ?? null,
+      evidenceRefs: input.evidenceRefs,
+      toolName: input.toolName,
+      fallbackReason: input.fallbackReason,
+      now: input.now
+    });
+    this.runtimeExperiences.set(experience.id, experience);
+    for (const event of telemetryEvents) {
+      input.appendTelemetry(event.state, "completed", null, null, event.metadata);
+    }
+  }
+
+  /** Recall-eligible experiences for a business: validated only, per the brief's "prevent one bad
+   *  execution from poisoning memory" requirement - a "candidate" is never surfaced into a prompt. */
+  validatedRuntimeExperiencesForBusiness(businessId: string): RuntimeExperience[] {
+    return [...this.runtimeExperiences.values()]
+      .filter(
+        (experience) => experience.shopId === businessId && experience.validationState === "validated"
+      )
+      .map((experience) => ({ ...experience }));
+  }
+
+  /**
+   * Automatic counterpart to an explicit disable (not yet exposed as an owner action - this pass
+   * scopes the lifecycle to automatic promotion/retention only, per the audit's bounded-scope
+   * decision). Deprecates (never hard-deletes, matching purgeExpiredAgentOwnerCorrections' own
+   * audit-preserving contract) every experience older than its business's configured
+   * memoryPolicy.retentionDays, whatever its validation state.
+   */
+  purgeExpiredRuntimeExperiences(now = new Date()): number {
+    let deprecatedCount = 0;
+    for (const experience of this.runtimeExperiences.values()) {
+      if (experience.validationState === "deprecated") continue;
+      const stored = this.agentProfiles.get(experience.shopId);
+      if (stored === undefined) continue;
+      const retentionMs =
+        hydrateBusinessAgentProfile(stored).memoryPolicy.retentionDays * 24 * 60 * 60 * 1000;
+      const ageMs = now.getTime() - Date.parse(experience.updatedAt);
+      if (ageMs <= retentionMs) continue;
+      this.runtimeExperiences.set(experience.id, {
+        ...experience,
+        validationState: "deprecated",
+        deprecatedAt: now.toISOString()
+      });
+      deprecatedCount += 1;
+    }
+    return deprecatedCount;
+  }
+
   private bumpAgentRuntimeVersionForCorrectionChange(
     businessId: string,
     actorId: string,
@@ -2617,6 +2727,21 @@ export class AgentRuntimeDomain {
       actionId: plan.id
     });
 
+    if (modelRoute.trace?.fallbackUsed === true && status === "completed" && verification.ok) {
+      this.recordFallbackExperience({
+        businessId: input.businessId,
+        agentId: shopRuntime.agentId,
+        turnId,
+        intent: parserResult.intent,
+        recipe: contextRecipe,
+        evidenceRefs: retrievedContext.map((item) => item.sourceId),
+        toolName: plan.toolName,
+        fallbackReason: modelRoute.trace.fallbackReason ?? "unspecified",
+        now,
+        appendTelemetry
+      });
+    }
+
     return this.storeRuntimeTurn({
       runtimeSession,
       turn: {
@@ -3197,7 +3322,8 @@ export class AgentRuntimeDomain {
       {
         deps: this.deps,
         agentContextSources: this.agentContextSources,
-        ownerCorrections: this.ownerCorrectionsForBusiness(profile.businessId)
+        ownerCorrections: this.ownerCorrectionsForBusiness(profile.businessId),
+        runtimeExperiences: this.validatedRuntimeExperiencesForBusiness(profile.businessId)
       },
       profile
     );

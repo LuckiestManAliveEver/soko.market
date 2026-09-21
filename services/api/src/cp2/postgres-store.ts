@@ -100,6 +100,7 @@ export const normalizedCollections: NormalizedCollection[] = [
   { key: "agentContextSources", tableName: "cp2_agent_context_sources" },
   { key: "agentEvaluationEvents", tableName: "cp2_agent_evaluation_events" },
   { key: "agentOwnerCorrections", tableName: "cp2_agent_owner_corrections" },
+  { key: "runtimeExperiences", tableName: "cp2_runtime_experiences" },
   { key: "installedAgentModels", tableName: "cp2_installed_agent_models" },
   { key: "modelTemplates", tableName: "cp2_model_templates" },
   { key: "modelTemplateVersions", tableName: "cp2_model_template_versions" },
@@ -4136,6 +4137,7 @@ function emptySnapshot(): Cp2Snapshot {
     agentContextSources: [],
     agentEvaluationEvents: [],
     agentOwnerCorrections: [],
+    runtimeExperiences: [],
     installedAgentModels: [],
     modelTemplates: [],
     modelTemplateVersions: [],
@@ -4306,7 +4308,8 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
     key === "agentRuntimeVersions" ||
     key === "agentContextSources" ||
     key === "agentEvaluationEvents" ||
-    key === "agentOwnerCorrections"
+    key === "agentOwnerCorrections" ||
+    key === "runtimeExperiences"
   ) {
     return requiredText(record, "id");
   }

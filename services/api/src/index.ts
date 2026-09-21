@@ -30,6 +30,10 @@ import {
   startAgentOwnerCorrectionRetentionRunner,
   type AgentOwnerCorrectionRetentionRunner
 } from "./cp2/agent-owner-correction-retention-runner.js";
+import {
+  startRuntimeExperienceRetentionRunner,
+  type RuntimeExperienceRetentionRunner
+} from "./cp2/runtime-experience-retention-runner.js";
 import { readAccountDeletionProcessors } from "./cp2/account-deletion-processors.js";
 import { createPostgresCp2Store } from "./cp2/postgres-store.js";
 import { RETIRED_EXECUTION_FABRIC_TABLES } from "./cp2/retired-execution-fabric-tables.js";
@@ -263,6 +267,7 @@ let connectedMailboxSyncRunner: ConnectedMailboxSyncRunner | null = null;
 let sokoIdCooldownRunner: SokoIdCooldownRunner | null = null;
 let conversationRecycleBinRunner: ConversationRecycleBinRunner | null = null;
 let agentOwnerCorrectionRetentionRunner: AgentOwnerCorrectionRetentionRunner | null = null;
+let runtimeExperienceRetentionRunner: RuntimeExperienceRetentionRunner | null = null;
 const connectedMailboxSyncIntervalMs = readOptionalPositiveInteger(
   process.env.CONNECTED_MAILBOX_SYNC_INTERVAL_MS
 );
@@ -277,6 +282,7 @@ app.addHook("onClose", async () => {
   await accountDeletionRunner?.stop();
   await conversationRecycleBinRunner?.stop();
   await agentOwnerCorrectionRetentionRunner?.stop();
+  await runtimeExperienceRetentionRunner?.stop();
   rateLimitRedisClient.disconnect();
   await artifactPool?.end();
   if (isClosableStore(cp2Store)) {
@@ -342,6 +348,22 @@ if (process.env.ENABLE_AGENT_OWNER_CORRECTION_RETENTION_RUNNER !== "false") {
       }
     },
     onError: (error) => app.log.error({ error }, "Owner correction retention sweep failed.")
+  });
+}
+
+if (process.env.ENABLE_RUNTIME_EXPERIENCE_RETENTION_RUNNER !== "false") {
+  runtimeExperienceRetentionRunner = startRuntimeExperienceRetentionRunner({
+    store: cp2Store,
+    timeScheduledJob: metrics.timeScheduledJob,
+    onResult: (deprecated) => {
+      if (deprecated > 0) {
+        app.log.info(
+          { event: "runtime_experience_retention_swept", deprecated },
+          "Runtime experience retention sweep completed."
+        );
+      }
+    },
+    onError: (error) => app.log.error({ error }, "Runtime experience retention sweep failed.")
   });
 }
 

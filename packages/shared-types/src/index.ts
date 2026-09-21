@@ -4220,6 +4220,56 @@ export interface AgentOwnerCorrection {
   disabledAt: string | null;
 }
 
+/**
+ * MUSE-adoption brief §8/§9/§15: a structured, reusable fact distilled from a completed execution
+ * trajectory - never hidden chain-of-thought, never a raw conversation transcript. Fills the
+ * `"recall"` `AgentContextSourceType` slot that was already wired into context retrieval and prompt
+ * assembly (`context-semantic-runtime.md`) but, until this type existed, nothing ever populated.
+ * Distinct from `AgentOwnerCorrection`: a correction is owner-authored; a `RuntimeExperience` is
+ * extracted automatically from what actually happened during execution, following the same
+ * candidate -> validated -> deprecated lifecycle a correction's `active`/`disabled` status models,
+ * one level more cautious (see `validationState`/`corroborationCount`).
+ */
+export type RuntimeExperienceOutcome = "successful" | "adjusted" | "rejected" | "failed" | "unknown";
+
+/**
+ * `candidate`: extracted once, not yet corroborated - never surfaced into a prompt.
+ * `validated`: corroborated by `corroborationCount` independent occurrences - eligible for recall.
+ * `deprecated`: retired by the retention sweep or an explicit disable - excluded from recall,
+ * audit history preserved (never hard-deleted), mirroring `AgentOwnerCorrection.disabledAt`.
+ */
+export type RuntimeExperienceValidationState = "candidate" | "validated" | "deprecated";
+
+export interface RuntimeExperience {
+  id: string;
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  taskType: RuntimeParserIntent;
+  /** A short, deterministic description of the situation - never freeform model narration. */
+  situation: string;
+  /** A stable key identifying "the same lesson recurring" for deduplication/corroboration. */
+  lessonKey: string;
+  recipeId: string | null;
+  recipeVersion: number | null;
+  /** `RetrievedAgentContextItem.sourceId` values consulted for the execution this was drawn from. */
+  evidenceRefs: string[];
+  toolSequence: RuntimeToolName[];
+  resultType: string;
+  verificationResult: string | null;
+  outcome: RuntimeExperienceOutcome;
+  lesson: string;
+  validationState: RuntimeExperienceValidationState;
+  /** Independent turns that produced this exact `lessonKey`. Promotion threshold in
+   *  `docs/architecture/experience-memory.md`. */
+  corroborationCount: number;
+  /** The turn extraction last ran from - diagnostic only, never used to resume execution. */
+  sourceTurnId: string;
+  createdAt: string;
+  updatedAt: string;
+  deprecatedAt: string | null;
+}
+
 export type AgentEvaluationEventType =
   | "intent_classification"
   | "context_retrieval"

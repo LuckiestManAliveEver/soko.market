@@ -47,9 +47,12 @@ describe("registered-user purge script", () => {
     // (infra/db/migrations/087_runtime_execution_events.sql, docs/architecture/
     // durable-execution-plane.md) added cp2_runtime_execution_events, classified DELETE: it is a
     // per-task event log scoped to a purged account/business, same as the other runtime-protocol
-    // tables above.
-    expect(plan.size).toBe(194);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(187);
+    // tables above. Structured experience memory
+    // (infra/db/migrations/088_runtime_experiences.sql, docs/architecture/experience-memory.md)
+    // added cp2_runtime_experiences, classified DELETE: business-scoped recall/lesson records, same
+    // family as cp2_agent_owner_corrections above.
+    expect(plan.size).toBe(195);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(188);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

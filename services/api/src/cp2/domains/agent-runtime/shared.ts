@@ -83,15 +83,18 @@ import type {
   BusinessSummary,
   CatalogueQueryResult,
   ChannelProvider,
+  EvidenceProvenance,
   InstalledAgentModelSummary,
   ModelExecutionTarget,
   ModelRuntimeHealthSummary,
   PreferredExecutionMode,
   RuntimeContextSummary,
+  RuntimeExperience,
   RuntimeModelCompletionResult,
   RuntimeModelConversationMessage,
   RuntimeModelPrompt,
   RuntimeModelTrace,
+  RuntimeParserIntent,
   RuntimePlannedAction,
   RuntimeToolName,
   RuntimeTurnStatus,
@@ -985,6 +988,12 @@ export function contextSourceRecord(input: {
   customerVisible: boolean;
   sourceRecordId: string | null;
   now: Date;
+  /** Explicit evidence confidence/provenance override - see EvidenceProvenance. Omitted for every
+   *  canonical-record-backed source, which derives it automatically at retrieval time instead
+   *  (services/api/src/cp2/agent-business-runtime.ts). Required for a synthesized non-canonical
+   *  source (e.g. a "recall" entry) whose confidence should never look like a canonical record's. */
+  confidence?: number | null;
+  provenance?: EvidenceProvenance;
 }): AgentContextSource {
   return {
     id: input.id,
@@ -1004,11 +1013,108 @@ export function contextSourceRecord(input: {
     retrievalMetadata: {
       keywords: contextKeywords(`${input.title} ${input.content ?? ""}`),
       sourceRecordId: input.sourceRecordId,
-      content: input.content
+      content: input.content,
+      ...(input.confidence === undefined ? {} : { confidence: input.confidence }),
+      ...(input.provenance === undefined ? {} : { provenance: input.provenance })
     },
     createdAt: input.now.toISOString(),
     updatedAt: input.now.toISOString(),
     deletedAt: null
+  };
+}
+
+/**
+ * Independent corroborating turns required before a candidate RuntimeExperience is trusted enough
+ * to be surfaced into a prompt (brief-adoption §15: "prefer repeated evidence before promoting
+ * general lessons"). Deliberately small and fixed rather than configurable in this pass - see
+ * docs/architecture/experience-memory.md for the rationale.
+ */
+export const runtimeExperienceValidationThreshold = 2;
+
+export interface RuntimeExperienceTelemetryEvent {
+  state: "recall.candidate_generated" | "recall.deduplicated" | "recall.persisted";
+  metadata: Record<string, string | number | boolean | null>;
+}
+
+/**
+ * Pure state transition for structured experience extraction (brief-adoption §8/§9/§15) - computes
+ * the next `RuntimeExperience` row and the telemetry events it produces, without touching a Map, so
+ * the corroboration/promotion decision is unit-testable independent of `Cp2Store`. `existing` is the
+ * caller's current same-`lessonKey`, non-deprecated row for this business, if any (the caller does
+ * the lookup, since only it knows the storage shape).
+ */
+export function nextRuntimeExperienceState(
+  existing: RuntimeExperience | null,
+  input: {
+    id: string;
+    businessId: string;
+    agentId: string;
+    turnId: string;
+    intent: RuntimeParserIntent;
+    recipeId: string | null;
+    recipeVersion: number | null;
+    evidenceRefs: string[];
+    toolName: RuntimeToolName;
+    fallbackReason: string;
+    now: Date;
+  }
+): { experience: RuntimeExperience; telemetryEvents: RuntimeExperienceTelemetryEvent[] } {
+  const lessonKey = `fallback:${input.intent}:${input.fallbackReason}`;
+  const nowIso = input.now.toISOString();
+  if (existing !== null) {
+    const corroborationCount = existing.corroborationCount + 1;
+    const wasValidated = existing.validationState === "validated";
+    const validationState: RuntimeExperience["validationState"] =
+      corroborationCount >= runtimeExperienceValidationThreshold ? "validated" : existing.validationState;
+    const experience: RuntimeExperience = {
+      ...existing,
+      corroborationCount,
+      validationState,
+      sourceTurnId: input.turnId,
+      updatedAt: nowIso
+    };
+    const telemetryEvents: RuntimeExperienceTelemetryEvent[] = [
+      {
+        state: "recall.deduplicated",
+        metadata: { experienceId: experience.id, lessonKey, corroborationCount }
+      }
+    ];
+    if (validationState === "validated" && !wasValidated) {
+      telemetryEvents.push({
+        state: "recall.persisted",
+        metadata: { experienceId: experience.id, lessonKey, validationState }
+      });
+    }
+    return { experience, telemetryEvents };
+  }
+  const experience: RuntimeExperience = {
+    id: input.id,
+    tenantId: input.businessId,
+    shopId: input.businessId,
+    agentId: input.agentId,
+    taskType: input.intent,
+    situation: `A "${input.intent}" request needed a fallback model after the primary model failed (${input.fallbackReason}).`,
+    lessonKey,
+    recipeId: input.recipeId,
+    recipeVersion: input.recipeVersion,
+    evidenceRefs: input.evidenceRefs,
+    toolSequence: [input.toolName],
+    resultType: input.toolName,
+    verificationResult: "ok",
+    outcome: "successful",
+    lesson: `For "${input.intent}" requests, the primary model has failed with ${input.fallbackReason}; the configured fallback model completed the request successfully when this happened.`,
+    validationState: "candidate",
+    corroborationCount: 1,
+    sourceTurnId: input.turnId,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    deprecatedAt: null
+  };
+  return {
+    experience,
+    telemetryEvents: [
+      { state: "recall.candidate_generated", metadata: { experienceId: experience.id, lessonKey } }
+    ]
   };
 }
 
