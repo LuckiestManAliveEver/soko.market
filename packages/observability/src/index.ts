@@ -1,6 +1,20 @@
-import { Registry, Histogram, Gauge, collectDefaultMetrics } from "@prometheus-io/client";
+import { Registry, Histogram, Gauge, Counter, collectDefaultMetrics } from "@prometheus-io/client";
+import type { Bulkhead, CircuitBreaker, CircuitState } from "@soko/resource-control";
 
 export type { Registry } from "@prometheus-io/client";
+
+/** The subset of a resource-control event this module cares about - a structural type so this
+ *  package never imports `@soko/resource-control`'s bulkhead/circuit-breaker event unions just to
+ *  read three fields off them. */
+export type ResourceControlMetricEvent =
+  | { type: "capacity_reached"; name: string; workloadClass: string }
+  | {
+      type: "operation_rejected";
+      name: string;
+      workloadClass: string;
+      reason: "queue_full" | "queue_timeout";
+    }
+  | { type: "opened" | "closed" | "half_open_probe"; name: string };
 
 /**
  * The minimal shape of a `pg.Pool` this package instruments. Structural, not a `pg` import, so
@@ -59,6 +73,31 @@ export interface Metrics {
    * `fn` throws after recording it - this never swallows or changes runtime behavior.
    */
   timeModelRequest<T>(labels: ModelRequestLabels, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Registers a `Bulkhead` (resource-isolation.md §3/§10) so its live active/queued/budget
+   * numbers are sampled into `workload_active`/`workload_queued`/`workload_max_concurrency`/
+   * `workload_max_queue`, labeled `{name, workload_class}`, the same live-sampling pattern as
+   * `instrumentPgPool`'s connection gauges.
+   */
+  instrumentBulkhead(bulkhead: Bulkhead): Bulkhead;
+  /**
+   * Registers a `CircuitBreaker` so its live state is sampled into `circuit_breaker_state`
+   * (0=closed, 1=half_open, 2=open), labeled `{name}`.
+   */
+  instrumentCircuitBreaker(breaker: CircuitBreaker): CircuitBreaker;
+  /**
+   * Feeds one bulkhead/circuit-breaker event into the event-driven counters this module cannot
+   * derive by live sampling: `overload_rejection_total{name, workload_class, reason}` and
+   * `circuit_breaker_transitions_total{name, state}`. Call this from every bulkhead's/breaker's
+   * `onEvent` callback.
+   */
+  recordResourceEvent(event: ResourceControlMetricEvent): void;
+  /**
+   * Times a scheduled job/background runner and observes it into `scheduled_job_duration_seconds`
+   * (labeled `{job, outcome}`), also incrementing `scheduled_job_failure_total{job}` on throw.
+   * Rethrows whatever `fn` throws after recording it.
+   */
+  timeScheduledJob<T>(job: string, fn: () => Promise<T>): Promise<T>;
 }
 
 export interface CreateMetricsOptions {
@@ -161,6 +200,110 @@ export function createMetrics(options: CreateMetricsOptions): Metrics {
     }
   });
 
+  const instrumentedBulkheads = new Map<string, Bulkhead>();
+  const instrumentedBreakers = new Map<string, CircuitBreaker>();
+
+  new Gauge({
+    name: "workload_active",
+    help: "Operations currently running inside a bounded workload (bulkhead).",
+    labelNames: ["name", "workload_class"],
+    registers: [registry],
+    collect(this: Gauge<"name" | "workload_class">) {
+      for (const bulkhead of instrumentedBulkheads.values()) {
+        this.set(
+          { name: bulkhead.name, workload_class: bulkhead.workloadClass },
+          bulkhead.stats().active
+        );
+      }
+    }
+  });
+
+  new Gauge({
+    name: "workload_queued",
+    help: "Operations currently waiting for a free slot in a bounded workload (bulkhead).",
+    labelNames: ["name", "workload_class"],
+    registers: [registry],
+    collect(this: Gauge<"name" | "workload_class">) {
+      for (const bulkhead of instrumentedBulkheads.values()) {
+        this.set(
+          { name: bulkhead.name, workload_class: bulkhead.workloadClass },
+          bulkhead.stats().queued
+        );
+      }
+    }
+  });
+
+  new Gauge({
+    name: "workload_max_concurrency",
+    help: "Configured concurrency budget for a bounded workload (bulkhead).",
+    labelNames: ["name", "workload_class"],
+    registers: [registry],
+    collect(this: Gauge<"name" | "workload_class">) {
+      for (const bulkhead of instrumentedBulkheads.values()) {
+        this.set(
+          { name: bulkhead.name, workload_class: bulkhead.workloadClass },
+          bulkhead.stats().maxConcurrency
+        );
+      }
+    }
+  });
+
+  new Gauge({
+    name: "workload_max_queue",
+    help: "Configured wait-queue budget for a bounded workload (bulkhead).",
+    labelNames: ["name", "workload_class"],
+    registers: [registry],
+    collect(this: Gauge<"name" | "workload_class">) {
+      for (const bulkhead of instrumentedBulkheads.values()) {
+        this.set(
+          { name: bulkhead.name, workload_class: bulkhead.workloadClass },
+          bulkhead.stats().maxQueue
+        );
+      }
+    }
+  });
+
+  new Gauge({
+    name: "circuit_breaker_state",
+    help: "0=closed, 1=half_open, 2=open.",
+    labelNames: ["name"],
+    registers: [registry],
+    collect(this: Gauge<"name">) {
+      for (const breaker of instrumentedBreakers.values()) {
+        this.set({ name: breaker.name }, circuitStateValue(breaker.state()));
+      }
+    }
+  });
+
+  const overloadRejectionCounter = new Counter({
+    name: "overload_rejection_total",
+    help: "Operations rejected because a bounded workload's queue was full or a queued wait timed out.",
+    labelNames: ["name", "workload_class", "reason"],
+    registers: [registry]
+  });
+
+  const circuitBreakerTransitionCounter = new Counter({
+    name: "circuit_breaker_transitions_total",
+    help: "Circuit breaker state transitions and half-open probes.",
+    labelNames: ["name", "state"],
+    registers: [registry]
+  });
+
+  const scheduledJobHistogram = new Histogram({
+    name: "scheduled_job_duration_seconds",
+    help: "Scheduled/background job run duration in seconds.",
+    labelNames: ["job", "outcome"],
+    buckets: [0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 120, 300],
+    registers: [registry]
+  });
+
+  const scheduledJobFailureCounter = new Counter({
+    name: "scheduled_job_failure_total",
+    help: "Scheduled/background job runs that threw.",
+    labelNames: ["job"],
+    registers: [registry]
+  });
+
   return {
     registry,
     contentType: registry.contentType,
@@ -223,8 +366,62 @@ export function createMetrics(options: CreateMetricsOptions): Metrics {
         );
         throw error;
       }
+    },
+
+    instrumentBulkhead(bulkhead) {
+      instrumentedBulkheads.set(bulkhead.name, bulkhead);
+      return bulkhead;
+    },
+
+    instrumentCircuitBreaker(breaker) {
+      instrumentedBreakers.set(breaker.name, breaker);
+      return breaker;
+    },
+
+    recordResourceEvent(event) {
+      if (event.type === "operation_rejected") {
+        overloadRejectionCounter.inc({
+          name: event.name,
+          workload_class: event.workloadClass,
+          reason: event.reason
+        });
+        return;
+      }
+      if (event.type === "opened" || event.type === "closed" || event.type === "half_open_probe") {
+        circuitBreakerTransitionCounter.inc({ name: event.name, state: event.type });
+      }
+    },
+
+    async timeScheduledJob(job, fn) {
+      const startedAtNs = process.hrtime.bigint();
+      try {
+        const result = await fn();
+        scheduledJobHistogram.observe(
+          { job, outcome: "success" },
+          Number(process.hrtime.bigint() - startedAtNs) / 1e9
+        );
+        return result;
+      } catch (error) {
+        scheduledJobHistogram.observe(
+          { job, outcome: "error" },
+          Number(process.hrtime.bigint() - startedAtNs) / 1e9
+        );
+        scheduledJobFailureCounter.inc({ job });
+        throw error;
+      }
     }
   };
+}
+
+function circuitStateValue(state: CircuitState): number {
+  switch (state) {
+    case "closed":
+      return 0;
+    case "half_open":
+      return 1;
+    case "open":
+      return 2;
+  }
 }
 
 function inferSqlOperation(query: unknown): string {

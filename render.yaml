@@ -168,6 +168,21 @@ services:
         value: "120000"
       - key: INFERENCE_JOB_SIGNING_SECRET
         generateValue: true
+      # Resource isolation (docs/architecture/resource-isolation.md): bounds concurrent inference
+      # calls to ai-runtime and opens the circuit fast under sustained failure instead of letting
+      # every conversation turn queue/time out against a dependency that is clearly down.
+      - key: INFERENCE_MAX_CONCURRENCY
+        value: "4"
+      - key: INFERENCE_QUEUE_MAX
+        value: "8"
+      - key: INFERENCE_CIRCUIT_BREAKER_FAILURE_THRESHOLD
+        value: "5"
+      - key: INFERENCE_CIRCUIT_BREAKER_RESET_TIMEOUT_MS
+        value: "30000"
+      - key: DB_ARTIFACT_POOL_MAX
+        value: "2"
+      - key: DB_HEALTH_PARITY_CHECK_INTERVAL_MS
+        value: "60000"
       - key: OCR_WORKER_URL
         fromService:
           name: soko-market-ocr-worker
@@ -177,6 +192,16 @@ services:
         value: "1"
       - key: OCR_JOB_TIMEOUT_SECONDS
         value: "120"
+      - key: OCR_QUEUE_MAX
+        value: "10"
+      - key: OCR_RETRY_INITIAL_DELAY_MS
+        value: "200"
+      - key: OCR_RETRY_MAX_DELAY_MS
+        value: "5000"
+      - key: OCR_CIRCUIT_BREAKER_FAILURE_THRESHOLD
+        value: "5"
+      - key: OCR_CIRCUIT_BREAKER_RESET_TIMEOUT_MS
+        value: "30000"
       - key: MALWARE_SCANNER_ENABLED
         value: "false"
       - key: VAPID_PUBLIC_KEY

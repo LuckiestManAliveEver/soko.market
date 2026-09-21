@@ -6,6 +6,7 @@ export * from "./portable-agent.js";
 export * from "./runtime-handoff.js";
 export * from "./runtime-registry.js";
 export * from "./store-links.js";
+export * from "./workload.js";
 
 import type { PortableAgentManifest } from "./portable-agent.js";
 

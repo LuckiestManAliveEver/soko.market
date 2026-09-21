@@ -156,12 +156,21 @@ importers:
       '@prometheus-io/client':
         specifier: ^0.16.1
         version: 0.16.1
+      '@soko/resource-control':
+        specifier: workspace:*
+        version: link:../resource-control
 
   packages/offline-runtime:
     dependencies:
       '@soko/business-core':
         specifier: workspace:*
         version: link:../business-core
+      '@soko/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+
+  packages/resource-control:
+    dependencies:
       '@soko/shared-types':
         specifier: workspace:*
         version: link:../shared-types
@@ -244,6 +253,9 @@ importers:
       '@soko/offline-runtime':
         specifier: workspace:*
         version: link:../../packages/offline-runtime
+      '@soko/resource-control':
+        specifier: workspace:*
+        version: link:../../packages/resource-control
       '@soko/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
