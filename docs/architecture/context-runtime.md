@@ -15,10 +15,10 @@ before, plus a `ContextSelectionDiagnostics` object built in the same pass (no s
 
 ```ts
 interface ContextSelectionDiagnostics {
-  candidateNodes: number;   // every source of this type/audience Soko holds for the business
-  selectedNodes: number;    // items actually packed into the prompt
-  rejectedNodes: number;    // candidateNodes - selectedNodes
-  estimatedTokens: number;  // ~4 chars/token, matching contextCharacterBudgetForModel's own estimate
+  candidateNodes: number; // every source of this type/audience Soko holds for the business
+  selectedNodes: number; // items actually packed into the prompt
+  rejectedNodes: number; // candidateNodes - selectedNodes
+  estimatedTokens: number; // ~4 chars/token, matching contextCharacterBudgetForModel's own estimate
   tokenBudget: number | null;
   byDomain: Partial<Record<AgentContextSourceType, { candidates; authorized; selected }>>;
 }
@@ -55,7 +55,7 @@ model's own free-text output rather than a pre-inference block on every turn.
 
 ## Security note
 
-Diagnostics and grounding decisions never change *what* is authorized - `resolveAgentContext`'s
+Diagnostics and grounding decisions never change _what_ is authorized - `resolveAgentContext`'s
 authorization filter (status/deletedAt/audience/customerVisible) runs exactly as it did before this
 change, before any content is scored or packed. The grounding gate can only narrow an already-
 resolved turn further (by substituting a fixed abstention message); it never grants access to

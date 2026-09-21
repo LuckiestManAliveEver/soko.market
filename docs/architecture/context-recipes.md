@@ -5,7 +5,7 @@
 `intentContextTypes` (`services/api/src/cp2/agent-business-runtime.ts`) was a plain lookup table
 mapping a recognized `RuntimeParserIntent` to the `AgentContextSourceType[]` it should narrow
 retrieval to. It had no version, no grounding policy, and no declared tool list. Separately,
-`RuntimeModelTemplateRecipe` (`packages/shared-types`) is a *different* "recipe" concept scoped to
+`RuntimeModelTemplateRecipe` (`packages/shared-types`) is a _different_ "recipe" concept scoped to
 Model Template prompt compilation (allowed tools, context requirements, output schema, vocabulary
 snapshots for one template version) - not evidence requirements.
 
@@ -15,13 +15,13 @@ snapshots for one template version) - not evidence requirements.
 
 ```ts
 export interface ContextRecipe {
-  id: string;              // "soko.<taskType>@<version>", e.g. "soko.show_products@1"
+  id: string; // "soko.<taskType>@<version>", e.g. "soko.show_products@1"
   taskType: RuntimeParserIntent;
   version: number;
   requiredEvidence: AgentContextSourceType[];
   optionalEvidence: AgentContextSourceType[];
-  tools: RuntimeToolName[];       // informational - read by the report card, not an authorization path
-  groundingPolicy: GroundingPolicyId;  // "none" | "require_evidence"
+  tools: RuntimeToolName[]; // informational - read by the report card, not an authorization path
+  groundingPolicy: GroundingPolicyId; // "none" | "require_evidence"
 }
 ```
 
@@ -38,7 +38,7 @@ Only four entries set `groundingPolicy: "require_evidence"`: `show_products`, `c
 hallucination risk. Every write-oriented intent (`add_product`, `create_invoice`, `record_payment`,
 ...) is `"none"`, because a different, already-existing mechanism grounds them instead:
 `findRuntimeUnknownEntityReferenceError` (`services/api/src/cp2/domains/agent-runtime/runtime-entity-lookup.ts`)
-checks the entity a mutation *references* exists before a confirmation token is even minted. Applying
+checks the entity a mutation _references_ exists before a confirmation token is even minted. Applying
 the context-recipe grounding gate there too would be redundant, not additive.
 
 Extending grounding to another intent, or adding an entry for a future intent, is a one-line,

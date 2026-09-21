@@ -5,9 +5,9 @@
 Soko's runtime already grounds most read-oriented tasks by construction: a recognized intent like
 `show_products`/`check_debt` deterministically resolves to a tool proposal
 (`createRuntimeToolProposal`, `packages/tool-core`) that executes against live data
-(`products.list`, `payments.debtors`, ...) - the tool's result *is* the evidence, independent of
+(`products.list`, `payments.debtors`, ...) - the tool's result _is_ the evidence, independent of
 whether `retrieveAgentContext` found matching text. That existing design was discovered, not assumed,
-during this change: an early version of the grounding gate blocked *every* turn pre-emptively when
+during this change: an early version of the grounding gate blocked _every_ turn pre-emptively when
 retrieval looked thin, and broke exactly this path (a real regression caught by the existing test
 suite - see the commit history for `agent-business-runtime.ts`/`store.ts` in this change). The gate
 was narrowed to the one place a real gap exists instead.
@@ -53,7 +53,7 @@ In `executeRuntimeTurn` (`services/api/src/cp2/domains/agent-runtime/store.ts`):
 ## Why this order is safe
 
 - A deterministic parser/context-script proposal is never touched - it isn't `unknown.clarify`.
-- A model-proposed *tool* call is never touched - same reason, and it separately passes through
+- A model-proposed _tool_ call is never touched - same reason, and it separately passes through
   `findRuntimeUnknownEntityReferenceError`/`validateRuntimeToolInput`/`enforceAgentPolicy` regardless.
 - Only the one case where nothing else resolved the turn into an executable action, and the model
   filled that gap with unverified prose, is intercepted.
@@ -67,4 +67,4 @@ In `executeRuntimeTurn` (`services/api/src/cp2/domains/agent-runtime/store.ts`):
 unit tests, and one HTTP-level integration test that reproduces the exact shape of bug the narrowing
 above was built to avoid: a business with a real customer record, queried in a way that retrieves
 nothing, correctly overrides a fabricating model's answer - while the same query against a business
-with *no* customers at all (a legitimately empty result) is left untouched.
+with _no_ customers at all (a legitimately empty result) is left untouched.

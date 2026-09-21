@@ -1731,7 +1731,8 @@ export class AgentRuntimeDomain {
   validatedRuntimeExperiencesForBusiness(businessId: string): RuntimeExperience[] {
     return [...this.runtimeExperiences.values()]
       .filter(
-        (experience) => experience.shopId === businessId && experience.validationState === "validated"
+        (experience) =>
+          experience.shopId === businessId && experience.validationState === "validated"
       )
       .map((experience) => ({ ...experience }));
   }
@@ -2465,9 +2466,9 @@ export class AgentRuntimeDomain {
       {
         recipeId: contextRecipe?.id ?? null,
         status: grounding.status,
-        missing:
-          grounding.status === "insufficient_evidence" ? grounding.missing.join(",") : null,
-        missingScopes: grounding.status === "unauthorized" ? grounding.missingScopes.join(",") : null
+        missing: grounding.status === "insufficient_evidence" ? grounding.missing.join(",") : null,
+        missingScopes:
+          grounding.status === "unauthorized" ? grounding.missingScopes.join(",") : null
       }
     );
     const runtimeMemory = shopRuntime.memory.ownerCorrectionsEnabled

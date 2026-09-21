@@ -1,4 +1,8 @@
-import type { RuntimeReportCard, RuntimeReportCardKey, RuntimeTurnSummary } from "@soko/shared-types";
+import type {
+  RuntimeReportCard,
+  RuntimeReportCardKey,
+  RuntimeTurnSummary
+} from "@soko/shared-types";
 
 /**
  * MUSE-adoption brief §16/§17: groups already-recorded runtime turns by the actual
@@ -35,13 +39,17 @@ export function buildRuntimeReportCard(turns: RuntimeTurnSummary[]): RuntimeRepo
 
 function recipeIdForTurn(turn: RuntimeTurnSummary): string | null {
   const event = turn.telemetry.find(
-    (candidate) => candidate.state === "grounding.accepted" || candidate.state === "grounding.rejected"
+    (candidate) =>
+      candidate.state === "grounding.accepted" || candidate.state === "grounding.rejected"
   );
   const recipeId = event?.metadata.recipeId;
   return typeof recipeId === "string" ? recipeId : null;
 }
 
-function reportCardForGroup(key: RuntimeReportCardKey, turns: RuntimeTurnSummary[]): RuntimeReportCard {
+function reportCardForGroup(
+  key: RuntimeReportCardKey,
+  turns: RuntimeTurnSummary[]
+): RuntimeReportCard {
   const sampleSize = turns.length;
   const successCount = turns.filter((turn) => turn.status === "completed").length;
   const abstentionCount = turns.filter(

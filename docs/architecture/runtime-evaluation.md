@@ -13,8 +13,8 @@ Two real evaluation systems already existed before this change:
    with versioned lineage, but scoped to comparing **Model Template versions** in an offline
    evaluation run.
 
-Neither compares the brief's `P = f(M, C, T, R)` at the granularity of *live runtime turns as they
-actually executed* - which model, which context recipe, which runtime version actually answered a
+Neither compares the brief's `P = f(M, C, T, R)` at the granularity of _live runtime turns as they
+actually executed_ - which model, which context recipe, which runtime version actually answered a
 given group of turns. That is the one narrow gap this change closes, without building a second
 evaluate/gate/promote pipeline (explicitly out of scope per brief §16: "do NOT implement autonomous
 production prompt mutation yet").
@@ -29,16 +29,16 @@ telemetry beyond what this change already added for other reasons (`context.plan
 ```ts
 interface RuntimeReportCardKey {
   runtimeVersion: number;
-  modelId: string | null;    // turn.model.modelId, or null for a fully deterministic turn
-  recipeId: string | null;   // from the turn's own grounding telemetry, or null if none matched
+  modelId: string | null; // turn.model.modelId, or null for a fully deterministic turn
+  recipeId: string | null; // from the turn's own grounding telemetry, or null if none matched
 }
 
 interface RuntimeReportCard {
   key: RuntimeReportCardKey;
   sampleSize: number;
   taskSuccessRate: number;
-  abstentionRate: number;              // clarifying + blocked / sampleSize
-  groundedAcceptRate: number | null;   // null if this group had no grounding-policy recipe
+  abstentionRate: number; // clarifying + blocked / sampleSize
+  groundedAcceptRate: number | null; // null if this group had no grounding-policy recipe
   toolCallRate: number;
   averageLatencyMs: number | null;
   averagePromptTokens: number | null;

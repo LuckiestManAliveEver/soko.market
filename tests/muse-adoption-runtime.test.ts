@@ -317,7 +317,14 @@ describe("buildRuntimeReportCard", () => {
         rateLimited: false,
         errors: []
       },
-      model: overrides.model ?? { provider: null, status: "available", durationMs: 100, outputKind: "tool", errorCode: null, modelId: "model-a" },
+      model: overrides.model ?? {
+        provider: null,
+        status: "available",
+        durationMs: 100,
+        outputKind: "tool",
+        errorCode: null,
+        modelId: "model-a"
+      },
       response: "ok",
       toolResult: null,
       telemetry: overrides.telemetry ?? [],
@@ -345,13 +352,24 @@ describe("buildRuntimeReportCard", () => {
       turn({
         id: "turn-c",
         runtimeVersion: 2,
-        model: { provider: null, status: "available", durationMs: 50, outputKind: "tool", errorCode: null, modelId: "model-b" }
+        model: {
+          provider: null,
+          status: "available",
+          durationMs: 50,
+          outputKind: "tool",
+          errorCode: null,
+          modelId: "model-b"
+        }
       })
     ];
     const cards = buildRuntimeReportCard(turns);
     expect(cards).toHaveLength(2);
     const v1Card = cards.find((card) => card.key.runtimeVersion === 1)!;
-    expect(v1Card.key).toEqual({ runtimeVersion: 1, modelId: "model-a", recipeId: "soko.show_products@1" });
+    expect(v1Card.key).toEqual({
+      runtimeVersion: 1,
+      modelId: "model-a",
+      recipeId: "soko.show_products@1"
+    });
     expect(v1Card.sampleSize).toBe(2);
     expect(v1Card.taskSuccessRate).toBe(0.5);
     expect(v1Card.abstentionRate).toBe(0.5);

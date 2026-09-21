@@ -4230,7 +4230,8 @@ export interface AgentOwnerCorrection {
  * candidate -> validated -> deprecated lifecycle a correction's `active`/`disabled` status models,
  * one level more cautious (see `validationState`/`corroborationCount`).
  */
-export type RuntimeExperienceOutcome = "successful" | "adjusted" | "rejected" | "failed" | "unknown";
+export type RuntimeExperienceOutcome =
+  "successful" | "adjusted" | "rejected" | "failed" | "unknown";
 
 /**
  * `candidate`: extracted once, not yet corroborated - never surfaced into a prompt.

@@ -299,9 +299,23 @@ export const contextRecipeRegistry: Partial<Record<RuntimeParserIntent, ContextR
     ["invoice.draft"],
     "none"
   ),
-  record_payment: recipe("record_payment", 1, ["customer", "order"], [], ["payment.record"], "none"),
+  record_payment: recipe(
+    "record_payment",
+    1,
+    ["customer", "order"],
+    [],
+    ["payment.record"],
+    "none"
+  ),
   update_logistics: recipe("update_logistics", 1, ["order", "customer"], [], [], "none"),
-  check_debt: recipe("check_debt", 1, ["customer", "order"], [], ["reports.summary"], "require_evidence"),
+  check_debt: recipe(
+    "check_debt",
+    1,
+    ["customer", "order"],
+    [],
+    ["reports.summary"],
+    "require_evidence"
+  ),
   show_products: recipe(
     "show_products",
     1,

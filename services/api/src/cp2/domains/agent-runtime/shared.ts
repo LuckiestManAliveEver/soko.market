@@ -1065,7 +1065,9 @@ export function nextRuntimeExperienceState(
     const corroborationCount = existing.corroborationCount + 1;
     const wasValidated = existing.validationState === "validated";
     const validationState: RuntimeExperience["validationState"] =
-      corroborationCount >= runtimeExperienceValidationThreshold ? "validated" : existing.validationState;
+      corroborationCount >= runtimeExperienceValidationThreshold
+        ? "validated"
+        : existing.validationState;
     const experience: RuntimeExperience = {
       ...existing,
       corroborationCount,

@@ -27,12 +27,16 @@ of the above.
 
 ```ts
 interface RuntimeExperience {
-  id, tenantId, shopId, agentId: string;
+  id;
+  tenantId;
+  shopId;
+  agentId: string;
   taskType: RuntimeParserIntent;
-  situation: string;       // short, deterministic description - never model narration
-  lessonKey: string;       // stable dedup/corroboration key
-  recipeId, recipeVersion: string | number | null;
-  evidenceRefs: string[];  // RetrievedAgentContextItem.sourceId values consulted
+  situation: string; // short, deterministic description - never model narration
+  lessonKey: string; // stable dedup/corroboration key
+  recipeId;
+  recipeVersion: string | number | null;
+  evidenceRefs: string[]; // RetrievedAgentContextItem.sourceId values consulted
   toolSequence: RuntimeToolName[];
   resultType: string;
   verificationResult: string | null;
@@ -40,8 +44,9 @@ interface RuntimeExperience {
   lesson: string;
   validationState: "candidate" | "validated" | "deprecated";
   corroborationCount: number;
-  sourceTurnId: string;    // diagnostic only - never used to resume execution
-  createdAt, updatedAt: string;
+  sourceTurnId: string; // diagnostic only - never used to resume execution
+  createdAt;
+  updatedAt: string;
   deprecatedAt: string | null;
 }
 ```
@@ -99,7 +104,7 @@ Failure avoided: an unanswered or failed request.
 ```
 
 gated on `profile.memoryPolicy.reusableWorkflowMemoryEnabled` (the same policy flag that already
-existed for this purpose) and gone through the *same*, unmodified relevance-scoring, budgeting, and
+existed for this purpose) and gone through the _same_, unmodified relevance-scoring, budgeting, and
 `<relevant_recall>` rendering pipeline every other context source uses.
 `confidence = min(1, corroborationCount / 2)` and `provenance.resolver = "model_recall"` - never
 mistaken for a canonical record (see [`evidence-graph.md`](evidence-graph.md)).
@@ -107,11 +112,12 @@ mistaken for a canonical record (see [`evidence-graph.md`](evidence-graph.md)).
 ## Retention
 
 `purgeExpiredRuntimeExperiences` (mirroring `purgeExpiredAgentOwnerCorrections` exactly) deprecates
+
 - never hard-deletes - any experience older than the business's own
-`memoryPolicy.retentionDays`, run by a daily background sweep
-(`runtime-experience-retention-runner.ts`, wired into `services/api/src/index.ts` next to the
-existing owner-correction retention runner, toggleable via
-`ENABLE_RUNTIME_EXPERIENCE_RETENTION_RUNNER`).
+  `memoryPolicy.retentionDays`, run by a daily background sweep
+  (`runtime-experience-retention-runner.ts`, wired into `services/api/src/index.ts` next to the
+  existing owner-correction retention runner, toggleable via
+  `ENABLE_RUNTIME_EXPERIENCE_RETENTION_RUNNER`).
 
 ## Persistence and tenant isolation
 

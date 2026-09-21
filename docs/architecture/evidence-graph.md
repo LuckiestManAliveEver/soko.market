@@ -18,17 +18,17 @@ actually was.
 
 ```ts
 export type EvidenceProvenanceResolver =
-  | "canonical_record"   // read directly from a product/customer/order/... row
-  | "owner_authored"     // a context_script or owner_note the merchant wrote
-  | "ocr_extraction"     // derived from a receipt scan
-  | "model_recall"       // a validated RuntimeExperience (see experience-memory.md)
-  | "context_script"     // an authored automation script
+  | "canonical_record" // read directly from a product/customer/order/... row
+  | "owner_authored" // a context_script or owner_note the merchant wrote
+  | "ocr_extraction" // derived from a receipt scan
+  | "model_recall" // a validated RuntimeExperience (see experience-memory.md)
+  | "context_script" // an authored automation script
   | "unknown";
 
 export interface EvidenceProvenance {
   resolver: EvidenceProvenanceResolver;
   sourceType: AgentContextSourceType;
-  sourceId: string | null;  // the canonical record this evidence was read from, when one exists
+  sourceId: string | null; // the canonical record this evidence was read from, when one exists
 }
 ```
 
