@@ -3504,6 +3504,9 @@ export type RuntimeTelemetryState =
   | "model.completed"
   | "model.fallback"
   | "model.fallback_completed"
+  | "context.plan.completed"
+  | "grounding.accepted"
+  | "grounding.rejected"
   | "recall.candidate_generated"
   | "recall.candidate_rejected"
   | "recall.deduplicated"
@@ -4008,6 +4011,27 @@ export interface AgentContextAccessRules {
   customerVisible: boolean;
 }
 
+/**
+ * How a piece of evidence was established. `canonical_record` means it was read directly from an
+ * authoritative business record (a product/customer/order row) - the strongest grade. The others
+ * name progressively less-verified origins. A model's own free-text claim is never a valid
+ * resolver: model output is not evidence until it is checked against a canonical record.
+ */
+export type EvidenceProvenanceResolver =
+  | "canonical_record"
+  | "owner_authored"
+  | "ocr_extraction"
+  | "model_recall"
+  | "context_script"
+  | "unknown";
+
+export interface EvidenceProvenance {
+  resolver: EvidenceProvenanceResolver;
+  sourceType: AgentContextSourceType;
+  /** The canonical business record this evidence was read from, when one exists. */
+  sourceId: string | null;
+}
+
 export interface AgentContextSource {
   id: string;
   tenantId: string;
@@ -4023,6 +4047,14 @@ export interface AgentContextSource {
     keywords: string[];
     sourceRecordId: string | null;
     content: string | null;
+    /**
+     * How confident the resolver is that `content` is accurate, 0-1. `null` when confidence was
+     * never assessed (the historical default - most canonical-record-backed sources are
+     * unambiguous and don't need a score). Optional so existing persisted rows and test fixtures
+     * built before this field existed remain valid without a migration.
+     */
+    confidence?: number | null;
+    provenance?: EvidenceProvenance;
   };
   createdAt: string;
   updatedAt: string;
@@ -4036,6 +4068,57 @@ export interface BusinessContextManifest {
   sources: AgentContextSource[];
 }
 
+/**
+ * How strictly a context recipe's grounding gate treats missing required evidence. "none" never
+ * blocks (the historical behavior for every intent before this field existed). "require_evidence"
+ * blocks with a deterministic abstention when a required evidence domain has real candidate
+ * records the caller could see but none were actually retrieved for this turn - it never blocks on
+ * a domain that is genuinely empty for the business, since "there are none" is itself a grounded
+ * answer, not a hallucination risk.
+ */
+export type GroundingPolicyId = "none" | "require_evidence";
+
+/**
+ * A versioned, named declaration of what a recognized task type needs - evidence domains, a
+ * grounding policy, and (for the runtime report card) the tools it's expected to use. Distinct from
+ * `RuntimeModelTemplateRecipe`, which shapes a Model Template's compiled prompt/tool list for one
+ * template version; a `ContextRecipe` is keyed by task type (`RuntimeParserIntent`), not by
+ * template, and every agent/template resolves the same recipe for the same recognized task.
+ */
+export interface ContextRecipe {
+  /** `soko.<taskType>@<version>`, e.g. `soko.show_products@1`. */
+  id: string;
+  taskType: RuntimeParserIntent;
+  version: number;
+  requiredEvidence: AgentContextSourceType[];
+  optionalEvidence: AgentContextSourceType[];
+  tools: RuntimeToolName[];
+  groundingPolicy: GroundingPolicyId;
+}
+
+export interface ContextSelectionDiagnostics {
+  candidateNodes: number;
+  selectedNodes: number;
+  rejectedNodes: number;
+  estimatedTokens: number;
+  tokenBudget: number | null;
+  byDomain: Partial<
+    Record<AgentContextSourceType, { candidates: number; authorized: number; selected: number }>
+  >;
+}
+
+/**
+ * The brief's abstention contract: a model must never be left to decide whether mandatory evidence
+ * exists. `conflicting_evidence` is declared for forward compatibility with a future detector but is
+ * never produced today - no code path currently compares retrieved evidence for contradictions, and
+ * this change does not add one (see docs/architecture/runtime-grounding.md).
+ */
+export type GroundingDecision =
+  | { status: "grounded"; evidenceIds: string[] }
+  | { status: "insufficient_evidence"; missing: AgentContextSourceType[] }
+  | { status: "unauthorized"; missingScopes: AgentContextSourceType[] }
+  | { status: "conflicting_evidence"; conflicts: string[] };
+
 export interface RetrievedAgentContextItem {
   sourceId: string;
   type: AgentContextSourceType;
@@ -4044,6 +4127,9 @@ export interface RetrievedAgentContextItem {
   sensitivity: AgentContextSensitivity;
   freshnessTimestamp: string;
   relevanceScore: number;
+  /** 0-1, or `null` when the source never assessed one. See `EvidenceProvenance`. */
+  confidence: number | null;
+  provenance: EvidenceProvenance;
 }
 
 export interface AgentSkillBinding {

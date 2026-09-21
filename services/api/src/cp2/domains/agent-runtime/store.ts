@@ -132,8 +132,12 @@ import { runtimeAdapterIdForAgent } from "../../../agent-harness/agent-runtime-a
 import { normalizeRequiredBoundedText } from "../../text-normalization.js";
 import {
   agentAudienceForBusinessRole,
+  contextRecipeRegistry,
   enforceAgentPolicy,
-  retrieveAgentContext
+  evaluateGrounding,
+  groundingAbstentionMessage,
+  resolveAgentContext,
+  type retrieveAgentContext
 } from "../../agent-business-runtime.js";
 import type { CustomerRuntimeCapabilityRecord } from "../../domain-contracts.js";
 import type { Cp2Snapshot } from "../../store.js";
@@ -2310,7 +2314,7 @@ export class AgentRuntimeDomain {
         : receiptContextScriptMatch !== null
           ? receiptContextScriptMatchToParseResult(receiptContextScriptMatch)
           : productContextScriptMatchToParseResult(contextScriptMatch!);
-    const retrievedContext = retrieveAgentContext({
+    const { items: retrievedContext, diagnostics: contextDiagnostics } = resolveAgentContext({
       sources: this.contextSourcesForRuntime(storedAgentProfile),
       query: input.message,
       audience: callerAudience,
@@ -2321,58 +2325,85 @@ export class AgentRuntimeDomain {
         this.deps.resolveCatalogModel(runtimeModelId)
       )
     });
+    appendTelemetry("context.plan.completed", "completed", null, null, {
+      candidateNodes: contextDiagnostics.candidateNodes,
+      selectedNodes: contextDiagnostics.selectedNodes,
+      rejectedNodes: contextDiagnostics.rejectedNodes,
+      estimatedTokens: contextDiagnostics.estimatedTokens,
+      tokenBudget: contextDiagnostics.tokenBudget
+    });
+    const contextRecipe = contextRecipeRegistry[parserResult.intent];
+    const grounding = evaluateGrounding({
+      recipe: contextRecipe,
+      retrievedContext,
+      diagnostics: contextDiagnostics
+    });
+    const willCallModel =
+      hashtagInvocation === null &&
+      documentImportProposal === null &&
+      messagingProposal === null &&
+      networkProposal === null &&
+      commerceProposal === null &&
+      effectiveContextScriptMatch === null;
+    appendTelemetry(
+      grounding.status === "grounded" ? "grounding.accepted" : "grounding.rejected",
+      "completed",
+      null,
+      null,
+      {
+        recipeId: contextRecipe?.id ?? null,
+        status: grounding.status,
+        missing:
+          grounding.status === "insufficient_evidence" ? grounding.missing.join(",") : null,
+        missingScopes: grounding.status === "unauthorized" ? grounding.missingScopes.join(",") : null
+      }
+    );
     const runtimeMemory = shopRuntime.memory.ownerCorrectionsEnabled
       ? this.ownerCorrectionsForBusiness(input.businessId)
           .filter((correction) => correction.status === "active")
           .slice(0, shopRuntime.memory.maximumItemsPerScope)
           .map((correction) => correction.correction)
       : [];
-    const modelRoute =
-      hashtagInvocation === null &&
-      documentImportProposal === null &&
-      messagingProposal === null &&
-      networkProposal === null &&
-      commerceProposal === null &&
-      effectiveContextScriptMatch === null
-        ? await this.createRuntimeModelRoute({
-            message: input.message,
-            accountId: auth.account.id,
-            ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
-            ...(input.conversationHistory === undefined
-              ? {}
-              : { conversationHistory: input.conversationHistory }),
-            modelId: runtimeModelId,
-            ...(input.signal === undefined ? {} : { signal: input.signal }),
-            context,
-            now,
-            appendTelemetry,
-            shopRuntime,
-            retrievedContext,
-            memory: runtimeMemory,
-            intent: parserResult.intent,
-            ...(modelTemplate === undefined || modelTemplate === null
-              ? {}
-              : {
-                  modelTemplate: {
-                    templateId: modelTemplate.templateId,
-                    templateVersionId: modelTemplate.templateVersionId,
-                    version: modelTemplate.version,
-                    task: modelTemplate.task,
-                    allowedTools: modelTemplate.allowedTools as RuntimeToolName[],
-                    contextRequirements: modelTemplate.contextRequirements,
-                    ...(modelTemplate.outputSchema === undefined
-                      ? {}
-                      : { outputSchema: modelTemplate.outputSchema }),
-                    constraints: modelTemplate.constraints,
-                    templateVocabularySnapshot: modelTemplate.templateVocabularySnapshot,
-                    currentVocabularySnapshot: modelTemplate.currentVocabularySnapshot
-                  }
-                })
-          })
-        : {
-            proposal: null,
-            trace: null
-          };
+    const modelRoute = willCallModel
+      ? await this.createRuntimeModelRoute({
+          message: input.message,
+          accountId: auth.account.id,
+          ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
+          ...(input.conversationHistory === undefined
+            ? {}
+            : { conversationHistory: input.conversationHistory }),
+          modelId: runtimeModelId,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+          context,
+          now,
+          appendTelemetry,
+          shopRuntime,
+          retrievedContext,
+          memory: runtimeMemory,
+          intent: parserResult.intent,
+          ...(modelTemplate === undefined || modelTemplate === null
+            ? {}
+            : {
+                modelTemplate: {
+                  templateId: modelTemplate.templateId,
+                  templateVersionId: modelTemplate.templateVersionId,
+                  version: modelTemplate.version,
+                  task: modelTemplate.task,
+                  allowedTools: modelTemplate.allowedTools as RuntimeToolName[],
+                  contextRequirements: modelTemplate.contextRequirements,
+                  ...(modelTemplate.outputSchema === undefined
+                    ? {}
+                    : { outputSchema: modelTemplate.outputSchema }),
+                  constraints: modelTemplate.constraints,
+                  templateVocabularySnapshot: modelTemplate.templateVocabularySnapshot,
+                  currentVocabularySnapshot: modelTemplate.currentVocabularySnapshot
+                }
+              })
+        })
+      : {
+          proposal: null,
+          trace: null
+        };
     if (
       activeBinding !== null &&
       modelRoute.trace !== null &&
@@ -2418,7 +2449,7 @@ export class AgentRuntimeDomain {
       clarificationRequired: effectiveContextScriptMatch?.clarificationRequired ?? false,
       fallbackReason: effectiveContextScriptMatch === null ? "no_context_script_match" : null
     });
-    const proposal =
+    const resolvedProposal =
       hashtagInvocation?.proposal ??
       documentImportProposal ??
       messagingProposal ??
@@ -2429,6 +2460,25 @@ export class AgentRuntimeDomain {
         : receiptContextScriptMatch !== null
           ? receiptProposal!
           : createRuntimeToolProposalFromProductContextScript(contextScriptMatch!));
+    // Grounding gate (brief-adoption §6): only ever narrows an already-unresolved turn - never
+    // overrides a deterministic parser proposal or a model-proposed tool call, both of which are
+    // grounded by construction (they execute against, and are validated against, live authoritative
+    // records; see findRuntimeUnknownEntityReferenceError above and executeRuntimeCapability below).
+    // The one case this closes: `parseRuntimeModelOutput`'s "response" kind
+    // (packages/tool-core/src/parsers/model-output.ts) lets the model answer in free text instead of
+    // proposing a tool - it maps to `toolName: "unknown.clarify"`, `validation: valid()`, and
+    // `reason: <the model's own free text>`, which `createRuntimeResponse` falls through to
+    // returning verbatim for any unmatched toolName. That free text is model output, not evidence -
+    // for a task whose recipe requires evidence that wasn't actually resolved, it must never reach
+    // the merchant. Forcing `validation.ok = false` here turns it into an ordinary, already-handled
+    // `clarification_required` plan whose response is the deterministic grounding message instead.
+    const proposal: typeof resolvedProposal =
+      resolvedProposal.toolName === "unknown.clarify" && grounding.status !== "grounded"
+        ? {
+            ...resolvedProposal,
+            validation: { ok: false, errors: [groundingAbstentionMessage(grounding)] }
+          }
+        : resolvedProposal;
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
     if (input.conversationId !== undefined) {
