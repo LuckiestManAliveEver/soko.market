@@ -6156,41 +6156,124 @@ details.nested-form-section summary {
   right: max(8px, env(safe-area-inset-right));
   bottom: max(8px, env(safe-area-inset-bottom));
   z-index: 1000;
-  width: min(360px, calc(100vw - 16px));
-  max-height: min(42vh, 360px);
+  width: min(420px, calc(100vw - 16px));
+  max-height: min(58vh, 520px);
   overflow: auto;
-  padding: 10px;
-  border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
-  border-radius: 12px;
-  background: Canvas;
-  color: CanvasText;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 18%);
+  padding: 12px;
+  border: 1px solid #314336;
+  border-radius: 8px;
+  background: #131a17;
+  color: #dce8df;
+  box-shadow: 0 16px 36px rgb(0 0 0 / 30%);
   font:
-    12px/1.35 ui-monospace,
-    monospace;
+    12px/1.35 "IBM Plex Sans",
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 
-.performance-panel > strong {
-  margin-right: 12px;
+.performance-panel__header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
 }
 
-.performance-panel > button {
+.performance-panel__header strong,
+.performance-panel__header span {
+  display: block;
+}
+
+.performance-panel__header strong {
+  color: #ffffff;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.performance-panel__header span {
+  color: #9eb2a6;
+  margin-top: 2px;
+}
+
+.performance-panel__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.performance-panel__actions button {
+  background: #24342b;
+  border: 1px solid #3b5444;
+  color: #dce8df;
   min-height: 32px;
-  padding: 4px 8px;
+  min-width: 32px;
+  padding: 4px 9px;
 }
 
-.performance-panel ol {
+.performance-panel__metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 12px 0;
+}
+
+.performance-panel__metrics div {
+  background: #1d2823;
+  border: 1px solid #304138;
+  border-radius: 8px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.performance-panel__metrics dt,
+.performance-panel__metrics dd {
+  margin: 0;
+}
+
+.performance-panel__metrics dt {
+  color: #94a79d;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.performance-panel__metrics dd {
+  color: #f2f8f4;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 15px;
+  font-weight: 800;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.performance-panel__metric--warn dd {
+  color: #ffc46b;
+}
+
+.performance-panel__events {
   margin: 8px 0 0;
   padding-left: 22px;
 }
 
-.performance-panel li {
+.performance-panel__events li {
   margin-block: 4px;
 }
 
-.performance-panel code {
+.performance-panel__events span {
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.performance-panel__events code {
+  color: #abc0b5;
   display: block;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+  .performance-panel__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .connectivity-indicator {
