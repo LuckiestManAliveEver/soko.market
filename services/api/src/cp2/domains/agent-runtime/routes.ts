@@ -969,6 +969,22 @@ export function registerAgentRuntimeRoutes(
     }
   );
 
+  // MUSE-adoption brief §16/§17: read-only, grouped by the actual (model, context recipe, runtime
+  // version) configuration recorded runtime turns ran with - see report-card.ts.
+  app.get(
+    "/businesses/:businessId/agent-runtime/report-card",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.runtimeReportCard({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post(
     "/businesses/:businessId/agent-runtime/feedback",
     async (request: FastifyRequest<{ Params: BusinessParams; Body: AgentFeedbackBody }>, reply) => {

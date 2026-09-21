@@ -4334,6 +4334,39 @@ export interface AgentEvaluationSummary {
   recentEvents: AgentEvaluationEvent[];
 }
 
+/**
+ * MUSE-adoption brief §16/§17: "P = f(M, C, T, R)" - the model, context recipe, tools, and runtime
+ * a group of turns actually ran with, so different configurations can be compared systematically.
+ * `modelId`/`recipeId` are `null` when a turn used no resolvable model (a fully deterministic
+ * proposal) or matched no `ContextRecipe` (an intent with no recipe, e.g. "unknown"). Distinct from
+ * `TemplateReportCard` (model-templates domain): that compares Model Template *versions* in an
+ * offline evaluation run; this compares live runtime turns as they actually executed, grouped by
+ * what configuration answered them - a read-only aggregation over already-recorded
+ * `RuntimeTurnSummary`/telemetry data, not a second evaluate/gate/promote pipeline.
+ */
+export interface RuntimeReportCardKey {
+  runtimeVersion: number;
+  modelId: string | null;
+  recipeId: string | null;
+}
+
+export interface RuntimeReportCard {
+  key: RuntimeReportCardKey;
+  sampleSize: number;
+  taskSuccessRate: number;
+  /** Turns ending in clarifying/blocked as a share of sampleSize - the brief's "abstention
+   *  correctness" is a judgment call on top of this raw rate, not computed here. */
+  abstentionRate: number;
+  /** Share of grounding-evaluated turns that were accepted, or `null` if this group had no
+   *  grounding-policy recipe among its turns. */
+  groundedAcceptRate: number | null;
+  toolCallRate: number;
+  averageLatencyMs: number | null;
+  averagePromptTokens: number | null;
+  averageCompletionTokens: number | null;
+  averageContextTokens: number | null;
+}
+
 export interface CompiledAgentInstructionSet {
   precedence: [
     "platform_security",

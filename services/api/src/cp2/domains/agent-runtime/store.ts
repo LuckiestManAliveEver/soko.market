@@ -102,6 +102,7 @@ import type {
   RuntimeTelemetryEvent,
   RuntimeExecutionEventType,
   RuntimeExperience,
+  RuntimeReportCard,
   RuntimeToolName,
   RuntimeTurnResult,
   RuntimeTurnSummary,
@@ -151,6 +152,7 @@ import {
   contextSourcesForRuntime as contextSourcesForRuntimeModule
 } from "./runtime-context.js";
 import { createRuntimeModelRoute } from "./runtime-model-routing.js";
+import { buildRuntimeReportCard } from "./report-card.js";
 import {
   assertResolvedRuntimeAvailable,
   resolveNativeRuntimeModelProvider,
@@ -3005,6 +3007,21 @@ export class AgentRuntimeDomain {
 
   runtimeTurnsForBusiness(businessId: string): RuntimeTurnSummary[] {
     return [...this.runtimeTurns.values()].filter((turn) => turn.businessId === businessId);
+  }
+
+  /** MUSE-adoption brief §16/§17 - see report-card.ts for the aggregation itself. */
+  runtimeReportCard(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): RuntimeReportCard[] {
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return buildRuntimeReportCard(this.runtimeTurnsForBusiness(input.businessId));
   }
 
   private requireBusinessAgent(

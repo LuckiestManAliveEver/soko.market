@@ -3921,6 +3921,11 @@ export class Cp2Store {
   ): ReturnType<AgentRuntimeDomain["purgeExpiredRuntimeExperiences"]> {
     return this.agentRuntimeDomain.purgeExpiredRuntimeExperiences(...args);
   }
+  runtimeReportCard(
+    ...args: Parameters<AgentRuntimeDomain["runtimeReportCard"]>
+  ): ReturnType<AgentRuntimeDomain["runtimeReportCard"]> {
+    return this.agentRuntimeDomain.runtimeReportCard(...args);
+  }
   submitAgentFeedback(
     ...args: Parameters<AgentRuntimeDomain["submitAgentFeedback"]>
   ): ReturnType<AgentRuntimeDomain["submitAgentFeedback"]> {
