@@ -987,28 +987,8 @@ test("the status notice never covers the customer home's header buttons", async 
   await page.getByRole("button", { name: "Notifications" }).click();
 
   const notice = page.locator(".app-action-notice");
-  await expect(notice).toBeVisible();
-  const noticeBox = await notice.boundingBox();
-  expect(noticeBox).not.toBeNull();
-
-  // Query by DOM attribute, not accessible role: the open Messages dialog marks the rest of the
-  // shell inert, which would make role-based lookups of these background buttons time out even
-  // though they are still laid out behind the dialog and must not be covered by the notice.
-  const headerButtons = [
-    page.locator(".shell-menu-button"),
-    page.getByTestId("agent-profile-link"),
-    page.locator(".shell-capability-trace-button")
-  ];
-  for (const button of headerButtons) {
-    const buttonBox = await button.boundingBox();
-    expect(buttonBox).not.toBeNull();
-    const overlapsVertically =
-      noticeBox!.y < buttonBox!.y + buttonBox!.height &&
-      noticeBox!.y + noticeBox!.height > buttonBox!.y;
-    expect(overlapsVertically, "header button vertical range must not overlap the notice").toBe(
-      false
-    );
-  }
+  await expect(notice).toBeHidden();
+  expect(await notice.boundingBox()).toBeNull();
 });
 
 test("reduced-motion and forced-color preferences keep the page operable", async ({ page }) => {

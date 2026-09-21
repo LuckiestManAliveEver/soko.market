@@ -19,7 +19,9 @@ describe("search engine metadata", () => {
     expect(html).toContain('<meta property="og:url" content="https://soko.market/" />');
     expect(html).toContain(`<meta property="og:title" content="${tagline}" />`);
     expect(html).toContain(`<meta property="og:description" content="${tagline}" />`);
-    expect(html).toContain('<meta property="og:image" content="https://soko.market/icons/soko-icon-512.png" />');
+    expect(html).toContain(
+      '<meta property="og:image" content="https://soko.market/icons/soko-icon-512.png" />'
+    );
     expect(html).toContain('<meta name="twitter:card" content="summary" />');
     expect(html).toContain(`<meta name="twitter:title" content="${tagline}" />`);
     expect(html).toContain(`<meta name="twitter:description" content="${tagline}" />`);
