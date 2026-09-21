@@ -85,15 +85,9 @@ button:disabled {
 }
 
 .lazy-module-error {
-  align-content: center;
-  background: #452411;
-  border: 1px solid #5c321e;
-  border-radius: 10px;
-  display: grid;
-  gap: 10px;
-  min-height: 180px;
-  padding: 20px;
-  text-align: center;
+  /* Hidden from the UI per product decision; the component still renders (state, logging,
+     and the retry/reload button handlers all still run) so this is purely a visibility toggle. */
+  display: none;
 }
 
 .lazy-module-error p {
@@ -176,25 +170,9 @@ button:disabled {
 }
 
 .app-action-notice {
-  background: #1e5238;
-  border-radius: 8px;
-  color: #ebebeb;
-  font-size: 13px;
-  font-weight: 800;
-  left: 50%;
-  max-width: min(92vw, 680px);
-  padding: 9px 13px;
-  pointer-events: none;
-  position: fixed;
-  /* Below .top-bar + .shell-mode-bar, whose combined height holds at ~119px across every
-     supported viewport width (280px-1440px+) and at 200% text zoom - measured directly rather
-     than guessed, since this value previously sat at 72px and opaquely covered the Buy/Messages/
-     Sell buttons underneath it whenever a status message (e.g. enabling push notifications)
-     showed. */
-  top: 128px;
-  transform: translateX(-50%);
-  width: max-content;
-  z-index: 60;
+  /* Hidden from the UI per product decision; statusMessage state and every setter still run,
+     so this is purely a visibility toggle, not a removal of the underlying mechanism. */
+  display: none;
 }
 
 .app-action-notice a {
