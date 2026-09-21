@@ -64,6 +64,9 @@ export const normalizedCollections: NormalizedCollection[] = [
   { key: "runtimeTaskHeads", tableName: "cp2_runtime_task_heads" },
   { key: "runtimeTaskInstances", tableName: "cp2_runtime_task_instances" },
   { key: "runtimeOperationDedup", tableName: "cp2_runtime_operation_dedup" },
+  // Durable execution event log (docs/architecture/durable-execution-plane.md). Purely additive
+  // next to the checkpoint/transfer tables above; append-only, no FK ordering constraint on them.
+  { key: "runtimeExecutionEvents", tableName: "cp2_runtime_execution_events" },
   { key: "modelCatalog", tableName: "cp2_model_catalog" },
   { key: "agentCatalog", tableName: "cp2_agent_catalog" },
   { key: "platformOperators", tableName: "cp2_platform_operators" },

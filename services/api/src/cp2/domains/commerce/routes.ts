@@ -35,6 +35,7 @@ import {
   parseRequestBody,
   parseString,
   parseStringArray,
+  readHeader,
   sendCp2Error,
   type BusinessParams
 } from "../../route-helpers.js";
@@ -535,10 +536,12 @@ export function registerCommerceRoutes(
 
   app.post("/buy/checkout", async (request: FastifyRequest<{ Body: BuyCheckoutBody }>, reply) => {
     try {
+      const idempotencyKey = readHeader(request, "idempotency-key");
       return store.createUnifiedCheckout({
         sessionId: readSessionCookie(request.headers.cookie),
         items: parseBuyCheckoutItems(request.body.items),
-        sellerConversationId: parseNullableString(request.body.sellerConversationId ?? null)
+        sellerConversationId: parseNullableString(request.body.sellerConversationId ?? null),
+        ...(idempotencyKey === null ? {} : { idempotencyKey })
       });
     } catch (error) {
       return sendCp2Error(reply, error);

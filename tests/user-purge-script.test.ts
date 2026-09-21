@@ -43,9 +43,13 @@ describe("registered-user purge script", () => {
     // classified DELETE and ordered so cp2_runtime_task_heads/cp2_runtime_task_instances (which
     // reference a handoff) delete before cp2_runtime_handoffs (which they reference), and
     // cp2_runtime_handoffs deletes before the cp2_native_runtime_agents/models/execution_hosts
-    // rows it references.
-    expect(plan.size).toBe(193);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(186);
+    // rows it references. The durable execution plane
+    // (infra/db/migrations/087_runtime_execution_events.sql, docs/architecture/
+    // durable-execution-plane.md) added cp2_runtime_execution_events, classified DELETE: it is a
+    // per-task event log scoped to a purged account/business, same as the other runtime-protocol
+    // tables above.
+    expect(plan.size).toBe(194);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(187);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

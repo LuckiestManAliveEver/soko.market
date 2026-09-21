@@ -12,6 +12,108 @@ import type { ModelRuntimeAdapter } from "../services/api/src/inference/model-ru
 // activation-failure scenarios.
 
 describe("Runtime Handoff Protocol REST surface", () => {
+  // Durable execution event log (docs/architecture/durable-execution-plane.md "Event lifecycle") -
+  // proves the full taxonomy fires end-to-end for a real, conversation-attached, tool-executing
+  // chat turn, not just the RuntimeHandoffDomain-internal lifecycle points exercised in
+  // tests/runtime-handoff-domain-unit.test.ts.
+  it("GET /v1/runtime/:taskId/events records the full execution lifecycle for a real chat turn", async () => {
+    const eventsModelId = "qwen2.5-0.5b-android";
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
+        modelId === eventsModelId && executionTarget === "backend"
+          ? healthyAdapter(eventsModelId)
+          : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700009099", "Events Shop");
+    await activateModel(app, owner, eventsModelId);
+
+    const conversation = await app.inject({
+      method: "POST",
+      url: "/v1/conversations",
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({ kind: "personal", activeShopId: owner.businessId })
+    });
+    expect(conversation.statusCode).toBe(200);
+    const taskId = conversation.json<{ conversation: { id: string } }>().conversation.id;
+
+    await app.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/products`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({ name: "Sugar", unit: "kg", quantity: 4 })
+    });
+
+    const turn = await app.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({ message: "show products", conversationId: taskId })
+    });
+    expect(turn.statusCode, turn.body).toBe(200);
+    expect(turn.json<{ turn: { status: string } }>().turn.status).toBe("completed");
+
+    const events = await app.inject({
+      method: "GET",
+      url: `/v1/runtime/${taskId}/events`,
+      headers: { cookie: owner.cookie }
+    });
+    expect(events.statusCode).toBe(200);
+    const eventList =
+      events.json<
+        Array<{ sequenceNumber: number; eventType: string; taskId: string; payload: unknown }>
+      >();
+    expect(eventList.length).toBeGreaterThan(5);
+    expect(eventList.every((event) => event.taskId === taskId)).toBe(true);
+    for (let i = 1; i < eventList.length; i += 1) {
+      expect(eventList[i]!.sequenceNumber).toBe(eventList[i - 1]!.sequenceNumber + 1);
+    }
+    const types = eventList.map((event) => event.eventType);
+    expect(types).toEqual(
+      expect.arrayContaining([
+        "TASK_CREATED",
+        "EXECUTION_STARTED",
+        "CONTEXT_RESOLVED",
+        "CAPABILITIES_RESOLVED",
+        "AUTHORIZATION_STARTED",
+        "TOOL_REQUESTED",
+        "AUTHORIZATION_COMPLETED",
+        "TOOL_AUTHORIZED",
+        "TOOL_STARTED",
+        "TOOL_COMPLETED",
+        "EXECUTION_COMPLETED",
+        "CHECKPOINT_CREATED"
+      ])
+    );
+    // Ordering sanity: authorization starts before the tool is authorized, which is before it
+    // starts executing, which is before it completes.
+    const indexOf = (type: string) => types.indexOf(type);
+    expect(indexOf("AUTHORIZATION_STARTED")).toBeLessThan(indexOf("TOOL_AUTHORIZED"));
+    expect(indexOf("TOOL_AUTHORIZED")).toBeLessThan(indexOf("TOOL_STARTED"));
+    expect(indexOf("TOOL_STARTED")).toBeLessThan(indexOf("TOOL_COMPLETED"));
+    expect(indexOf("TOOL_COMPLETED")).toBeLessThan(indexOf("EXECUTION_COMPLETED"));
+    // Never exposes secrets/prompts.
+    expect(JSON.stringify(eventList)).not.toContain("show products");
+
+    // Same information, aggregated, via the inspection endpoint.
+    const inspect = await app.inject({
+      method: "GET",
+      url: `/v1/runtime/${taskId}/inspect`,
+      headers: { cookie: owner.cookie }
+    });
+    expect(inspect.statusCode).toBe(200);
+    const inspection = inspect.json<{
+      resumeEligible: boolean;
+      lastSuccessfulEventType: string | null;
+      latestEvents: unknown[];
+    }>();
+    expect(inspection.resumeEligible).toBe(true);
+    expect(inspection.lastSuccessfulEventType).not.toBeNull();
+    expect(inspection.latestEvents.length).toBeGreaterThan(0);
+
+    await app.close();
+  });
+
   it("bootstraps a legacy task on first GET, then checkpoints, swaps the model, resumes, and rolls back - all through HTTP", async () => {
     const primaryModelId = "qwen2.5-0.5b-android";
     const replacementModelId = "qwen2.5-1.5b-android";

@@ -1738,6 +1738,13 @@ export interface UnifiedCheckoutSummary {
   handoffs: UnifiedCheckoutHandoffSummary[];
   failures: UnifiedCheckoutFailureSummary[];
   createdAt: string;
+  /** Durable idempotency key (durable-execution-plane.md "Idempotency"), scoped to `buyerAccountId`
+   *  by `CommerceDomain.createUnifiedCheckout`. Null for a checkout created without one (e.g. the
+   *  direct storefront "Buy" UI, which has its own client-side double-submit guard). A confirmed
+   *  runtime action's stable `action.id` is used as this key when checkout is reached through the
+   *  `commerce.checkout` capability, so a resumed/retried task never creates a second order for the
+   *  same confirmed action. */
+  idempotencyKey?: string | null;
 }
 
 export interface BuyCheckoutItemInput {

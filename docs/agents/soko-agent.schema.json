@@ -123,6 +123,30 @@
         "filesystem": { "enum": ["none", "sandboxed"] }
       }
     },
+    "runtime": {
+      "description": "Durable-execution requirements (docs/architecture/durable-execution-plane.md). A declaration of requirements, not credentials or infrastructure ownership - the runtime resolver decides how they are fulfilled. Optional and additive: an artifact without this property behaves exactly as it did before this property existed.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resumable": {
+          "description": "Whether this agent's tasks may be checkpointed and resumed by a different runtime binding after a suspend/handoff.",
+          "type": "boolean"
+        },
+        "portable": {
+          "description": "Whether this agent's execution may be handed off to a different execution host (see RuntimeHandoff).",
+          "type": "boolean"
+        }
+      }
+    },
+    "context": {
+      "description": "Which context-assembly recipe (docs/architecture/context-semantic-runtime.md) this agent expects the runtime to use. Optional; omitting it means the platform default recipe.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recipe"],
+      "properties": {
+        "recipe": { "type": "string", "minLength": 1, "maxLength": 160 }
+      }
+    },
     "metadata": { "type": "object" }
   },
   "$defs": {

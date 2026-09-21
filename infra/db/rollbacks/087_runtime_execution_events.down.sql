@@ -1,0 +1,3 @@
+drop trigger if exists cp2_runtime_execution_events_immutable_guard on cp2_runtime_execution_events;
+drop function if exists cp2_runtime_execution_events_immutable_guard();
+drop table if exists cp2_runtime_execution_events;

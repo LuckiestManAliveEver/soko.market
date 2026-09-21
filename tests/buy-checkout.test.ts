@@ -207,6 +207,87 @@ describe("unified buy feed and checkout", () => {
 
     await app.close();
   });
+
+  // Side-effect test (docs/architecture/durable-execution-plane.md "Idempotency"): an
+  // order-creating checkout that presents the same idempotency key twice - the scenario a resumed
+  // or retried runtime turn produces (see commerce-capabilities.ts's
+  // `runtime-checkout:${action.id}` key) - must not create a second order.
+  it("does not create a second order when the same idempotency key is presented twice", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const seller = await createOwnerBusiness(app, "254700000706", "Idempotent Farm");
+    await postJson(
+      app,
+      `/businesses/${seller.business.id}/products`,
+      { name: "Avocados", unit: "kg", quantity: 15, buyingPrice: 90, sellingPrice: 150 },
+      seller.cookie
+    );
+    const buyer = await createOwnerBusiness(app, "254700000707", "Idempotent Buyer");
+    const feed = await getJson<BuyFeedSummary>(app, "/buy/search?query=", buyer.cookie);
+    const avocado = feed.results.find((r) => r.title === "Avocados")!;
+
+    const body = JSON.stringify({
+      items: [
+        {
+          sourceKind: "catalogue",
+          sourceId: avocado.sourceId,
+          sourceLabel: avocado.sourceLabel,
+          title: "Avocados",
+          quantity: 2,
+          agentId: avocado.agentId,
+          productId: avocado.productId
+        }
+      ]
+    });
+    const headers = { ...jsonHeaders(buyer.cookie), "idempotency-key": "confirmed-action-xyz" };
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/buy/checkout",
+      headers,
+      payload: body
+    });
+    expect(first.statusCode).toBe(200);
+    const firstCheckout = first.json<UnifiedCheckoutSummary>();
+
+    // Simulates the task resuming/retrying after an interruption and re-issuing the exact same
+    // confirmed capability call.
+    const second = await app.inject({
+      method: "POST",
+      url: "/buy/checkout",
+      headers,
+      payload: body
+    });
+    expect(second.statusCode).toBe(200);
+    const secondCheckout = second.json<UnifiedCheckoutSummary>();
+
+    expect(secondCheckout.id).toBe(firstCheckout.id);
+    expect(secondCheckout.handoffs).toEqual(firstCheckout.handoffs);
+
+    // Exactly one order exists for the seller, not two.
+    const sellerFeedCheck = await getJson<BuyFeedSummary>(
+      app,
+      "/buy/search?query=avocado",
+      buyer.cookie
+    );
+    expect(sellerFeedCheck.results[0]?.title).toBe("Avocados");
+    expect(sellerFeedCheck.results[0]?.sourceId).toBe(avocado.sourceId);
+
+    // A different idempotency key for otherwise-identical input legitimately creates a second,
+    // independent order - idempotency must not become an accidental global dedup.
+    const third = await app.inject({
+      method: "POST",
+      url: "/buy/checkout",
+      headers: { ...jsonHeaders(buyer.cookie), "idempotency-key": "confirmed-action-different" },
+      payload: body
+    });
+    expect(third.statusCode).toBe(200);
+    const thirdCheckout = third.json<UnifiedCheckoutSummary>();
+    expect(thirdCheckout.id).not.toBe(firstCheckout.id);
+    expect(thirdCheckout.handoffs[0]?.orderId).not.toBe(firstCheckout.handoffs[0]?.orderId);
+
+    await app.close();
+  });
 });
 
 async function createOwnerBusiness(
