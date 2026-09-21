@@ -1207,7 +1207,8 @@ export class Cp2Store {
       acquireRuntimeTurn: (...args) => this.runtimeHandoffDomain.acquireTurn(...args),
       checkpointRuntimeTurn: (...args) => this.runtimeHandoffDomain.checkpointAfterTurn(...args),
       activeRuntimeCheckpoint: (taskId) => this.runtimeHandoffDomain.activeCheckpoint(taskId),
-      appendRuntimeExecutionEvent: (...args) => this.runtimeHandoffDomain.appendExecutionEvent(...args),
+      appendRuntimeExecutionEvent: (...args) =>
+        this.runtimeHandoffDomain.appendExecutionEvent(...args),
       platformDefaultRuntime: this.options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy,
       listModelCatalog: () => this.listModelCatalog(),
       resolveCatalogModel: (modelId) => this.resolveCatalogModel(modelId),

@@ -59,9 +59,10 @@ describe("Runtime Handoff Protocol REST surface", () => {
       headers: { cookie: owner.cookie }
     });
     expect(events.statusCode).toBe(200);
-    const eventList = events.json<
-      Array<{ sequenceNumber: number; eventType: string; taskId: string; payload: unknown }>
-    >();
+    const eventList =
+      events.json<
+        Array<{ sequenceNumber: number; eventType: string; taskId: string; payload: unknown }>
+      >();
     expect(eventList.length).toBeGreaterThan(5);
     expect(eventList.every((event) => event.taskId === taskId)).toBe(true);
     for (let i = 1; i < eventList.length; i += 1) {

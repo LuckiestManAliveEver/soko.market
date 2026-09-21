@@ -15,21 +15,21 @@ brief asks for, under repository-native names. The single biggest risk in this c
 a second, parallel version of something that already exists — this section exists to make that
 impossible.
 
-| Spec concept                    | Existing Soko implementation                                                                                                                    |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Task                             | `cp2_conversations` (a conversation *is* the unit of runtime execution; `taskId` throughout the handoff protocol is literally the conversation id — see `packages/shared-types/src/runtime-handoff.ts:10-14`) |
-| Agent / Model / Runtime binding  | `cp2_native_runtime_agents`, `cp2_native_runtime_models`, `cp2_native_runtime_bindings`, `cp2_native_runtime_binding_models` (migration `063_native_runtime_bindings.sql`), owned by `NativeRuntimeBindingStore` |
-| Execution host                   | `cp2_native_execution_hosts` (same migration family)                                                                                            |
-| RuntimeHandoff (transfer of execution authority) | `cp2_runtime_transfers` (migration `085_runtime_transfers.sql`) + `RuntimeHandoffDomain.beginTransfer/completeTransfer/failTransfer` — a real state machine (`PENDING → CHECKPOINTING → CHECKPOINTED → TARGET_ACTIVATING → RESTORING → VERIFYING → COMPLETED`, or `FAILED` from any nonterminal state) |
-| Checkpoint (resumable execution snapshot) | `cp2_runtime_handoffs` (migration `083_runtime_handoff_protocol.sql`) — **confusingly named `RuntimeHandoff` in this codebase's own vocabulary**, but semantically the spec's `RuntimeCheckpoint`: immutable, versioned (`schemaVersion`, `checkpointVersion`), contains goal/currentState/completedActions/decisions/rejectedPaths/pendingActions/nextAction/relevantContext (references, not copies)/artifacts/tests/runtime ref. DB-enforced immutable via an `UPDATE` trigger (`cp2_runtime_handoffs_immutable_guard`) |
-| Task head (authoritative current-checkpoint pointer) | `cp2_runtime_task_heads` — one row per task, `activeHandoffId` + `nextCheckpointVersion` monotonic counter, optimistic-concurrency guarded (`expectedHandoffId` on every mutating call) |
-| Runtime instance (per-task executor pointer) | `cp2_runtime_task_instances` — `activeHandoffId`, `status` (`STARTING\|READY\|RUNNING\|DEGRADED\|FAILED\|STOPPED`), used for drift detection (`resolveHandoff().isRuntimeStale`) |
-| Idempotency primitive             | `cp2_runtime_operation_dedup` — generic `(operationType, idempotencyKey)` dedup, used by every mutating `RuntimeHandoffDomain` method via `withIdempotency()` |
-| Capability gateway                | `runtimeToolRegistry` (`packages/tool-core/src/index.ts`) + `Cp2Store.createRuntimeTurn`/`executeRuntimeAction` — one canonical registry, one execution pipeline, every surface (chat, MCP, browser, storefront) converges on it (`docs/architecture/governed-tool-runtime.md`, `capability-first-runtime.md`) |
-| Context runtime                   | `retrieveAgentContext` / `assembleAgentInferenceMessage` (`docs/architecture/context-semantic-runtime.md`) — authorized-before-touched, task-narrowed, model-aware-budgeted, precedence-ordered assembly |
-| `.soko` artifact                  | `docs/agents/soko-agent.schema.json` — already declares `capabilities`, `tools`, `modelRequirements`, `executionRequirements`, `permissions`, `memory` |
-| Single-writer execution           | CP2Store is a single in-memory, synchronously-mutated store (one authoritative API writer by explicit deployment policy — `docs/single-instance-store-ceiling.md`); `RuntimeHandoffDomain.acquireTurn`'s `executingTasks` set gives per-task mutual exclusion between an in-flight turn and a handoff/transfer |
-| Retired Execution Fabric          | `infra/db/migrations/065_retire_execution_fabric.sql` — archives every legacy selection-preference/host/model row into the native runtime graph as `inactive`/`draft`/`unavailable`, then the source tables are dropped. **No parallel execution engine exists in this codebase today; nothing to remove for that reason.** |
+| Spec concept                                         | Existing Soko implementation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Task                                                 | `cp2_conversations` (a conversation _is_ the unit of runtime execution; `taskId` throughout the handoff protocol is literally the conversation id — see `packages/shared-types/src/runtime-handoff.ts:10-14`)                                                                                                                                                                                                                                                                                                              |
+| Agent / Model / Runtime binding                      | `cp2_native_runtime_agents`, `cp2_native_runtime_models`, `cp2_native_runtime_bindings`, `cp2_native_runtime_binding_models` (migration `063_native_runtime_bindings.sql`), owned by `NativeRuntimeBindingStore`                                                                                                                                                                                                                                                                                                           |
+| Execution host                                       | `cp2_native_execution_hosts` (same migration family)                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| RuntimeHandoff (transfer of execution authority)     | `cp2_runtime_transfers` (migration `085_runtime_transfers.sql`) + `RuntimeHandoffDomain.beginTransfer/completeTransfer/failTransfer` — a real state machine (`PENDING → CHECKPOINTING → CHECKPOINTED → TARGET_ACTIVATING → RESTORING → VERIFYING → COMPLETED`, or `FAILED` from any nonterminal state)                                                                                                                                                                                                                     |
+| Checkpoint (resumable execution snapshot)            | `cp2_runtime_handoffs` (migration `083_runtime_handoff_protocol.sql`) — **confusingly named `RuntimeHandoff` in this codebase's own vocabulary**, but semantically the spec's `RuntimeCheckpoint`: immutable, versioned (`schemaVersion`, `checkpointVersion`), contains goal/currentState/completedActions/decisions/rejectedPaths/pendingActions/nextAction/relevantContext (references, not copies)/artifacts/tests/runtime ref. DB-enforced immutable via an `UPDATE` trigger (`cp2_runtime_handoffs_immutable_guard`) |
+| Task head (authoritative current-checkpoint pointer) | `cp2_runtime_task_heads` — one row per task, `activeHandoffId` + `nextCheckpointVersion` monotonic counter, optimistic-concurrency guarded (`expectedHandoffId` on every mutating call)                                                                                                                                                                                                                                                                                                                                    |
+| Runtime instance (per-task executor pointer)         | `cp2_runtime_task_instances` — `activeHandoffId`, `status` (`STARTING\|READY\|RUNNING\|DEGRADED\|FAILED\|STOPPED`), used for drift detection (`resolveHandoff().isRuntimeStale`)                                                                                                                                                                                                                                                                                                                                           |
+| Idempotency primitive                                | `cp2_runtime_operation_dedup` — generic `(operationType, idempotencyKey)` dedup, used by every mutating `RuntimeHandoffDomain` method via `withIdempotency()`                                                                                                                                                                                                                                                                                                                                                              |
+| Capability gateway                                   | `runtimeToolRegistry` (`packages/tool-core/src/index.ts`) + `Cp2Store.createRuntimeTurn`/`executeRuntimeAction` — one canonical registry, one execution pipeline, every surface (chat, MCP, browser, storefront) converges on it (`docs/architecture/governed-tool-runtime.md`, `capability-first-runtime.md`)                                                                                                                                                                                                             |
+| Context runtime                                      | `retrieveAgentContext` / `assembleAgentInferenceMessage` (`docs/architecture/context-semantic-runtime.md`) — authorized-before-touched, task-narrowed, model-aware-budgeted, precedence-ordered assembly                                                                                                                                                                                                                                                                                                                   |
+| `.soko` artifact                                     | `docs/agents/soko-agent.schema.json` — already declares `capabilities`, `tools`, `modelRequirements`, `executionRequirements`, `permissions`, `memory`                                                                                                                                                                                                                                                                                                                                                                     |
+| Single-writer execution                              | CP2Store is a single in-memory, synchronously-mutated store (one authoritative API writer by explicit deployment policy — `docs/single-instance-store-ceiling.md`); `RuntimeHandoffDomain.acquireTurn`'s `executingTasks` set gives per-task mutual exclusion between an in-flight turn and a handoff/transfer                                                                                                                                                                                                             |
+| Retired Execution Fabric                             | `infra/db/migrations/065_retire_execution_fabric.sql` — archives every legacy selection-preference/host/model row into the native runtime graph as `inactive`/`draft`/`unavailable`, then the source tables are dropped. **No parallel execution engine exists in this codebase today; nothing to remove for that reason.**                                                                                                                                                                                                |
 
 Read in full before this change: `docs/architecture/runtime-handoff-protocol.md`,
 `docs/runtime/runtime-handoff.md`, `docs/architecture/native-agent-model-runtime.md`,
@@ -96,23 +96,23 @@ mature: idempotent swap/rollback/resume/offline-sync/merge, optimistic concurren
 table for cross-host handoffs. **What it does not have**, confirmed by full-file read and repo-wide
 grep, and what this change adds:
 
-- No durable, append-only, fine-grained execution *event log* distinct from the checkpoint chain —
+- No durable, append-only, fine-grained execution _event log_ distinct from the checkpoint chain —
   `recordAuditEvent` calls exist (`runtime.handoff_requested`, `.checkpoint_created`, etc.) but are
   a generic cross-domain audit sink, not a per-task, sequence-numbered, typed event table queryable
   for recovery/diagnosis. Zero hits repo-wide for `task_execution_events`, `execution_events`, or
   `task_events` (SQL, TS, or docs).
 - No explicit numeric fencing token. Safety today comes from (a) single-writer-process synchronous
-  mutation (no interleaving is possible *within* one process — see the class docstring at
+  mutation (no interleaving is possible _within_ one process — see the class docstring at
   `runtime-handoff/store.ts:11-20`) and (b) optimistic concurrency via `expectedHandoffId`/
-  `checkpointVersion` on every *handoff-domain* mutation. **One real, concrete gap**:
+  `checkpointVersion` on every _handoff-domain_ mutation. **One real, concrete gap**:
   `checkpointAfterTurn` (called after literally every ordinary chat turn, `runtime-handoff/store.ts:206`)
   performs **no** staleness check at all before promoting its checkpoint — it unconditionally trusts
   that the task head it read at the start of the (possibly long, `await`-laden) turn is still the
-  right parent. Since `acquireTurn`'s mutual-exclusion lock is held for the *entire* async turn
+  right parent. Since `acquireTurn`'s mutual-exclusion lock is held for the _entire_ async turn
   duration today, this is not currently exploitable by another turn or transfer in the same process
   — but it is exactly the seam a genuinely distributed/local executor (a `LocalHandoffHost`, not yet
-  shipped per `runtime-handoff.md`: *"This checkout does not ship a full LocalHandoffHost executor or
-  installer"*) would need, and it is exactly what the spec's mandatory fencing test requires being
+  shipped per `runtime-handoff.md`: _"This checkout does not ship a full LocalHandoffHost executor or
+  installer"_) would need, and it is exactly what the spec's mandatory fencing test requires being
   able to demonstrate explicitly rather than by argument. This change adds an explicit fence token.
 - No runtime inspection API beyond `GET /v1/runtime/:taskId` (resolve) and `GET /capabilities`. No
   `events`/`inspect`/`cancel` endpoints.
@@ -120,11 +120,11 @@ grep, and what this change adds:
 ## 6. Existing context authorization
 
 `retrieveAgentContext` filters by `status`/`deletedAt`/`accessRules.audiences`/`customerVisible`
-*before* any content is read, narrows by recognized intent, and re-derives caller audience from the
+_before_ any content is read, narrows by recognized intent, and re-derives caller audience from the
 authenticated session's real business-membership role on every call (not cached). This already
 satisfies "never assume authorization valid before suspension remains valid forever" for the
-*ordinary chat* path, since every turn re-resolves context from scratch. The still-open gap is
-narrower than the spec implies: a *resumed* task (post-handoff) re-enters through
+_ordinary chat_ path, since every turn re-resolves context from scratch. The still-open gap is
+narrower than the spec implies: a _resumed_ task (post-handoff) re-enters through
 `resolveHandoff`/`createRuntimeTurn` exactly the same way a fresh turn does — there is no cached,
 unauthorized context object anywhere on a checkpoint (`relevantContext` is references only, per
 `RuntimeContextReference`, never content).
@@ -168,10 +168,9 @@ never real in this codebase, and no new abstraction was invented to match it.
 4. **`commerce.checkout` (the one non-idempotent, order-creating runtime capability reachable from
    chat) has no idempotency key wired through it**, unlike `messaging.send`
    (`capabilities.ts:447`, `idempotencyKey: \`runtime-message:${input.action.id}\``, which
-   `MessagingDomain` already deduplicates on `(conversationId, idempotencyKey)`). Added: an optional
-   `idempotencyKey` on `CommerceDomain.createUnifiedCheckout`, durable (stored on the already-persisted
-   `UnifiedCheckoutSummary` row, no new table), wired from `commerce-capabilities.ts` using the same
-   `action.id`-based key messaging already uses. This directly satisfies the mandatory "side-effect
+`MessagingDomain`already deduplicates on`(conversationId, idempotencyKey)`). Added: an optional
+`idempotencyKey`on`CommerceDomain.createUnifiedCheckout`, durable (stored on the already-persisted
+`UnifiedCheckoutSummary`row, no new table), wired from`commerce-capabilities.ts`using the same`action.id`-based key messaging already uses. This directly satisfies the mandatory "side-effect
    test" (an order must not be created twice because execution resumed).
 5. **`.soko` artifacts cannot declare `runtime.resumable`/`runtime.portable`/`context.recipe`.**
    Added as additive, optional, non-breaking schema properties (schema stays `schemaVersion: "1"`;

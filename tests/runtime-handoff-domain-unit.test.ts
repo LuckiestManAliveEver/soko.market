@@ -1337,7 +1337,7 @@ function buildFakeTurn(overrides: { id: string; toolName?: string }): RuntimeTur
   };
 }
 
-describe("RuntimeHandoffDomain execution fencing (durable-execution-plane.md \"Fencing\")", () => {
+describe('RuntimeHandoffDomain execution fencing (durable-execution-plane.md "Fencing")', () => {
   it("CRITICAL: rejects a checkpoint commit from an execution whose fence token a rebind has superseded", () => {
     // Execution A owns the task, captures its fence token via acquireTurn (mirrors fence=41 in
     // the spec's example scenario), then a handoff (performSwap - a rebind) happens *before*
@@ -1381,9 +1381,7 @@ describe("RuntimeHandoffDomain execution fencing (durable-execution-plane.md \"F
     // A second rebind (resume) mints fence token 2 - Execution C's captured token (1) is now
     // stale.
     harness.domain.resume(sessionId, { taskId: conversationId });
-    expect(
-      harness.domain.taskInstancesMap.get(conversationId)?.fenceToken
-    ).toBe(2);
+    expect(harness.domain.taskInstancesMap.get(conversationId)?.fenceToken).toBe(2);
 
     const beforeRejection = harness.domain.resolveHandoff(sessionId, conversationId).activeHandoff;
     expect(() =>
@@ -1412,9 +1410,14 @@ describe("RuntimeHandoffDomain execution fencing (durable-execution-plane.md \"F
 
     // The rejection itself is durably observable.
     const events = harness.domain.listExecutionEvents(sessionId, conversationId);
-    const rejectionEvents = events.filter((event) => event.eventType === "EXECUTION_FENCE_REJECTED");
+    const rejectionEvents = events.filter(
+      (event) => event.eventType === "EXECUTION_FENCE_REJECTED"
+    );
     expect(rejectionEvents.length).toBeGreaterThan(0);
-    expect(rejectionEvents[0]?.payload).toMatchObject({ expectedFenceToken: 1, currentFenceToken: 2 });
+    expect(rejectionEvents[0]?.payload).toMatchObject({
+      expectedFenceToken: 1,
+      currentFenceToken: 2
+    });
   });
 
   it("accepts a checkpoint commit whose captured fence token still matches the task's current execution", () => {

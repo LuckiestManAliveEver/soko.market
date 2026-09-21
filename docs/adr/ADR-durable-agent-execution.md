@@ -32,7 +32,7 @@ Concretely, this change:
 
 1. Adds `cp2_runtime_execution_events` (migration `087_runtime_execution_events.sql`): an
    append-only, per-task sequence-numbered event log covering the spec's full required taxonomy
-   (`TASK_CREATED` through `EXECUTION_CANCELLED`), emitted from the *existing* instrumentation seams
+   (`TASK_CREATED` through `EXECUTION_CANCELLED`), emitted from the _existing_ instrumentation seams
    (`RuntimeTelemetryEvent` call sites, `RuntimeHandoffDomain`'s audit-event call sites) rather than
    a parallel instrumentation mechanism.
 2. Adds explicit fencing: `RuntimeTaskInstance.fenceToken`/`executionId`, minted on every rebind

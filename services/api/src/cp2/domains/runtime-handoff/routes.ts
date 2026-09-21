@@ -366,7 +366,10 @@ export function registerRuntimeHandoffRoutes(app: FastifyInstance, store: Cp2Sto
     async (request: FastifyRequest<{ Params: TaskParams }>, reply) => {
       try {
         reply.header("cache-control", "no-store");
-        return store.inspectRuntime(readSessionCookie(request.headers.cookie), request.params.taskId);
+        return store.inspectRuntime(
+          readSessionCookie(request.headers.cookie),
+          request.params.taskId
+        );
       } catch (error) {
         return sendCp2Error(reply, error);
       }

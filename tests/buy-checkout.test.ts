@@ -241,13 +241,23 @@ describe("unified buy feed and checkout", () => {
     });
     const headers = { ...jsonHeaders(buyer.cookie), "idempotency-key": "confirmed-action-xyz" };
 
-    const first = await app.inject({ method: "POST", url: "/buy/checkout", headers, payload: body });
+    const first = await app.inject({
+      method: "POST",
+      url: "/buy/checkout",
+      headers,
+      payload: body
+    });
     expect(first.statusCode).toBe(200);
     const firstCheckout = first.json<UnifiedCheckoutSummary>();
 
     // Simulates the task resuming/retrying after an interruption and re-issuing the exact same
     // confirmed capability call.
-    const second = await app.inject({ method: "POST", url: "/buy/checkout", headers, payload: body });
+    const second = await app.inject({
+      method: "POST",
+      url: "/buy/checkout",
+      headers,
+      payload: body
+    });
     expect(second.statusCode).toBe(200);
     const secondCheckout = second.json<UnifiedCheckoutSummary>();
 

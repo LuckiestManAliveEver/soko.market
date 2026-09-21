@@ -239,7 +239,11 @@ function runtimeExecutionEventTypeForTelemetry(
     case "confirmation.required":
       return "EXECUTION_SUSPENDED";
     case "tool.executed":
-      return status === "completed" ? "TOOL_COMPLETED" : status === "blocked" ? "TOOL_DENIED" : "TOOL_FAILED";
+      return status === "completed"
+        ? "TOOL_COMPLETED"
+        : status === "blocked"
+          ? "TOOL_DENIED"
+          : "TOOL_FAILED";
     case "response.generated":
       return status === "completed"
         ? "EXECUTION_COMPLETED"

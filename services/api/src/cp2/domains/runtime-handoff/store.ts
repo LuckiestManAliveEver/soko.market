@@ -823,7 +823,11 @@ export class RuntimeHandoffDomain {
         executionId: op.id,
         runtimeInstanceId: null,
         executionHostId: op.targetHostId,
-        payload: { transferId: op.id, sourceHostId: op.sourceHostId, targetHostId: op.targetHostId },
+        payload: {
+          transferId: op.id,
+          sourceHostId: op.sourceHostId,
+          targetHostId: op.targetHostId
+        },
         now
       });
     }
@@ -2033,7 +2037,8 @@ export class RuntimeHandoffDomain {
       // from any snapshot persisted before this change - default exactly like every other
       // additive-field restore in this codebase (e.g. runtimeTurns' `runtimeVersion` in
       // agent-runtime/store.ts's own restore()).
-      const legacy = record as RuntimeTaskInstance & Partial<{ fenceToken: number; executionId: string }>;
+      const legacy = record as RuntimeTaskInstance &
+        Partial<{ fenceToken: number; executionId: string }>;
       this.taskInstances.set(record.taskId, {
         ...record,
         fenceToken: legacy.fenceToken ?? 0,
@@ -2046,7 +2051,8 @@ export class RuntimeHandoffDomain {
     for (const record of snapshot.runtimeExecutionEvents ?? []) {
       this.executionEvents.set(record.id, record);
       const currentMax = this.eventSequences.get(record.taskId) ?? 0;
-      if (record.sequenceNumber > currentMax) this.eventSequences.set(record.taskId, record.sequenceNumber);
+      if (record.sequenceNumber > currentMax)
+        this.eventSequences.set(record.taskId, record.sequenceNumber);
     }
   }
 

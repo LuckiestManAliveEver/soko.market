@@ -91,20 +91,20 @@ aspiration - see §7 for the exact file/line seams.
   cp2_runtime_operation_dedup (generic idempotency-key store)
 ```
 
-| Table                          | Role                                                    | Added by     |
-| ------------------------------- | -------------------------------------------------------- | ------------ |
-| `cp2_runtime_handoffs`          | Checkpoint (spec's `RuntimeCheckpoint`) - immutable      | migration 083 |
-| `cp2_runtime_task_heads`        | Authoritative current-checkpoint pointer + version counter | migration 083 |
-| `cp2_runtime_task_instances`    | Per-task executor identity: status, `fenceToken`, `executionId` | migration 083 (+fields this change) |
-| `cp2_runtime_transfers`         | Mutable RuntimeHandoff (transfer-of-authority) state machine | migration 085 |
-| `cp2_runtime_operation_dedup`   | Generic `(operationType, idempotencyKey)` dedup           | migration 083 |
-| `cp2_runtime_execution_events`  | Append-only, sequence-numbered execution event log        | migration 087 (this change) |
-| `cp2_native_runtime_*`          | Agent/model/host/binding graph (native runtime bindings)  | migration 063 |
-| `unified_checkouts.idempotencyKey` | Durable dedup for the one order-creating capability   | this change |
+| Table                              | Role                                                            | Added by                            |
+| ---------------------------------- | --------------------------------------------------------------- | ----------------------------------- |
+| `cp2_runtime_handoffs`             | Checkpoint (spec's `RuntimeCheckpoint`) - immutable             | migration 083                       |
+| `cp2_runtime_task_heads`           | Authoritative current-checkpoint pointer + version counter      | migration 083                       |
+| `cp2_runtime_task_instances`       | Per-task executor identity: status, `fenceToken`, `executionId` | migration 083 (+fields this change) |
+| `cp2_runtime_transfers`            | Mutable RuntimeHandoff (transfer-of-authority) state machine    | migration 085                       |
+| `cp2_runtime_operation_dedup`      | Generic `(operationType, idempotencyKey)` dedup                 | migration 083                       |
+| `cp2_runtime_execution_events`     | Append-only, sequence-numbered execution event log              | migration 087 (this change)         |
+| `cp2_native_runtime_*`             | Agent/model/host/binding graph (native runtime bindings)        | migration 063                       |
+| `unified_checkouts.idempotencyKey` | Durable dedup for the one order-creating capability             | this change                         |
 
 Naming note, carried over from the audit: this codebase's `RuntimeHandoff` type is the spec's
-*checkpoint*; this codebase's `cp2_runtime_transfers`/`RuntimeTransfer` is the spec's
-*RuntimeHandoff* (transfer of execution authority). Both concepts exist; only the label differs.
+_checkpoint_; this codebase's `cp2_runtime_transfers`/`RuntimeTransfer` is the spec's
+_RuntimeHandoff_ (transfer of execution authority). Both concepts exist; only the label differs.
 This document uses the repository's own names and calls out the spec's name in parentheses on
 first use per section.
 
@@ -220,7 +220,7 @@ adds a durable event alongside checkpoint creation. A checkpoint (`RuntimeHandof
 
 **The gap this change closes.** Before this change, per-task mutual exclusion
 (`RuntimeHandoffDomain.acquireTurn`'s `executingTasks` set) prevented two turns, or a turn and a
-transfer, from running concurrently *within one process* - but `checkpointAfterTurn` (called after
+transfer, from running concurrently _within one process_ - but `checkpointAfterTurn` (called after
 every ordinary chat turn) performed no staleness check of its own before promoting a checkpoint. See
 `durable-execution-audit.md` §5 for the full gap analysis.
 
@@ -257,8 +257,8 @@ API reachable over REST (`POST /v1/runtime/:taskId/checkpoints`) and MCP. This i
 path a future out-of-process executor (a `LocalHandoffHost`, or any other caller that captured a
 fence token from `GET .../inspect`) would use to report progress; it gets the identical
 stale-execution protection an ordinary chat turn gets, today, even though no such executor ships in
-this checkout yet (`runtime-handoff.md`: *"This checkout does not ship a full LocalHandoffHost
-executor or installer"*). A non-promoting checkpoint (a branch, never becoming canonical) is
+this checkout yet (`runtime-handoff.md`: _"This checkout does not ship a full LocalHandoffHost
+executor or installer"_). A non-promoting checkpoint (a branch, never becoming canonical) is
 unaffected by fencing, matching how it is already unaffected by `expectedHandoffId` - only a
 promotion can overwrite the task's canonical state.
 
@@ -311,18 +311,18 @@ A product-search agent's model can propose `catalogue.query` or `inventory.read`
 `payments.request` or a fabricated `database.rawQuery`, there is no dispatcher case for the latter
 (`runtimeToolRegistry` has no such entry) and `enforceAgentPolicy`/role checks gate the former
 regardless of what the model claims. Possession of a task never implies possession of its
-resources: every capability call re-derives account/business/role from the *authenticated session*,
+resources: every capability call re-derives account/business/role from the _authenticated session_,
 never from anything the model said.
 
 ## 13. Idempotency
 
-| Operation                | Class              | Mechanism                                                                 |
-| ------------------------- | ------------------ | --------------------------------------------------------------------------- |
-| `catalogue.query`, `inventory.read`, etc. | read-only          | No dedup needed - no side effect |
-| `product.create`, `customer.create`, ...  | idempotent-write   | Re-running with the same input either no-ops or produces the same visible state (existing domain invariants, unchanged by this work) |
-| `messaging.send`          | non-idempotent-write | `idempotencyKey: \`runtime-message:${action.id}\`` (pre-existing), deduped by `MessagingDomain` on `(conversationId, idempotencyKey)` |
-| `commerce.checkout` (order creation) | non-idempotent-write | **New in this change**: `idempotencyKey: \`runtime-checkout:${action.id}\`` (`commerce-capabilities.ts`), deduped by `CommerceDomain.createUnifiedCheckout` on `(buyerAccountId, idempotencyKey)`, durable via the already-persisted `UnifiedCheckoutSummary.idempotencyKey` field - no separate cache table |
-| Checkpoint/swap/rollback/resume/offline-sync/merge | control-plane mutation | `RuntimeHandoffDomain.withIdempotency`, `cp2_runtime_operation_dedup` (pre-existing) |
+| Operation                                          | Class                  | Mechanism                                                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalogue.query`, `inventory.read`, etc.          | read-only              | No dedup needed - no side effect                                                                                                                                                                                                                                                                           |
+| `product.create`, `customer.create`, ...           | idempotent-write       | Re-running with the same input either no-ops or produces the same visible state (existing domain invariants, unchanged by this work)                                                                                                                                                                       |
+| `messaging.send`                                   | non-idempotent-write   | `idempotencyKey: \`runtime-message:${action.id}\``(pre-existing), deduped by`MessagingDomain`on`(conversationId, idempotencyKey)`                                                                                                                                                                          |
+| `commerce.checkout` (order creation)               | non-idempotent-write   | **New in this change**: `idempotencyKey: \`runtime-checkout:${action.id}\`` (`commerce-capabilities.ts`), deduped by `CommerceDomain.createUnifiedCheckout`on`(buyerAccountId, idempotencyKey)`, durable via the already-persisted `UnifiedCheckoutSummary.idempotencyKey` field - no separate cache table |
+| Checkpoint/swap/rollback/resume/offline-sync/merge | control-plane mutation | `RuntimeHandoffDomain.withIdempotency`, `cp2_runtime_operation_dedup` (pre-existing)                                                                                                                                                                                                                       |
 
 A confirmed action's `action.id` is stable across a retried or resumed turn (it is minted once when
 the plan is created and reused by every subsequent `confirmRuntimeAction` call using the same
@@ -331,15 +331,15 @@ confirmed action never mints a new key.
 
 ## 14. Failure recovery
 
-| Failure                          | Behavior                                                                                     |
-| --------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Model timeout / provider failure  | `runtimeProviderFromAdapter` returns `status: "unavailable" \| "timeout"`; conversation state untouched; next candidate/fallback tried per `native-agent-model-runtime.md` §"Resolution and fallback" |
-| Host timeout during handoff       | Transfer soft deadline (2 minutes) expires it to `FAILED`; source stays canonical (`runtime-handoff.md`) |
-| Process crash mid-turn            | In-memory `executingTasks` lock vanishes with the process; a fresh process has no stale lock. A *local* host's async work completing after a handoff is rejected by fencing (§9) |
-| Tool failure                      | `executeRuntimeCapability` throws; `tool.executed`/`TOOL_FAILED` recorded; action not marked executed, confirmation token retained if the failure is retryable |
-| Duplicate delivery / duplicate resume | Fencing (§9) + idempotency (§13) |
-| Authorization change while suspended | Every turn (including a resumed one) re-derives audience/authorization from the live session and business membership - `context-semantic-runtime.md`'s per-turn re-resolution, unchanged by this work; nothing caches a stale authorization decision on a checkpoint |
-| Stale checkpoint / stale binding  | `requireMatchingHead`/`expectedHandoffId` optimistic concurrency (pre-existing) + fencing (new) |
+| Failure                               | Behavior                                                                                                                                                                                                                                                             |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model timeout / provider failure      | `runtimeProviderFromAdapter` returns `status: "unavailable" \| "timeout"`; conversation state untouched; next candidate/fallback tried per `native-agent-model-runtime.md` §"Resolution and fallback"                                                                |
+| Host timeout during handoff           | Transfer soft deadline (2 minutes) expires it to `FAILED`; source stays canonical (`runtime-handoff.md`)                                                                                                                                                             |
+| Process crash mid-turn                | In-memory `executingTasks` lock vanishes with the process; a fresh process has no stale lock. A _local_ host's async work completing after a handoff is rejected by fencing (§9)                                                                                     |
+| Tool failure                          | `executeRuntimeCapability` throws; `tool.executed`/`TOOL_FAILED` recorded; action not marked executed, confirmation token retained if the failure is retryable                                                                                                       |
+| Duplicate delivery / duplicate resume | Fencing (§9) + idempotency (§13)                                                                                                                                                                                                                                     |
+| Authorization change while suspended  | Every turn (including a resumed one) re-derives audience/authorization from the live session and business membership - `context-semantic-runtime.md`'s per-turn re-resolution, unchanged by this work; nothing caches a stale authorization decision on a checkpoint |
+| Stale checkpoint / stale binding      | `requireMatchingHead`/`expectedHandoffId` optimistic concurrency (pre-existing) + fencing (new)                                                                                                                                                                      |
 
 ## 15. Observability
 
@@ -354,21 +354,21 @@ a new read surface, not a new metrics pipeline).
 
 ## 16. Runtime inspection API
 
-| Capability             | Route                                    |
-| ----------------------- | ------------------------------------------ |
-| `runtime.inspect(taskId)` | `GET /v1/runtime/:taskId/inspect`        |
-| `runtime.events(taskId)`  | `GET /v1/runtime/:taskId/events`         |
-| `runtime.suspend`        | Implicit - a confirmation-required tool proposal already suspends the turn (`EXECUTION_SUSPENDED`); no separate endpoint needed |
-| `runtime.resume(taskId)`  | `POST /v1/runtime/:taskId/resume` (pre-existing) |
-| `runtime.handoff(taskId, target?)` | `POST /v1/runtime/:taskId/handoffs` (pre-existing) |
-| `runtime.cancel(taskId)`  | `POST /v1/runtime/:taskId/cancel` (new)  |
-| `runtime.retry(taskId)`   | `POST /v1/runtime/:taskId/resume` (same endpoint - a retry *is* a resume of the current checkpoint) |
+| Capability                         | Route                                                                                                                           |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime.inspect(taskId)`          | `GET /v1/runtime/:taskId/inspect`                                                                                               |
+| `runtime.events(taskId)`           | `GET /v1/runtime/:taskId/events`                                                                                                |
+| `runtime.suspend`                  | Implicit - a confirmation-required tool proposal already suspends the turn (`EXECUTION_SUSPENDED`); no separate endpoint needed |
+| `runtime.resume(taskId)`           | `POST /v1/runtime/:taskId/resume` (pre-existing)                                                                                |
+| `runtime.handoff(taskId, target?)` | `POST /v1/runtime/:taskId/handoffs` (pre-existing)                                                                              |
+| `runtime.cancel(taskId)`           | `POST /v1/runtime/:taskId/cancel` (new)                                                                                         |
+| `runtime.retry(taskId)`            | `POST /v1/runtime/:taskId/resume` (same endpoint - a retry _is_ a resume of the current checkpoint)                             |
 
 No secrets are ever returned by any of these.
 
 ## 17. Chat integration
 
-The chat path *is* this architecture, not a second one beside it: `POST
+The chat path _is_ this architecture, not a second one beside it: `POST
 /businesses/:id/runtime/turns` → `Cp2Store.createRuntimeTurn` → `RuntimeHandoffDomain.acquireTurn`
 (fencing/mutual-exclusion) → `AgentRuntimeDomain.executeRuntimeTurn` (binding resolution → context
 resolution → capability resolution → execution, each now emitting durable events) →

@@ -25,13 +25,13 @@ RUNNING                             |
 STOPPED (cancelExecution) ----------+
 ```
 
-| Transition                     | Trigger                                                    |
-| -------------------------------- | ------------------------------------------------------------- |
-| (none) → `READY`                | `performSwap` / `completeTransfer` commit (`setTaskInstanceHandoff`, status `"READY"`) |
-| (none) → `RUNNING`               | `resume` (`setTaskInstanceHandoff`, status `"RUNNING"`)     |
-| any → `STOPPED`                  | `cancelExecution` (idempotent - already-`STOPPED` is a no-op) |
-| any → `READY` / `RUNNING`        | Any subsequent rebind - always mints a **new** `executionId`/`fenceToken`, so this is never a same-execution self-transition |
-| `DEGRADED` / `FAILED`            | Not currently set by any code path in this checkout (reserved for a future health-monitoring integration - the type exists, `resolveHandoff().isRuntimeStale` is the closest current drift signal, computed by comparing `RuntimeTaskInstance.activeHandoffId` against `RuntimeTaskHead.activeHandoffId`, not by transitioning this field) |
+| Transition                | Trigger                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| (none) → `READY`          | `performSwap` / `completeTransfer` commit (`setTaskInstanceHandoff`, status `"READY"`)                                                                                                                                                                                                                                                     |
+| (none) → `RUNNING`        | `resume` (`setTaskInstanceHandoff`, status `"RUNNING"`)                                                                                                                                                                                                                                                                                    |
+| any → `STOPPED`           | `cancelExecution` (idempotent - already-`STOPPED` is a no-op)                                                                                                                                                                                                                                                                              |
+| any → `READY` / `RUNNING` | Any subsequent rebind - always mints a **new** `executionId`/`fenceToken`, so this is never a same-execution self-transition                                                                                                                                                                                                               |
+| `DEGRADED` / `FAILED`     | Not currently set by any code path in this checkout (reserved for a future health-monitoring integration - the type exists, `resolveHandoff().isRuntimeStale` is the closest current drift signal, computed by comparing `RuntimeTaskInstance.activeHandoffId` against `RuntimeTaskHead.activeHandoffId`, not by transitioning this field) |
 
 **Every transition mints a new `fenceToken`/`executionId`** (see
 `durable-execution-plane.md` §9) - this status machine and the fencing mechanism are the same
@@ -73,16 +73,16 @@ Only the exact next state in this fixed sequence is a valid transition (`transit
 `HANDOFF_CONFLICT` on anything else); `FAILED` is reachable from any nonterminal state exactly once.
 `COMPLETED` and `FAILED` are both terminal - no transition leaves either.
 
-| State               | Meaning                                                                 | Durable event (§7 of durable-execution-plane.md) |
-| --------------------- | ---------------------------------------------------------------------- | ------------------------------------------------- |
-| `PENDING`            | Transfer created, ownership/host validated                             | `HANDOFF_STARTED` |
-| `CHECKPOINTING`       | Creating the unpromoted target-bound checkpoint                        | (transitional, no distinct durable event)        |
-| `CHECKPOINTED`        | Checkpoint created; source still canonical                             | `CHECKPOINT_CREATED` |
-| `TARGET_ACTIVATING`   | Target host being validated/prepared                                    | `BINDING_RESOLUTION_STARTED` |
-| `RESTORING`           | Target restoring the exact checkpoint                                   | `EXECUTION_SUSPENDED` (source quiesces while target restores) |
-| `VERIFYING`           | Server readiness probes / receipt validation                            | `BINDING_RESOLVED` |
-| `COMPLETED`           | Binding, head, and instance committed together; source routing changes  | `HANDOFF_COMPLETED` + `RUNTIME_REBOUND`          |
-| `FAILED`              | Any failure; source remains (or reverts to being) canonical             | `HANDOFF_FAILED`                                  |
+| State               | Meaning                                                                | Durable event (§7 of durable-execution-plane.md)              |
+| ------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `PENDING`           | Transfer created, ownership/host validated                             | `HANDOFF_STARTED`                                             |
+| `CHECKPOINTING`     | Creating the unpromoted target-bound checkpoint                        | (transitional, no distinct durable event)                     |
+| `CHECKPOINTED`      | Checkpoint created; source still canonical                             | `CHECKPOINT_CREATED`                                          |
+| `TARGET_ACTIVATING` | Target host being validated/prepared                                   | `BINDING_RESOLUTION_STARTED`                                  |
+| `RESTORING`         | Target restoring the exact checkpoint                                  | `EXECUTION_SUSPENDED` (source quiesces while target restores) |
+| `VERIFYING`         | Server readiness probes / receipt validation                           | `BINDING_RESOLVED`                                            |
+| `COMPLETED`         | Binding, head, and instance committed together; source routing changes | `HANDOFF_COMPLETED` + `RUNTIME_REBOUND`                       |
+| `FAILED`            | Any failure; source remains (or reverts to being) canonical            | `HANDOFF_FAILED`                                              |
 
 Terminal-state idempotency: `completeTransfer`/`failTransfer` called again on an already-terminal
 transfer returns the existing record rather than re-transitioning (`if (op.status === "COMPLETED" ||
@@ -103,7 +103,7 @@ fenceToken presented != task's current fenceToken   -> commit rejected (STALE_EX
 
 ## 4. Checkpoint chain (not a state machine - an immutable, append-only DAG)
 
-Checkpoints (`RuntimeHandoff` rows) never transition; a "state change" is always a *new* row with
+Checkpoints (`RuntimeHandoff` rows) never transition; a "state change" is always a _new_ row with
 `parentHandoffId` pointing at the previous one (or, for a merge, `mergedFromHandoffIds` for
 additional ancestors). The only thing that changes over a task's lifetime is which checkpoint
 `RuntimeTaskHead.activeHandoffId` currently points at - `rollback` moves this pointer backward in
