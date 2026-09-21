@@ -85,14 +85,24 @@ button:disabled {
 }
 
 .lazy-module-error {
-  /* Hidden from the UI per product decision; the component still renders (state, logging,
-     and the retry/reload button handlers all still run) so this is purely a visibility toggle. */
-  display: none;
+  align-content: center;
+  background: #452411;
+  border: 1px solid #5c321e;
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  min-height: 96px;
+  padding: 20px;
+  text-align: center;
 }
 
+/* Message text hidden per product decision; the retry/reload button (the one actionable
+   affordance) stays visible so a chunk-load failure doesn't strand the user with nothing
+   to click. strong/p are removed from the accessibility tree too, so role="alert" no longer
+   announces the message text - only the button's own label is exposed to screen readers. */
+.lazy-module-error strong,
 .lazy-module-error p {
-  color: #cdafa2;
-  margin: 0;
+  display: none;
 }
 
 .lazy-module-error button {
