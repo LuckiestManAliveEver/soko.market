@@ -2,6 +2,7 @@ import { OfflineRuntimeNotice } from "./OfflineRuntimeNotice";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { Surface } from "@soko/ui";
+import { commerceAddressFromSokoId } from "@soko/shared-types";
 import type { E2eeDeviceSummary, SokoSessionContext } from "@soko/shared-types";
 import {
   createInitialChatMessages,
@@ -1607,7 +1608,7 @@ export function OwnerApp() {
                   <strong>Soko</strong>
                   <span>{business.name}</span>
                   <small>{shouldShowAuth ? "Saved workspace loaded" : agentSettings.name}</small>
-                  <small>{business.sokoId}</small>
+                  <small>{commerceAddressFromSokoId(business.sokoId)}</small>
                 </span>
               </button>
             )}

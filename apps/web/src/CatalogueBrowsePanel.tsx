@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import type {
-  ProductSummary,
-  ShareableCatalogueProductSummary,
-  ShareableCatalogueSummary
+import {
+  commerceAddressFromSokoId,
+  type ProductSummary,
+  type ShareableCatalogueProductSummary,
+  type ShareableCatalogueSummary
 } from "@soko/shared-types";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getJson, postJson } from "./api-helpers";
@@ -137,7 +138,7 @@ export default function CatalogueBrowsePanel({
                   }
                 >
                   <strong>{shop.businessName}</strong>
-                  <small>{shop.sokoId}</small>
+                  <small>{commerceAddressFromSokoId(shop.sokoId)}</small>
                   <p>
                     {shop.productCount} catalogue {shop.productCount === 1 ? "item" : "items"}
                   </p>

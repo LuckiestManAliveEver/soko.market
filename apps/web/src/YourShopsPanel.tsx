@@ -1,4 +1,4 @@
-import type { AccountShopSummary } from "@soko/shared-types";
+import { commerceAddressFromSokoId, type AccountShopSummary } from "@soko/shared-types";
 
 import type { ActiveBusiness } from "./soko-application-shared";
 
@@ -21,7 +21,7 @@ export function YourShopsPanel({ shops, business, onSwitchBusiness }: YourShopsP
         {shops.map((shop) => (
           <article className="connected-social-card" role="listitem" key={shop.business.id}>
             <div>
-              <span>{shop.business.sokoId}</span>
+              <span>{commerceAddressFromSokoId(shop.business.sokoId)}</span>
               <strong>{shop.business.name}</strong>
               <p>{shop.membership.role}</p>
             </div>

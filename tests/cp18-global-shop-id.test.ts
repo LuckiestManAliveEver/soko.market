@@ -22,6 +22,7 @@ interface ProductResponse {
 interface PublicStorefrontResponse {
   agentId: string;
   sokoId: string;
+  commerceAddress: string;
   businessName: string;
   presence: {
     status: string;
@@ -89,6 +90,7 @@ describe("CP18 Soko Storefront ID", () => {
     expect(storefront.json<PublicStorefrontResponse>()).toEqual({
       agentId: first.business.sokoId,
       sokoId: first.business.sokoId,
+      commerceAddress: "amina-seller@soko.market",
       businessName: "BigFish soko",
       presence: {
         status: "online",

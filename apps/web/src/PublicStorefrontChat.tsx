@@ -256,7 +256,10 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
 
     appendMessage("customer", "Help me register someone new.");
     setCareRequestType("registration");
-    appendMessage("agent", `Add their contact details or share ${storefront.sokoId} with them.`);
+    appendMessage(
+      "agent",
+      `Add their contact details or share ${storefront.commerceAddress} with them.`
+    );
   }
 
   function addProductToCart(product: PublicStorefrontProductSummary) {
@@ -542,7 +545,7 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
             <div>
               <strong>{storefront.businessName}</strong>
               <span>
-                {storefront.sokoId} · {storefront.presence.status}
+                {storefront.commerceAddress} · {storefront.presence.status}
               </span>
             </div>
             <div className="public-chat-actions">
@@ -594,8 +597,8 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
               <span>Agent</span>
               <p>
                 Karibu to {storefront.businessName}. I can help you browse products and prepare
-                checkout when you are ready. Use {storefront.sokoId} any time you want to return to
-                this shop. Open Catalogue to browse without leaving the conversation.
+                checkout when you are ready. Use {storefront.commerceAddress} any time you want to
+                return to this shop. Open Catalogue to browse without leaving the conversation.
               </p>
             </div>
 

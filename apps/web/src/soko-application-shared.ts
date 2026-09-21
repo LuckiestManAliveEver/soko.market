@@ -357,6 +357,7 @@ export interface PublicStorefrontProductSummary {
 export interface PublicStorefrontSummary {
   agentId: string;
   sokoId: string;
+  commerceAddress: string;
   businessName: string;
   presence: Pick<ShopPresenceSummary, "status" | "updatedAt">;
   products: PublicStorefrontProductSummary[];

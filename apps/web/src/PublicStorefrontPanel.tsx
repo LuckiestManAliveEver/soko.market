@@ -1,6 +1,4 @@
-import { useEffect, useState } from "react";
-import type { CommerceIdentityResolution } from "@soko/shared-types";
-import { getJson } from "./api-helpers";
+import { commerceAddressFromSokoId } from "@soko/shared-types";
 import type { AgentSettings, SupportedLanguage } from "./soko-application-shared";
 
 export interface PublicStorefrontPanelProps {
@@ -22,26 +20,7 @@ export function PublicStorefrontPanel({
   updateAgent,
   copyStorefrontValue
 }: PublicStorefrontPanelProps) {
-  // Falls back to the raw sokoId while the resolver call is in flight (or if it fails), so this
-  // card never regresses to a blank/broken state - see docs/architecture/multiplayer-commerce-audit.md.
-  const [publicId, setPublicId] = useState(business.sokoId);
-
-  useEffect(() => {
-    let cancelled = false;
-    setPublicId(business.sokoId);
-    void getJson<CommerceIdentityResolution>(
-      `/public/commerce-identities/${encodeURIComponent(business.sokoId)}`
-    )
-      .then((resolution) => {
-        if (!cancelled) setPublicId(resolution.identity.commerceAddress);
-      })
-      .catch(() => {
-        // Keep the sokoId fallback already set above.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [business.sokoId]);
+  const publicId = commerceAddressFromSokoId(business.sokoId);
 
   return (
     <div className="record-form">

@@ -1,3 +1,5 @@
+import { commerceAddressFromSokoId } from "@soko/shared-types";
+
 import { type ProductSummary } from "./soko-application-shared";
 
 import { formatMoney } from "./formatters";
@@ -38,7 +40,7 @@ export function StorefrontPreviewCard({
         <span className="storefront-preview-logo">{businessName.slice(0, 1).toUpperCase()}</span>
         <div>
           <h2>{businessName}</h2>
-          <p>{sokoId}</p>
+          <p>{commerceAddressFromSokoId(sokoId)}</p>
         </div>
       </button>
       {products.length === 0 ? (

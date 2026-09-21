@@ -413,6 +413,8 @@ export interface PublicStorefrontProductSummary {
 export interface PublicStorefrontSummary {
   agentId: string;
   sokoId: string;
+  /** The friendlier public-facing "handle@soko.market" address - see commerceAddressFromSokoId. */
+  commerceAddress: string;
   businessName: string;
   presence: PublicShopPresenceSummary;
   products: PublicStorefrontProductSummary[];
@@ -9069,6 +9071,7 @@ export class Cp2Store {
     return {
       agentId: business.sokoId,
       sokoId: business.sokoId,
+      commerceAddress: commerceAddressFromSokoId(business.sokoId),
       businessName: business.name,
       presence: { status: presence.status, updatedAt: presence.updatedAt },
       products: this.salesDomain

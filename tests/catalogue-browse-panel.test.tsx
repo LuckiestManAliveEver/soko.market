@@ -95,6 +95,9 @@ describe("CatalogueBrowsePanel", () => {
 
     expect(getJson).toHaveBeenCalledWith("/businesses/shop-b/catalogue-marketplace/shops");
     expect(host.textContent).toContain("Amina's Fresh Produce");
+    // Displays the friendly public commerce address, not the raw internal sokoId.
+    expect(host.textContent).toContain("shop-a@soko.market");
+    expect(host.textContent).not.toContain("soko.shop-a");
 
     const shopButton = [...host.querySelectorAll("button")].find((button) =>
       button.textContent?.includes("Amina's Fresh Produce")

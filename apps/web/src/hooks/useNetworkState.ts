@@ -1,6 +1,6 @@
 import { useState, type ChangeEvent, type Dispatch, type SetStateAction } from "react";
 
-import type { NetworkInviteSummary } from "@soko/shared-types";
+import { commerceAddressFromSokoId, type NetworkInviteSummary } from "@soko/shared-types";
 
 import { copyTextToClipboard } from "../misc-browser-utils";
 import type { ChatMessage } from "../app-shell";
@@ -247,7 +247,7 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
     const publicStorefrontUrl = createPublicStorefrontUrl(deps.business);
     const shareData = {
       title: `${deps.business.name} on Soko.market`,
-      text: `Open ${deps.business.name} with Soko Shop ID ${deps.business.sokoId}.`,
+      text: `Open ${deps.business.name} with Soko Shop ID ${commerceAddressFromSokoId(deps.business.sokoId)}.`,
       url: publicStorefrontUrl
     };
 

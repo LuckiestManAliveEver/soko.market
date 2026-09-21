@@ -1,6 +1,10 @@
 import { Suspense, useState } from "react";
 
-import type { BuyFeedSummary, BuyResultSummary } from "@soko/shared-types";
+import {
+  commerceAddressFromSokoId,
+  type BuyFeedSummary,
+  type BuyResultSummary
+} from "@soko/shared-types";
 
 import { routes } from "./routes";
 import { StatusResultCard } from "./StatusResultCard";
@@ -178,7 +182,7 @@ export function MarketplaceModeCard({
                 {storefront.presence.status}
               </span>
               <strong>{storefront.businessName}</strong>
-              <small>{storefront.sokoId}</small>
+              <small>{storefront.commerceAddress}</small>
               <p>
                 {storefront.products.length === 0
                   ? "No public catalogue items"
@@ -198,7 +202,8 @@ export function MarketplaceModeCard({
             <span>Your shop</span>
             <h3>{businessName}</h3>
             <p>
-              {sokoId} · {productCount} catalogue {productCount === 1 ? "item" : "items"}
+              {commerceAddressFromSokoId(sokoId)} · {productCount} catalogue{" "}
+              {productCount === 1 ? "item" : "items"}
             </p>
           </button>
           <div className="compact-actions">

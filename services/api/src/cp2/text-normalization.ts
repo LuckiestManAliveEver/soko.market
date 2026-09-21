@@ -8,6 +8,17 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { AccountSummary, SupportedLanguage } from "@soko/shared-types";
 import { Cp2Error } from "./cp2-error.js";
 
+/**
+ * Re-exported (not redefined) from @soko/shared-types so the web app can derive the same
+ * commerce address from a sokoId it already has, without an extra API round trip, and without a
+ * second copy of this logic drifting from this one.
+ */
+export {
+  commerceAddressFromSokoId,
+  normalizeCommerceAddress,
+  sokoIdFromCommerceAddress
+} from "@soko/shared-types";
+
 export function normalizeRequiredBoundedText(
   value: string,
   label: string,
@@ -46,23 +57,6 @@ export function normalizeOptionalBoundedText(
 
 export function normalizeStorefrontLookupId(value: string): string {
   return value.trim().toLowerCase();
-}
-
-export function commerceAddressFromSokoId(sokoId: string): string {
-  const handle = normalizeStorefrontLookupId(sokoId).replace(/^soko\./u, "");
-  return `${handle}@soko.market`;
-}
-
-export function sokoIdFromCommerceAddress(address: string): string {
-  const normalized = address.trim().toLowerCase();
-  const handle = normalized.endsWith("@soko.market")
-    ? normalized.slice(0, -"@soko.market".length)
-    : normalized.replace(/^soko\./u, "");
-  return `soko.${handle}`;
-}
-
-export function normalizeCommerceAddress(address: string): string {
-  return commerceAddressFromSokoId(sokoIdFromCommerceAddress(address));
 }
 
 export function isSokoStorefrontId(value: string): boolean {

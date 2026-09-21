@@ -204,6 +204,19 @@ describe("commerce address resolver", () => {
     });
   });
 
+  it("carries commerceAddress on the public storefront summary itself, single and listed", () => {
+    const store = createCp2Store();
+    const owner = seedOwner(store, 62, "Directory Shop");
+    const address = commerceAddressFromSokoId(owner.business.sokoId);
+
+    const single = store.getPublicStorefront({ agentId: owner.business.sokoId });
+    expect(single.commerceAddress).toBe(address);
+
+    const listed = store.listPublicStorefronts({ search: "Directory Shop" });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]!.commerceAddress).toBe(address);
+  });
+
   it("checks invalid, reserved, and open commerce addresses", () => {
     const store = createCp2Store();
     expect(store.checkCommerceAddressAvailability("bad address@soko.market")).toEqual({

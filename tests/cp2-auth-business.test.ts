@@ -61,6 +61,7 @@ interface ProductResponse {
 interface PublicStorefrontResponse {
   agentId: string;
   sokoId: string;
+  commerceAddress: string;
   businessName: string;
   presence: { status: "online" | "private" | "offline"; updatedAt: string };
   products: Array<{
@@ -845,6 +846,7 @@ describe("CP2 auth and business creation", () => {
     expect(publicResponse.json<PublicStorefrontResponse>()).toEqual({
       agentId: business.business.sokoId,
       sokoId: business.business.sokoId,
+      commerceAddress: "public-shop@soko.market",
       businessName,
       presence: { status: "online", updatedAt: "1970-01-01T00:00:00.000Z" },
       products: [
