@@ -143,7 +143,16 @@ export type RuntimeTaskInstanceStatus =
  *  same task is runtime drift detection (section 5/12). This is the closest Soko has to the
  *  protocol's generic "runtime_instances" concept for a per-task executing process; it is
  *  intentionally a new, narrow table rather than an extension of `cp2_runtime_sessions`, which is
- *  a distinct business/user-scoped agentic-planner concept (see invariant 1.4). */
+ *  a distinct business/user-scoped agentic-planner concept (see invariant 1.4).
+ *
+ *  `fenceToken`/`executionId` (durable-execution-plane.md "Fencing") identify *which* execution
+ *  attempt currently owns this task. Every rebind (`performSwap`, `completeTransfer`, `resume`)
+ *  mints a new `executionId` and strictly increases `fenceToken`. A commit that captured an older
+ *  fence token (e.g. an ordinary chat turn that started before a handoff completed) must be
+ *  rejected rather than silently applied - see `RuntimeHandoffDomain.checkpointAfterTurn`. Both
+ *  fields default to `0`/a synthesized id on restore from a pre-fencing snapshot (see
+ *  `RuntimeHandoffDomain.restore`), matching this codebase's existing `legacy.field ?? default`
+ *  convention for additive record fields. */
 export interface RuntimeTaskInstance {
   taskId: string;
   activeHandoffId: string | null;
@@ -153,6 +162,82 @@ export interface RuntimeTaskInstance {
   executionHostId: string | null;
   lastError: string | null;
   updatedAt: string;
+  fenceToken: number;
+  executionId: string;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Durable execution event log (durable-execution-plane.md "Event lifecycle"). Append-only,
+// sequence-numbered per task; never mutated after insertion. Distinct from RuntimeHandoff
+// (checkpoint) history - this is a fine-grained trace of *what happened*, not a resumable
+// snapshot. See infra/db/migrations/087_runtime_execution_events.sql.
+// ---------------------------------------------------------------------------------------------
+
+export type RuntimeExecutionEventType =
+  | "TASK_CREATED"
+  | "BINDING_RESOLUTION_STARTED"
+  | "BINDING_RESOLVED"
+  | "AUTHORIZATION_STARTED"
+  | "AUTHORIZATION_COMPLETED"
+  | "AUTHORIZATION_DENIED"
+  | "CONTEXT_RESOLUTION_STARTED"
+  | "CONTEXT_RESOLVED"
+  | "CAPABILITIES_RESOLVED"
+  | "EXECUTION_STARTED"
+  | "MODEL_INVOCATION_STARTED"
+  | "MODEL_INVOCATION_COMPLETED"
+  | "MODEL_INVOCATION_FAILED"
+  | "TOOL_REQUESTED"
+  | "TOOL_AUTHORIZED"
+  | "TOOL_DENIED"
+  | "TOOL_STARTED"
+  | "TOOL_COMPLETED"
+  | "TOOL_FAILED"
+  | "CHECKPOINT_CREATED"
+  | "EXECUTION_SUSPENDED"
+  | "EXECUTION_RESUMED"
+  | "HANDOFF_STARTED"
+  | "HANDOFF_COMPLETED"
+  | "HANDOFF_FAILED"
+  | "RUNTIME_REBOUND"
+  | "EXECUTION_COMPLETED"
+  | "EXECUTION_FAILED"
+  | "EXECUTION_CANCELLED"
+  /** Beyond the spec's required list: an explicit, observable record of a fencing rejection - see
+   *  RuntimeTaskInstance's fenceToken doc. Never contains the rejected mutation's content, only
+   *  the fence tokens compared. */
+  | "EXECUTION_FENCE_REJECTED";
+
+/** One row in the durable execution event log. Never contains secrets, raw credentials, auth
+ *  tokens, or customer PII in `payload` - only identifiers, counts, and typed status fields (same
+ *  discipline `RuntimeTelemetryEvent` already applies). */
+export interface RuntimeExecutionEvent {
+  id: string;
+  taskId: string;
+  sequenceNumber: number;
+  /** Opaque per-attempt identifier - either a runtime-turn id or a task-instance `executionId`
+   *  (see RuntimeTaskInstance). Null for task-level events with no single owning attempt. */
+  executionId: string | null;
+  runtimeInstanceId: string | null;
+  executionHostId: string | null;
+  eventType: RuntimeExecutionEventType;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** `runtime.inspect(taskId)` result (durable-execution-plane.md "Runtime inspection API"). Enough
+ *  to diagnose a task without exposing secrets. */
+export interface RuntimeInspection {
+  taskId: string;
+  taskHead: RuntimeTaskHead;
+  activeHandoff: RuntimeHandoff;
+  runtimeInstance: RuntimeTaskInstance | null;
+  isRuntimeStale: boolean;
+  activeTransfer: RuntimeTransfer | null;
+  latestEvents: RuntimeExecutionEvent[];
+  lastSuccessfulEventType: RuntimeExecutionEventType | null;
+  resumeEligible: boolean;
+  resumeBlockedReason: string | null;
 }
 
 /** resolveHandoff()'s return shape - kept analogous to `resolveExecutionChain`/

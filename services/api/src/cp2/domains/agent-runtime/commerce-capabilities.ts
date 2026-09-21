@@ -27,6 +27,12 @@ export function executeCommerceCapability(
     ...(typeof input.action.input.sellerConversationId === "string"
       ? { sellerConversationId: input.action.input.sellerConversationId }
       : {}),
+    // Durable idempotency key (docs/architecture/durable-execution-plane.md "Idempotency"), same
+    // pattern messaging.send already uses (capabilities.ts's `runtime-message:${action.id}`): a
+    // confirmed action's id is stable across a retried/resumed turn, so a duplicate
+    // commerce.checkout call for the same confirmed action reuses the original order instead of
+    // creating a second one.
+    idempotencyKey: `runtime-checkout:${input.action.id}`,
     now: input.now
   });
 }

@@ -98,6 +98,7 @@ import type {
   RuntimePlannedAction,
   RuntimeSessionSummary,
   RuntimeTelemetryEvent,
+  RuntimeExecutionEventType,
   RuntimeToolName,
   RuntimeTurnResult,
   RuntimeTurnSummary,
@@ -196,6 +197,60 @@ import {
   type BusinessAgentProfileSummary,
   type PendingRuntimeAction
 } from "./shared.js";
+/**
+ * Maps this domain's existing, already-instrumented `RuntimeTelemetryEvent` lifecycle states onto
+ * the durable execution event log's taxonomy (docs/architecture/durable-execution-plane.md). This
+ * piggybacks on every `appendTelemetry(...)` call site rather than adding a second, parallel set of
+ * instrumentation calls - the two closures below (`executeRuntimeTurn`'s and
+ * `confirmRuntimeAction`'s) already fire at exactly the lifecycle points this taxonomy needs.
+ * `null` means "no durable event for this telemetry point" (a few `RuntimeTelemetryState` values -
+ * `model.fallback`/`recall.*` - are provider/memory-internal detail the spec's taxonomy has no
+ * corresponding class for; logging them as, say, EXECUTION_STARTED again would be noise, not
+ * signal).
+ */
+function runtimeExecutionEventTypeForTelemetry(
+  state: RuntimeTelemetryEvent["state"],
+  status: RuntimeTelemetryEvent["status"]
+): RuntimeExecutionEventType | null {
+  switch (state) {
+    case "turn.received":
+      return "EXECUTION_STARTED";
+    case "turn.rate_limited":
+    case "turn.blocked":
+      return "EXECUTION_FAILED";
+    case "context.built":
+      return "CONTEXT_RESOLVED";
+    case "agent.started":
+      return "BINDING_RESOLUTION_STARTED";
+    case "agent.completed":
+      return "BINDING_RESOLVED";
+    case "model.inference_started":
+      return "MODEL_INVOCATION_STARTED";
+    case "model.completed":
+      return status === "completed" ? "MODEL_INVOCATION_COMPLETED" : "MODEL_INVOCATION_FAILED";
+    case "intent.routed":
+      return "CAPABILITIES_RESOLVED";
+    case "plan.created":
+      return "TOOL_REQUESTED";
+    case "verification.completed":
+      return status === "blocked" || status === "clarification_required"
+        ? "AUTHORIZATION_DENIED"
+        : "AUTHORIZATION_COMPLETED";
+    case "confirmation.required":
+      return "EXECUTION_SUSPENDED";
+    case "tool.executed":
+      return status === "completed" ? "TOOL_COMPLETED" : status === "blocked" ? "TOOL_DENIED" : "TOOL_FAILED";
+    case "response.generated":
+      return status === "completed"
+        ? "EXECUTION_COMPLETED"
+        : status === "needs_confirmation" || status === "clarifying"
+          ? "EXECUTION_SUSPENDED"
+          : "EXECUTION_FAILED";
+    default:
+      return null;
+  }
+}
+
 export class AgentRuntimeDomain {
   private readonly activeAiModels = new Map<string, ActiveAiModelSummary>();
   private readonly agentProfiles = new Map<string, BusinessAgentProfileSummary>();
@@ -1971,16 +2026,16 @@ export class AgentRuntimeDomain {
       "business:read",
       input.now ?? new Date()
     );
-    const release = input.conversationId
+    const acquired = input.conversationId
       ? this.deps.acquireRuntimeTurn?.(input.conversationId, auth.account.id, input.businessId)
       : undefined;
     try {
       const result = await this.executeRuntimeTurn(input);
       if (input.conversationId)
-        this.deps.checkpointRuntimeTurn?.(input.conversationId, result.turn);
+        this.deps.checkpointRuntimeTurn?.(input.conversationId, result.turn, acquired?.fenceToken);
       return result;
     } finally {
-      release?.();
+      acquired?.release();
     }
   }
 
@@ -2112,6 +2167,21 @@ export class AgentRuntimeDomain {
         status,
         metadata
       });
+      // Durable execution event log (docs/architecture/durable-execution-plane.md). Only for turns
+      // attached to a task (conversation) - a turn with no conversationId never participates in the
+      // Runtime Handoff Protocol either (see the checkpointRuntimeTurn call in createRuntimeTurn).
+      if (input.conversationId === undefined) return;
+      const eventType = runtimeExecutionEventTypeForTelemetry(state, status);
+      if (eventType === null) return;
+      this.deps.appendRuntimeExecutionEvent?.({
+        taskId: input.conversationId,
+        eventType,
+        executionId: turnId,
+        runtimeInstanceId: nativeResolution?.binding.id ?? activeBinding?.binding.id ?? null,
+        executionHostId: nativeResolution?.selected.host?.id ?? null,
+        payload: { toolName, risk },
+        now
+      });
     };
 
     appendTelemetry("turn.received", "completed", null, null, {
@@ -2192,7 +2262,8 @@ export class AgentRuntimeDomain {
         telemetry,
         turnId,
         token: input.confirmationToken,
-        runtimeVersion: shopRuntime.version
+        runtimeVersion: shopRuntime.version,
+        ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId })
       });
     }
 
@@ -2433,6 +2504,17 @@ export class AgentRuntimeDomain {
     // hashtag command's file-not-found/storage-failed surfaces loudly rather than being silently
     // absorbed into a soft chat reply. See tests/workspace-conversation-delivery.test.ts.
     const canExecute = plan.status === "safe_to_execute" && verification.ok;
+    if (canExecute && input.conversationId !== undefined) {
+      this.deps.appendRuntimeExecutionEvent?.({
+        taskId: input.conversationId,
+        eventType: "TOOL_STARTED",
+        executionId: turnId,
+        runtimeInstanceId: nativeResolution?.binding.id ?? activeBinding?.binding.id ?? null,
+        executionHostId: nativeResolution?.selected.host?.id ?? null,
+        payload: { toolName: plan.toolName, actionId: plan.id },
+        now
+      });
+    }
     const toolResult = canExecute
       ? await executeRuntimeCapability(this.deps, {
           sessionId: input.sessionId,
@@ -2521,6 +2603,7 @@ export class AgentRuntimeDomain {
     turnId: string;
     token: string;
     runtimeVersion: number;
+    conversationId?: string;
   }): Promise<RuntimeTurnResult> {
     const pending = this.pendingRuntimeActions.get(input.token);
 
@@ -2577,6 +2660,18 @@ export class AgentRuntimeDomain {
         status,
         metadata
       });
+      if (input.conversationId === undefined) return;
+      const eventType = runtimeExecutionEventTypeForTelemetry(state, status);
+      if (eventType === null) return;
+      this.deps.appendRuntimeExecutionEvent?.({
+        taskId: input.conversationId,
+        eventType,
+        executionId: input.turnId,
+        runtimeInstanceId: null,
+        executionHostId: null,
+        payload: { toolName: action.toolName, risk: action.risk },
+        now: input.now
+      });
     };
 
     appendTelemetry("intent.routed", "completed", {
@@ -2593,6 +2688,17 @@ export class AgentRuntimeDomain {
     let toolResult: unknown = null;
     let executionError: Cp2Error | null = null;
     if (verification.ok) {
+      if (input.conversationId !== undefined) {
+        this.deps.appendRuntimeExecutionEvent?.({
+          taskId: input.conversationId,
+          eventType: "TOOL_STARTED",
+          executionId: input.turnId,
+          runtimeInstanceId: null,
+          executionHostId: null,
+          payload: { toolName: action.toolName, actionId: action.id },
+          now: input.now
+        });
+      }
       try {
         toolResult = await executeRuntimeCapability(this.deps, {
           sessionId: this.requireSessionIdForUser(input.authUserId),

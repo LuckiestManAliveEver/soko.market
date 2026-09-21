@@ -1,4 +1,9 @@
-import type { RuntimeHandoff, RuntimeTurnSummary } from "@soko/shared-types";
+import type {
+  RuntimeHandoff,
+  RuntimeTurnSummary,
+  RuntimeExecutionEvent,
+  RuntimeExecutionEventType
+} from "@soko/shared-types";
 import type {
   ActiveNativeAgentBinding,
   AgentDefinition,
@@ -29,9 +34,30 @@ import type { SessionRecord } from "../../store.js";
 import type { AgentRuntimeCommerceDeps } from "./domain-deps-commerce.js";
 
 export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
-  acquireRuntimeTurn?: (taskId: string, accountId: string, businessId: string) => () => void;
-  checkpointRuntimeTurn?: (taskId: string, turn: RuntimeTurnSummary) => void;
+  acquireRuntimeTurn?: (
+    taskId: string,
+    accountId: string,
+    businessId: string
+  ) => { release: () => void; fenceToken: number | null };
+  checkpointRuntimeTurn?: (
+    taskId: string,
+    turn: RuntimeTurnSummary,
+    expectedFenceToken?: number | null
+  ) => void;
   activeRuntimeCheckpoint?: (taskId: string) => RuntimeHandoff | undefined;
+  /** Durable execution event log (docs/architecture/durable-execution-plane.md). Optional so every
+   *  existing test double for `AgentRuntimeDomainDeps` keeps compiling unchanged - a turn simply
+   *  produces no durable event trail when omitted, exactly like `checkpointRuntimeTurn` already
+   *  degrades to "no checkpoint" when absent. */
+  appendRuntimeExecutionEvent?: (input: {
+    taskId: string;
+    eventType: RuntimeExecutionEventType;
+    executionId: string | null;
+    runtimeInstanceId: string | null;
+    executionHostId: string | null;
+    payload: Record<string, unknown>;
+    now: Date;
+  }) => RuntimeExecutionEvent;
   platformDefaultRuntime: PlatformDefaultRuntimePolicy;
   // DB-hosted model catalog (see infra/db/migrations/071_platform_catalog.sql,
   // Cp2Store.modelCatalog) - the source of truth every aiModelRegistry.find()/.filter() call in
@@ -72,6 +98,7 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
     sessionId: string | null;
     items: BuyCheckoutItemInput[];
     sellerConversationId?: string | null;
+    idempotencyKey?: string;
     now?: Date;
   }) => UnifiedCheckoutSummary;
   sessions: Map<string, SessionRecord>;

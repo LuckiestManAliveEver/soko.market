@@ -3,7 +3,11 @@ import type {
   AccountSummary,
   AiModelSummary,
   ConversationSummary,
+  RuntimeContextSummary,
   RuntimeOfflineCheckpointInput,
+  RuntimePlannedAction,
+  RuntimeTurnSummary,
+  RuntimeVerificationResult,
   UserSummary
 } from "../packages/shared-types/src";
 import { Cp2Error } from "../services/api/src/cp2/cp2-error";
@@ -1273,9 +1277,9 @@ describe("acknowledged hosted/local transfers", () => {
   it("excludes executing turns, head writes during transfer, and hosted execution after local commit", () => {
     const f = setup();
     f.heartbeat();
-    const release = f.h.domain.acquireTurn(f.owner.conversationId, f.owner.accountId, "shop");
+    const acquired = f.h.domain.acquireTurn(f.owner.conversationId, f.owner.accountId, "shop");
     expect(() => f.begin()).toThrow("current turn is still executing");
-    release();
+    acquired.release();
     const op = f.begin();
     expect(() => f.h.domain.acquireTurn(f.owner.conversationId, f.owner.accountId, "shop")).toThrow(
       "turn or handoff"
@@ -1291,5 +1295,228 @@ describe("acknowledged hosted/local transfers", () => {
     expect(() => f.h.domain.acquireTurn(f.owner.conversationId, f.owner.accountId, "shop")).toThrow(
       "local runtime"
     );
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Durable execution event log + fencing (docs/architecture/durable-execution-plane.md).
+// ---------------------------------------------------------------------------------------------
+
+/** Minimal fake turn: `checkpointAfterTurn` only reads `id`, `status`, and a few `plan` fields -
+ *  the rest is present only to satisfy the type. */
+function buildFakeTurn(overrides: { id: string; toolName?: string }): RuntimeTurnSummary {
+  return {
+    id: overrides.id,
+    sessionId: "session",
+    businessId: "shop",
+    actorId: "actor",
+    message: "test",
+    normalizedInput: "test",
+    parserIntent: "unknown",
+    parserConfidence: 1,
+    status: "completed",
+    context: {} as RuntimeContextSummary,
+    plan: {
+      id: `${overrides.id}-plan`,
+      toolName: (overrides.toolName ?? "unknown.clarify") as RuntimePlannedAction["toolName"],
+      risk: "low",
+      requiresConfirmation: false,
+      status: "safe_to_execute",
+      input: {},
+      validationErrors: [],
+      confirmationToken: null,
+      executedAt: null
+    },
+    verification: {} as RuntimeVerificationResult,
+    model: null,
+    response: "ok",
+    toolResult: null,
+    telemetry: [],
+    runtimeVersion: 1,
+    createdAt: new Date().toISOString()
+  };
+}
+
+describe("RuntimeHandoffDomain execution fencing (durable-execution-plane.md \"Fencing\")", () => {
+  it("CRITICAL: rejects a checkpoint commit from an execution whose fence token a rebind has superseded", () => {
+    // Execution A owns the task, captures its fence token via acquireTurn (mirrors fence=41 in
+    // the spec's example scenario), then a handoff (performSwap - a rebind) happens *before*
+    // Execution A's own checkpoint write lands (mirrors fence=42 for Execution B). Execution A's
+    // late checkpoint attempt must be rejected, and the swap's own checkpoint must remain the
+    // task's canonical state - not overwritten by the stale turn.
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "fence-model-a");
+    const sessionId = harness.sessionIdFor(accountId);
+    harness.native.activateGlobalDefaultModel({
+      model: buildModel("fence-model-a-replacement"),
+      executionTarget: "backend",
+      checkedAt: new Date().toISOString(),
+      updatedBy: "system"
+    });
+
+    // Execution A acquires the task (no rebind has happened yet, so fenceToken is null - fencing
+    // has nothing to compare against until the first rebind, exactly as documented on
+    // RuntimeTaskInstance.fenceToken).
+    const executionA = harness.domain.acquireTurn(conversationId, accountId, "shop");
+    expect(executionA.fenceToken).toBeNull();
+    executionA.release();
+
+    // The first rebind mints fence token 1 for this task.
+    const before = harness.domain.resolveHandoff(sessionId, conversationId);
+    const swap = harness.domain.performSwap(sessionId, {
+      taskId: conversationId,
+      dimension: "model",
+      targetId: "fence-model-a-replacement",
+      expectedHandoffId: before.activeHandoff.id
+    });
+    expect(swap.runtimeInstance.fenceToken).toBe(1);
+
+    // Execution B (this handoff) now owns the task at fence 1. A second execution (C) acquires
+    // the task after the rebind, correctly capturing that fence token - mirroring the spec's
+    // "Execution #42 receives fence 42" step.
+    const executionC = harness.domain.acquireTurn(conversationId, accountId, "shop");
+    expect(executionC.fenceToken).toBe(1);
+    executionC.release();
+
+    // A second rebind (resume) mints fence token 2 - Execution C's captured token (1) is now
+    // stale.
+    harness.domain.resume(sessionId, { taskId: conversationId });
+    expect(
+      harness.domain.taskInstancesMap.get(conversationId)?.fenceToken
+    ).toBe(2);
+
+    const beforeRejection = harness.domain.resolveHandoff(sessionId, conversationId).activeHandoff;
+    expect(() =>
+      harness.domain.checkpointAfterTurn(
+        conversationId,
+        buildFakeTurn({ id: "execution-c-late-commit" }),
+        1 // Execution C's stale, superseded fence token.
+      )
+    ).toThrow(Cp2Error);
+    try {
+      harness.domain.checkpointAfterTurn(
+        conversationId,
+        buildFakeTurn({ id: "execution-c-late-commit-2" }),
+        1
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(Cp2Error);
+      expect((error as Cp2Error).statusCode).toBe(409);
+      expect((error as Cp2Error).code).toBe("STALE_EXECUTION_FENCE");
+    }
+
+    // The rejected mutation never landed: the task head still points at the same checkpoint it
+    // did immediately before the rejected commit attempt.
+    const after = harness.domain.resolveHandoff(sessionId, conversationId);
+    expect(after.taskHead.activeHandoffId).toBe(beforeRejection.id);
+
+    // The rejection itself is durably observable.
+    const events = harness.domain.listExecutionEvents(sessionId, conversationId);
+    const rejectionEvents = events.filter((event) => event.eventType === "EXECUTION_FENCE_REJECTED");
+    expect(rejectionEvents.length).toBeGreaterThan(0);
+    expect(rejectionEvents[0]?.payload).toMatchObject({ expectedFenceToken: 1, currentFenceToken: 2 });
+  });
+
+  it("accepts a checkpoint commit whose captured fence token still matches the task's current execution", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "fence-model-b");
+    const sessionId = harness.sessionIdFor(accountId);
+    harness.domain.resume(sessionId, { taskId: conversationId });
+    const acquired = harness.domain.acquireTurn(conversationId, accountId, "shop");
+    acquired.release();
+    expect(() =>
+      harness.domain.checkpointAfterTurn(
+        conversationId,
+        buildFakeTurn({ id: "fresh-turn" }),
+        acquired.fenceToken
+      )
+    ).not.toThrow();
+    const after = harness.domain.resolveHandoff(sessionId, conversationId);
+    expect(after.activeHandoff.currentState).toContain("fresh-turn");
+  });
+
+  it("duplicate resume: the later resume wins and mints a fresh fence, superseding the earlier one", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "fence-model-c");
+    const sessionId = harness.sessionIdFor(accountId);
+    const first = harness.domain.resume(sessionId, { taskId: conversationId });
+    const second = harness.domain.resume(sessionId, { taskId: conversationId });
+    expect(second.runtimeInstance.fenceToken).toBeGreaterThan(first.runtimeInstance.fenceToken);
+    expect(second.runtimeInstance.executionId).not.toBe(first.runtimeInstance.executionId);
+    // The first resume's fence token can no longer commit.
+    expect(() =>
+      harness.domain.checkpointAfterTurn(
+        conversationId,
+        buildFakeTurn({ id: "first-resume-late-commit" }),
+        first.runtimeInstance.fenceToken
+      )
+    ).toThrow("moved on from");
+  });
+
+  it("cancelExecution is idempotent and durably records EXECUTION_CANCELLED", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "fence-model-d");
+    const sessionId = harness.sessionIdFor(accountId);
+    harness.domain.resolveHandoff(sessionId, conversationId);
+    const first = harness.domain.cancelExecution(sessionId, conversationId);
+    expect(first.status).toBe("STOPPED");
+    const second = harness.domain.cancelExecution(sessionId, conversationId);
+    expect(second.executionId).toBe(first.executionId); // no-op on an already-stopped task
+    const events = harness.domain.listExecutionEvents(sessionId, conversationId);
+    expect(events.filter((event) => event.eventType === "EXECUTION_CANCELLED")).toHaveLength(1);
+  });
+
+  it("produces a strictly increasing, per-task event sequence across checkpoint/swap/resume", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "fence-model-e");
+    const sessionId = harness.sessionIdFor(accountId);
+    harness.native.activateGlobalDefaultModel({
+      model: buildModel("fence-model-e-replacement"),
+      executionTarget: "backend",
+      checkedAt: new Date().toISOString(),
+      updatedBy: "system"
+    });
+    const before = harness.domain.resolveHandoff(sessionId, conversationId);
+    harness.domain.createCheckpoint(sessionId, {
+      taskId: conversationId,
+      promote: true,
+      expectedHandoffId: before.activeHandoff.id
+    });
+    const midway = harness.domain.resolveHandoff(sessionId, conversationId);
+    harness.domain.performSwap(sessionId, {
+      taskId: conversationId,
+      dimension: "model",
+      targetId: "fence-model-e-replacement",
+      expectedHandoffId: midway.activeHandoff.id
+    });
+    harness.domain.resume(sessionId, { taskId: conversationId });
+
+    const events = harness.domain.listExecutionEvents(sessionId, conversationId);
+    expect(events.length).toBeGreaterThan(3);
+    for (let i = 1; i < events.length; i += 1) {
+      expect(events[i]!.sequenceNumber).toBe(events[i - 1]!.sequenceNumber + 1);
+    }
+    expect(events.map((event) => event.eventType)).toContain("HANDOFF_STARTED");
+    expect(events.map((event) => event.eventType)).toContain("RUNTIME_REBOUND");
+    expect(events.map((event) => event.eventType)).toContain("HANDOFF_COMPLETED");
+    expect(events.map((event) => event.eventType)).toContain("EXECUTION_RESUMED");
+  });
+
+  it("inspect() reports resume eligibility and the latest event window without exposing secrets", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "fence-model-f");
+    const sessionId = harness.sessionIdFor(accountId);
+    harness.domain.resolveHandoff(sessionId, conversationId);
+    const inspection = harness.domain.inspect(sessionId, conversationId);
+    expect(inspection.resumeEligible).toBe(true);
+    expect(inspection.resumeBlockedReason).toBeNull();
+    expect(inspection.latestEvents.length).toBeGreaterThan(0);
+    expect(JSON.stringify(inspection)).not.toMatch(/password|secret|token.*[a-f0-9]{32}/i);
+
+    const release = harness.domain.acquireTurn(conversationId, accountId, "shop");
+    const busy = harness.domain.inspect(sessionId, conversationId);
+    expect(busy.resumeEligible).toBe(false);
+    expect(busy.resumeBlockedReason).toBe("EXECUTION_IN_PROGRESS");
+    release.release();
   });
 });

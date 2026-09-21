@@ -1002,10 +1002,26 @@ export class CommerceDomain {
     sessionId: string | null;
     items: BuyCheckoutItemInput[];
     sellerConversationId?: string | null;
+    /** Durable idempotency key (docs/architecture/durable-execution-plane.md "Idempotency"),
+     *  scoped to the buyer account. A retry/resume that presents the same key reuses the
+     *  already-created checkout (and its orders) instead of creating a second one - the same
+     *  check-then-write discipline `RuntimeHandoffDomain.withIdempotency` already applies to every
+     *  runtime-handoff mutation, applied here to the one non-idempotent, order-creating capability
+     *  reachable from chat (`commerce.checkout`). Durable because it is stored on the
+     *  already-persisted `UnifiedCheckoutSummary` row, not a separate in-memory-only cache. */
+    idempotencyKey?: string;
     now?: Date;
   }): UnifiedCheckoutSummary {
     const now = input.now ?? new Date();
     const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    if (input.idempotencyKey !== undefined) {
+      const existing = [...this.unifiedCheckouts.values()].find(
+        (checkout) =>
+          checkout.buyerAccountId === session.account.id &&
+          checkout.idempotencyKey === input.idempotencyKey
+      );
+      if (existing !== undefined) return existing;
+    }
     if (input.items.length === 0 || input.items.length > 100) {
       throw new Cp2Error(
         400,
@@ -1200,7 +1216,8 @@ export class CommerceDomain {
       buyerAccountId: session.account.id,
       handoffs,
       failures,
-      createdAt: now.toISOString()
+      createdAt: now.toISOString(),
+      idempotencyKey: input.idempotencyKey ?? null
     };
     this.unifiedCheckouts.set(checkout.id, checkout);
 

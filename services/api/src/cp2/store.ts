@@ -290,7 +290,9 @@ import type {
   RuntimeSwapInput,
   RuntimeSwapResult,
   RuntimeTaskHead,
-  RuntimeTaskInstance
+  RuntimeTaskInstance,
+  RuntimeExecutionEvent,
+  RuntimeInspection
 } from "@soko/shared-types";
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
 import {
@@ -649,6 +651,7 @@ export interface Cp2Snapshot extends ModelTemplatesSnapshot, VocabularySnapshot 
   runtimeTaskHeads?: RuntimeTaskHead[];
   runtimeTaskInstances?: RuntimeTaskInstance[];
   runtimeOperationDedup?: RuntimeOperationDedupRecord[];
+  runtimeExecutionEvents?: RuntimeExecutionEvent[];
   modelCatalog?: AiModelSummary[];
   agentCatalog?: AgentDefinition[];
   platformOperators?: PlatformOperatorGrant[];
@@ -1204,6 +1207,7 @@ export class Cp2Store {
       acquireRuntimeTurn: (...args) => this.runtimeHandoffDomain.acquireTurn(...args),
       checkpointRuntimeTurn: (...args) => this.runtimeHandoffDomain.checkpointAfterTurn(...args),
       activeRuntimeCheckpoint: (taskId) => this.runtimeHandoffDomain.activeCheckpoint(taskId),
+      appendRuntimeExecutionEvent: (...args) => this.runtimeHandoffDomain.appendExecutionEvent(...args),
       platformDefaultRuntime: this.options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy,
       listModelCatalog: () => this.listModelCatalog(),
       resolveCatalogModel: (modelId) => this.resolveCatalogModel(modelId),
@@ -3525,6 +3529,19 @@ export class Cp2Store {
   }
   mergeRuntimeHandoffs(sessionId: string | null, input: RuntimeMergeInput): RuntimeMergeResult {
     return this.runtimeHandoffDomain.mergeCheckpoints(sessionId, input);
+  }
+
+  // Durable execution event log + inspection (docs/architecture/durable-execution-plane.md).
+  listRuntimeExecutionEvents(
+    ...args: Parameters<RuntimeHandoffDomain["listExecutionEvents"]>
+  ): RuntimeExecutionEvent[] {
+    return this.runtimeHandoffDomain.listExecutionEvents(...args);
+  }
+  inspectRuntime(...args: Parameters<RuntimeHandoffDomain["inspect"]>): RuntimeInspection {
+    return this.runtimeHandoffDomain.inspect(...args);
+  }
+  cancelRuntimeExecution(...args: Parameters<RuntimeHandoffDomain["cancelExecution"]>) {
+    return this.runtimeHandoffDomain.cancelExecution(...args);
   }
 
   // MCP wrappers for the Runtime Handoff Protocol (docs/architecture/runtime-handoff-protocol.md
@@ -6862,6 +6879,7 @@ export class Cp2Store {
       runtimeTaskHeads: [...this.runtimeHandoffDomain.taskHeadsMap.values()],
       runtimeTaskInstances: [...this.runtimeHandoffDomain.taskInstancesMap.values()],
       runtimeOperationDedup: [...this.runtimeHandoffDomain.operationDedupMap.values()],
+      runtimeExecutionEvents: [...this.runtimeHandoffDomain.executionEventsMap.values()],
       modelCatalog: [...this.modelCatalog.values()].map(cloneModelCatalogEntry),
       agentCatalog: [...this.agentCatalog.values()].map(cloneAgentCatalogEntry),
       platformOperators: [...this.platformOperators.values()],

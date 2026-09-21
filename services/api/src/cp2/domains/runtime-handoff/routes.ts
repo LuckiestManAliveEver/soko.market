@@ -340,6 +340,54 @@ export function registerRuntimeHandoffRoutes(app: FastifyInstance, store: Cp2Sto
     }
   });
 
+  // Durable execution event log + inspection (docs/architecture/durable-execution-plane.md
+  // "Runtime inspection API"). Never exposes secrets: everything returned is the same information
+  // `resolveRuntimeHandoff`/`getRuntimeCapabilities` already expose piecemeal, assembled into one
+  // diagnostic view.
+  app.get(
+    "/v1/runtime/:taskId/events",
+    async (request: FastifyRequest<{ Params: TaskParams }>, reply) => {
+      try {
+        reply.header("cache-control", "no-store");
+        return store.listRuntimeExecutionEvents(
+          readSessionCookie(request.headers.cookie),
+          request.params.taskId
+        );
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/runtime/:taskId/inspect",
+    async (request: FastifyRequest<{ Params: TaskParams }>, reply) => {
+      try {
+        reply.header("cache-control", "no-store");
+        return store.inspectRuntime(readSessionCookie(request.headers.cookie), request.params.taskId);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  // runtime.cancel(taskId) (spec section 11). Idempotent: cancelling an already-stopped task
+  // returns the current instance rather than erroring. Does not delete checkpoint history - a
+  // cancelled task remains inspectable and, if the caller chooses, resumable via POST .../resume.
+  app.post(
+    "/v1/runtime/:taskId/cancel",
+    async (request: FastifyRequest<{ Params: TaskParams }>, reply) => {
+      try {
+        return store.cancelRuntimeExecution(
+          readSessionCookie(request.headers.cookie),
+          request.params.taskId
+        );
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.get(
     "/v1/runtime/:taskId/handoff",
     async (request: FastifyRequest<{ Params: TaskParams; Querystring: HandoffQuery }>, reply) => {

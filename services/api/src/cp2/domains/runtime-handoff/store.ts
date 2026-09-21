@@ -6,7 +6,10 @@ import type {
   RuntimeHostCapability,
   RuntimeTransfer,
   RuntimeTransferStatus,
-  RuntimeRestoreReceipt
+  RuntimeRestoreReceipt,
+  RuntimeExecutionEvent,
+  RuntimeExecutionEventType,
+  RuntimeInspection
 } from "@soko/shared-types";
 /**
  * Runtime Handoff Protocol domain (see docs/architecture/runtime-handoff-protocol.md).
@@ -64,6 +67,18 @@ export interface RuntimeHandoffSnapshot {
   runtimeTaskHeads?: RuntimeTaskHead[];
   runtimeTaskInstances?: RuntimeTaskInstance[];
   runtimeOperationDedup?: RuntimeOperationDedupRecord[];
+  runtimeExecutionEvents?: RuntimeExecutionEvent[];
+}
+
+/** What `acquireTurn` hands the caller: the release function every prior caller already expected,
+ *  plus the fence token in effect for this task at acquisition time (null if the task has no
+ *  executor identity yet - see RuntimeTaskInstance's fenceToken doc). The caller must present this
+ *  same token back to `checkpointAfterTurn` so a rebind that happens during the turn's execution
+ *  (a handoff completing while a local host is still mid-turn, for example) causes the turn's
+ *  eventual checkpoint write to be rejected instead of silently overwriting newer state. */
+export interface AcquiredRuntimeTurn {
+  release: () => void;
+  fenceToken: number | null;
 }
 
 /** The one resolved-binding shape this domain actually reads (a structural subset of
@@ -162,10 +177,12 @@ export class RuntimeHandoffDomain {
   private readonly taskHeads = new Map<string, RuntimeTaskHead>();
   private readonly taskInstances = new Map<string, RuntimeTaskInstance>();
   private readonly operationDedup = new Map<string, RuntimeOperationDedupRecord>();
+  private readonly executionEvents = new Map<string, RuntimeExecutionEvent>();
+  private readonly eventSequences = new Map<string, number>();
 
   constructor(private readonly deps: RuntimeHandoffDomainDeps) {}
 
-  acquireTurn(taskId: string, accountId: string, businessId: string): () => void {
+  acquireTurn(taskId: string, accountId: string, businessId: string): AcquiredRuntimeTurn {
     const conversation = this.requireConversationRecord(taskId);
     if (
       conversation.accountId !== accountId ||
@@ -198,12 +215,28 @@ export class RuntimeHandoffDomain {
         );
     }
     this.executingTasks.add(taskId);
-    return () => {
-      this.executingTasks.delete(taskId);
+    const fenceToken = this.taskInstances.get(taskId)?.fenceToken ?? null;
+    return {
+      release: () => {
+        this.executingTasks.delete(taskId);
+      },
+      fenceToken
     };
   }
 
-  checkpointAfterTurn(taskId: string, turn: RuntimeTurnSummary, now = new Date()) {
+  /** Fencing (durable-execution-plane.md "Fencing"): `expectedFenceToken` is whatever
+   *  `acquireTurn` returned when this turn started. If the task now has an executor identity whose
+   *  fence token differs (a rebind - `performSwap`/`completeTransfer`/`resume` - completed while
+   *  this turn was executing), the checkpoint write is rejected instead of silently promoted over
+   *  the newer state. A task with no executor identity yet (`expectedFenceToken` and the current
+   *  instance are both absent) has nothing to be stale against, so the check is skipped - fencing
+   *  activates from the first rebind onward, exactly when the risk it guards against begins. */
+  checkpointAfterTurn(
+    taskId: string,
+    turn: RuntimeTurnSummary,
+    expectedFenceToken?: number | null,
+    now = new Date()
+  ) {
     const conversation = this.requireConversationRecord(taskId);
     let head = this.taskHeads.get(taskId);
     if (!head) {
@@ -213,13 +246,40 @@ export class RuntimeHandoffDomain {
         return;
       } // Legacy/non-model turns can exist without a native runtime binding.
     }
+    const currentInstance = this.taskInstances.get(taskId);
+    if (
+      expectedFenceToken !== undefined &&
+      expectedFenceToken !== null &&
+      currentInstance !== undefined &&
+      currentInstance.fenceToken !== expectedFenceToken
+    ) {
+      this.appendExecutionEvent({
+        taskId,
+        eventType: "EXECUTION_FENCE_REJECTED",
+        executionId: null,
+        runtimeInstanceId: null,
+        executionHostId: currentInstance.executionHostId,
+        payload: {
+          runtimeTurnId: turn.id,
+          expectedFenceToken,
+          currentFenceToken: currentInstance.fenceToken
+        },
+        now
+      });
+      throw new Cp2Error(
+        409,
+        "STALE_EXECUTION_FENCE",
+        "This runtime turn started under an execution the task has since moved on from. Its result " +
+          "was not committed."
+      );
+    }
     const source = this.handoffs.get(head.activeHandoffId)!;
     const action = {
       id: turn.plan.id,
       description: turn.plan.toolName,
       metadata: { runtimeTurnId: turn.id }
     };
-    this.allocateAndInsertCheckpoint({
+    const { handoff } = this.allocateAndInsertCheckpoint({
       ...source,
       taskId,
       parentHandoffId: source.id,
@@ -242,6 +302,15 @@ export class RuntimeHandoffDomain {
         ...source.relevantContext,
         { kind: "external", refId: `runtime-turn:${turn.id}` }
       ]
+    });
+    this.appendExecutionEvent({
+      taskId,
+      eventType: "CHECKPOINT_CREATED",
+      executionId: turn.id,
+      runtimeInstanceId: currentInstance?.executionId ?? null,
+      executionHostId: currentInstance?.executionHostId ?? null,
+      payload: { handoffId: handoff.id, runtimeTurnId: turn.id },
+      now
     });
   }
 
@@ -625,7 +694,23 @@ export class RuntimeHandoffDomain {
         updatedAt: now.toISOString()
       });
       this.deps.setConversationRuntimeBinding(taskId, binding.id, now);
-      this.setTaskInstanceHandoff(taskId, checkpoint.id, "READY", checkpoint.runtime, now, null);
+      const rebound = this.setTaskInstanceHandoff(
+        taskId,
+        checkpoint.id,
+        "READY",
+        checkpoint.runtime,
+        now,
+        null
+      );
+      this.appendExecutionEvent({
+        taskId,
+        eventType: "RUNTIME_REBOUND",
+        executionId: rebound.executionId,
+        runtimeInstanceId: rebound.executionId,
+        executionHostId: rebound.executionHostId,
+        payload: { transferId: op.id, fenceToken: rebound.fenceToken },
+        now
+      });
       this.transitionTransfer(op, "COMPLETED", now);
     } catch (error) {
       this.failTransferRecord(
@@ -717,6 +802,20 @@ export class RuntimeHandoffDomain {
     this.transitionTransfer(op, "FAILED", now);
   }
 
+  private static readonly transferAuditEventToExecutionEventType: Record<
+    string,
+    RuntimeExecutionEventType | null
+  > = {
+    "runtime.handoff_requested": "HANDOFF_STARTED",
+    "runtime.checkpoint_started": null,
+    "runtime.checkpoint_created": "CHECKPOINT_CREATED",
+    "runtime.target_activation_started": "BINDING_RESOLUTION_STARTED",
+    "runtime.restore_started": "EXECUTION_SUSPENDED",
+    "runtime.restore_completed": "BINDING_RESOLVED",
+    "runtime.handoff_completed": "HANDOFF_COMPLETED",
+    "runtime.handoff_failed": "HANDOFF_FAILED"
+  };
+
   private transferEvent(op: RuntimeTransfer, type: string, now: Date) {
     this.deps.recordAuditEvent({
       type,
@@ -734,6 +833,18 @@ export class RuntimeHandoffDomain {
         failureCode: op.failureCode
       }
     });
+    const eventType = RuntimeHandoffDomain.transferAuditEventToExecutionEventType[type];
+    if (eventType !== null && eventType !== undefined) {
+      this.appendExecutionEvent({
+        taskId: op.taskId,
+        eventType,
+        executionId: op.id,
+        runtimeInstanceId: null,
+        executionHostId: op.targetHostId,
+        payload: { transferId: op.id, sourceHostId: op.sourceHostId, targetHostId: op.targetHostId },
+        now
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -860,6 +971,15 @@ export class RuntimeHandoffDomain {
           occurredAt: now.toISOString(),
           payload: { handoffId: handoff.id, promoted: promote }
         });
+        this.appendExecutionEvent({
+          taskId: input.taskId,
+          eventType: "CHECKPOINT_CREATED",
+          executionId: resolved.runtimeInstance?.executionId ?? null,
+          runtimeInstanceId: resolved.runtimeInstance?.executionId ?? null,
+          executionHostId: previous.runtime.executionHostId,
+          payload: { handoffId: handoff.id, promoted: promote },
+          now
+        });
         return { handoff, taskHead, promoted: promote };
       }
     );
@@ -885,6 +1005,15 @@ export class RuntimeHandoffDomain {
         const resolved = this.resolveHandoff(sessionId, input.taskId, now);
         const actorId = this.resolveActorId(sessionId, now);
         this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
+        this.appendExecutionEvent({
+          taskId: input.taskId,
+          eventType: "HANDOFF_STARTED",
+          executionId: null,
+          runtimeInstanceId: resolved.runtimeInstance?.executionId ?? null,
+          executionHostId: resolved.activeHandoff.runtime.executionHostId,
+          payload: { dimension: input.dimension, targetId: input.targetId },
+          now
+        });
         const current = resolved.activeHandoff.runtime;
         const candidate: RuntimeRef = {
           agentId: input.dimension === "agent" ? input.targetId : current.agentId,
@@ -897,22 +1026,38 @@ export class RuntimeHandoffDomain {
           accountId: owner.accountId,
           businessId: owner.activeShopId
         });
-        if (input.dimension === "host")
-          throw new Cp2Error(
-            409,
-            "HANDOFF_RESTORE_REQUIRED",
-            "Execution host changes require an acknowledged runtime handoff. Use the handoffs API."
-          );
-        if (this.activeTransfer(input.taskId, now))
-          throw new Cp2Error(
-            409,
-            "HANDOFF_IN_PROGRESS",
-            "A runtime handoff is already in progress."
-          );
-        // Reuses the same agent/model/host compatibility rules turn-time resolution enforces
-        // (section 10) rather than re-implementing them. Throws (leaving the old runtime fully
-        // authoritative - nothing below has run yet) if the candidate chain is not viable.
-        this.deps.nativeRuntimeBindings.validateCandidateExecutionChain(candidate);
+        try {
+          if (input.dimension === "host")
+            throw new Cp2Error(
+              409,
+              "HANDOFF_RESTORE_REQUIRED",
+              "Execution host changes require an acknowledged runtime handoff. Use the handoffs API."
+            );
+          if (this.activeTransfer(input.taskId, now))
+            throw new Cp2Error(
+              409,
+              "HANDOFF_IN_PROGRESS",
+              "A runtime handoff is already in progress."
+            );
+          // Reuses the same agent/model/host compatibility rules turn-time resolution enforces
+          // (section 10) rather than re-implementing them. Throws (leaving the old runtime fully
+          // authoritative - nothing below has run yet) if the candidate chain is not viable.
+          this.deps.nativeRuntimeBindings.validateCandidateExecutionChain(candidate);
+        } catch (error) {
+          this.appendExecutionEvent({
+            taskId: input.taskId,
+            eventType: "HANDOFF_FAILED",
+            executionId: null,
+            runtimeInstanceId: resolved.runtimeInstance?.executionId ?? null,
+            executionHostId: resolved.activeHandoff.runtime.executionHostId,
+            payload: {
+              dimension: input.dimension,
+              failureCode: error instanceof Cp2Error ? error.code : "HANDOFF_FAILED"
+            },
+            now
+          });
+          throw error;
+        }
 
         // ---- Commit (11.2): one small synchronous unit; no I/O, no provider calls ----
         const conversation = this.requireConversationRecord(input.taskId);
@@ -971,6 +1116,24 @@ export class RuntimeHandoffDomain {
             targetId: input.targetId,
             activationFailed
           }
+        });
+        this.appendExecutionEvent({
+          taskId: input.taskId,
+          eventType: "RUNTIME_REBOUND",
+          executionId: runtimeInstance.executionId,
+          runtimeInstanceId: runtimeInstance.executionId,
+          executionHostId: runtimeInstance.executionHostId,
+          payload: { dimension: input.dimension, fenceToken: runtimeInstance.fenceToken },
+          now
+        });
+        this.appendExecutionEvent({
+          taskId: input.taskId,
+          eventType: "HANDOFF_COMPLETED",
+          executionId: runtimeInstance.executionId,
+          runtimeInstanceId: runtimeInstance.executionId,
+          executionHostId: runtimeInstance.executionHostId,
+          payload: { handoffId: handoff.id, dimension: input.dimension },
+          now
         });
 
         return { handoff, taskHead, runtimeInstance, activationFailed, activationError };
@@ -1054,6 +1217,15 @@ export class RuntimeHandoffDomain {
         handoffId: resolved.activeHandoff.id,
         nextAction: resolved.activeHandoff.nextAction
       }
+    });
+    this.appendExecutionEvent({
+      taskId: input.taskId,
+      eventType: "EXECUTION_RESUMED",
+      executionId: runtimeInstance.executionId,
+      runtimeInstanceId: runtimeInstance.executionId,
+      executionHostId: runtimeInstance.executionHostId,
+      payload: { handoffId: resolved.activeHandoff.id, fenceToken: runtimeInstance.fenceToken },
+      now
     });
     return {
       taskHead: resolved.taskHead,
@@ -1345,6 +1517,15 @@ export class RuntimeHandoffDomain {
       occurredAt: now.toISOString(),
       payload: { handoffId: handoff.id }
     });
+    this.appendExecutionEvent({
+      taskId: conversation.id,
+      eventType: "TASK_CREATED",
+      executionId: null,
+      runtimeInstanceId: null,
+      executionHostId: runtime.executionHostId,
+      payload: { handoffId: handoff.id, bootstrapped: true },
+      now
+    });
     return { handoff, taskHead };
   }
 
@@ -1615,6 +1796,11 @@ export class RuntimeHandoffDomain {
     return { handoff, taskHead };
   }
 
+  /** Every call mints a fresh `executionId`/`fenceToken` (durable-execution-plane.md "Fencing") -
+   *  every caller of this method (`performSwap`, `completeTransfer`, `resume`) represents a
+   *  genuine new execution attempt taking ownership of the task, so a previously-issued fence
+   *  token (handed to an earlier `acquireTurn` caller, or to a local host that has not yet
+   *  reported back) becomes stale the moment this runs. */
   private setTaskInstanceHandoff(
     taskId: string,
     activeHandoffId: string,
@@ -1623,6 +1809,7 @@ export class RuntimeHandoffDomain {
     now: Date,
     lastError: string | null
   ): RuntimeTaskInstance {
+    const fenceToken = (this.taskInstances.get(taskId)?.fenceToken ?? 0) + 1;
     const instance: RuntimeTaskInstance = {
       taskId,
       activeHandoffId,
@@ -1631,9 +1818,133 @@ export class RuntimeHandoffDomain {
       modelId: runtime.modelId,
       executionHostId: runtime.executionHostId,
       lastError,
-      updatedAt: now.toISOString()
+      updatedAt: now.toISOString(),
+      fenceToken,
+      executionId: randomUUID()
     };
     this.taskInstances.set(taskId, instance);
+    return instance;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Durable execution event log (durable-execution-plane.md "Event lifecycle"). Append-only;
+  // sequence numbers are allocated synchronously within this single-writer process, exactly like
+  // allocateNextCheckpointVersion allocates checkpoint versions.
+  // ---------------------------------------------------------------------------------------------
+
+  appendExecutionEvent(input: {
+    taskId: string;
+    eventType: RuntimeExecutionEventType;
+    executionId: string | null;
+    runtimeInstanceId: string | null;
+    executionHostId: string | null;
+    payload: Record<string, unknown>;
+    now: Date;
+  }): RuntimeExecutionEvent {
+    const sequenceNumber = (this.eventSequences.get(input.taskId) ?? 0) + 1;
+    this.eventSequences.set(input.taskId, sequenceNumber);
+    const event: RuntimeExecutionEvent = {
+      id: randomUUID(),
+      taskId: input.taskId,
+      sequenceNumber,
+      executionId: input.executionId,
+      runtimeInstanceId: input.runtimeInstanceId,
+      executionHostId: input.executionHostId,
+      eventType: input.eventType,
+      payload: input.payload,
+      createdAt: input.now.toISOString()
+    };
+    this.executionEvents.set(event.id, event);
+    return event;
+  }
+
+  listExecutionEvents(
+    sessionId: string | null,
+    taskId: string,
+    now: Date = new Date()
+  ): RuntimeExecutionEvent[] {
+    this.requireConversation(sessionId, taskId, now);
+    return [...this.executionEvents.values()]
+      .filter((event) => event.taskId === taskId)
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+  }
+
+  /** `runtime.inspect(taskId)` (durable-execution-plane.md "Runtime inspection API"). Never
+   *  exposes secrets: everything returned is already exposed piecemeal by `resolveHandoff` /
+   *  `capabilities` / `listExecutionEvents` today. */
+  inspect(sessionId: string | null, taskId: string, now: Date = new Date()): RuntimeInspection {
+    const resolved = this.resolveHandoff(sessionId, taskId, now);
+    const events = this.listExecutionEvents(sessionId, taskId, now);
+    const activeTransfer = this.activeTransfer(taskId, now);
+    const failureTypes: RuntimeExecutionEventType[] = [
+      "EXECUTION_FAILED",
+      "EXECUTION_FENCE_REJECTED",
+      "HANDOFF_FAILED",
+      "AUTHORIZATION_DENIED"
+    ];
+    const lastSuccessful = [...events]
+      .reverse()
+      .find((event) => !failureTypes.includes(event.eventType));
+    const resumeBlockedReason = activeTransfer
+      ? "HANDOFF_IN_PROGRESS"
+      : this.executingTasks.has(taskId)
+        ? "EXECUTION_IN_PROGRESS"
+        : resolved.runtimeInstance?.status === "STOPPED"
+          ? "RUNTIME_STOPPED"
+          : null;
+    return {
+      taskId,
+      taskHead: resolved.taskHead,
+      activeHandoff: resolved.activeHandoff,
+      runtimeInstance: resolved.runtimeInstance,
+      isRuntimeStale: resolved.isRuntimeStale,
+      activeTransfer,
+      latestEvents: events.slice(-50),
+      lastSuccessfulEventType: lastSuccessful?.eventType ?? null,
+      resumeEligible: resumeBlockedReason === null,
+      resumeBlockedReason
+    };
+  }
+
+  /** `runtime.cancel(taskId)`. Marks the task's executor STOPPED and mints a fresh fence token so
+   *  any execution already in flight for this task cannot later commit a checkpoint (its captured
+   *  fence token is now stale - see `checkpointAfterTurn`). Idempotent: cancelling an
+   *  already-STOPPED task is a no-op that returns the existing instance. Does not touch checkpoint
+   *  history or the task head - a cancelled task can still be inspected and, if the caller
+   *  chooses, resumed later via `resume`. */
+  cancelExecution(
+    sessionId: string | null,
+    taskId: string,
+    now: Date = new Date()
+  ): RuntimeTaskInstance {
+    const resolved = this.resolveHandoff(sessionId, taskId, now);
+    if (resolved.runtimeInstance?.status === "STOPPED") return resolved.runtimeInstance;
+    const actorId = this.resolveActorId(sessionId, now);
+    const instance = this.setTaskInstanceHandoff(
+      taskId,
+      resolved.activeHandoff.id,
+      "STOPPED",
+      resolved.activeHandoff.runtime,
+      now,
+      "Cancelled by request."
+    );
+    this.appendExecutionEvent({
+      taskId,
+      eventType: "EXECUTION_CANCELLED",
+      executionId: instance.executionId,
+      runtimeInstanceId: instance.executionId,
+      executionHostId: instance.executionHostId,
+      payload: {},
+      now
+    });
+    this.deps.recordAuditEvent({
+      type: "runtime_handoff.cancelled",
+      aggregateType: "task",
+      aggregateId: taskId,
+      actorId,
+      occurredAt: now.toISOString(),
+      payload: {}
+    });
     return instance;
   }
 
@@ -1681,6 +1992,8 @@ export class RuntimeHandoffDomain {
     this.taskHeads.clear();
     this.taskInstances.clear();
     this.operationDedup.clear();
+    this.executionEvents.clear();
+    this.eventSequences.clear();
   }
 
   restore(snapshot: RuntimeHandoffSnapshot): void {
@@ -1689,10 +2002,24 @@ export class RuntimeHandoffDomain {
     for (const record of snapshot.runtimeHandoffs ?? []) this.handoffs.set(record.id, record);
     for (const record of snapshot.runtimeTaskHeads ?? []) this.taskHeads.set(record.taskId, record);
     for (const record of snapshot.runtimeTaskInstances ?? []) {
-      this.taskInstances.set(record.taskId, record);
+      // fenceToken/executionId are additive fields (durable-execution-plane.md "Fencing") absent
+      // from any snapshot persisted before this change - default exactly like every other
+      // additive-field restore in this codebase (e.g. runtimeTurns' `runtimeVersion` in
+      // agent-runtime/store.ts's own restore()).
+      const legacy = record as RuntimeTaskInstance & Partial<{ fenceToken: number; executionId: string }>;
+      this.taskInstances.set(record.taskId, {
+        ...record,
+        fenceToken: legacy.fenceToken ?? 0,
+        executionId: legacy.executionId ?? `legacy:${record.taskId}`
+      });
     }
     for (const record of snapshot.runtimeOperationDedup ?? []) {
       this.operationDedup.set(`${record.operationType}:${record.idempotencyKey}`, record);
+    }
+    for (const record of snapshot.runtimeExecutionEvents ?? []) {
+      this.executionEvents.set(record.id, record);
+      const currentMax = this.eventSequences.get(record.taskId) ?? 0;
+      if (record.sequenceNumber > currentMax) this.eventSequences.set(record.taskId, record.sequenceNumber);
     }
   }
 
@@ -1711,5 +2038,8 @@ export class RuntimeHandoffDomain {
   }
   get operationDedupMap(): Map<string, RuntimeOperationDedupRecord> {
     return this.operationDedup;
+  }
+  get executionEventsMap(): Map<string, RuntimeExecutionEvent> {
+    return this.executionEvents;
   }
 }
