@@ -2427,6 +2427,17 @@ export class AgentRuntimeDomain {
           : createRuntimeToolProposalFromProductContextScript(contextScriptMatch!));
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
+    if (input.conversationId !== undefined) {
+      this.deps.appendRuntimeExecutionEvent?.({
+        taskId: input.conversationId,
+        eventType: "AUTHORIZATION_STARTED",
+        executionId: turnId,
+        runtimeInstanceId: nativeResolution?.binding.id ?? activeBinding?.binding.id ?? null,
+        executionHostId: nativeResolution?.selected.host?.id ?? null,
+        payload: { toolName: proposal.toolName },
+        now
+      });
+    }
     const entityReferenceError = findRuntimeUnknownEntityReferenceError(
       this.deps,
       input.businessId,
@@ -2482,6 +2493,21 @@ export class AgentRuntimeDomain {
       ok: verification.ok,
       roleAllowed: verification.roleAllowed
     });
+    // Distinct from AUTHORIZATION_COMPLETED (the authorization *check* finishing, whatever its
+    // outcome - emitted above via the verification.completed mapping): TOOL_AUTHORIZED confirms
+    // this specific tool call is cleared to run, whether it executes immediately or waits for
+    // confirmation first.
+    if (verification.ok && input.conversationId !== undefined) {
+      this.deps.appendRuntimeExecutionEvent?.({
+        taskId: input.conversationId,
+        eventType: "TOOL_AUTHORIZED",
+        executionId: turnId,
+        runtimeInstanceId: nativeResolution?.binding.id ?? activeBinding?.binding.id ?? null,
+        executionHostId: nativeResolution?.selected.host?.id ?? null,
+        payload: { toolName: plan.toolName, actionId: plan.id },
+        now
+      });
+    }
 
     if (confirmationToken !== null) {
       this.pendingRuntimeActions.set(confirmationToken, {
@@ -2637,6 +2663,17 @@ export class AgentRuntimeDomain {
       input.context.role,
       definition.requiredPermission as BusinessPermission
     );
+    if (input.conversationId !== undefined) {
+      this.deps.appendRuntimeExecutionEvent?.({
+        taskId: input.conversationId,
+        eventType: "AUTHORIZATION_STARTED",
+        executionId: input.turnId,
+        runtimeInstanceId: null,
+        executionHostId: null,
+        payload: { toolName: action.toolName },
+        now: input.now
+      });
+    }
     const verification = createRuntimeVerification({
       requiresConfirmation: action.requiresConfirmation,
       confirmationSatisfied: true,
@@ -2684,6 +2721,17 @@ export class AgentRuntimeDomain {
       ok: verification.ok,
       roleAllowed: verification.roleAllowed
     });
+    if (verification.ok && input.conversationId !== undefined) {
+      this.deps.appendRuntimeExecutionEvent?.({
+        taskId: input.conversationId,
+        eventType: "TOOL_AUTHORIZED",
+        executionId: input.turnId,
+        runtimeInstanceId: null,
+        executionHostId: null,
+        payload: { toolName: action.toolName, actionId: action.id },
+        now: input.now
+      });
+    }
 
     let toolResult: unknown = null;
     let executionError: Cp2Error | null = null;

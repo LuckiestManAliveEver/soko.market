@@ -246,26 +246,7 @@ export class RuntimeHandoffDomain {
         return;
       } // Legacy/non-model turns can exist without a native runtime binding.
     }
-    const currentInstance = this.taskInstances.get(taskId);
-    if (
-      expectedFenceToken !== undefined &&
-      expectedFenceToken !== null &&
-      currentInstance !== undefined &&
-      currentInstance.fenceToken !== expectedFenceToken
-    ) {
-      this.appendExecutionEvent({
-        taskId,
-        eventType: "EXECUTION_FENCE_REJECTED",
-        executionId: null,
-        runtimeInstanceId: null,
-        executionHostId: currentInstance.executionHostId,
-        payload: {
-          runtimeTurnId: turn.id,
-          expectedFenceToken,
-          currentFenceToken: currentInstance.fenceToken
-        },
-        now
-      });
+    if (this.verifyFence(taskId, expectedFenceToken, now, { runtimeTurnId: turn.id })) {
       throw new Cp2Error(
         409,
         "STALE_EXECUTION_FENCE",
@@ -303,6 +284,7 @@ export class RuntimeHandoffDomain {
         { kind: "external", refId: `runtime-turn:${turn.id}` }
       ]
     });
+    const currentInstance = this.taskInstances.get(taskId);
     this.appendExecutionEvent({
       taskId,
       eventType: "CHECKPOINT_CREATED",
@@ -939,6 +921,19 @@ export class RuntimeHandoffDomain {
           this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, true);
         } else if (input.expectedHandoffId !== undefined) {
           this.requireMatchingHead(input.expectedHandoffId, resolved.taskHead, false);
+        }
+        if (
+          promote &&
+          this.verifyFence(input.taskId, input.expectedFenceToken, now, {
+            operation: "createCheckpoint"
+          })
+        ) {
+          throw new Cp2Error(
+            409,
+            "STALE_EXECUTION_FENCE",
+            "This checkpoint was created under an execution the task has since moved on from. It " +
+              "was not promoted."
+          );
         }
         const previous = resolved.activeHandoff;
         const { handoff, taskHead } = this.allocateAndInsertCheckpoint({
@@ -1794,6 +1789,38 @@ export class RuntimeHandoffDomain {
       input.now
     );
     return { handoff, taskHead };
+  }
+
+  /** Shared fencing check (durable-execution-plane.md "Fencing"), used by every commit path that
+   *  accepts an optional caller-captured fence token: `checkpointAfterTurn` (an ordinary chat
+   *  turn) and `createCheckpoint` (the general checkpoint API - the same one a future
+   *  `LocalHandoffHost` executor, or any other out-of-process caller that captured a fence token
+   *  via `GET .../inspect`, would use to report progress). Returns `true` (and records
+   *  `EXECUTION_FENCE_REJECTED`) when `expectedFenceToken` is present and no longer matches the
+   *  task's current execution; the caller is responsible for throwing `STALE_EXECUTION_FENCE`
+   *  before committing anything. Returns `false` (nothing recorded) when there is nothing to be
+   *  stale against yet, or the token still matches. */
+  private verifyFence(
+    taskId: string,
+    expectedFenceToken: number | null | undefined,
+    now: Date,
+    payload: Record<string, unknown>
+  ): boolean {
+    if (expectedFenceToken === undefined || expectedFenceToken === null) return false;
+    const currentInstance = this.taskInstances.get(taskId);
+    if (currentInstance === undefined || currentInstance.fenceToken === expectedFenceToken) {
+      return false;
+    }
+    this.appendExecutionEvent({
+      taskId,
+      eventType: "EXECUTION_FENCE_REJECTED",
+      executionId: null,
+      runtimeInstanceId: null,
+      executionHostId: currentInstance.executionHostId,
+      payload: { ...payload, expectedFenceToken, currentFenceToken: currentInstance.fenceToken },
+      now
+    });
+    return true;
   }
 
   /** Every call mints a fresh `executionId`/`fenceToken` (durable-execution-plane.md "Fencing") -

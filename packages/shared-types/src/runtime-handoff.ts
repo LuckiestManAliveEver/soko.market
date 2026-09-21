@@ -270,6 +270,13 @@ export interface RuntimeCheckpointCreateInput {
   promote?: boolean;
   /** Optimistic concurrency guard (section 7): required whenever `promote` is true. */
   expectedHandoffId?: string;
+  /** Execution fencing (durable-execution-plane.md "Fencing"), checked only when `promote` is
+   *  true. The fence token this caller captured (e.g. from `GET .../inspect`) when it started the
+   *  work this checkpoint reports - lets any out-of-process caller (not just an ordinary chat
+   *  turn, which uses the same mechanism internally via `checkpointAfterTurn`) get the same
+   *  stale-execution protection. Omit to skip the check, matching this field's behavior before it
+   *  existed. */
+  expectedFenceToken?: number | null;
   idempotencyKey?: string | null;
 }
 

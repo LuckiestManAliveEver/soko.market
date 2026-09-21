@@ -175,7 +175,7 @@ call sites that already existed):
   `executeRuntimeCapability` call (both the auto-execute and confirmed-action paths), since no
   existing telemetry state distinguished "about to execute" from "executed."
 
-Required event taxonomy (spec section 2), all present:
+Required event taxonomy (spec section 2), all present and all independently emitted:
 
 ```
 TASK_CREATED
@@ -194,11 +194,13 @@ EXECUTION_COMPLETED, EXECUTION_FAILED, EXECUTION_CANCELLED
 ```
 
 Plus one addition: `EXECUTION_FENCE_REJECTED` - an explicit, observable record of a fencing
-rejection (§9), for security review and diagnosis. `AUTHORIZATION_STARTED`/`TOOL_AUTHORIZED` are
-intentionally *not* independently instrumented today (the underlying pipeline resolves proposal and
-authorization together in one pass - `plan.created`/`verification.completed` - rather than as two
-observably-separate steps); the taxonomy accepts these values but the current pipeline does not
-yet emit them as distinct events. This is documented, not silently missing.
+rejection (§9), for security review and diagnosis. `AUTHORIZATION_STARTED` is emitted right before
+policy/role enforcement runs on a proposed tool call; `TOOL_AUTHORIZED` is emitted the moment
+`verification.ok` is true (the tool is cleared to run, whether it executes immediately or waits for
+confirmation first) - both are explicit `appendRuntimeExecutionEvent` calls in
+`executeRuntimeTurn`/`confirmRuntimeAction`, not inferred from `plan.created`/`verification.completed`
+alone, so they are independently observable rather than reconstructed after the fact
+(`tests/runtime-handoff-protocol.test.ts`'s end-to-end event-log test asserts their relative order).
 
 No secrets, credentials, tokens, or raw customer PII are ever written into an event payload - only
 identifiers, counts, and typed status fields, the same discipline `RuntimeTelemetryEvent` already
@@ -247,6 +249,18 @@ Execution C (after the rebind)
 A task with no executor identity yet (fresh conversation, never rebound) has nothing to be stale
 against, so the check is a no-op until the first rebind - fencing activates exactly when the risk it
 guards against begins, not before.
+
+Fencing is not limited to ordinary chat turns. `RuntimeCheckpointCreateInput.expectedFenceToken`
+(optional, checked only when `promote: true`) extends the exact same check - via a shared private
+`RuntimeHandoffDomain.verifyFence` helper - to `createCheckpoint`, the general checkpoint-creation
+API reachable over REST (`POST /v1/runtime/:taskId/checkpoints`) and MCP. This is the concrete write
+path a future out-of-process executor (a `LocalHandoffHost`, or any other caller that captured a
+fence token from `GET .../inspect`) would use to report progress; it gets the identical
+stale-execution protection an ordinary chat turn gets, today, even though no such executor ships in
+this checkout yet (`runtime-handoff.md`: *"This checkout does not ship a full LocalHandoffHost
+executor or installer"*). A non-promoting checkpoint (a branch, never becoming canonical) is
+unaffected by fencing, matching how it is already unaffected by `expectedHandoffId` - only a
+promotion can overwrite the task's canonical state.
 
 This is the same mechanism that makes **duplicate resume** safe: two `resume` calls on the same task
 each mint a new fence token; the second wins, and the first caller's eventual commit attempt (if any)

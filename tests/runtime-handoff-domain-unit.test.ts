@@ -1502,6 +1502,53 @@ describe("RuntimeHandoffDomain execution fencing (durable-execution-plane.md \"F
     expect(events.map((event) => event.eventType)).toContain("EXECUTION_RESUMED");
   });
 
+  it("createCheckpoint (the general checkpoint API, e.g. for a future out-of-process LocalHandoffHost) also honors an expectedFenceToken", () => {
+    const harness = buildHarness();
+    const { conversationId, accountId } = seedConversation(harness, "fence-model-g");
+    const sessionId = harness.sessionIdFor(accountId);
+    const firstResume = harness.domain.resume(sessionId, { taskId: conversationId });
+    const capturedFenceToken = firstResume.runtimeInstance.fenceToken;
+
+    // A concurrent rebind supersedes the captured fence token.
+    harness.domain.resume(sessionId, { taskId: conversationId });
+
+    const beforeAttempt = harness.domain.resolveHandoff(sessionId, conversationId);
+    expect(() =>
+      harness.domain.createCheckpoint(sessionId, {
+        taskId: conversationId,
+        promote: true,
+        expectedHandoffId: beforeAttempt.activeHandoff.id,
+        expectedFenceToken: capturedFenceToken
+      })
+    ).toThrow("moved on from");
+    // Not promoted: the head is unchanged by the rejected attempt.
+    expect(harness.domain.resolveHandoff(sessionId, conversationId).taskHead.activeHandoffId).toBe(
+      beforeAttempt.taskHead.activeHandoffId
+    );
+
+    // A non-promoting checkpoint (a branch, not a commit to the canonical head) is unaffected by
+    // fencing - only a promotion can overwrite the task's canonical state.
+    expect(() =>
+      harness.domain.createCheckpoint(sessionId, {
+        taskId: conversationId,
+        promote: false,
+        expectedFenceToken: capturedFenceToken
+      })
+    ).not.toThrow();
+
+    // The current fence token still works.
+    const current = harness.domain.resolveHandoff(sessionId, conversationId);
+    const currentFenceToken = harness.domain.taskInstancesMap.get(conversationId)?.fenceToken;
+    expect(() =>
+      harness.domain.createCheckpoint(sessionId, {
+        taskId: conversationId,
+        promote: true,
+        expectedHandoffId: current.activeHandoff.id,
+        expectedFenceToken: currentFenceToken
+      })
+    ).not.toThrow();
+  });
+
   it("inspect() reports resume eligibility and the latest event window without exposing secrets", () => {
     const harness = buildHarness();
     const { conversationId, accountId } = seedConversation(harness, "fence-model-f");

@@ -24,6 +24,7 @@ import type {
 import { Cp2Error, type Cp2Store, readSessionCookie } from "../../store.js";
 import {
   parseNullableString,
+  parseNumber,
   parseRequestBody,
   parseString,
   readHeader,
@@ -207,6 +208,7 @@ interface CheckpointBody {
   testsPending?: unknown;
   promote?: unknown;
   expectedHandoffId?: unknown;
+  expectedFenceToken?: unknown;
 }
 
 interface SwapBody {
@@ -458,7 +460,10 @@ export function registerRuntimeHandoffRoutes(app: FastifyInstance, store: Cp2Sto
           ...(body.promote === undefined ? {} : { promote: body.promote === true }),
           ...(body.expectedHandoffId === undefined
             ? {}
-            : { expectedHandoffId: parseString(body.expectedHandoffId, "expectedHandoffId") })
+            : { expectedHandoffId: parseString(body.expectedHandoffId, "expectedHandoffId") }),
+          ...(body.expectedFenceToken === undefined
+            ? {}
+            : { expectedFenceToken: parseNumber(body.expectedFenceToken, "expectedFenceToken") })
         });
       } catch (error) {
         return sendCp2Error(reply, error);
