@@ -111,8 +111,8 @@ describe("PWA installability", () => {
       "apps/web/src/legal/TermsOfServicePage.tsx"
     ].map((path) => readFileSync(path, "utf8"));
 
-    expect(icon).toContain("Two round African woven kiondo baskets");
-    expect(icon).toContain('viewBox="100 50 480 480"');
+    expect(icon).toContain("A round African woven kiondo basket");
+    expect(icon).toContain('viewBox="0 0 512 512"');
     expect(iconComponent).toContain('src="/icons/soko-icon.svg"');
     expect(application).toContain('<span className="home-brand-mark" aria-hidden="true">');
     expect(application).toContain('<AppIcon className="auth-header-icon" />');
