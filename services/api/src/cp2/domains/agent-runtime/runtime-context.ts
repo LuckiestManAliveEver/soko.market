@@ -3,6 +3,7 @@ import type {
   AgentAudience,
   AgentContextSource,
   AgentOwnerCorrection,
+  RuntimeExperience,
   ShopAgentRuntime
 } from "@soko/shared-types";
 
@@ -28,6 +29,7 @@ interface RuntimeContextSourcesState {
   deps: AgentRuntimeDomainDeps;
   agentContextSources: Map<string, AgentContextSource>;
   ownerCorrections: AgentOwnerCorrection[];
+  runtimeExperiences: RuntimeExperience[];
 }
 
 export function buildShopAgentRuntime(
@@ -232,6 +234,34 @@ export function contextSourcesForRuntime(
         customerVisible: false,
         sourceRecordId: correction.id,
         now: new Date(correction.createdAt)
+      })
+    );
+  }
+  // Structured experience memory (docs/architecture/experience-memory.md), following the format
+  // context/agent/recall.md already specified: Trigger / Learned behavior / Failure avoided. Only
+  // ever built from `state.runtimeExperiences`, which the caller has already filtered to
+  // validationState === "validated" (contextSourcesForRuntime -> validatedRuntimeExperiencesForBusiness,
+  // store.ts) - a "candidate" experience is never synthesized into a source here.
+  for (const experience of profile.memoryPolicy.reusableWorkflowMemoryEnabled
+    ? state.runtimeExperiences
+    : []) {
+    sources.push(
+      contextSourceRecord({
+        id: experience.id,
+        businessId,
+        type: "recall",
+        title: `Recall: ${experience.taskType}`,
+        content: [
+          `Trigger: ${experience.situation}`,
+          `Learned behavior: ${experience.lesson}`,
+          "Failure avoided: an unanswered or failed request."
+        ].join("\n"),
+        sensitivity: "internal",
+        customerVisible: false,
+        sourceRecordId: experience.id,
+        now: new Date(experience.updatedAt),
+        confidence: Math.min(1, experience.corroborationCount / 2),
+        provenance: { resolver: "model_recall", sourceType: "recall", sourceId: experience.id }
       })
     );
   }

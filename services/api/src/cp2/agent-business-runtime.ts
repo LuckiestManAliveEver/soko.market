@@ -9,6 +9,12 @@ import type {
   AgentSkillBinding,
   BusinessRole,
   CompiledAgentInstructionSet,
+  ContextRecipe,
+  ContextSelectionDiagnostics,
+  EvidenceProvenance,
+  EvidenceProvenanceResolver,
+  GroundingDecision,
+  GroundingPolicyId,
   RetrievedAgentContextItem,
   RuntimeParserIntent,
   RuntimeToolName,
@@ -243,36 +249,135 @@ export function assembleAgentInferenceMessage(input: {
   };
 }
 
-/**
- * Deterministic task -> context-category mapping. A recognized intent narrows retrieval to the
- * source types that task actually needs (e.g. a stock question never pulls supplier or receipt
- * records). `null` is the documented fallback for "unknown": no category narrowing, matching the
- * pre-existing behavior for unclassified tasks so callers that omit `intent` are unaffected.
- */
-const intentContextTypes: Record<RuntimeParserIntent, AgentContextSourceType[] | null> = {
-  add_product: ["catalogue", "inventory"],
-  update_product: ["catalogue", "inventory"],
-  adjust_stock: ["catalogue", "inventory"],
-  add_customer: ["customer"],
-  update_customer: ["customer"],
-  add_supplier: ["supplier"],
-  update_supplier: ["supplier"],
-  create_invoice: ["catalogue", "inventory", "customer", "order"],
-  record_payment: ["customer", "order"],
-  update_logistics: ["order", "customer"],
-  check_debt: ["customer", "order"],
-  show_products: ["catalogue", "inventory"],
-  show_invoices: ["order", "customer"],
-  show_reports: ["catalogue", "inventory", "order", "customer"],
-  show_notifications: [],
-  confirm_document_import: ["document"],
-  unknown: null
-};
-
-/** Cross-cutting categories eligible for every recognized task, regardless of the mapping above. */
+/** Cross-cutting categories eligible for every recognized task, regardless of its recipe. */
 const alwaysEligibleContextTypes: AgentContextSourceType[] = ["policy", "context_script", "recall"];
 
-export function retrieveAgentContext(input: {
+/**
+ * Versioned, named declarations of what each recognized task type needs (brief-adoption §7,
+ * `docs/architecture/context-recipes.md`). Formalizes the same task -> evidence-domain mapping the
+ * pre-existing `intentContextTypes` lookup table encoded, plus a per-task grounding policy and the
+ * tools each task is expected to use (read by the runtime report-card aggregation, not a second
+ * authorization mechanism - tool authorization remains exclusively `AgentSkillBinding` +
+ * `enforceAgentPolicy`). `unknown` intentionally has no recipe: no category narrowing and no
+ * grounding, matching the documented pre-existing fallback for unclassified tasks.
+ *
+ * `groundingPolicy: "require_evidence"` is applied only to read-oriented intents where an
+ * unanswerable question is a real hallucination risk (the model would otherwise have to invent
+ * stock levels, balances, or invoice contents). Write-oriented intents already have an equivalent,
+ * narrower grounding mechanism - `findRuntimeUnknownEntityReferenceError`
+ * (`services/api/src/cp2/domains/agent-runtime/runtime-entity-lookup.ts`) checks the *referenced*
+ * entity exists before a mutation is proposed - so adding this gate there too would be redundant,
+ * not additive. Extending grounding to another intent is a one-line, reviewable registry change.
+ */
+export const contextRecipeRegistry: Partial<Record<RuntimeParserIntent, ContextRecipe>> = {
+  add_product: recipe("add_product", 1, ["catalogue", "inventory"], [], ["product.create"], "none"),
+  update_product: recipe(
+    "update_product",
+    1,
+    ["catalogue", "inventory"],
+    [],
+    ["product.update"],
+    "none"
+  ),
+  adjust_stock: recipe(
+    "adjust_stock",
+    1,
+    ["catalogue", "inventory"],
+    [],
+    ["product.stock_adjust"],
+    "none"
+  ),
+  add_customer: recipe("add_customer", 1, ["customer"], [], ["customer.create"], "none"),
+  update_customer: recipe("update_customer", 1, ["customer"], [], ["customer.update"], "none"),
+  add_supplier: recipe("add_supplier", 1, ["supplier"], [], ["supplier.create"], "none"),
+  update_supplier: recipe("update_supplier", 1, ["supplier"], [], ["supplier.update"], "none"),
+  create_invoice: recipe(
+    "create_invoice",
+    1,
+    ["catalogue", "inventory", "customer", "order"],
+    [],
+    ["invoice.draft"],
+    "none"
+  ),
+  record_payment: recipe(
+    "record_payment",
+    1,
+    ["customer", "order"],
+    [],
+    ["payment.record"],
+    "none"
+  ),
+  update_logistics: recipe("update_logistics", 1, ["order", "customer"], [], [], "none"),
+  check_debt: recipe(
+    "check_debt",
+    1,
+    ["customer", "order"],
+    [],
+    ["reports.summary"],
+    "require_evidence"
+  ),
+  show_products: recipe(
+    "show_products",
+    1,
+    ["catalogue", "inventory"],
+    [],
+    ["products.list"],
+    "require_evidence"
+  ),
+  show_invoices: recipe(
+    "show_invoices",
+    1,
+    ["order", "customer"],
+    [],
+    ["invoices.list"],
+    "require_evidence"
+  ),
+  show_reports: recipe(
+    "show_reports",
+    1,
+    ["catalogue", "inventory", "order", "customer"],
+    [],
+    ["reports.summary"],
+    "require_evidence"
+  ),
+  show_notifications: recipe("show_notifications", 1, [], [], [], "none"),
+  confirm_document_import: recipe("confirm_document_import", 1, ["document"], [], [], "none")
+};
+
+function recipe(
+  taskType: RuntimeParserIntent,
+  version: number,
+  requiredEvidence: AgentContextSourceType[],
+  optionalEvidence: AgentContextSourceType[],
+  tools: RuntimeToolName[],
+  groundingPolicy: GroundingPolicyId
+): ContextRecipe {
+  return {
+    id: `soko.${taskType}@${version}`,
+    taskType,
+    version,
+    requiredEvidence,
+    optionalEvidence,
+    tools,
+    groundingPolicy
+  };
+}
+
+export interface ContextResolution {
+  items: RetrievedAgentContextItem[];
+  diagnostics: ContextSelectionDiagnostics;
+}
+
+/**
+ * The task-planning + evidence-resolution + token-budgeting core (brief-adoption §4/§5), extended
+ * to also report selection diagnostics (§5's `candidateNodes`/`selectedNodes`/`rejectedNodes`/
+ * `estimatedTokens`/`tokenBudget`) and a per-domain candidate/authorized/selected breakdown, which
+ * `evaluateGrounding` below reads to decide whether a task's required evidence was actually
+ * resolved, filtered out by authorization, or genuinely absent. `retrieveAgentContext` remains the
+ * stable, unchanged-signature entry point every existing caller uses; it is now a thin wrapper
+ * around this function that discards diagnostics, so no existing call site or test needed to change.
+ */
+export function resolveAgentContext(input: {
   sources: AgentContextSource[];
   query: string;
   audience: AgentAudience;
@@ -286,20 +391,22 @@ export function retrieveAgentContext(input: {
    * task never silently receives zero context.
    */
   characterBudget?: number;
-}): RetrievedAgentContextItem[] {
+}): ContextResolution {
   const queryTerms = terms(input.query);
-  const restrictedTypes = input.intent === undefined ? null : intentContextTypes[input.intent];
+  const recipe = input.intent === undefined ? undefined : contextRecipeRegistry[input.intent];
+  const restrictedTypes =
+    recipe === undefined ? null : [...recipe.requiredEvidence, ...recipe.optionalEvidence];
   const eligibleTypes =
     restrictedTypes === null ? null : new Set([...restrictedTypes, ...alwaysEligibleContextTypes]);
-  const scored = input.sources
-    .filter(
-      (source) =>
-        source.status === "active" &&
-        source.deletedAt === null &&
-        source.accessRules.audiences.includes(input.audience) &&
-        (input.audience !== "customer" || source.accessRules.customerVisible) &&
-        (eligibleTypes === null || eligibleTypes.has(source.type))
-    )
+  const authorized = input.sources.filter(
+    (source) =>
+      source.status === "active" &&
+      source.deletedAt === null &&
+      source.accessRules.audiences.includes(input.audience) &&
+      (input.audience !== "customer" || source.accessRules.customerVisible)
+  );
+  const scored = authorized
+    .filter((source) => eligibleTypes === null || eligibleTypes.has(source.type))
     .map((source) => {
       const content = source.retrievalMetadata.content ?? "";
       const sourceTerms = terms(
@@ -330,15 +437,133 @@ export function retrieveAgentContext(input: {
     usedCharacters += candidate.content.length;
     budgeted.push(candidate);
   }
-  return budgeted.map(({ source, content, relevanceScore }) => ({
+  const items = budgeted.map(({ source, content, relevanceScore }) => ({
     sourceId: source.id,
     type: source.type,
     title: source.title,
     content,
     sensitivity: source.sensitivity,
     freshnessTimestamp: source.freshnessTimestamp,
-    relevanceScore
+    relevanceScore,
+    confidence: evidenceConfidence(source),
+    provenance: evidenceProvenance(source)
   }));
+  const byDomain: ContextSelectionDiagnostics["byDomain"] = {};
+  const bump = (
+    domain: AgentContextSourceType,
+    field: "candidates" | "authorized" | "selected"
+  ): void => {
+    const entry = (byDomain[domain] ??= { candidates: 0, authorized: 0, selected: 0 });
+    entry[field] += 1;
+  };
+  for (const source of input.sources) {
+    if (source.deletedAt !== null) continue;
+    bump(source.type, "candidates");
+  }
+  for (const source of authorized) bump(source.type, "authorized");
+  for (const item of items) bump(item.type, "selected");
+  return {
+    items,
+    diagnostics: {
+      candidateNodes: input.sources.length,
+      selectedNodes: items.length,
+      rejectedNodes: input.sources.length - items.length,
+      estimatedTokens: Math.ceil(usedCharacters / 4),
+      tokenBudget:
+        input.characterBudget === undefined ? null : Math.ceil(input.characterBudget / 4),
+      byDomain
+    }
+  };
+}
+
+export function retrieveAgentContext(
+  input: Parameters<typeof resolveAgentContext>[0]
+): RetrievedAgentContextItem[] {
+  return resolveAgentContext(input).items;
+}
+
+/**
+ * The deterministic grounding gate (brief-adoption §6). Reads the per-domain candidate/authorized/
+ * selected breakdown `resolveAgentContext` already computed - no second query, no model call. A
+ * domain with zero real candidate records is treated as grounded ("there are none" is itself an
+ * evidenced answer, not a guess); a domain with candidates the caller cannot see is `unauthorized`;
+ * a domain with authorized candidates that simply weren't retrieved (relevance/budget) is
+ * `insufficient_evidence`. `"none"`-policy recipes (and any unrecognized intent, which has no
+ * recipe) are always `grounded` - this function only ever narrows, never revokes, what
+ * authorization/retrieval already decided.
+ */
+export function evaluateGrounding(input: {
+  recipe: ContextRecipe | undefined;
+  retrievedContext: RetrievedAgentContextItem[];
+  diagnostics: ContextSelectionDiagnostics;
+}): GroundingDecision {
+  const grounded = (): GroundingDecision => ({
+    status: "grounded",
+    evidenceIds: input.retrievedContext.map((item) => item.sourceId)
+  });
+  if (input.recipe === undefined || input.recipe.groundingPolicy === "none") return grounded();
+  const missing: AgentContextSourceType[] = [];
+  const unauthorized: AgentContextSourceType[] = [];
+  for (const domain of input.recipe.requiredEvidence) {
+    const counts = input.diagnostics.byDomain[domain] ?? {
+      candidates: 0,
+      authorized: 0,
+      selected: 0
+    };
+    if (counts.candidates === 0) continue;
+    if (counts.authorized === 0) {
+      unauthorized.push(domain);
+      continue;
+    }
+    if (counts.selected === 0) missing.push(domain);
+  }
+  if (unauthorized.length > 0) return { status: "unauthorized", missingScopes: unauthorized };
+  if (missing.length > 0) return { status: "insufficient_evidence", missing };
+  return grounded();
+}
+
+/** A fixed, non-fabricated abstention message for a non-`grounded` decision - never model text. */
+export function groundingAbstentionMessage(decision: GroundingDecision): string {
+  switch (decision.status) {
+    case "insufficient_evidence":
+      return `I don't have enough recorded ${decision.missing.join(", ")} information to answer that yet. Please check or add the relevant records.`;
+    case "unauthorized":
+      return `I don't have permission to view the ${decision.missingScopes.join(", ")} records needed to answer that.`;
+    case "conflicting_evidence":
+      return "The records I found for that don't agree with each other, so I can't answer reliably. Please check the underlying records.";
+    case "grounded":
+      return "";
+  }
+}
+
+/**
+ * Confidence a resolver has in a context source's content, 0-1 or null when unassessed. A source
+ * explicitly scoring itself (e.g. an extracted-experience "recall" record, or OCR-derived evidence)
+ * is trusted as-is; a source read straight from a canonical business record (has a
+ * `sourceRecordId`) is unambiguous and defaults to full confidence; anything else is left
+ * unassessed rather than guessed.
+ */
+function evidenceConfidence(source: AgentContextSource): number | null {
+  if (source.retrievalMetadata.confidence !== undefined) return source.retrievalMetadata.confidence;
+  return source.retrievalMetadata.sourceRecordId !== null ? 1 : null;
+}
+
+const defaultProvenanceResolverByType: Partial<
+  Record<AgentContextSourceType, EvidenceProvenanceResolver>
+> = {
+  recall: "model_recall",
+  context_script: "context_script",
+  owner_note: "owner_authored",
+  receipt: "ocr_extraction"
+};
+
+function evidenceProvenance(source: AgentContextSource): EvidenceProvenance {
+  if (source.retrievalMetadata.provenance !== undefined) return source.retrievalMetadata.provenance;
+  const resolver: EvidenceProvenanceResolver =
+    source.retrievalMetadata.sourceRecordId !== null
+      ? "canonical_record"
+      : (defaultProvenanceResolverByType[source.type] ?? "unknown");
+  return { resolver, sourceType: source.type, sourceId: source.retrievalMetadata.sourceRecordId };
 }
 
 export function enforceAgentPolicy(input: {

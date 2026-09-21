@@ -82,6 +82,7 @@ import type {
   AgentModelBindingSummary,
   AgentOwnerCorrection,
   AgentRuntimeReadiness,
+  ContextRecipe,
   EffectiveRuntimeSummary,
   AgentRuntimeVersion,
   AiModelSummary,
@@ -91,6 +92,7 @@ import type {
   NativeRuntimeAgentSummary,
   PreferredExecutionMode,
   RuntimeContextSummary,
+  RuntimeParserIntent,
   RuntimeModelConversationMessage,
   RuntimeModelProvider,
   RuntimeModelTemplateRecipe,
@@ -99,6 +101,8 @@ import type {
   RuntimeSessionSummary,
   RuntimeTelemetryEvent,
   RuntimeExecutionEventType,
+  RuntimeExperience,
+  RuntimeReportCard,
   RuntimeToolName,
   RuntimeTurnResult,
   RuntimeTurnSummary,
@@ -132,8 +136,12 @@ import { runtimeAdapterIdForAgent } from "../../../agent-harness/agent-runtime-a
 import { normalizeRequiredBoundedText } from "../../text-normalization.js";
 import {
   agentAudienceForBusinessRole,
+  contextRecipeRegistry,
   enforceAgentPolicy,
-  retrieveAgentContext
+  evaluateGrounding,
+  groundingAbstentionMessage,
+  resolveAgentContext,
+  type retrieveAgentContext
 } from "../../agent-business-runtime.js";
 import type { CustomerRuntimeCapabilityRecord } from "../../domain-contracts.js";
 import type { Cp2Snapshot } from "../../store.js";
@@ -144,6 +152,12 @@ import {
   contextSourcesForRuntime as contextSourcesForRuntimeModule
 } from "./runtime-context.js";
 import { createRuntimeModelRoute } from "./runtime-model-routing.js";
+import { buildRuntimeReportCard } from "./report-card.js";
+import {
+  purgeExpiredRuntimeExperiences as purgeExpiredRuntimeExperiencesModule,
+  recordFallbackExperience as recordFallbackExperienceModule,
+  validatedRuntimeExperiencesForBusiness as validatedRuntimeExperiencesForBusinessModule
+} from "./experience.js";
 import {
   assertResolvedRuntimeAvailable,
   resolveNativeRuntimeModelProvider,
@@ -262,6 +276,7 @@ export class AgentRuntimeDomain {
   private readonly agentContextSources = new Map<string, AgentContextSource>();
   private readonly agentEvaluationEvents = new Map<string, AgentEvaluationEvent>();
   private readonly agentOwnerCorrections = new Map<string, AgentOwnerCorrection>();
+  private readonly runtimeExperiences = new Map<string, RuntimeExperience>();
   private readonly installedAgentModels = new Map<string, InstalledAgentModelSummary>();
   private readonly agentModelActivationLocks = new Set<string>();
   private readonly runtimeSessions = new Map<string, RuntimeSessionSummary>();
@@ -294,6 +309,10 @@ export class AgentRuntimeDomain {
     return this.agentOwnerCorrections;
   }
 
+  get runtimeExperiencesMap(): Map<string, RuntimeExperience> {
+    return this.runtimeExperiences;
+  }
+
   get installedAgentModelsMap(): Map<string, InstalledAgentModelSummary> {
     return this.installedAgentModels;
   }
@@ -317,6 +336,7 @@ export class AgentRuntimeDomain {
     this.agentContextSources.clear();
     this.agentEvaluationEvents.clear();
     this.agentOwnerCorrections.clear();
+    this.runtimeExperiences.clear();
     this.installedAgentModels.clear();
     this.agentModelActivationLocks.clear();
     this.runtimeSessions.clear();
@@ -353,6 +373,14 @@ export class AgentRuntimeDomain {
 
     for (const correction of snapshot.agentOwnerCorrections ?? []) {
       this.agentOwnerCorrections.set(correction.id, { ...correction });
+    }
+
+    for (const experience of snapshot.runtimeExperiences ?? []) {
+      this.runtimeExperiences.set(experience.id, {
+        ...experience,
+        evidenceRefs: [...experience.evidenceRefs],
+        toolSequence: [...experience.toolSequence]
+      });
     }
 
     for (const model of snapshot.installedAgentModels ?? []) {
@@ -1647,6 +1675,44 @@ export class AgentRuntimeDomain {
     return updated;
   }
 
+  /** See experience.ts for the extraction logic itself - split out for store.ts's line budget. */
+  private recordFallbackExperience(input: {
+    businessId: string;
+    agentId: string;
+    turnId: string;
+    intent: RuntimeParserIntent;
+    recipe: ContextRecipe | undefined;
+    evidenceRefs: string[];
+    toolName: RuntimeToolName;
+    fallbackReason: string;
+    now: Date;
+    appendTelemetry: (
+      state: RuntimeTelemetryEvent["state"],
+      status: RuntimeTelemetryEvent["status"],
+      toolName: RuntimeToolName | null,
+      risk: RuntimePlannedAction["risk"] | null,
+      metadata?: RuntimeTelemetryEvent["metadata"]
+    ) => void;
+  }): void {
+    recordFallbackExperienceModule(this.runtimeExperiences, input);
+  }
+
+  /** Recall-eligible experiences for a business: validated only, per the brief's "prevent one bad
+   *  execution from poisoning memory" requirement - a "candidate" is never surfaced into a prompt. */
+  validatedRuntimeExperiencesForBusiness(businessId: string): RuntimeExperience[] {
+    return validatedRuntimeExperiencesForBusinessModule(this.runtimeExperiences, businessId);
+  }
+
+  /**
+   * Automatic counterpart to an explicit disable (not yet exposed as an owner action - this pass
+   * scopes the lifecycle to automatic promotion/retention only, per the audit's bounded-scope
+   * decision). Deprecates (never hard-deletes) every experience older than its business's
+   * configured memoryPolicy.retentionDays.
+   */
+  purgeExpiredRuntimeExperiences(now = new Date()): number {
+    return purgeExpiredRuntimeExperiencesModule(this.runtimeExperiences, this.agentProfiles, now);
+  }
+
   private bumpAgentRuntimeVersionForCorrectionChange(
     businessId: string,
     actorId: string,
@@ -2310,7 +2376,7 @@ export class AgentRuntimeDomain {
         : receiptContextScriptMatch !== null
           ? receiptContextScriptMatchToParseResult(receiptContextScriptMatch)
           : productContextScriptMatchToParseResult(contextScriptMatch!);
-    const retrievedContext = retrieveAgentContext({
+    const { items: retrievedContext, diagnostics: contextDiagnostics } = resolveAgentContext({
       sources: this.contextSourcesForRuntime(storedAgentProfile),
       query: input.message,
       audience: callerAudience,
@@ -2321,58 +2387,85 @@ export class AgentRuntimeDomain {
         this.deps.resolveCatalogModel(runtimeModelId)
       )
     });
+    appendTelemetry("context.plan.completed", "completed", null, null, {
+      candidateNodes: contextDiagnostics.candidateNodes,
+      selectedNodes: contextDiagnostics.selectedNodes,
+      rejectedNodes: contextDiagnostics.rejectedNodes,
+      estimatedTokens: contextDiagnostics.estimatedTokens,
+      tokenBudget: contextDiagnostics.tokenBudget
+    });
+    const contextRecipe = contextRecipeRegistry[parserResult.intent];
+    const grounding = evaluateGrounding({
+      recipe: contextRecipe,
+      retrievedContext,
+      diagnostics: contextDiagnostics
+    });
+    const willCallModel =
+      hashtagInvocation === null &&
+      documentImportProposal === null &&
+      messagingProposal === null &&
+      networkProposal === null &&
+      commerceProposal === null &&
+      effectiveContextScriptMatch === null;
+    appendTelemetry(
+      grounding.status === "grounded" ? "grounding.accepted" : "grounding.rejected",
+      "completed",
+      null,
+      null,
+      {
+        recipeId: contextRecipe?.id ?? null,
+        status: grounding.status,
+        missing: grounding.status === "insufficient_evidence" ? grounding.missing.join(",") : null,
+        missingScopes:
+          grounding.status === "unauthorized" ? grounding.missingScopes.join(",") : null
+      }
+    );
     const runtimeMemory = shopRuntime.memory.ownerCorrectionsEnabled
       ? this.ownerCorrectionsForBusiness(input.businessId)
           .filter((correction) => correction.status === "active")
           .slice(0, shopRuntime.memory.maximumItemsPerScope)
           .map((correction) => correction.correction)
       : [];
-    const modelRoute =
-      hashtagInvocation === null &&
-      documentImportProposal === null &&
-      messagingProposal === null &&
-      networkProposal === null &&
-      commerceProposal === null &&
-      effectiveContextScriptMatch === null
-        ? await this.createRuntimeModelRoute({
-            message: input.message,
-            accountId: auth.account.id,
-            ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
-            ...(input.conversationHistory === undefined
-              ? {}
-              : { conversationHistory: input.conversationHistory }),
-            modelId: runtimeModelId,
-            ...(input.signal === undefined ? {} : { signal: input.signal }),
-            context,
-            now,
-            appendTelemetry,
-            shopRuntime,
-            retrievedContext,
-            memory: runtimeMemory,
-            intent: parserResult.intent,
-            ...(modelTemplate === undefined || modelTemplate === null
-              ? {}
-              : {
-                  modelTemplate: {
-                    templateId: modelTemplate.templateId,
-                    templateVersionId: modelTemplate.templateVersionId,
-                    version: modelTemplate.version,
-                    task: modelTemplate.task,
-                    allowedTools: modelTemplate.allowedTools as RuntimeToolName[],
-                    contextRequirements: modelTemplate.contextRequirements,
-                    ...(modelTemplate.outputSchema === undefined
-                      ? {}
-                      : { outputSchema: modelTemplate.outputSchema }),
-                    constraints: modelTemplate.constraints,
-                    templateVocabularySnapshot: modelTemplate.templateVocabularySnapshot,
-                    currentVocabularySnapshot: modelTemplate.currentVocabularySnapshot
-                  }
-                })
-          })
-        : {
-            proposal: null,
-            trace: null
-          };
+    const modelRoute = willCallModel
+      ? await this.createRuntimeModelRoute({
+          message: input.message,
+          accountId: auth.account.id,
+          ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
+          ...(input.conversationHistory === undefined
+            ? {}
+            : { conversationHistory: input.conversationHistory }),
+          modelId: runtimeModelId,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+          context,
+          now,
+          appendTelemetry,
+          shopRuntime,
+          retrievedContext,
+          memory: runtimeMemory,
+          intent: parserResult.intent,
+          ...(modelTemplate === undefined || modelTemplate === null
+            ? {}
+            : {
+                modelTemplate: {
+                  templateId: modelTemplate.templateId,
+                  templateVersionId: modelTemplate.templateVersionId,
+                  version: modelTemplate.version,
+                  task: modelTemplate.task,
+                  allowedTools: modelTemplate.allowedTools as RuntimeToolName[],
+                  contextRequirements: modelTemplate.contextRequirements,
+                  ...(modelTemplate.outputSchema === undefined
+                    ? {}
+                    : { outputSchema: modelTemplate.outputSchema }),
+                  constraints: modelTemplate.constraints,
+                  templateVocabularySnapshot: modelTemplate.templateVocabularySnapshot,
+                  currentVocabularySnapshot: modelTemplate.currentVocabularySnapshot
+                }
+              })
+        })
+      : {
+          proposal: null,
+          trace: null
+        };
     if (
       activeBinding !== null &&
       modelRoute.trace !== null &&
@@ -2418,7 +2511,7 @@ export class AgentRuntimeDomain {
       clarificationRequired: effectiveContextScriptMatch?.clarificationRequired ?? false,
       fallbackReason: effectiveContextScriptMatch === null ? "no_context_script_match" : null
     });
-    const proposal =
+    const resolvedProposal =
       hashtagInvocation?.proposal ??
       documentImportProposal ??
       messagingProposal ??
@@ -2429,6 +2522,25 @@ export class AgentRuntimeDomain {
         : receiptContextScriptMatch !== null
           ? receiptProposal!
           : createRuntimeToolProposalFromProductContextScript(contextScriptMatch!));
+    // Grounding gate (brief-adoption §6): only ever narrows an already-unresolved turn - never
+    // overrides a deterministic parser proposal or a model-proposed tool call, both of which are
+    // grounded by construction (they execute against, and are validated against, live authoritative
+    // records; see findRuntimeUnknownEntityReferenceError above and executeRuntimeCapability below).
+    // The one case this closes: `parseRuntimeModelOutput`'s "response" kind
+    // (packages/tool-core/src/parsers/model-output.ts) lets the model answer in free text instead of
+    // proposing a tool - it maps to `toolName: "unknown.clarify"`, `validation: valid()`, and
+    // `reason: <the model's own free text>`, which `createRuntimeResponse` falls through to
+    // returning verbatim for any unmatched toolName. That free text is model output, not evidence -
+    // for a task whose recipe requires evidence that wasn't actually resolved, it must never reach
+    // the merchant. Forcing `validation.ok = false` here turns it into an ordinary, already-handled
+    // `clarification_required` plan whose response is the deterministic grounding message instead.
+    const proposal: typeof resolvedProposal =
+      resolvedProposal.toolName === "unknown.clarify" && grounding.status !== "grounded"
+        ? {
+            ...resolvedProposal,
+            validation: { ok: false, errors: [groundingAbstentionMessage(grounding)] }
+          }
+        : resolvedProposal;
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
     if (input.conversationId !== undefined) {
@@ -2566,6 +2678,21 @@ export class AgentRuntimeDomain {
     appendTelemetry("response.generated", status, plan.toolName, plan.risk, {
       actionId: plan.id
     });
+
+    if (modelRoute.trace?.fallbackUsed === true && status === "completed" && verification.ok) {
+      this.recordFallbackExperience({
+        businessId: input.businessId,
+        agentId: shopRuntime.agentId,
+        turnId,
+        intent: parserResult.intent,
+        recipe: contextRecipe,
+        evidenceRefs: retrievedContext.map((item) => item.sourceId),
+        toolName: plan.toolName,
+        fallbackReason: modelRoute.trace.fallbackReason ?? "unspecified",
+        now,
+        appendTelemetry
+      });
+    }
 
     return this.storeRuntimeTurn({
       runtimeSession,
@@ -2830,6 +2957,21 @@ export class AgentRuntimeDomain {
 
   runtimeTurnsForBusiness(businessId: string): RuntimeTurnSummary[] {
     return [...this.runtimeTurns.values()].filter((turn) => turn.businessId === businessId);
+  }
+
+  /** MUSE-adoption brief §16/§17 - see report-card.ts for the aggregation itself. */
+  runtimeReportCard(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): RuntimeReportCard[] {
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return buildRuntimeReportCard(this.runtimeTurnsForBusiness(input.businessId));
   }
 
   private requireBusinessAgent(
@@ -3147,7 +3289,8 @@ export class AgentRuntimeDomain {
       {
         deps: this.deps,
         agentContextSources: this.agentContextSources,
-        ownerCorrections: this.ownerCorrectionsForBusiness(profile.businessId)
+        ownerCorrections: this.ownerCorrectionsForBusiness(profile.businessId),
+        runtimeExperiences: this.validatedRuntimeExperiencesForBusiness(profile.businessId)
       },
       profile
     );

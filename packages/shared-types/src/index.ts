@@ -3504,6 +3504,9 @@ export type RuntimeTelemetryState =
   | "model.completed"
   | "model.fallback"
   | "model.fallback_completed"
+  | "context.plan.completed"
+  | "grounding.accepted"
+  | "grounding.rejected"
   | "recall.candidate_generated"
   | "recall.candidate_rejected"
   | "recall.deduplicated"
@@ -4008,6 +4011,27 @@ export interface AgentContextAccessRules {
   customerVisible: boolean;
 }
 
+/**
+ * How a piece of evidence was established. `canonical_record` means it was read directly from an
+ * authoritative business record (a product/customer/order row) - the strongest grade. The others
+ * name progressively less-verified origins. A model's own free-text claim is never a valid
+ * resolver: model output is not evidence until it is checked against a canonical record.
+ */
+export type EvidenceProvenanceResolver =
+  | "canonical_record"
+  | "owner_authored"
+  | "ocr_extraction"
+  | "model_recall"
+  | "context_script"
+  | "unknown";
+
+export interface EvidenceProvenance {
+  resolver: EvidenceProvenanceResolver;
+  sourceType: AgentContextSourceType;
+  /** The canonical business record this evidence was read from, when one exists. */
+  sourceId: string | null;
+}
+
 export interface AgentContextSource {
   id: string;
   tenantId: string;
@@ -4023,6 +4047,14 @@ export interface AgentContextSource {
     keywords: string[];
     sourceRecordId: string | null;
     content: string | null;
+    /**
+     * How confident the resolver is that `content` is accurate, 0-1. `null` when confidence was
+     * never assessed (the historical default - most canonical-record-backed sources are
+     * unambiguous and don't need a score). Optional so existing persisted rows and test fixtures
+     * built before this field existed remain valid without a migration.
+     */
+    confidence?: number | null;
+    provenance?: EvidenceProvenance;
   };
   createdAt: string;
   updatedAt: string;
@@ -4036,6 +4068,57 @@ export interface BusinessContextManifest {
   sources: AgentContextSource[];
 }
 
+/**
+ * How strictly a context recipe's grounding gate treats missing required evidence. "none" never
+ * blocks (the historical behavior for every intent before this field existed). "require_evidence"
+ * blocks with a deterministic abstention when a required evidence domain has real candidate
+ * records the caller could see but none were actually retrieved for this turn - it never blocks on
+ * a domain that is genuinely empty for the business, since "there are none" is itself a grounded
+ * answer, not a hallucination risk.
+ */
+export type GroundingPolicyId = "none" | "require_evidence";
+
+/**
+ * A versioned, named declaration of what a recognized task type needs - evidence domains, a
+ * grounding policy, and (for the runtime report card) the tools it's expected to use. Distinct from
+ * `RuntimeModelTemplateRecipe`, which shapes a Model Template's compiled prompt/tool list for one
+ * template version; a `ContextRecipe` is keyed by task type (`RuntimeParserIntent`), not by
+ * template, and every agent/template resolves the same recipe for the same recognized task.
+ */
+export interface ContextRecipe {
+  /** `soko.<taskType>@<version>`, e.g. `soko.show_products@1`. */
+  id: string;
+  taskType: RuntimeParserIntent;
+  version: number;
+  requiredEvidence: AgentContextSourceType[];
+  optionalEvidence: AgentContextSourceType[];
+  tools: RuntimeToolName[];
+  groundingPolicy: GroundingPolicyId;
+}
+
+export interface ContextSelectionDiagnostics {
+  candidateNodes: number;
+  selectedNodes: number;
+  rejectedNodes: number;
+  estimatedTokens: number;
+  tokenBudget: number | null;
+  byDomain: Partial<
+    Record<AgentContextSourceType, { candidates: number; authorized: number; selected: number }>
+  >;
+}
+
+/**
+ * The brief's abstention contract: a model must never be left to decide whether mandatory evidence
+ * exists. `conflicting_evidence` is declared for forward compatibility with a future detector but is
+ * never produced today - no code path currently compares retrieved evidence for contradictions, and
+ * this change does not add one (see docs/architecture/runtime-grounding.md).
+ */
+export type GroundingDecision =
+  | { status: "grounded"; evidenceIds: string[] }
+  | { status: "insufficient_evidence"; missing: AgentContextSourceType[] }
+  | { status: "unauthorized"; missingScopes: AgentContextSourceType[] }
+  | { status: "conflicting_evidence"; conflicts: string[] };
+
 export interface RetrievedAgentContextItem {
   sourceId: string;
   type: AgentContextSourceType;
@@ -4044,6 +4127,9 @@ export interface RetrievedAgentContextItem {
   sensitivity: AgentContextSensitivity;
   freshnessTimestamp: string;
   relevanceScore: number;
+  /** 0-1, or `null` when the source never assessed one. See `EvidenceProvenance`. */
+  confidence: number | null;
+  provenance: EvidenceProvenance;
 }
 
 export interface AgentSkillBinding {
@@ -4134,6 +4220,57 @@ export interface AgentOwnerCorrection {
   disabledAt: string | null;
 }
 
+/**
+ * MUSE-adoption brief §8/§9/§15: a structured, reusable fact distilled from a completed execution
+ * trajectory - never hidden chain-of-thought, never a raw conversation transcript. Fills the
+ * `"recall"` `AgentContextSourceType` slot that was already wired into context retrieval and prompt
+ * assembly (`context-semantic-runtime.md`) but, until this type existed, nothing ever populated.
+ * Distinct from `AgentOwnerCorrection`: a correction is owner-authored; a `RuntimeExperience` is
+ * extracted automatically from what actually happened during execution, following the same
+ * candidate -> validated -> deprecated lifecycle a correction's `active`/`disabled` status models,
+ * one level more cautious (see `validationState`/`corroborationCount`).
+ */
+export type RuntimeExperienceOutcome =
+  "successful" | "adjusted" | "rejected" | "failed" | "unknown";
+
+/**
+ * `candidate`: extracted once, not yet corroborated - never surfaced into a prompt.
+ * `validated`: corroborated by `corroborationCount` independent occurrences - eligible for recall.
+ * `deprecated`: retired by the retention sweep or an explicit disable - excluded from recall,
+ * audit history preserved (never hard-deleted), mirroring `AgentOwnerCorrection.disabledAt`.
+ */
+export type RuntimeExperienceValidationState = "candidate" | "validated" | "deprecated";
+
+export interface RuntimeExperience {
+  id: string;
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  taskType: RuntimeParserIntent;
+  /** A short, deterministic description of the situation - never freeform model narration. */
+  situation: string;
+  /** A stable key identifying "the same lesson recurring" for deduplication/corroboration. */
+  lessonKey: string;
+  recipeId: string | null;
+  recipeVersion: number | null;
+  /** `RetrievedAgentContextItem.sourceId` values consulted for the execution this was drawn from. */
+  evidenceRefs: string[];
+  toolSequence: RuntimeToolName[];
+  resultType: string;
+  verificationResult: string | null;
+  outcome: RuntimeExperienceOutcome;
+  lesson: string;
+  validationState: RuntimeExperienceValidationState;
+  /** Independent turns that produced this exact `lessonKey`. Promotion threshold in
+   *  `docs/architecture/experience-memory.md`. */
+  corroborationCount: number;
+  /** The turn extraction last ran from - diagnostic only, never used to resume execution. */
+  sourceTurnId: string;
+  createdAt: string;
+  updatedAt: string;
+  deprecatedAt: string | null;
+}
+
 export type AgentEvaluationEventType =
   | "intent_classification"
   | "context_retrieval"
@@ -4196,6 +4333,39 @@ export interface AgentEvaluationSummary {
    */
   averageSessionTurnCountAtClarify: number | null;
   recentEvents: AgentEvaluationEvent[];
+}
+
+/**
+ * MUSE-adoption brief §16/§17: "P = f(M, C, T, R)" - the model, context recipe, tools, and runtime
+ * a group of turns actually ran with, so different configurations can be compared systematically.
+ * `modelId`/`recipeId` are `null` when a turn used no resolvable model (a fully deterministic
+ * proposal) or matched no `ContextRecipe` (an intent with no recipe, e.g. "unknown"). Distinct from
+ * `TemplateReportCard` (model-templates domain): that compares Model Template *versions* in an
+ * offline evaluation run; this compares live runtime turns as they actually executed, grouped by
+ * what configuration answered them - a read-only aggregation over already-recorded
+ * `RuntimeTurnSummary`/telemetry data, not a second evaluate/gate/promote pipeline.
+ */
+export interface RuntimeReportCardKey {
+  runtimeVersion: number;
+  modelId: string | null;
+  recipeId: string | null;
+}
+
+export interface RuntimeReportCard {
+  key: RuntimeReportCardKey;
+  sampleSize: number;
+  taskSuccessRate: number;
+  /** Turns ending in clarifying/blocked as a share of sampleSize - the brief's "abstention
+   *  correctness" is a judgment call on top of this raw rate, not computed here. */
+  abstentionRate: number;
+  /** Share of grounding-evaluated turns that were accepted, or `null` if this group had no
+   *  grounding-policy recipe among its turns. */
+  groundedAcceptRate: number | null;
+  toolCallRate: number;
+  averageLatencyMs: number | null;
+  averagePromptTokens: number | null;
+  averageCompletionTokens: number | null;
+  averageContextTokens: number | null;
 }
 
 export interface CompiledAgentInstructionSet {
