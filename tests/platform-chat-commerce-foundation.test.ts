@@ -20,7 +20,10 @@ describe("public chat commerce foundation", () => {
         displayName: string;
         entryPoints: Array<{ type: string; href: string }>;
       };
-    }>(app, `/public/commerce-identities/${owner.business.sokoId.replace("soko.", "")}@soko.market`);
+    }>(
+      app,
+      `/public/commerce-identities/${owner.business.sokoId.replace("soko.", "")}@soko.market`
+    );
 
     expect(resolved).toMatchObject({
       status: "active",
@@ -28,9 +31,7 @@ describe("public chat commerce foundation", () => {
         canonicalBusinessId: owner.business.id,
         commerceAddress: `${owner.business.sokoId.replace("soko.", "")}@soko.market`,
         displayName: "Identity Shop",
-        entryPoints: expect.arrayContaining([
-          expect.objectContaining({ type: "conversation" })
-        ])
+        entryPoints: expect.arrayContaining([expect.objectContaining({ type: "conversation" })])
       }
     });
     expect(JSON.stringify(resolved)).not.toContain("owner");
@@ -39,9 +40,7 @@ describe("public chat commerce foundation", () => {
       app,
       `/public/commerce-identities/availability?address=${owner.business.sokoId.replace("soko.", "")}@soko.market`
     );
-    expect(availability).toEqual(
-      expect.objectContaining({ available: false, reason: "taken" })
-    );
+    expect(availability).toEqual(expect.objectContaining({ available: false, reason: "taken" }));
     await app.close();
   });
 
