@@ -31,7 +31,8 @@ export interface IntervalRunner<T> {
 export function createIntervalRunner<T>(options: IntervalRunnerOptions<T>): IntervalRunner<T> {
   let stopped = false;
   let inFlight: Promise<T | null> | null = null;
-  const timeScheduledJob = options.timeScheduledJob ?? (<R>(_job: string, fn: () => Promise<R>) => fn());
+  const timeScheduledJob =
+    options.timeScheduledJob ?? (<R>(_job: string, fn: () => Promise<R>) => fn());
 
   const runNow = (): Promise<T | null> => {
     if (stopped) return Promise.resolve(null);

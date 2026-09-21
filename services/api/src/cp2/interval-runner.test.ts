@@ -14,7 +14,12 @@ describe("createIntervalRunner", () => {
 
   it("does not run on start when runOnStart is false", async () => {
     const run = vi.fn(async () => "ok");
-    const runner = createIntervalRunner({ job: "test", intervalMs: 60_000, run, runOnStart: false });
+    const runner = createIntervalRunner({
+      job: "test",
+      intervalMs: 60_000,
+      run,
+      runOnStart: false
+    });
     await Promise.resolve();
     expect(run).not.toHaveBeenCalled();
     await runner.stop();
@@ -23,7 +28,12 @@ describe("createIntervalRunner", () => {
   it("collapses an overlapping tick into the same in-flight run", async () => {
     let releaseRun!: () => void;
     const run = vi.fn(() => new Promise<string>((resolve) => (releaseRun = () => resolve("ok"))));
-    const runner = createIntervalRunner({ job: "test", intervalMs: 60_000, run, runOnStart: false });
+    const runner = createIntervalRunner({
+      job: "test",
+      intervalMs: 60_000,
+      run,
+      runOnStart: false
+    });
 
     const first = runner.runNow();
     const second = runner.runNow();
@@ -53,7 +63,12 @@ describe("createIntervalRunner", () => {
       fn: () => Promise<R>
     ) => Promise<R>;
     const run = vi.fn(async () => "ok");
-    const runner = createIntervalRunner({ job: "sokoid_cooldown", intervalMs: 60_000, run, timeScheduledJob });
+    const runner = createIntervalRunner({
+      job: "sokoid_cooldown",
+      intervalMs: 60_000,
+      run,
+      timeScheduledJob
+    });
     await runner.runNow();
     expect(timeScheduledJobMock).toHaveBeenCalledWith("sokoid_cooldown", run);
     await runner.stop();
@@ -62,7 +77,12 @@ describe("createIntervalRunner", () => {
   it("stops accepting new runs after stop() and awaits the in-flight run", async () => {
     let releaseRun!: () => void;
     const run = vi.fn(() => new Promise<string>((resolve) => (releaseRun = () => resolve("ok"))));
-    const runner = createIntervalRunner({ job: "test", intervalMs: 60_000, run, runOnStart: false });
+    const runner = createIntervalRunner({
+      job: "test",
+      intervalMs: 60_000,
+      run,
+      runOnStart: false
+    });
 
     const inFlight = runner.runNow();
     const stopPromise = runner.stop();

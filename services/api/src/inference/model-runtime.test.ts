@@ -8,7 +8,11 @@ import {
   type ModelRuntimeGenerationResult
 } from "./model-runtime.js";
 
-const prompt: RuntimeModelPrompt = { message: "hi", allowedTools: [], schemaVersion: "cp11-runtime-model-v1" };
+const prompt: RuntimeModelPrompt = {
+  message: "hi",
+  allowedTools: [],
+  schemaVersion: "cp11-runtime-model-v1"
+};
 
 function generationResult(): ModelRuntimeGenerationResult {
   return {
@@ -53,7 +57,11 @@ describe("boundModelRuntimeAdapter", () => {
         maxConcurrency: 1,
         maxQueue: 0
       }),
-      breaker: createCircuitBreaker({ name: "inference", failureThreshold: 1, resetTimeoutMs: 1000 })
+      breaker: createCircuitBreaker({
+        name: "inference",
+        failureThreshold: 1,
+        resetTimeoutMs: 1000
+      })
     });
 
     await bounded.canRun(context);
@@ -71,7 +79,11 @@ describe("boundModelRuntimeAdapter", () => {
         maxConcurrency: 2,
         maxQueue: 0
       }),
-      breaker: createCircuitBreaker({ name: "inference", failureThreshold: 5, resetTimeoutMs: 1000 })
+      breaker: createCircuitBreaker({
+        name: "inference",
+        failureThreshold: 5,
+        resetTimeoutMs: 1000
+      })
     });
 
     const result = await bounded.generate({ context, prompt });
@@ -95,7 +107,11 @@ describe("boundModelRuntimeAdapter", () => {
         maxConcurrency: 1,
         maxQueue: 0
       }),
-      breaker: createCircuitBreaker({ name: "inference", failureThreshold: 5, resetTimeoutMs: 1000 })
+      breaker: createCircuitBreaker({
+        name: "inference",
+        failureThreshold: 5,
+        resetTimeoutMs: 1000
+      })
     });
 
     const first = bounded.generate({ context, prompt });
@@ -123,15 +139,20 @@ describe("boundModelRuntimeAdapter", () => {
         maxConcurrency: 5,
         maxQueue: 5
       }),
-      breaker: createCircuitBreaker({ name: "inference", failureThreshold: 1, resetTimeoutMs: 60_000 })
+      breaker: createCircuitBreaker({
+        name: "inference",
+        failureThreshold: 1,
+        resetTimeoutMs: 60_000
+      })
     });
 
     await expect(bounded.generate({ context, prompt })).rejects.toThrow("down");
     expect(adapter.generate).toHaveBeenCalledTimes(1);
 
-    await expect(
-      bounded.generate({ context, prompt })
-    ).rejects.toMatchObject({ code: "INFERENCE_CIRCUIT_OPEN", retryable: true });
+    await expect(bounded.generate({ context, prompt })).rejects.toMatchObject({
+      code: "INFERENCE_CIRCUIT_OPEN",
+      retryable: true
+    });
     // The circuit stayed open, so the adapter itself is never called a second time - this is what
     // "fail fast without calling the dependency" means in practice.
     expect(adapter.generate).toHaveBeenCalledTimes(1);

@@ -147,7 +147,11 @@ describe("createBulkhead", () => {
     gate.resolve();
 
     expect(events).toContainEqual(
-      expect.objectContaining({ type: "capacity_reached", name: "ocr", workloadClass: "background" })
+      expect.objectContaining({
+        type: "capacity_reached",
+        name: "ocr",
+        workloadClass: "background"
+      })
     );
     expect(events).toContainEqual(
       expect.objectContaining({

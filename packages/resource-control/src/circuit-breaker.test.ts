@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { type CircuitBreakerEvent, CircuitOpenError, createCircuitBreaker } from "./circuit-breaker.js";
+import {
+  type CircuitBreakerEvent,
+  CircuitOpenError,
+  createCircuitBreaker
+} from "./circuit-breaker.js";
 
 describe("createCircuitBreaker", () => {
   it("rejects a non-positive failureThreshold at construction", () => {
@@ -55,7 +59,11 @@ describe("createCircuitBreaker", () => {
   it("moves to half_open after resetTimeoutMs and closes again on a successful probe", async () => {
     vi.useFakeTimers();
     try {
-      const breaker = createCircuitBreaker({ name: "x", failureThreshold: 1, resetTimeoutMs: 1000 });
+      const breaker = createCircuitBreaker({
+        name: "x",
+        failureThreshold: 1,
+        resetTimeoutMs: 1000
+      });
       await expect(breaker.run(() => Promise.reject(new Error("down")))).rejects.toThrow();
       expect(breaker.state()).toBe("open");
 
@@ -72,7 +80,11 @@ describe("createCircuitBreaker", () => {
   it("reopens immediately when the half_open probe itself fails", async () => {
     vi.useFakeTimers();
     try {
-      const breaker = createCircuitBreaker({ name: "x", failureThreshold: 1, resetTimeoutMs: 1000 });
+      const breaker = createCircuitBreaker({
+        name: "x",
+        failureThreshold: 1,
+        resetTimeoutMs: 1000
+      });
       await expect(breaker.run(() => Promise.reject(new Error("down")))).rejects.toThrow();
       await vi.advanceTimersByTimeAsync(1001);
       expect(breaker.state()).toBe("half_open");

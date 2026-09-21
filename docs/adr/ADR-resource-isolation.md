@@ -76,7 +76,7 @@ Concretely:
 - **A hosted rate-limiting or queueing service (Redis Streams, a message broker)**: rejected -
   every mechanism in this pass is in-process. The existing Redis instance
   (`soko-market-rate-limit-cache`) already backs `@fastify/rate-limit` for a different concern
-  (HTTP request volume); resource isolation for expensive *workloads* (not raw request count) does
+  (HTTP request volume); resource isolation for expensive _workloads_ (not raw request count) does
   not need a second infrastructure dependency.
 - **Live-sampled Prometheus gauges for OCR's bulkhead/breaker state, matching inference's**:
   deferred, not rejected outright. OCR's bulkhead/breaker instances are private to

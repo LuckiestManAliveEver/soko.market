@@ -37,14 +37,20 @@ export interface CircuitBreaker {
 /** Standard CLOSED → OPEN → HALF_OPEN → CLOSED|OPEN circuit breaker (resource-isolation.md §7). */
 export function createCircuitBreaker(options: CircuitBreakerOptions): CircuitBreaker {
   if (!Number.isSafeInteger(options.failureThreshold) || options.failureThreshold < 1) {
-    throw new Error(`Circuit breaker "${options.name}": failureThreshold must be a positive integer.`);
+    throw new Error(
+      `Circuit breaker "${options.name}": failureThreshold must be a positive integer.`
+    );
   }
   if (!Number.isSafeInteger(options.resetTimeoutMs) || options.resetTimeoutMs <= 0) {
-    throw new Error(`Circuit breaker "${options.name}": resetTimeoutMs must be a positive integer.`);
+    throw new Error(
+      `Circuit breaker "${options.name}": resetTimeoutMs must be a positive integer.`
+    );
   }
   const halfOpenMaxAttempts = options.halfOpenMaxAttempts ?? 1;
   if (!Number.isSafeInteger(halfOpenMaxAttempts) || halfOpenMaxAttempts < 1) {
-    throw new Error(`Circuit breaker "${options.name}": halfOpenMaxAttempts must be a positive integer.`);
+    throw new Error(
+      `Circuit breaker "${options.name}": halfOpenMaxAttempts must be a positive integer.`
+    );
   }
 
   const { name, failureThreshold, resetTimeoutMs, onEvent } = options;

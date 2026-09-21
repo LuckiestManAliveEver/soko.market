@@ -142,7 +142,11 @@ describe("resource exhaustion acceptance", () => {
         maxConcurrency: 4,
         maxQueue: 8
       }),
-      breaker: createCircuitBreaker({ name: "inference", failureThreshold: 5, resetTimeoutMs: 30_000 })
+      breaker: createCircuitBreaker({
+        name: "inference",
+        failureThreshold: 5,
+        resetTimeoutMs: 30_000
+      })
     });
     const prompt: RuntimeModelPrompt = {
       message: "hello",

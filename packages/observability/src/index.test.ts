@@ -198,9 +198,7 @@ describe("createMetrics", () => {
     metrics.instrumentBulkhead(bulkhead);
 
     let releaseFirst!: () => void;
-    const hold = bulkhead.run(
-      () => new Promise<void>((resolve) => (releaseFirst = resolve))
-    );
+    const hold = bulkhead.run(() => new Promise<void>((resolve) => (releaseFirst = resolve)));
     await Promise.resolve();
 
     const text = await metrics.metricsText();
@@ -214,7 +212,11 @@ describe("createMetrics", () => {
 
   it("samples a registered circuit breaker's state live at scrape time", async () => {
     const metrics = createMetrics({ serviceName: "api" });
-    const breaker = createCircuitBreaker({ name: "inference", failureThreshold: 1, resetTimeoutMs: 60_000 });
+    const breaker = createCircuitBreaker({
+      name: "inference",
+      failureThreshold: 1,
+      resetTimeoutMs: 60_000
+    });
     metrics.instrumentCircuitBreaker(breaker);
 
     let text = await metrics.metricsText();

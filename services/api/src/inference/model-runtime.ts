@@ -11,7 +11,12 @@ import {
   renderRuntimeModelFewShotExamples,
   renderRuntimeModelOutputInstructions
 } from "@soko/tool-core";
-import { type Bulkhead, BulkheadRejectedError, type CircuitBreaker, CircuitOpenError } from "@soko/resource-control";
+import {
+  type Bulkhead,
+  BulkheadRejectedError,
+  type CircuitBreaker,
+  CircuitOpenError
+} from "@soko/resource-control";
 
 import type { ModelArtifactStore } from "./model-artifact-store.js";
 
@@ -314,7 +319,9 @@ export function boundModelRuntimeAdapter(
     healthCheck: (context) => adapter.healthCheck(context),
     async generate(input) {
       try {
-        return await controls.bulkhead.run(() => controls.breaker.run(() => adapter.generate(input)));
+        return await controls.bulkhead.run(() =>
+          controls.breaker.run(() => adapter.generate(input))
+        );
       } catch (error) {
         if (error instanceof BulkheadRejectedError) {
           throw new ModelRuntimeError(

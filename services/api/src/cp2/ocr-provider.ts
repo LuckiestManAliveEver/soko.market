@@ -179,7 +179,10 @@ export function createOcrExtractionProcessorFromEnvironment(
     retryInitialDelayMs: readPositiveInteger(env.OCR_RETRY_INITIAL_DELAY_MS, 200),
     retryMaxDelayMs: readPositiveInteger(env.OCR_RETRY_MAX_DELAY_MS, 5_000),
     timeoutMs: readPositiveInteger(env.OCR_JOB_TIMEOUT_SECONDS, 120) * 1_000,
-    circuitBreakerFailureThreshold: readPositiveInteger(env.OCR_CIRCUIT_BREAKER_FAILURE_THRESHOLD, 5),
+    circuitBreakerFailureThreshold: readPositiveInteger(
+      env.OCR_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+      5
+    ),
     circuitBreakerResetTimeoutMs: readPositiveInteger(
       env.OCR_CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
       30_000

@@ -4,7 +4,11 @@ import { Pool } from "pg";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
 import { buildPgPoolConfig } from "./db-pool-config.js";
-import { createBulkhead, createCircuitBreaker, positiveIntegerFromEnv } from "@soko/resource-control";
+import {
+  createBulkhead,
+  createCircuitBreaker,
+  positiveIntegerFromEnv
+} from "@soko/resource-control";
 import { resourceControlEventName, type ResourceControlEvent } from "./resource-control-events.js";
 import {
   boundModelRuntimeAdapter,
@@ -123,10 +127,13 @@ if (config.vercelInferenceUrl !== "") {
   );
   for (const model of Object.values(runtimeModels).filter((candidate) => candidate.enabled)) {
     const adapter = instrumentModelAdapter(
-      boundModelRuntimeAdapter(createVercelModelAdapter({ modelId: model.id, artifactStore, client }), {
-        bulkhead: inferenceBulkhead,
-        breaker: inferenceBreaker
-      }),
+      boundModelRuntimeAdapter(
+        createVercelModelAdapter({ modelId: model.id, artifactStore, client }),
+        {
+          bulkhead: inferenceBulkhead,
+          breaker: inferenceBreaker
+        }
+      ),
       metrics
     );
     modelRuntimeAdapters.set(`vercel:${model.id}`, adapter);
@@ -145,7 +152,10 @@ const pushNotificationSender =
 const emailProvider = createEmailProviderFromEnvironment();
 const messageWebBaseUrl = (process.env.WEB_PUBLIC_URL ?? "https://soko.market").trim();
 const accountDeletionProcessors = readAccountDeletionProcessors();
-const ocrProcessor = createOcrExtractionProcessorFromEnvironment(process.env, onResourceControlEvent);
+const ocrProcessor = createOcrExtractionProcessorFromEnvironment(
+  process.env,
+  onResourceControlEvent
+);
 const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
 const channelGateway = createChannelGatewayFromEnvironment();

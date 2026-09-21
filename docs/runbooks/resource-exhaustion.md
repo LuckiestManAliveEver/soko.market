@@ -36,13 +36,14 @@ so it's usually the first thing worth curling directly.
 (`[db] slow operation "persist CP2 relational store" took Nms`).
 
 **Diagnose:**
+
 1. Which pool - `cp2_primary` (persistence + health checks), `cp2_realtime` (should only ever show
    `total=1`), or `model_artifact_store` (inference artifact resolution)?
 2. Is it saturated (`pg_pool_total_connections` at `pg_pool_max_connections`) or just slow
    (connections available, but `pg_query_duration_seconds` climbing)? Different causes, different
    fixes.
 3. Check for a long-running query holding a connection: on Postgres, `select * from pg_stat_activity
-   where state != 'idle' order by query_start asc limit 20;`.
+where state != 'idle' order by query_start asc limit 20;`.
 
 **Emergency mitigation:** none that doesn't also fix the cause here - there's no separate "shed
 load" lever for this pool today (see resource-isolation.md's "what this pass deliberately did not
@@ -50,6 +51,7 @@ do"). If a specific query is clearly hung, terminate it: `select pg_terminate_ba
 pg_stat_activity where pid = <pid>;` - only the identified query, never a blanket kill.
 
 **Permanent remediation:**
+
 - If it's genuinely more traffic than `DB_POOL_MAX=5` can serve: raise it (render.yaml + a
   matching Neon connection-limit check), don't just restart.
 - If it's the Phase 1 parity check regressing (it shouldn't - that moved to a background interval
@@ -58,7 +60,7 @@ pg_stat_activity where pid = <pid>;` - only the identified query, never a blanke
   piling up.
 - If it's a genuinely slow query: `EXPLAIN ANALYZE` it in a non-production environment, add the
   index it's missing (resource-isolation-audit.md §5 already covers the parity-check case; if a
-  *new* slow query shows up, treat it the same way - diagnose before indexing).
+  _new_ slow query shows up, treat it the same way - diagnose before indexing).
 
 ## Inference saturation
 
@@ -67,6 +69,7 @@ pg_stat_activity where pid = <pid>;` - only the identified query, never a blanke
 (retryable) or agent turns come back "unavailable."
 
 **Diagnose:**
+
 1. Is `ai-runtime` itself actually saturated (its own single `busy` flag returning 503), or is
    `services/api`'s bulkhead the bottleneck (requests queuing/rejecting before even reaching
    `ai-runtime`)? `workload_queued{name="inference"}` > 0 with `ai-runtime` healthy means the
@@ -74,7 +77,7 @@ pg_stat_activity where pid = <pid>;` - only the identified query, never a blanke
    traffic, not a real dependency problem.
 2. Check `circuit_breaker_state{name="inference"}` - if it's `2` (open), calls are failing fast
    without even reaching `ai-runtime`; that's the circuit doing its job, not a new problem. Look at
-   *why* it opened (the failures that tripped it), not just that it's open.
+   _why_ it opened (the failures that tripped it), not just that it's open.
 
 **Emergency mitigation:** conversations degrade gracefully already (resource-isolation.md §10) -
 users see "unavailable," not a hang. If `ai-runtime` is confirmed down and the circuit hasn't
@@ -82,6 +85,7 @@ opened yet, that's expected until `INFERENCE_CIRCUIT_BREAKER_FAILURE_THRESHOLD` 
 failures accumulate; it will open on its own.
 
 **Permanent remediation:**
+
 - `ai-runtime` genuinely under-provisioned: scale its instance (it enforces one generation at a
   time by design - `services/ai-runtime/src/http-server.ts`'s `busy` flag - so this may mean more
   instances, not a bigger one, once the single-instance-store-ceiling work (see
@@ -98,6 +102,7 @@ failures accumulate; it will open on its own.
 `ocr_worker_busy` (503, retryable).
 
 **Diagnose:**
+
 1. Is the OCR worker container (`soko-market-ocr-worker` on Render) itself slow/unhealthy? It has
    its own `OCR_CONCURRENCY` (default 1) semaphore independent of `services/api`'s - check the
    worker's own Render metrics (comment in render.yaml flags PaddleOCR's CPU inference as
@@ -109,6 +114,7 @@ failures accumulate; it will open on its own.
 catalogue/product management (resource-isolation.md §10); manual entry stays available.
 
 **Permanent remediation:**
+
 - Worker under-provisioned: raise its Render plan/instance size, or raise
   `OCR_CONCURRENCY`/worker-side concurrency together (raising one without the other just moves the
   bottleneck).
@@ -124,7 +130,7 @@ backpressure working correctly, not itself a bug - the question is whether the b
 traffic.
 
 **Permanent remediation:** raise the relevant `*_MAX_CONCURRENCY`/`*_QUEUE_MAX` env var only after
-confirming the *downstream* dependency (ai-runtime, the OCR worker, the DB) can actually sustain
+confirming the _downstream_ dependency (ai-runtime, the OCR worker, the DB) can actually sustain
 the higher concurrency - raising a bulkhead's budget without raising the capacity behind it just
 moves the failure from "clean 503" to "everything times out instead," which is worse.
 

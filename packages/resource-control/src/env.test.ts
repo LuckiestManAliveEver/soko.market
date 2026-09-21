@@ -11,7 +11,9 @@ describe("positiveIntegerFromEnv", () => {
   });
 
   it("throws for zero", () => {
-    expect(() => positiveIntegerFromEnv("X", 7, { X: "0" })).toThrow("X must be a positive integer.");
+    expect(() => positiveIntegerFromEnv("X", 7, { X: "0" })).toThrow(
+      "X must be a positive integer."
+    );
   });
 
   it("throws for a negative value", () => {

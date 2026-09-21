@@ -23,7 +23,9 @@ export function startNotificationDeliveryRunner(options: {
     ...(options.runOnStart === undefined ? {} : { runOnStart: options.runOnStart }),
     ...(options.onResult === undefined ? {} : { onResult: options.onResult }),
     ...(options.onError === undefined ? {} : { onError: options.onError }),
-    ...(options.timeScheduledJob === undefined ? {} : { timeScheduledJob: options.timeScheduledJob })
+    ...(options.timeScheduledJob === undefined
+      ? {}
+      : { timeScheduledJob: options.timeScheduledJob })
   });
 }
 

@@ -1,6 +1,6 @@
 # Resource isolation audit (as of 2026-09-21)
 
-Status: audit of the *current* implementation, written before the resource-isolation changes in
+Status: audit of the _current_ implementation, written before the resource-isolation changes in
 this same pass. See [`resource-isolation.md`](./resource-isolation.md) for what changed and why.
 
 This audit covers every finite shared resource in the repository: Postgres connections, HTTP
@@ -22,7 +22,7 @@ scaled — and `render.yaml` deploys exactly one `soko-market` instance today, w
 
 Consequence for this audit: the classic failure mode this task describes — "a background query
 holds all the DB connections, so a critical request blocks waiting for one" — mostly does not
-apply to the *business-logic critical path* (auth, chat, catalogue reads, order creation), because
+apply to the _business-logic critical path_ (auth, chat, catalogue reads, order creation), because
 that path does not query Postgres per request at all. It applies instead to:
 
 - the **async persistence path** (all of it, critical and background alike, funnels through the
@@ -38,11 +38,11 @@ The rest of this audit is organized around what's actually true here, not a gene
 Three separate `pg.Pool` instances exist in the `soko-market` process, all created in
 `services/api/src/index.ts` / `services/api/src/cp2/postgres-store.ts`:
 
-| Pool | File:line | Max | Timeouts configured? | Purpose |
-|---|---|---|---|---|
-| `cp2_primary` | `postgres-store.ts:516` (`poolConfig()`, `postgres-store.ts:1206`) | `DB_POOL_MAX` (default 5) | Yes — `connectionTimeoutMillis`, `idleTimeoutMillis`, `query_timeout`, `statement_timeout`, all env-driven | Boot-time snapshot load, async persistence writes, `health()` reads |
-| `cp2_realtime` | `postgres-store.ts:587` | 1 (hardcoded, same `poolConfig()` base) | Yes (inherits `poolConfig()`) | Single dedicated connection holding `LISTEN soko_sync_changes` |
-| `model_artifact_store` | `index.ts:63` | 2 (hardcoded) | **No** — only `{ connectionString, max: 2 }`, no `connectionTimeoutMillis`/`query_timeout`/`statement_timeout` | Resolves/verifies model artifacts on the inference path |
+| Pool                   | File:line                                                          | Max                                     | Timeouts configured?                                                                                           | Purpose                                                             |
+| ---------------------- | ------------------------------------------------------------------ | --------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `cp2_primary`          | `postgres-store.ts:516` (`poolConfig()`, `postgres-store.ts:1206`) | `DB_POOL_MAX` (default 5)               | Yes — `connectionTimeoutMillis`, `idleTimeoutMillis`, `query_timeout`, `statement_timeout`, all env-driven     | Boot-time snapshot load, async persistence writes, `health()` reads |
+| `cp2_realtime`         | `postgres-store.ts:587`                                            | 1 (hardcoded, same `poolConfig()` base) | Yes (inherits `poolConfig()`)                                                                                  | Single dedicated connection holding `LISTEN soko_sync_changes`      |
+| `model_artifact_store` | `index.ts:63`                                                      | 2 (hardcoded)                           | **No** — only `{ connectionString, max: 2 }`, no `connectionTimeoutMillis`/`query_timeout`/`statement_timeout` | Resolves/verifies model artifacts on the inference path             |
 
 All three are registered with `@soko/observability`'s `instrumentPgPool()`
 (`packages/observability/src/index.ts:176`), which wraps `pool.query` for per-pool query-duration
@@ -110,14 +110,14 @@ revisited here since it's already correct and tested (`tests/cp2-postgres-store.
 
 ## 3. Bounded concurrency
 
-| Workload | Concurrency control | File |
-|---|---|---|
-| OCR (services/api → OCR worker) | Semaphore, `OCR_CONCURRENCY` (default 1) | `services/api/src/cp2/ocr-provider.ts:47,233-256` |
-| OCR worker itself (Python) | `threading.BoundedSemaphore(OCR_CONCURRENCY)` (default 1) | `services/receipt-ocr-service/worker.py:169,188` |
-| Inference (services/api → ai-runtime) | **None** | `services/api/src/inference/model-runtime.ts` — every conversation turn needing inference calls `createVercelInferenceClient.infer()` directly, no limiter |
-| Inference (ai-runtime itself) | Single global `busy` boolean — one generation at a time, process-wide | `services/ai-runtime/src/http-server.ts:15,48-52` |
-| Inference (owner-node / on-device) | Per-node cap (`maxConcurrentJobs`, 1-4) + per-user registration cap (default 5) | `services/api/src/inference/owner-node-broker.ts:59,66-68,218` |
-| Scheduled/background runners | Single-flight guard per runner (`inFlight` promise), not a concurrency *limit* across runners | `services/api/src/cp2/*-runner.ts` (6 runners, identical shape) |
+| Workload                              | Concurrency control                                                                           | File                                                                                                                                                       |
+| ------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OCR (services/api → OCR worker)       | Semaphore, `OCR_CONCURRENCY` (default 1)                                                      | `services/api/src/cp2/ocr-provider.ts:47,233-256`                                                                                                          |
+| OCR worker itself (Python)            | `threading.BoundedSemaphore(OCR_CONCURRENCY)` (default 1)                                     | `services/receipt-ocr-service/worker.py:169,188`                                                                                                           |
+| Inference (services/api → ai-runtime) | **None**                                                                                      | `services/api/src/inference/model-runtime.ts` — every conversation turn needing inference calls `createVercelInferenceClient.infer()` directly, no limiter |
+| Inference (ai-runtime itself)         | Single global `busy` boolean — one generation at a time, process-wide                         | `services/ai-runtime/src/http-server.ts:15,48-52`                                                                                                          |
+| Inference (owner-node / on-device)    | Per-node cap (`maxConcurrentJobs`, 1-4) + per-user registration cap (default 5)               | `services/api/src/inference/owner-node-broker.ts:59,66-68,218`                                                                                             |
+| Scheduled/background runners          | Single-flight guard per runner (`inFlight` promise), not a concurrency _limit_ across runners | `services/api/src/cp2/*-runner.ts` (6 runners, identical shape)                                                                                            |
 
 **Gap found:** `services/api`'s inference client has no concurrency limiter of its own. It relies
 entirely on `ai-runtime`'s single `busy` flag to reject overload as an HTTP 503
@@ -131,29 +131,29 @@ overload response shaped for the caller, and no protection against repeatedly ha
 
 ## 4. Backpressure
 
-- OCR: bounded by its semaphore (concurrency 1 both sides); no explicit *queue* depth limit beyond
+- OCR: bounded by its semaphore (concurrency 1 both sides); no explicit _queue_ depth limit beyond
   whatever requests happen to be waiting on the semaphore in memory — an unbounded number of
   callers can await the semaphore simultaneously today (no queue-full rejection).
-- Inference: `ai-runtime`'s `busy` flag *is* backpressure (immediate 503 + `Retry-After: 1`,
+- Inference: `ai-runtime`'s `busy` flag _is_ backpressure (immediate 503 + `Retry-After: 1`,
   correct HTTP semantics per §7 of the task spec) but only protects `ai-runtime` itself; nothing
   bounds how many `services/api` requests can be in flight toward it at once before that 503 fires.
 - HTTP request volume overall: `@fastify/rate-limit` (`services/api/src/app.ts:83-96`), global,
   Redis-backed (`soko-market-rate-limit-cache`), 300 req/min default / 60 req/min for `/auth/*`,
   keyed by IP. This is a real, working, already-correct backstop against request volume — not
   scoped per-workload, and not the mechanism this audit is about (queue/concurrency bounds for
-  *expensive* operations, not raw request counting).
+  _expensive_ operations, not raw request counting).
 - No unbounded in-memory queues were found anywhere in the repo.
 
 ## 5. Timeouts
 
-| Boundary | Timeout | File |
-|---|---|---|
-| DB connection acquisition | `DB_CONNECTION_TIMEOUT_MS` (default 5000ms) | `postgres-store.ts:1215` |
-| DB query execution | `DB_QUERY_TIMEOUT_MS` / `DB_STATEMENT_TIMEOUT_MS` (default 15000ms each) | `postgres-store.ts:1218-1219` — **not applied to the `model_artifact_store` pool** |
-| Inference (services/api → ai-runtime) | `VERCEL_INFERENCE_TIMEOUT_MS` (default 300000ms), `AbortController` | `model-runtime.ts:95-134` |
-| Inference (ai-runtime HTTP server) | `server.requestTimeout=30000`, `server.headersTimeout=10000` | `services/ai-runtime/src/http-server.ts:22-23` |
-| OCR | `OCR_JOB_TIMEOUT_SECONDS` (default 120s), `AbortSignal.timeout()` | `ocr-provider.ts:46,66` |
-| Owner-node inference job | `INFERENCE_JOB_TIMEOUT_MS` (default 120000ms) | `owner-node-broker.ts:124,138-140` |
+| Boundary                              | Timeout                                                                  | File                                                                               |
+| ------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| DB connection acquisition             | `DB_CONNECTION_TIMEOUT_MS` (default 5000ms)                              | `postgres-store.ts:1215`                                                           |
+| DB query execution                    | `DB_QUERY_TIMEOUT_MS` / `DB_STATEMENT_TIMEOUT_MS` (default 15000ms each) | `postgres-store.ts:1218-1219` — **not applied to the `model_artifact_store` pool** |
+| Inference (services/api → ai-runtime) | `VERCEL_INFERENCE_TIMEOUT_MS` (default 300000ms), `AbortController`      | `model-runtime.ts:95-134`                                                          |
+| Inference (ai-runtime HTTP server)    | `server.requestTimeout=30000`, `server.headersTimeout=10000`             | `services/ai-runtime/src/http-server.ts:22-23`                                     |
+| OCR                                   | `OCR_JOB_TIMEOUT_SECONDS` (default 120s), `AbortSignal.timeout()`        | `ocr-provider.ts:46,66`                                                            |
+| Owner-node inference job              | `INFERENCE_JOB_TIMEOUT_MS` (default 120000ms)                            | `owner-node-broker.ts:124,138-140`                                                 |
 
 Every network boundary found already has an explicit timeout with cancellation propagation
 (`AbortController`/`AbortSignal`). This is already correct and was not a gap.
@@ -165,7 +165,7 @@ Every network boundary found already has an explicit timeout with cancellation p
   This is exactly the "immediate retry loop" pattern this task's rules call out to eliminate.
   **Fixed in this pass** (bounded exponential backoff + jitter).
 - Inference has no retry within a single client call (`createVercelInferenceClient.infer()` is
-  single-attempt) — retry-shaped behavior instead happens as *fallback* across
+  single-attempt) — retry-shaped behavior instead happens as _fallback_ across
   agent/model/execution-host targets (`INFERENCE_MAX_FALLBACKS`), a distinct, already-correct
   mechanism (don't retry a request against the same failing target; try a different one).
 - Persistence writes (`postgres-store.ts`) already use bounded exponential backoff, capped at
@@ -192,7 +192,7 @@ pass** for inference and OCR.
   client; manual catalogue/product entry remains available since OCR is opt-in enrichment, not a
   blocking dependency of catalogue writes.
 - Already correct; not changed in this pass beyond adding the circuit breaker (§7), which makes
-  degradation *faster* under sustained outage instead of retrying into every request.
+  degradation _faster_ under sustained outage instead of retrying into every request.
 
 ## 9. RuntimeHandoff
 
@@ -209,7 +209,7 @@ already idempotency-keyed via `withIdempotency`. `acquireTurn` already provides 
 exclusion so a task can't execute two turns concurrently.
 
 This audit did not find a missing handoff mechanism to build. What it found missing is the
-*trigger*: nothing today checkpoints a task specifically *because* the inference circuit breaker
+_trigger_: nothing today checkpoints a task specifically _because_ the inference circuit breaker
 opened or the bounded queue is full, as distinct from an ordinary inference failure. Given
 `performSwap`'s existing fallback-across-targets behavior already covers "this execution target
 failed, try another," and `RuntimeModelCompletionResult.status` already propagates
@@ -221,8 +221,8 @@ same failure shape the runtime already knows how to handle — see
 
 Today: OCR and inference are already separate failure domains (different services, different
 processes, different HTTP boundaries) — a crash or saturation in one cannot directly crash the
-other. What's missing is *bounded concurrency for inference on the caller side* (§3) and a
-*shared, reusable* bulkhead primitive — OCR's semaphore (`ocr-provider.ts:233-256`) is a private,
+other. What's missing is _bounded concurrency for inference on the caller side_ (§3) and a
+_shared, reusable_ bulkhead primitive — OCR's semaphore (`ocr-provider.ts:233-256`) is a private,
 un-exported implementation that nothing else can reuse, so any future bounded workload would be
 tempted to write a fourth one. **Fixed in this pass** by extracting one reusable bulkhead used by
 both OCR and inference.
@@ -241,7 +241,7 @@ Two distinct mechanisms, both already safe:
   sokoId cooldown, account deletion): every one follows an identical, already-correct shape —
   `setInterval(() => void runNow(), intervalMs)`, `.unref()`'d, with a single `inFlight` promise
   guard so a tick that arrives while the previous run is still active collapses into the same
-  in-flight promise rather than starting a second overlapping run. This *is* the "prevent
+  in-flight promise rather than starting a second overlapping run. This _is_ the "prevent
   overlapping execution" requirement, already implemented, independently, six times.
 
 No `pg_advisory_lock`-based cross-instance job lock exists for these six runners — not a gap
@@ -273,7 +273,7 @@ inference provider must not fail liveness:
 - `GET /health/db` (`app.ts:461`) — separate, explicit DB detail endpoint.
 
 Only gap: `/health/ready`'s DB check (`cp2Store.health()`) is the expensive query from §2 —
-correct *shape*, wrong *cost*. Fixed in this pass without changing the shape.
+correct _shape_, wrong _cost_. Fixed in this pass without changing the shape.
 
 ## 14. Graceful shutdown
 
@@ -309,7 +309,7 @@ Mature and pervasive — not a gap area. Runtime handoff/transfer operations, me
 messages, SMS/email auto-replies, provider webhook updates), the offline sync queue, device
 bootstrap, OTP email sends, account-deletion webhooks, and network invites all have explicit
 idempotency keys today, per-domain. The newest addition,
-`cp2_runtime_operation_dedup` (migration 083), is the first *generic*, reusable idempotency-key
+`cp2_runtime_operation_dedup` (migration 083), is the first _generic_, reusable idempotency-key
 primitive in the codebase; earlier idempotency is scattered, working, per-domain in-memory maps.
 Not touched in this pass.
 
@@ -317,7 +317,7 @@ Not touched in this pass.
 
 `@fastify/rate-limit`, global, Redis-backed, IP-keyed, `/auth/*` at 60 req/min vs. 300 req/min
 elsewhere (`app.ts:83-96`) — already a working backstop against a single client generating
-unbounded request volume. It does not (and by design should not) protect OCR/inference *worker*
+unbounded request volume. It does not (and by design should not) protect OCR/inference _worker_
 capacity directly — that's what the concurrency limiter and circuit breaker added in this pass are
 for; the HTTP-level limiter and the workload-level bulkhead are complementary, not duplicative.
 
@@ -357,5 +357,5 @@ pass (a documented multi-week rewrite, not a same-session change).
 6. **No resource-pressure telemetry for any of the above** (§15).
 
 Everything else audited — rate limiting, timeouts, graceful shutdown, health/readiness
-*separation*, idempotency, RuntimeHandoff, scheduled-job overlap protection — was already correct
+_separation_, idempotency, RuntimeHandoff, scheduled-job overlap protection — was already correct
 and is left untouched.

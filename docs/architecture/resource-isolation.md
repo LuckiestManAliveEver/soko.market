@@ -22,7 +22,7 @@ auth, conversations, catalogue, and orders are synchronous in-memory operations,
 Postgres queries. That single documented fact changes where DB-connection isolation actually
 matters here: not "every request competes for a DB connection," but "the async persistence path,
 the inference artifact path, and the health-check path do." The controls below target the real
-contention points in *this* architecture, not a generic template.
+contention points in _this_ architecture, not a generic template.
 
 ## 1. Workload classification
 
@@ -30,11 +30,11 @@ contention points in *this* architecture, not a generic template.
 Used as a label on every bulkhead, every resource-control event, and every metric, so nothing
 duplicates these as string literals.
 
-| Class | Examples in Soko | Bounded today? |
-|---|---|---|
-| critical | auth, session restore, conversation persistence, catalogue reads, order/payment state | No dedicated bulkhead - it runs against the in-memory store (§0), which isn't the contended resource; protected by *not sharing* the resources below with anything else |
-| important | an agent turn's inference call | Yes - `inferenceBulkhead` + `inferenceBreaker` (§3) |
-| background | OCR (even when triggered by a live user action - see resource-isolation-audit.md §11), scheduled retention/cooldown sweeps, nightly cron jobs | Yes - `ocrBulkhead`/`ocrBreaker` (§3), single-flight guard on every scheduled runner (§11) |
+| Class      | Examples in Soko                                                                                                                              | Bounded today?                                                                                                                                                          |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| critical   | auth, session restore, conversation persistence, catalogue reads, order/payment state                                                         | No dedicated bulkhead - it runs against the in-memory store (§0), which isn't the contended resource; protected by _not sharing_ the resources below with anything else |
+| important  | an agent turn's inference call                                                                                                                | Yes - `inferenceBulkhead` + `inferenceBreaker` (§3)                                                                                                                     |
+| background | OCR (even when triggered by a live user action - see resource-isolation-audit.md §11), scheduled retention/cooldown sweeps, nightly cron jobs | Yes - `ocrBulkhead`/`ocrBreaker` (§3), single-flight guard on every scheduled runner (§11)                                                                              |
 
 ## 2. Database connection isolation
 
@@ -43,11 +43,11 @@ replacing three previously-independent, partially-inconsistent implementations
 (`postgres-store.ts`'s private `poolConfig()`, `database-connection.mjs`'s `databasePoolConfig()`
 for one-off scripts, and index.ts's bare `{ max: 2 }` artifact pool with no timeouts at all):
 
-| Pool | Budget env var | Default | Purpose |
-|---|---|---|---|
-| `cp2_primary` | `DB_POOL_MAX` | 5 | Boot snapshot load, async persistence, health checks |
-| `cp2_realtime` | (fixed `max: 1`) | 1 | `LISTEN soko_sync_changes` |
-| `model_artifact_store` | `DB_ARTIFACT_POOL_MAX` | 2 | Inference artifact resolution - now has real `connectionTimeoutMillis`/`query_timeout`/`statement_timeout` instead of none |
+| Pool                   | Budget env var         | Default | Purpose                                                                                                                    |
+| ---------------------- | ---------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `cp2_primary`          | `DB_POOL_MAX`          | 5       | Boot snapshot load, async persistence, health checks                                                                       |
+| `cp2_realtime`         | (fixed `max: 1`)       | 1       | `LISTEN soko_sync_changes`                                                                                                 |
+| `model_artifact_store` | `DB_ARTIFACT_POOL_MAX` | 2       | Inference artifact resolution - now has real `connectionTimeoutMillis`/`query_timeout`/`statement_timeout` instead of none |
 
 `DB_CONNECTION_TIMEOUT_MS` / `DB_IDLE_TIMEOUT_MS` / `DB_QUERY_TIMEOUT_MS` / `DB_STATEMENT_TIMEOUT_MS`
 apply to every pool identically. One-off scripts (`db:health`, `db:purge-shops`, ...) keep their own
@@ -56,7 +56,7 @@ Render cron process with its own pool, so it never contends with the API's pools
 
 **The expensive-query fix.** `/health/ready` → `cp2Store.health()` used to run a 12-full-table-scan
 Phase 1 relational/compatibility parity check (`count(*)` + `md5(string_agg(...))` across 6 table
-pairs) *inline, on every call* - and Render polls that exact endpoint as its `healthCheckPath`. Now
+pairs) _inline, on every call_ - and Render polls that exact endpoint as its `healthCheckPath`. Now
 (`postgres-store.ts`, `refreshParityCache`): that check runs on a background interval
 (`DB_HEALTH_PARITY_CHECK_INTERVAL_MS`, default 60s), cached, never awaited by a request. A failed
 refresh keeps the last-known-good cached result rather than flipping readiness - the same
@@ -72,10 +72,10 @@ path. `cachedParity` starts empty and fills in on the first background tick inst
 `packages/resource-control/src/bulkhead.ts`) is the one reusable primitive, replacing OCR's
 previously private, unexported semaphore. Two live instances:
 
-| Bulkhead | Class | `maxConcurrency` env | `maxQueue` env | Notes |
-|---|---|---|---|---|
-| `inference` | important | `INFERENCE_MAX_CONCURRENCY` (4) | `INFERENCE_QUEUE_MAX` (8) | One instance shared across every model on the `vercel` execution target - `ai-runtime` itself enforces one global "single generation at a time" budget (`services/ai-runtime/src/http-server.ts`'s `busy` flag) regardless of which model is asked for, so per-model budgets here would just let one model starve another's share of the same underlying capacity |
-| `ocr` | background | `OCR_CONCURRENCY` (1) | `OCR_QUEUE_MAX` (10) | Created per `OcrExtractionProcessor` instance (`ocr-provider.ts`) |
+| Bulkhead    | Class      | `maxConcurrency` env            | `maxQueue` env            | Notes                                                                                                                                                                                                                                                                                                                                                             |
+| ----------- | ---------- | ------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `inference` | important  | `INFERENCE_MAX_CONCURRENCY` (4) | `INFERENCE_QUEUE_MAX` (8) | One instance shared across every model on the `vercel` execution target - `ai-runtime` itself enforces one global "single generation at a time" budget (`services/ai-runtime/src/http-server.ts`'s `busy` flag) regardless of which model is asked for, so per-model budgets here would just let one model starve another's share of the same underlying capacity |
+| `ocr`       | background | `OCR_CONCURRENCY` (1)           | `OCR_QUEUE_MAX` (10)      | Created per `OcrExtractionProcessor` instance (`ocr-provider.ts`)                                                                                                                                                                                                                                                                                                 |
 
 Before this, `services/api`'s inference client had **no concurrency bound at all** - it relied
 entirely on `ai-runtime`'s single `busy` flag to reject overload, with no client-side queuing, no
@@ -164,13 +164,13 @@ just not the point-in-time active/queued/state gauges.
 
 ## 9. Structured events
 
-| Event | Emitted when |
-|---|---|
-| `resource.capacity_reached` | A bulkhead's `maxConcurrency` is saturated and a new operation must queue (or is about to be rejected because the queue is also full) |
-| `resource.operation_rejected` | A bulkhead rejects: `reason: "queue_full"` or `"queue_timeout"` |
-| `dependency.circuit_opened` | A circuit breaker trips (`failureThreshold` consecutive failures, or a half-open probe fails) |
-| `dependency.circuit_closed` | A circuit breaker recovers (a call - including a half-open probe - succeeds) |
-| `dependency.circuit_half_open_probe` | A circuit breaker allows one probe attempt after `resetTimeoutMs` |
+| Event                                | Emitted when                                                                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `resource.capacity_reached`          | A bulkhead's `maxConcurrency` is saturated and a new operation must queue (or is about to be rejected because the queue is also full) |
+| `resource.operation_rejected`        | A bulkhead rejects: `reason: "queue_full"` or `"queue_timeout"`                                                                       |
+| `dependency.circuit_opened`          | A circuit breaker trips (`failureThreshold` consecutive failures, or a half-open probe fails)                                         |
+| `dependency.circuit_closed`          | A circuit breaker recovers (a call - including a half-open probe - succeeds)                                                          |
+| `dependency.circuit_half_open_probe` | A circuit breaker allows one probe attempt after `resetTimeoutMs`                                                                     |
 
 Scheduled-job events already existed before this pass in the six background runners' own
 structured logs (`mailbox_background_sync_completed`, `conversation_recycle_bin_purged`, etc., each
@@ -179,7 +179,7 @@ predate and are unrelated to this resource-control event vocabulary.
 
 ## 10. Graceful degradation
 
-Unchanged in *shape* from the audit (§8 there) - this was already correct. What changed is that
+Unchanged in _shape_ from the audit (§8 there) - this was already correct. What changed is that
 degradation is now **faster and protected** under sustained overload/outage instead of retrying or
 timing out into every single request:
 
@@ -293,19 +293,19 @@ All new env vars, fail-closed at the point of use (a malformed value throws at s
 the existing `numberFromEnv`/`positiveIntegerFromEnv` convention throughout this codebase - never a
 silently-ignored bad value):
 
-| Variable | Default | Validated by |
-|---|---|---|
-| `INFERENCE_MAX_CONCURRENCY` | 4 | `createBulkhead` (must be ≥ 1) |
-| `INFERENCE_QUEUE_MAX` | 8 | `createBulkhead` (must be ≥ 0) |
-| `INFERENCE_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | 5 | `createCircuitBreaker` (must be ≥ 1) |
-| `INFERENCE_CIRCUIT_BREAKER_RESET_TIMEOUT_MS` | 30000 | `createCircuitBreaker` (must be > 0) |
-| `DB_ARTIFACT_POOL_MAX` | 2 | `positiveIntegerFromEnv` |
-| `DB_HEALTH_PARITY_CHECK_INTERVAL_MS` | 60000 | `positiveIntegerFromEnv` |
-| `OCR_QUEUE_MAX` | 10 | `createBulkhead` |
-| `OCR_RETRY_INITIAL_DELAY_MS` | 200 | `readPositiveInteger` |
-| `OCR_RETRY_MAX_DELAY_MS` | 5000 | `readPositiveInteger` |
-| `OCR_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | 5 | `createCircuitBreaker` |
-| `OCR_CIRCUIT_BREAKER_RESET_TIMEOUT_MS` | 30000 | `createCircuitBreaker` |
+| Variable                                      | Default | Validated by                         |
+| --------------------------------------------- | ------- | ------------------------------------ |
+| `INFERENCE_MAX_CONCURRENCY`                   | 4       | `createBulkhead` (must be ≥ 1)       |
+| `INFERENCE_QUEUE_MAX`                         | 8       | `createBulkhead` (must be ≥ 0)       |
+| `INFERENCE_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | 5       | `createCircuitBreaker` (must be ≥ 1) |
+| `INFERENCE_CIRCUIT_BREAKER_RESET_TIMEOUT_MS`  | 30000   | `createCircuitBreaker` (must be > 0) |
+| `DB_ARTIFACT_POOL_MAX`                        | 2       | `positiveIntegerFromEnv`             |
+| `DB_HEALTH_PARITY_CHECK_INTERVAL_MS`          | 60000   | `positiveIntegerFromEnv`             |
+| `OCR_QUEUE_MAX`                               | 10      | `createBulkhead`                     |
+| `OCR_RETRY_INITIAL_DELAY_MS`                  | 200     | `readPositiveInteger`                |
+| `OCR_RETRY_MAX_DELAY_MS`                      | 5000    | `readPositiveInteger`                |
+| `OCR_CIRCUIT_BREAKER_FAILURE_THRESHOLD`       | 5       | `createCircuitBreaker`               |
+| `OCR_CIRCUIT_BREAKER_RESET_TIMEOUT_MS`        | 30000   | `createCircuitBreaker`               |
 
 Pre-existing, unchanged: `DB_POOL_MAX`, `DB_CONNECTION_TIMEOUT_MS`, `DB_IDLE_TIMEOUT_MS`,
 `DB_QUERY_TIMEOUT_MS`, `DB_STATEMENT_TIMEOUT_MS`, `OCR_CONCURRENCY`, `OCR_MAX_RETRIES`,

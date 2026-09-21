@@ -995,7 +995,10 @@ export async function createPostgresCp2Store(
           )
         ];
       } catch (error) {
-        console.error("Phase 1 parity check refresh failed; keeping last-known-good result.", error);
+        console.error(
+          "Phase 1 parity check refresh failed; keeping last-known-good result.",
+          error
+        );
       }
     })().finally(() => {
       parityCheckInFlight = null;
