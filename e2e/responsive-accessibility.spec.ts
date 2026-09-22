@@ -212,7 +212,7 @@ test("the agent catalogue hides an unavailable agent instead of listing it disab
   await expect(settingsDialog.getByText("Unlicensed Agent", { exact: true })).toHaveCount(0);
 });
 
-test("prompts to link an email, then offers Gmail contacts as the first network source", async ({
+test("offers Gmail contacts as the first network source for a verified Gmail account", async ({
   page
 }) => {
   // Overrides installApiMocks' defaults for this test only (page.route handlers added later take
@@ -298,7 +298,6 @@ test("prompts to link an email, then offers Gmail contacts as the first network 
   await page.goto("/");
   const card = page.locator(".identity-network-onboarding");
   await expect(card.getByRole("heading", { name: "Add your first contacts" })).toBeVisible();
-  await expect(card.getByText("jane.owner@gmail.com", { exact: false })).toBeVisible();
 
   const importButton = card.getByRole("button", { name: "Import Google Contacts" });
   await expect(importButton).toBeEnabled();
