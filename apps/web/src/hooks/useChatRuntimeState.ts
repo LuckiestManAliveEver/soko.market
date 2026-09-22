@@ -81,6 +81,7 @@ interface UseChatRuntimeStateDeps {
   setStatusMessage: (message: string) => void;
   navigateToView: (nextView: ShellView, options?: { replace?: boolean; mode?: SokoMode }) => void;
   requireMessagingSignIn: () => void;
+  searchBuyFeed?: (query: string) => Promise<void>;
   loadProducts: (businessId: string) => Promise<void>;
   loadSuppliers: (businessId: string) => Promise<void>;
   loadCustomers: (businessId: string) => Promise<void>;
@@ -164,6 +165,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     agentSettings,
     setStatusMessage,
     navigateToView,
+    searchBuyFeed,
     loadProducts,
     loadSuppliers,
     loadCustomers,
@@ -188,6 +190,18 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     activeConversation,
     loadMessagingInbox
   } = deps;
+
+  function parseMarketplaceBuyIntent(message: string): string | null {
+    const normalized = message.trim().replace(/\s+/gu, " ");
+    if (normalized.length === 0) return null;
+    if (!/\b(?:buy|purchase|order|looking for)\b/iu.test(normalized)) return null;
+    return normalized
+      .replace(/^i\s+(?:want|need|would like)\s+to\s+(?:buy|purchase|order|get)\s+/iu, "")
+      .replace(/^i\s*(?:am|'m)?\s*looking\s+for\s+/iu, "")
+      .replace(/^can\s+i\s+(?:buy|purchase|order|get)\s+/iu, "")
+      .replace(/^where\s+can\s+i\s+(?:buy|purchase|get)\s+/iu, "")
+      .trim();
+  }
 
   async function sendChatDraft(
     draftOverride?: string,
@@ -254,6 +268,37 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     let runtimeMessage = appendAttachmentSummary(agentRequest, attachments);
 
     if (message.length === 0 && attachments.length === 0) {
+      return;
+    }
+
+    const marketplaceSearch =
+      mode !== "seller" && attachments.length === 0 ? searchBuyFeed : undefined;
+    const buyQuery = marketplaceSearch ? parseMarketplaceBuyIntent(message) : null;
+    if (buyQuery !== null && marketplaceSearch) {
+      const createdAt = new Date().toISOString();
+      setChatMessages((messages) => [
+        ...messages,
+        {
+          id: createClientMessageId("buyer"),
+          author: "merchant",
+          body: message,
+          createdAt,
+          status: "delivered"
+        },
+        {
+          id: createClientMessageId("agent"),
+          author: "sokoclaw",
+          body: "I searched the marketplace for that. Open a result to review the shop and add items to your cart.",
+          createdAt,
+          status: "delivered"
+        }
+      ]);
+      setChatDraft("");
+      setPendingAttachments([]);
+      setReplyToMessageId(null);
+      navigateToView("chat", { mode: "marketplace" });
+      await marketplaceSearch(buyQuery);
+      setStatusMessage("Marketplace results updated.");
       return;
     }
 

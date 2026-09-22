@@ -45,6 +45,60 @@ describe("storefront interaction contracts", () => {
     await app.close();
   });
 
+  it("serves legacy public storefronts whose stored sokoId predates the soko-dot prefix", async () => {
+    const seededStore = createCp2Store();
+    const seeded = buildApi({ cp2: { store: seededStore } });
+    const owner = await createOwnerBusiness(seeded, "254700000062", "Kwa Jane", "3062");
+
+    await injectJson(
+      seeded,
+      "POST",
+      `/businesses/${owner.business.id}/products`,
+      { name: "Sukuma wiki", unit: "bunch", quantity: 18 },
+      owner.cookie
+    );
+
+    const snapshot = seededStore.snapshot();
+    snapshot.businesses = snapshot.businesses.map((business) =>
+      business.id === owner.business.id ? { ...business, sokoId: "254A35541894" } : business
+    );
+    await seeded.close();
+
+    const store = createCp2Store();
+    store.hydrateSnapshot(snapshot);
+    const app = buildApi({ cp2: { store } });
+
+    const directory = await app.inject({
+      method: "GET",
+      url: "/public/storefronts?search=sukuma&limit=10"
+    });
+    expect(directory.statusCode).toBe(200);
+    expect(directory.json()).toEqual({
+      storefronts: [
+        expect.objectContaining({
+          agentId: "254A35541894",
+          sokoId: "254A35541894",
+          businessName: "Kwa Jane",
+          products: [expect.objectContaining({ name: "Sukuma wiki", available: true })]
+        })
+      ]
+    });
+
+    const storefront = await app.inject({
+      method: "GET",
+      url: "/public/storefronts/254A35541894"
+    });
+    expect(storefront.statusCode).toBe(200);
+    expect(storefront.json()).toEqual(
+      expect.objectContaining({
+        agentId: "254A35541894",
+        sokoId: "254A35541894",
+        businessName: "Kwa Jane"
+      })
+    );
+    await app.close();
+  });
+
   it("persists presence, invites, public care, messages, and order requests", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
