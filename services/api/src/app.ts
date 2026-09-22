@@ -476,7 +476,11 @@ export function buildApi(options: BuildApiOptions = {}) {
       realtimeAllowedOrigins: [...allowedCorsOrigins]
     });
     cp2Store = store;
-    registerMcpRoutes(routes, { store, allowedOrigins: [...allowedCorsOrigins] });
+    registerMcpRoutes(routes, {
+      store,
+      allowedOrigins: [...allowedCorsOrigins],
+      publicOrigin: webPublicUrl
+    });
     if (options.renderDeployWebhookSecret !== undefined) {
       registerRenderDeployWebhook(routes, {
         store,
