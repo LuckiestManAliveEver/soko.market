@@ -1819,6 +1819,70 @@ button:disabled {
   width: 100%;
 }
 
+.local-gallery-panel {
+  background: color-mix(in srgb, var(--soko-paper-dim, #213625) 72%, #ffffff 8%);
+  border: 1px solid color-mix(in srgb, var(--soko-line, #344636) 80%, transparent);
+  border-radius: 12px;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.local-gallery-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+}
+
+.local-gallery-grid button {
+  align-content: start;
+  background: color-mix(in srgb, var(--soko-sell-tint, #273f2c) 75%, transparent);
+  border: 1px solid color-mix(in srgb, var(--soko-sell, #2f7d46) 22%, transparent);
+  border-radius: 10px;
+  color: inherit;
+  display: grid;
+  gap: 7px;
+  min-height: 132px;
+  padding: 7px;
+  text-align: start;
+}
+
+.local-gallery-grid button.active {
+  border-color: var(--soko-sell, #2f7d46);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--soko-sell, #2f7d46) 20%, transparent);
+}
+
+.local-gallery-grid img {
+  aspect-ratio: 1;
+  border-radius: 8px;
+  object-fit: cover;
+  width: 100%;
+}
+
+.local-gallery-grid span {
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.gallery-binding-editor {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(160px, 0.48fr) minmax(0, 1fr);
+}
+
+.gallery-binding-fields {
+  align-content: start;
+  display: grid;
+  gap: 10px;
+}
+
+@media (max-width: 680px) {
+  .gallery-binding-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
 .business-card-editor {
   background: #242424;
   border-color: #35453a;
