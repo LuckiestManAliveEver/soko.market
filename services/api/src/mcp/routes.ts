@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { McpAccessScope, McpPrincipal, RuntimeSwapDimension } from "@soko/shared-types";
 import { Cp2Error, readSessionCookie, type Cp2Store } from "../cp2/store.js";
+import { mcpOAuthChallenge, mcpSecuritySchemes, registerMcpOAuthRoutes } from "./oauth.js";
 
 const protocolVersion = "2025-11-25";
 const maxRequestsPerMinute = 120;
 
 export interface McpRouteOptions {
   allowedOrigins: string[];
+  publicOrigin: string;
   store: Cp2Store;
 }
 
@@ -27,6 +29,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
   const allowedOrigins = new Set(options.allowedOrigins);
   const sessions = new Map<string, McpSession>();
   const rateWindows = new Map<string, { startedAt: number; requests: number }>();
+  registerMcpOAuthRoutes(app, { store: options.store, publicOrigin: options.publicOrigin });
 
   app.post("/v1/mcp/tokens", async (request, reply) => {
     try {
@@ -86,7 +89,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
       sessions.delete(sessionId);
       return reply.code(204).send();
     } catch (error) {
-      return sendMcpHttpError(reply, error, null);
+      return sendMcpHttpError(reply, error, null, options.publicOrigin);
     }
   });
 
@@ -135,12 +138,17 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
         });
       }
       if (rpc.method === "tools/call") {
-        const result = await callMcpTool(options.store, principal, rpc.params);
+        const result = await callMcpTool(
+          options.store,
+          principal,
+          rpc.params,
+          options.publicOrigin
+        );
         return reply.send({ jsonrpc: "2.0", id, result });
       }
       return reply.send(jsonRpcError(id, -32601, "Method not found"));
     } catch (error) {
-      return sendMcpHttpError(reply, error, id);
+      return sendMcpHttpError(reply, error, id, options.publicOrigin);
     }
   });
 }
@@ -150,14 +158,32 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
   if (principal.scopes.includes("mcp:read")) {
     tools.push(
       {
+        name: "soko.get_profile",
+        description:
+          "Return the stable Soko account profile represented by the authenticated connection.",
+        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
+        inputSchema: { type: "object", additionalProperties: false, properties: {} },
+        outputSchema: {
+          $schema: "https://json-schema.org/draft/2020-12/schema",
+          type: "object",
+          additionalProperties: false,
+          required: ["id"],
+          properties: { id: { type: "string", minLength: 1, pattern: "\\S" } }
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        _meta: { "openai/profile": true }
+      },
+      {
         name: "soko.list_shops",
         description: "List shops the authenticated Soko account can access.",
+        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
         inputSchema: { type: "object", additionalProperties: false, properties: {} },
         annotations: { readOnlyHint: true, destructiveHint: false }
       },
       {
         name: "soko.get_sync_changes",
         description: "Read the account's durable incremental sync journal.",
+        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -172,6 +198,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         name: "soko.query_catalogue",
         description:
           "Query canonical products in one authorized shop. Returns authoritative selling price, availability, and product IDs.",
+        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -188,6 +215,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         name: "soko.runtime_status",
         description:
           "Resolve a task's Runtime Handoff Protocol state: its current immutable checkpoint, task head, runtime instance health, and whether the runtime has drifted from the task head.",
+        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -204,6 +232,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         name: "soko.runtime_turn",
         description:
           "Propose a deterministic Soko runtime action. Business mutations return needs_confirmation and are not executed yet.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -219,6 +248,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
       {
         name: "soko.confirm_runtime_action",
         description: "Explicitly confirm one previously proposed Soko runtime action.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -235,6 +265,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         name: "soko.runtime_checkpoint",
         description:
           "Record a Runtime Handoff Protocol checkpoint for a task - its goal, current state, completed/pending actions, and next action. Immutable once written; pass promote:true with expectedHandoffId to also move the task head.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -254,6 +285,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         name: "soko.runtime_resume",
         description:
           "Resume a task from its Runtime Handoff Protocol state (the authoritative checkpoint), never from conversation transcript replay.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -266,6 +298,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         name: "soko.runtime_rollback",
         description:
           "Move a task's runtime head back to an earlier immutable checkpoint. Never mutates checkpoint history or the runtime binding.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -282,6 +315,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         name: "soko.runtime_merge",
         description:
           "Unify two or more diverged offline branch checkpoints into one new checkpoint and promote the task head to it. The first id in branchHandoffIds becomes the merge's primary parent; the rest are recorded as additional ancestors.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -300,6 +334,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
       ...(["agent", "model", "host"] as const).map((dimension) => ({
         name: `soko.${dimension === "host" ? "execution_host" : dimension}_swap`,
         description: `Swap a task's ${dimension} to a new compatible ${dimension}, checkpointing current state first (Prepare -> Commit -> Activate). Task and conversation identity never change.`,
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -317,13 +352,21 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
   return tools;
 }
 
-async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unknown) {
+async function callMcpTool(
+  store: Cp2Store,
+  principal: McpPrincipal,
+  params: unknown,
+  publicOrigin: string
+) {
   const record = objectValue(params, "params");
   const name = stringValue(record.name, "name");
   const args = objectValue(record.arguments ?? {}, "arguments");
   try {
     let result: unknown;
-    if (name === "soko.list_shops") {
+    if (name === "soko.get_profile") {
+      requireScope(principal, "mcp:read");
+      result = { id: principal.accountId };
+    } else if (name === "soko.list_shops") {
       requireScope(principal, "mcp:read");
       result = store.listAccountShopsForMcp({ principal });
     } else if (name === "soko.get_sync_changes") {
@@ -456,15 +499,38 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
     return toolResult(result, false);
   } catch (error) {
     if (error instanceof Cp2Error) {
-      return toolResult({ code: error.code, message: error.message }, true);
+      const readTool =
+        name === "soko.get_profile" ||
+        name === "soko.list_shops" ||
+        name === "soko.get_sync_changes" ||
+        name === "soko.query_catalogue" ||
+        name === "soko.runtime_status";
+      const challenge =
+        error.code === "mcp_scope_forbidden"
+          ? mcpOAuthChallenge(publicOrigin, readTool ? "mcp:read" : "mcp:act")
+          : undefined;
+      return toolResult({ code: error.code, message: error.message }, true, challenge);
     }
     throw error;
   }
 }
 
-function toolResult(value: unknown, isError: boolean) {
+function toolResult(value: unknown, isError: boolean, challenge?: string) {
   const text = JSON.stringify(value);
-  return { content: [{ type: "text", text }], structuredContent: value, isError };
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: value,
+    isError,
+    ...(challenge === undefined
+      ? {}
+      : {
+          _meta: {
+            "mcp/www_authenticate": [
+              `${challenge}, error="insufficient_scope", error_description="Authorize the required Soko permission"`
+            ]
+          }
+        })
+  };
 }
 
 function authenticateBearer(request: FastifyRequest, store: Cp2Store): McpPrincipal {
@@ -549,10 +615,10 @@ function sendHttpError(reply: FastifyReply, error: unknown) {
   throw error;
 }
 
-function sendMcpHttpError(reply: FastifyReply, error: unknown, id: unknown) {
+function sendMcpHttpError(reply: FastifyReply, error: unknown, id: unknown, publicOrigin: string) {
   if (error instanceof Cp2Error) {
     if (error.statusCode === 401) {
-      reply.header("www-authenticate", 'Bearer realm="soko-mcp"');
+      reply.header("www-authenticate", mcpOAuthChallenge(publicOrigin));
     }
     return reply.code(error.statusCode).send(jsonRpcError(id, -32000, error.message));
   }

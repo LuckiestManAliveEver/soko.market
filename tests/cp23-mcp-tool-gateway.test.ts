@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
@@ -15,6 +16,129 @@ interface McpTokenResponse {
 }
 
 describe("CP23 MCP tool gateway", () => {
+  it("links ChatGPT through OAuth 2.1 authorization code with PKCE", async () => {
+    const app = buildApi();
+    const cookie = await createSession(app, "254700000230");
+    const verifier = "soko-chatgpt-oauth-verifier-0123456789abcdef";
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+
+    const resourceMetadata = await app.inject({
+      method: "GET",
+      url: "/.well-known/oauth-protected-resource"
+    });
+    expect(resourceMetadata.statusCode).toBe(200);
+    expect(resourceMetadata.json()).toMatchObject({
+      resource: "https://soko.market/mcp",
+      authorization_servers: ["https://soko.market"],
+      scopes_supported: ["mcp:read", "mcp:act"]
+    });
+
+    const serverMetadata = await app.inject({
+      method: "GET",
+      url: "/.well-known/oauth-authorization-server"
+    });
+    expect(serverMetadata.json()).toMatchObject({
+      issuer: "https://soko.market",
+      authorization_endpoint: "https://soko.market/oauth/authorize",
+      token_endpoint: "https://soko.market/oauth/token",
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none"],
+      client_id_metadata_document_supported: true,
+      authorization_response_iss_parameter_supported: true
+    });
+
+    const authorizeUrl = new URL("https://soko.market/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "https://chatgpt.com/oauth/client.json");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "https://chatgpt.com/connector_platform_oauth_redirect"
+    );
+    authorizeUrl.searchParams.set("resource", "https://soko.market/mcp");
+    authorizeUrl.searchParams.set("scope", "mcp:read mcp:act");
+    authorizeUrl.searchParams.set("state", "chatgpt-state");
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const consent = await app.inject({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      headers: { cookie }
+    });
+    expect(consent.statusCode).toBe(200);
+    expect(consent.headers["cache-control"]).toBe("no-store");
+    expect(consent.body).toContain("Connect ChatGPT to Soko Market");
+    const requestId = consent.body.match(/request_id=([^&"]+)/u)?.[1];
+    expect(requestId).toBeTruthy();
+
+    const decision = await app.inject({
+      method: "GET",
+      url: `/oauth/authorize/decision?request_id=${requestId}&decision=approve`,
+      headers: { cookie }
+    });
+    expect(decision.statusCode).toBe(302);
+    const callback = new URL(String(decision.headers.location));
+    expect(callback.origin + callback.pathname).toBe(
+      "https://chatgpt.com/connector_platform_oauth_redirect"
+    );
+    expect(callback.searchParams.get("state")).toBe("chatgpt-state");
+    expect(callback.searchParams.get("iss")).toBe("https://soko.market");
+    const code = callback.searchParams.get("code");
+    expect(code).toBeTruthy();
+
+    const token = await app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: String(code),
+        client_id: "https://chatgpt.com/oauth/client.json",
+        redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect",
+        resource: "https://soko.market/mcp",
+        code_verifier: verifier
+      }).toString()
+    });
+    expect(token.statusCode).toBe(200);
+    expect(token.json()).toMatchObject({
+      access_token: expect.stringMatching(/^soko_mcp_[a-f0-9]{64}$/u),
+      token_type: "Bearer",
+      expires_in: 3600,
+      scope: "mcp:read mcp:act"
+    });
+
+    const initialized = await mcpPost(app, token.json().access_token, initializeRequest());
+    const listed = await mcpPost(
+      app,
+      token.json().access_token,
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+      String(initialized.headers["mcp-session-id"])
+    );
+    expect(listed.json().result.tools[0]).toMatchObject({
+      name: "soko.get_profile",
+      outputSchema: { required: ["id"] },
+      securitySchemes: [{ type: "oauth2", scopes: ["mcp:read"] }],
+      _meta: { "openai/profile": true }
+    });
+
+    const replay = await app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: String(code),
+        client_id: "https://chatgpt.com/oauth/client.json",
+        redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect",
+        resource: "https://soko.market/mcp",
+        code_verifier: verifier
+      }).toString()
+    });
+    expect(replay.statusCode).toBe(400);
+    expect(replay.json()).toMatchObject({ error: "invalid_grant" });
+    await app.close();
+  });
+
   it("connects an existing system catalogue to confirmed Soko Chat orders", async () => {
     const app = buildApi();
     const ownerCookie = await createSession(app, "254700000239");
@@ -180,6 +304,7 @@ describe("CP23 MCP tool gateway", () => {
       mcpSessionId
     );
     expect(listed.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "soko.get_profile",
       "soko.list_shops",
       "soko.get_sync_changes",
       "soko.query_catalogue",
@@ -309,6 +434,7 @@ describe("CP23 MCP tool gateway", () => {
       String(readInitialized.headers["mcp-session-id"])
     );
     expect(readListed.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "soko.get_profile",
       "soko.list_shops",
       "soko.get_sync_changes",
       "soko.query_catalogue",
@@ -382,6 +508,7 @@ describe("CP23 MCP tool gateway", () => {
       sessionId
     );
     expect(listed.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "soko.get_profile",
       "soko.list_shops",
       "soko.get_sync_changes",
       "soko.query_catalogue",
