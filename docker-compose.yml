@@ -28,6 +28,31 @@ services:
     volumes:
       - soko-redis-data:/data
 
+  computer-runtime:
+    profiles: ["computer"]
+    build:
+      context: .
+      dockerfile: services/computer-runtime/Dockerfile
+    environment:
+      COMPUTER_RUNTIME_SERVICE_TOKEN: ${COMPUTER_RUNTIME_SERVICE_TOKEN:-soko-computer-local-development}
+      PORT: 8790
+    init: true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:8790:8790"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
+
   # Inference now runs as a Vercel serverless function (services/ai-runtime), not a container in
   # this compose file. Run it locally with `pnpm --filter @soko/ai-runtime dev` (Vercel CLI dev
   # server) and point the API at it with VERCEL_INFERENCE_URL=http://127.0.0.1:3000 - see

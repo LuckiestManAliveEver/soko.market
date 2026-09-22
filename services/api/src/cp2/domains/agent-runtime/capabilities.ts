@@ -24,6 +24,7 @@ import {
   findRuntimeProductByName,
   findRuntimeSupplierByName
 } from "./runtime-entity-lookup.js";
+import { classifyComputerAction } from "@soko/tool-core";
 
 // findRuntimeUnknownEntityReferenceError lives in ./runtime-entity-lookup.js alongside the
 // by-name lookups it's built on, re-exported here since services/api/src/cp2/domains/agent-runtime
@@ -45,6 +46,29 @@ export async function executeRuntimeCapability(
     now: Date;
   }
 ): Promise<unknown> {
+  if (input.action.toolName.startsWith("computer.")) {
+    if (deps.executeComputerCapability)
+      return deps.executeComputerCapability({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
+        action: input.action,
+        now: input.now
+      });
+    const policy = classifyComputerAction({
+      toolName: input.action.toolName,
+      actionInput: input.action.input
+    });
+    throw new Cp2Error(
+      policy.requiresApproval ? 409 : 503,
+      policy.requiresApproval
+        ? "computer_action_requires_runtime_handoff_approval"
+        : "computer_runtime_provider_unconfigured",
+      policy.requiresApproval
+        ? "This computer action must be checkpointed through RuntimeHandoff and explicitly approved before execution."
+        : "ComputerRuntime is registered as a capability, but no isolated browser provider is configured for this API process."
+    );
+  }
   switch (input.action.toolName) {
     case "contacts.search":
     case "supplier.contact.attach":
@@ -57,6 +81,13 @@ export async function executeRuntimeCapability(
     case "route.history":
       return executeCommercialRecordsCapability(deps, input);
     case "network.route":
+    case "network.contacts.resolve":
+    case "network.identity.list":
+    case "network.identity.propose":
+    case "network.identity.confirm":
+    case "network.identity.reject":
+    case "network.identity.unlink":
+    case "network.identity.add":
       return executeNetworkCapability(deps, input);
     case "products.list":
     case "invoices.list":

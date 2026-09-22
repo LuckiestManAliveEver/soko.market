@@ -30,7 +30,12 @@ describe("capability-first architecture", () => {
     const toolBarrel = readFileSync("packages/tool-core/src/index.ts", "utf8");
     const runtime = readFileSync("services/api/src/cp2/domains/agent-runtime/store.ts", "utf8");
     expect(registry.match(/export const runtimeToolRegistry/g)).toHaveLength(1);
-    expect(toolBarrel.split("\n").filter(Boolean)).toHaveLength(1);
+    expect(
+      toolBarrel
+        .split("\n")
+        .filter(Boolean)
+        .every((line) => line.startsWith("export "))
+    ).toBe(true);
     expect(runtime.match(/async createRuntimeTurn\(/g)).toHaveLength(1);
   });
 

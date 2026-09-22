@@ -151,6 +151,7 @@ import type {
   AgentRuntimeVersion,
   RuntimeExperience,
   ActiveAiModelSummary,
+  ComputerActionKind,
   AccountDeletionRequestSummary,
   AuthChannel,
   AuthSessionView,
@@ -244,6 +245,7 @@ import type {
   SalesAgentSummary,
   SaleRecordSummary,
   ExternalIdentitySummary,
+  IdentityCandidateSummary,
   SokoIdentityLinkSummary,
   SyncMutationPayload,
   SyncMutationType,
@@ -295,6 +297,14 @@ import type {
   RuntimeExecutionEvent,
   RuntimeInspection
 } from "@soko/shared-types";
+import {
+  unavailableComputerWorkerClient,
+  type ComputerWorkerClient
+} from "../computer-runtime/client.js";
+import {
+  ComputerRuntimeDomain,
+  type ComputerRuntimeSnapshot
+} from "./domains/computer-runtime/store.js";
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
 import {
   globalDefaultRuntimeBindingId,
@@ -607,7 +617,8 @@ export interface RoleCheckResult {
   permission: BusinessPermission;
 }
 
-export interface Cp2Snapshot extends ModelTemplatesSnapshot, VocabularySnapshot {
+export interface Cp2Snapshot
+  extends ModelTemplatesSnapshot, VocabularySnapshot, ComputerRuntimeSnapshot {
   accounts: AccountSummary[];
   users: UserSummary[];
   deviceAccountBootstraps?: DeviceAccountBootstrapRecord[];
@@ -738,11 +749,13 @@ export interface Cp2Snapshot extends ModelTemplatesSnapshot, VocabularySnapshot 
   contactHashes: ContactHashSummary[];
   externalIdentities: ExternalIdentitySummary[];
   sokoIdentityLinks: SokoIdentityLinkSummary[];
+  identityCandidates: IdentityCandidateSummary[];
   externalRegistryConnections: ExternalConnectionRecord[];
   auditEvents: BusinessEvent[];
 }
 
 export interface Cp2StoreOptions {
+  computerWorkerClient?: ComputerWorkerClient;
   passkeyAuthenticationVerifier?: typeof verifyAuthenticationResponse;
   runtimeModelProvider?: RuntimeModelProvider;
   runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
@@ -875,6 +888,7 @@ export class Cp2Store {
   private readonly accountAiAssetStore: AccountAiAssetStore;
   private readonly mcpPrincipalContext = new AsyncLocalStorage<McpPrincipal>();
   private readonly defaultAgentRuntimeAdapters = createDefaultAgentRuntimeAdapterRegistry();
+  private readonly computerRuntimeDomain: ComputerRuntimeDomain;
 
   constructor(private readonly options: Cp2StoreOptions = {}) {
     this.nativeRuntimeBindings = new NativeRuntimeBindingStore(
@@ -1206,6 +1220,68 @@ export class Cp2Store {
     });
     this.vocabularyDomain.initializeApprovedCache();
     this.agentRuntimeDomain = new AgentRuntimeDomain({
+      executeComputerCapability: async (input) => {
+        const domain = this.requireComputerRuntime();
+        const toolName = input.action.toolName;
+        const values = input.action.input;
+        const computerSessionId = typeof values.sessionId === "string" ? values.sessionId : "";
+        if (toolName === "computer.session.create") {
+          const checkpoint = input.conversationId
+            ? this.runtimeHandoffDomain.activeCheckpoint(input.conversationId)
+            : undefined;
+          return domain.createSession(
+            input.sessionId,
+            {
+              businessId: input.businessId,
+              conversationId: input.conversationId ?? null,
+              taskId: input.conversationId ?? null,
+              profileId: typeof values.profileId === "string" ? values.profileId : null,
+              executionHostId: checkpoint?.runtime.executionHostId ?? "browser-computer",
+              agentId: checkpoint?.runtime.agentId ?? null,
+              runtimeInstanceId: input.conversationId ?? null
+            },
+            input.now
+          );
+        }
+        if (!computerSessionId)
+          throw new Cp2Error(400, "computer_session_required", "Computer session id is required.");
+        if (toolName === "computer.control.take")
+          return domain.takeControl(input.sessionId, computerSessionId, input.now);
+        if (toolName === "computer.control.release")
+          return domain.releaseControl(input.sessionId, computerSessionId, input.now);
+        if (toolName === "computer.session.resume")
+          return domain.resumeSession(input.sessionId, computerSessionId, input.now);
+        if (toolName === "computer.checkpoint")
+          return domain.checkpointSession(input.sessionId, computerSessionId, input.now);
+        if (toolName === "computer.suspend")
+          return domain.suspendSession(input.sessionId, computerSessionId, input.now);
+        if (toolName === "computer.close") {
+          await domain.closeSession(input.sessionId, computerSessionId, input.now);
+          return { closed: true };
+        }
+        const kind = toolName.slice("computer.".length) as ComputerActionKind;
+        return domain.perform(
+          input.sessionId,
+          {
+            id: input.action.id,
+            sessionId: computerSessionId,
+            kind,
+            target: {
+              ...(typeof values.url === "string" ? { url: values.url } : {}),
+              ...(typeof values.selector === "string" ? { selector: values.selector } : {}),
+              ...(typeof values.text === "string" && kind === "click" ? { text: values.text } : {})
+            },
+            ...(typeof values.text === "string" && kind === "type" ? { value: values.text } : {}),
+            ...(typeof values.semanticIntent === "string"
+              ? { semanticIntent: values.semanticIntent }
+              : {}),
+            risk: "READ"
+          },
+          "agent",
+          typeof values.approvalId === "string" ? values.approvalId : undefined,
+          input.now
+        );
+      },
       acquireRuntimeTurn: (...args) => this.runtimeHandoffDomain.acquireTurn(...args),
       checkpointRuntimeTurn: (...args) => this.runtimeHandoffDomain.checkpointAfterTurn(...args),
       activeRuntimeCheckpoint: (taskId) => this.runtimeHandoffDomain.activeCheckpoint(taskId),
@@ -1237,6 +1313,13 @@ export class Cp2Store {
       listNotifications: (input) => this.notificationsDomain.listNotifications(input),
       getSecurityReview: (input) => this.getSecurityReview(input),
       createAgentRoute: (input) => this.networkDomain.createAgentRoute(input),
+      resolveContact: (input) => this.networkDomain.resolveContact(input),
+      listIdentityCandidates: (input) => this.networkDomain.listIdentityCandidates(input),
+      proposeIdentityCandidate: (input) => this.networkDomain.proposeIdentityCandidate(input),
+      confirmIdentityCandidate: (input) => this.networkDomain.confirmIdentityCandidate(input),
+      rejectIdentityCandidate: (input) => this.networkDomain.rejectIdentityCandidate(input),
+      unlinkIdentity: (input) => this.networkDomain.unlinkIdentity(input),
+      addManualIdentity: (input) => this.networkDomain.addManualIdentity(input),
       searchBuyFeed: (input) => this.commerce.searchBuyFeed(input),
       createUnifiedCheckout: (input) => this.commerce.createUnifiedCheckout(input),
       getProductFieldSchema: (input) => this.salesDomain.getProductFieldSchema(input),
@@ -1458,6 +1541,60 @@ export class Cp2Store {
           ...conversation,
           runtimeBindingId,
           updatedAt: now.toISOString()
+        });
+      },
+      recordAuditEvent: (input) => this.recordAuditEvent(input)
+    });
+    this.computerRuntimeDomain = new ComputerRuntimeDomain({
+      worker: options.computerWorkerClient ?? unavailableComputerWorkerClient,
+      requireAnySession: (sessionId, now) => this.requireAnySession(sessionId, now),
+      requireBusinessAccess: (businessId, userId) => {
+        this.requireMembership(businessId, userId);
+      },
+      checkpoint: (input) => {
+        const resolved = this.runtimeHandoffDomain.resolveHandoff(input.sessionId, input.taskId);
+        const previous = resolved.activeHandoff;
+        this.runtimeHandoffDomain.createCheckpoint(input.sessionId, {
+          taskId: input.taskId,
+          idempotencyKey: `computer:${input.session.id}:${input.session.updatedAt}:${input.state}`,
+          expectedHandoffId: resolved.taskHead.activeHandoffId,
+          promote: true,
+          currentState: `Computer session ${input.session.id}: ${input.state}.`,
+          pendingActions: input.pendingAction
+            ? [
+                {
+                  id: input.pendingAction.id,
+                  description: input.pendingAction.semanticIntent ?? input.pendingAction.kind,
+                  status: "pending",
+                  metadata: {
+                    computerSessionId: input.session.id,
+                    actionHash: input.approval?.actionHash ?? null,
+                    approvalId: input.approval?.id ?? null
+                  }
+                }
+              ]
+            : [],
+          relevantContext: [
+            ...previous.relevantContext.filter(
+              (item) => !item.refId.startsWith("computer-session:")
+            ),
+            {
+              kind: "external",
+              refId: `computer-session:${input.session.id}`,
+              description: `${input.session.controlMode}; ${input.observation?.url ?? "blank"}`
+            }
+          ],
+          artifacts: input.observation?.screenshotRef
+            ? [
+                ...previous.artifacts.filter((item) => item.kind !== "computer-observation"),
+                {
+                  id: randomUUID(),
+                  kind: "computer-observation",
+                  uri: input.observation.screenshotRef,
+                  description: "Current untrusted browser observation"
+                }
+              ]
+            : previous.artifacts
         });
       },
       recordAuditEvent: (input) => this.recordAuditEvent(input)
@@ -3511,6 +3648,45 @@ export class Cp2Store {
     input: RuntimeCheckpointCreateInput
   ): RuntimeCheckpointResult {
     return this.runtimeHandoffDomain.createCheckpoint(sessionId, input);
+  }
+  private requireComputerRuntime(): ComputerRuntimeDomain {
+    return this.computerRuntimeDomain;
+  }
+  createComputerProfile(...args: Parameters<ComputerRuntimeDomain["createProfile"]>) {
+    return this.requireComputerRuntime().createProfile(...args);
+  }
+  listComputerProfiles(...args: Parameters<ComputerRuntimeDomain["listProfiles"]>) {
+    return this.requireComputerRuntime().listProfiles(...args);
+  }
+  clearComputerProfile(...args: Parameters<ComputerRuntimeDomain["clearProfile"]>) {
+    return this.requireComputerRuntime().clearProfile(...args);
+  }
+  createComputerSession(...args: Parameters<ComputerRuntimeDomain["createSession"]>) {
+    return this.requireComputerRuntime().createSession(...args);
+  }
+  getComputerSession(...args: Parameters<ComputerRuntimeDomain["getSession"]>) {
+    return this.requireComputerRuntime().getSession(...args);
+  }
+  getPendingComputerApproval(...args: Parameters<ComputerRuntimeDomain["getPendingApproval"]>) {
+    return this.requireComputerRuntime().getPendingApproval(...args);
+  }
+  performComputerAction(...args: Parameters<ComputerRuntimeDomain["perform"]>) {
+    return this.requireComputerRuntime().perform(...args);
+  }
+  decideComputerApproval(...args: Parameters<ComputerRuntimeDomain["decideApproval"]>) {
+    return this.requireComputerRuntime().decideApproval(...args);
+  }
+  takeComputerControl(...args: Parameters<ComputerRuntimeDomain["takeControl"]>) {
+    return this.requireComputerRuntime().takeControl(...args);
+  }
+  releaseComputerControl(...args: Parameters<ComputerRuntimeDomain["releaseControl"]>) {
+    return this.requireComputerRuntime().releaseControl(...args);
+  }
+  computerFrame(...args: Parameters<ComputerRuntimeDomain["frame"]>) {
+    return this.requireComputerRuntime().frame(...args);
+  }
+  closeComputerSession(...args: Parameters<ComputerRuntimeDomain["closeSession"]>) {
+    return this.requireComputerRuntime().closeSession(...args);
   }
   performRuntimeSwap(sessionId: string | null, input: RuntimeSwapInput): RuntimeSwapResult {
     return this.runtimeHandoffDomain.performSwap(sessionId, input);
@@ -6607,6 +6783,48 @@ export class Cp2Store {
     return this.networkDomain.rejectAgentRoute(...args);
   }
 
+  resolveContact(
+    ...args: Parameters<NetworkDomain["resolveContact"]>
+  ): ReturnType<NetworkDomain["resolveContact"]> {
+    return this.networkDomain.resolveContact(...args);
+  }
+
+  listIdentityCandidates(
+    ...args: Parameters<NetworkDomain["listIdentityCandidates"]>
+  ): ReturnType<NetworkDomain["listIdentityCandidates"]> {
+    return this.networkDomain.listIdentityCandidates(...args);
+  }
+
+  proposeIdentityCandidate(
+    ...args: Parameters<NetworkDomain["proposeIdentityCandidate"]>
+  ): ReturnType<NetworkDomain["proposeIdentityCandidate"]> {
+    return this.networkDomain.proposeIdentityCandidate(...args);
+  }
+
+  confirmIdentityCandidate(
+    ...args: Parameters<NetworkDomain["confirmIdentityCandidate"]>
+  ): ReturnType<NetworkDomain["confirmIdentityCandidate"]> {
+    return this.networkDomain.confirmIdentityCandidate(...args);
+  }
+
+  rejectIdentityCandidate(
+    ...args: Parameters<NetworkDomain["rejectIdentityCandidate"]>
+  ): ReturnType<NetworkDomain["rejectIdentityCandidate"]> {
+    return this.networkDomain.rejectIdentityCandidate(...args);
+  }
+
+  addManualIdentity(
+    ...args: Parameters<NetworkDomain["addManualIdentity"]>
+  ): ReturnType<NetworkDomain["addManualIdentity"]> {
+    return this.networkDomain.addManualIdentity(...args);
+  }
+
+  unlinkIdentity(
+    ...args: Parameters<NetworkDomain["unlinkIdentity"]>
+  ): ReturnType<NetworkDomain["unlinkIdentity"]> {
+    return this.networkDomain.unlinkIdentity(...args);
+  }
+
   createModelTemplate(
     ...args: Parameters<ModelTemplatesDomain["createTemplate"]>
   ): ReturnType<ModelTemplatesDomain["createTemplate"]> {
@@ -6905,6 +7123,10 @@ export class Cp2Store {
       runtimeTaskInstances: [...this.runtimeHandoffDomain.taskInstancesMap.values()],
       runtimeOperationDedup: [...this.runtimeHandoffDomain.operationDedupMap.values()],
       runtimeExecutionEvents: [...this.runtimeHandoffDomain.executionEventsMap.values()],
+      computerSessions: [...this.computerRuntimeDomain.sessions.values()],
+      computerProfiles: [...this.computerRuntimeDomain.profiles.values()],
+      computerApprovals: [...this.computerRuntimeDomain.approvals.values()],
+      computerAudits: [...this.computerRuntimeDomain.audits.values()],
       modelCatalog: [...this.modelCatalog.values()].map(cloneModelCatalogEntry),
       agentCatalog: [...this.agentCatalog.values()].map(cloneAgentCatalogEntry),
       platformOperators: [...this.platformOperators.values()],
@@ -6992,6 +7214,7 @@ export class Cp2Store {
       contactHashes: [...this.networkDomain.contactHashesMap.values()],
       externalIdentities: [...this.networkDomain.externalIdentitiesMap.values()],
       sokoIdentityLinks: [...this.networkDomain.sokoIdentityLinksMap.values()],
+      identityCandidates: [...this.networkDomain.identityCandidatesMap.values()],
       externalRegistryConnections: [...this.externalConnectionsDomain.connectionsMap.values()],
       auditEvents: [...this.auditEvents]
     };
@@ -7015,6 +7238,7 @@ export class Cp2Store {
     this.vocabularyDomain.clear();
     this.nativeRuntimeBindings.clear();
     this.runtimeHandoffDomain.clear();
+    this.computerRuntimeDomain.clear();
     this.modelCatalog.clear();
     this.agentCatalog.clear();
     this.platformOperators.clear();
@@ -7111,6 +7335,7 @@ export class Cp2Store {
     this.vocabularyDomain.restore(snapshot);
     this.nativeRuntimeBindings.restore(snapshot);
     this.runtimeHandoffDomain.restore(snapshot);
+    this.computerRuntimeDomain.restore(snapshot);
     this.salesDomain.restore(snapshot);
 
     for (const state of snapshot.marketplaceIntroStates ?? []) {
@@ -7387,6 +7612,10 @@ export class Cp2Store {
 
     for (const link of snapshot.sokoIdentityLinks ?? []) {
       this.networkDomain.sokoIdentityLinksMap.set(link.id, link);
+    }
+
+    for (const candidate of snapshot.identityCandidates ?? []) {
+      this.networkDomain.identityCandidatesMap.set(candidate.id, candidate);
     }
 
     for (const change of snapshot.syncChanges ?? []) {
@@ -10506,6 +10735,7 @@ export class Cp2Store {
         this.externalConnectionsDomain.connectionsMap,
         scope
       );
+      deletedRecordCount += this.computerRuntimeDomain.deleteAccount(request.accountId);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productFieldSchemasMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productMediaMap, scope);
@@ -10620,6 +10850,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.contactHashesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.externalIdentitiesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.sokoIdentityLinksMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.identityCandidatesMap, scope);
     }
 
     deletedRecordCount += deleteScopedArrayRecords(this.syncChanges, scope);

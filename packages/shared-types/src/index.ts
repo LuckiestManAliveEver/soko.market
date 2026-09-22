@@ -1,6 +1,7 @@
 export type RuntimeName = "api" | "sync" | "ai-runtime" | "web";
 
 export * from "./commerce-address.js";
+export * from "./computer-runtime.js";
 export * from "./phone-number.js";
 export * from "./portable-agent.js";
 export * from "./runtime-handoff.js";
@@ -1519,6 +1520,16 @@ export interface ContactHashSummary {
   createdAt: string;
 }
 
+/**
+ * Distinguishes how an identity fact (an external identity, or a Soko-account link) entered the
+ * phonebook, per docs/architecture/phonebook-identity-resolution.md - "user_entered" (the owner
+ * typed it themselves), "imported" (came in through a phone/social contact sync), "observed" (a
+ * ComputerRuntime browsing session saw it while completing some other task - never trusted enough
+ * to auto-attach, always starts life as a pending IdentityCandidateSummary), or "verified" (came
+ * through an OAuth-authenticated provider connection, i.e. syncConnectedSocialProvider).
+ */
+export type IdentityProvenance = "user_entered" | "imported" | "observed" | "verified";
+
 export interface ExternalIdentitySummary {
   id: string;
   ownerUserId: string;
@@ -1526,6 +1537,7 @@ export interface ExternalIdentitySummary {
   providerSubjectHash: string;
   displayName: string;
   handle: string | null;
+  provenance: IdentityProvenance;
   createdAt: string;
 }
 
@@ -1537,7 +1549,48 @@ export interface SokoIdentityLinkSummary {
   linkedBusinessId: string | null;
   linkedAgentId: string | null;
   confidence: number;
+  provenance: IdentityProvenance;
   createdAt: string;
+}
+
+export type IdentityCandidateStatus = "pending" | "confirmed" | "rejected";
+
+/**
+ * A proposed-but-unconfirmed identity fact, produced by an external observation (today: a
+ * ComputerRuntime browsing session reading untrusted web content) rather than an imported sync or
+ * a verified OAuth connection. Never mutates the canonical phonebook by itself - `nodeId` is only
+ * a best-effort guess at which existing contact this might be (null when no confident guess
+ * exists), and the identity is only attached to a node once the owner calls
+ * NetworkDomain.confirmIdentityCandidate, which is the one place "observed" data is allowed to
+ * become a real ExternalIdentitySummary. See docs/architecture/phonebook-identity-resolution.md.
+ */
+export interface IdentityCandidateSummary {
+  id: string;
+  ownerUserId: string;
+  nodeId: string | null;
+  provider: string;
+  providerSubject: string;
+  providerSubjectHash: string;
+  displayName: string;
+  handle: string | null;
+  evidence: string;
+  confidence: number;
+  status: IdentityCandidateStatus;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export type ContactResolutionMatchType = "phone" | "email" | "handle" | "name";
+
+export interface ContactResolutionMatchSummary {
+  node: NetworkNodeSummary;
+  matchType: ContactResolutionMatchType;
+  confidence: number;
+}
+
+export interface ContactResolutionSummary {
+  query: string;
+  matches: ContactResolutionMatchSummary[];
 }
 
 export interface NetworkNodeSummary {
@@ -1547,13 +1600,13 @@ export interface NetworkNodeSummary {
   displayName: string;
   degree: 0 | 1 | 2;
   sourceId: string | null;
-  sourceType: NetworkSyncSourceType | "owner";
+  sourceType: NetworkSyncSourceType | "owner" | "manual";
   sourcePlatform: string | null;
   sokoUserId: string | null;
   sokoBusinessId: string | null;
   sokoAgentId: string | null;
   contactHashIds: string[];
-  externalIdentityId: string | null;
+  externalIdentityIds: string[];
   visibilityStatus: NetworkVisibilityStatus;
   consentStatus: NetworkConsentStatus;
   createdAt: string;
@@ -1828,6 +1881,7 @@ export interface NetworkGraphSummary {
   routes: AgentRouteSummary[];
   permissions: NetworkPermissionSummary[];
   identityLinks: SokoIdentityLinkSummary[];
+  identityCandidates: IdentityCandidateSummary[];
 }
 
 export interface SupplierSummary {
@@ -3432,6 +3486,13 @@ export type RuntimeToolName =
   | "notifications.list"
   | "compliance.review"
   | "network.route"
+  | "network.contacts.resolve"
+  | "network.identity.list"
+  | "network.identity.propose"
+  | "network.identity.confirm"
+  | "network.identity.reject"
+  | "network.identity.unlink"
+  | "network.identity.add"
   | "commerce.search"
   | "commerce.checkout"
   | "product.create"
@@ -3467,6 +3528,19 @@ export type RuntimeToolName =
   | "document_import.confirm"
   | "messaging.send"
   | "workspace.deliver"
+  | "computer.session.create"
+  | "computer.session.resume"
+  | "computer.navigate"
+  | "computer.observe"
+  | "computer.click"
+  | "computer.type"
+  | "computer.scroll"
+  | "computer.upload"
+  | "computer.control.take"
+  | "computer.control.release"
+  | "computer.checkpoint"
+  | "computer.suspend"
+  | "computer.close"
   | "unknown.clarify";
 
 export type RuntimeParserIntent =

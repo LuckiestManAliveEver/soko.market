@@ -25,12 +25,119 @@ export function validateRuntimeToolInput(
     case "sales.history":
     case "route.history":
     case "unknown.clarify":
+    case "computer.observe":
+    case "computer.scroll":
+    case "computer.control.take":
+    case "computer.control.release":
+    case "computer.checkpoint":
+    case "computer.suspend":
+    case "computer.close":
       return valid();
+
+    case "computer.session.create":
+    case "computer.session.resume": {
+      const profileId = input.profileId;
+      return profileId === undefined || typeof profileId === "string"
+        ? valid()
+        : invalid("Computer profile id must be a string when provided.");
+    }
+
+    case "computer.navigate": {
+      const url = typeof input.url === "string" ? input.url.trim() : "";
+      if (url.length === 0) return invalid("Which website should I open?");
+      try {
+        const parsed = new URL(url);
+        return parsed.protocol === "https:" || parsed.protocol === "http:"
+          ? valid()
+          : invalid("Computer navigation only supports http and https URLs.");
+      } catch {
+        return invalid("Computer navigation needs a valid URL.");
+      }
+    }
+
+    case "computer.click": {
+      const hasSelector = typeof input.selector === "string" && input.selector.trim().length > 0;
+      const hasText = typeof input.text === "string" && input.text.trim().length > 0;
+      return hasSelector || hasText
+        ? valid()
+        : invalid("Computer click needs a selector or visible target text.");
+    }
+
+    case "computer.type": {
+      const text = typeof input.text === "string" ? input.text : "";
+      return text.length > 0 && text.length <= 4000
+        ? valid()
+        : invalid("Computer typing needs text between 1 and 4000 characters.");
+    }
+
+    case "computer.upload": {
+      const fileRef = typeof input.fileRef === "string" ? input.fileRef.trim() : "";
+      return fileRef.length > 0
+        ? valid()
+        : invalid("Computer upload needs a trusted file reference.");
+    }
 
     case "network.route":
       return typeof input.requestText === "string" && input.requestText.trim().length > 0
         ? valid()
         : invalid("What should I look for through your network?");
+
+    case "network.contacts.resolve":
+      return typeof input.query === "string" && input.query.trim().length > 0
+        ? valid()
+        : invalid("Who should I look up in your contacts?");
+
+    case "network.identity.list":
+      return valid();
+
+    case "network.identity.propose": {
+      const errors: string[] = [];
+      if (typeof input.provider !== "string" || input.provider.trim().length === 0) {
+        errors.push("Which provider was this identity observed on?");
+      }
+      if (typeof input.providerSubject !== "string" || input.providerSubject.trim().length === 0) {
+        errors.push("What is the observed provider identifier?");
+      }
+      if (typeof input.displayName !== "string" || input.displayName.trim().length === 0) {
+        errors.push("What name was observed for this identity?");
+      }
+      if (typeof input.evidence !== "string" || input.evidence.trim().length === 0) {
+        errors.push("What evidence supports this observed identity?");
+      }
+      return errors.length === 0 ? valid() : invalid(...errors);
+    }
+
+    case "network.identity.confirm":
+      return typeof input.candidateId === "string" && input.candidateId.trim().length > 0
+        ? valid()
+        : invalid("Which identity candidate should I confirm?");
+
+    case "network.identity.reject":
+      return typeof input.candidateId === "string" && input.candidateId.trim().length > 0
+        ? valid()
+        : invalid("Which identity candidate should I reject?");
+
+    case "network.identity.unlink":
+      return typeof input.nodeId === "string" &&
+        input.nodeId.trim().length > 0 &&
+        typeof input.externalIdentityId === "string" &&
+        input.externalIdentityId.trim().length > 0
+        ? valid()
+        : invalid("Which contact and identity should I unlink?");
+
+    case "network.identity.add": {
+      const errors: string[] = [];
+      if (typeof input.nodeId !== "string" || input.nodeId.trim().length === 0) {
+        errors.push("Which contact should I add this identity to?");
+      }
+      if (typeof input.provider !== "string" || input.provider.trim().length === 0) {
+        errors.push("Which provider is this identity on?");
+      }
+      if (typeof input.providerSubject !== "string" || input.providerSubject.trim().length === 0) {
+        errors.push("What is the identity's provider identifier or handle?");
+      }
+      return errors.length === 0 ? valid() : invalid(...errors);
+    }
 
     case "commerce.checkout": {
       const items = Array.isArray(input.items) ? input.items : [];

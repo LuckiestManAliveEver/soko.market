@@ -36,7 +36,11 @@ import type {
   AuthenticatedActorView,
   BusinessSummary,
   ContactHashSummary,
+  ContactResolutionMatchSummary,
+  ContactResolutionSummary,
   ExternalIdentitySummary,
+  IdentityCandidateSummary,
+  IdentityProvenance,
   MembershipSummary,
   NetworkConsentStatus,
   NetworkEdgeSourceType,
@@ -83,6 +87,7 @@ export class NetworkDomain {
   private readonly externalIdentities = new Map<string, ExternalIdentitySummary>();
   private readonly externalIdentityIdBySubject = new Map<string, string>();
   private readonly sokoIdentityLinks = new Map<string, SokoIdentityLinkSummary>();
+  private readonly identityCandidates = new Map<string, IdentityCandidateSummary>();
 
   constructor(private readonly deps: NetworkDomainDeps) {}
 
@@ -126,6 +131,10 @@ export class NetworkDomain {
     return this.sokoIdentityLinks;
   }
 
+  get identityCandidatesMap(): Map<string, IdentityCandidateSummary> {
+    return this.identityCandidates;
+  }
+
   clear(): void {
     this.networkNodes.clear();
     this.networkEdges.clear();
@@ -137,6 +146,7 @@ export class NetworkDomain {
     this.externalIdentities.clear();
     this.externalIdentityIdBySubject.clear();
     this.sokoIdentityLinks.clear();
+    this.identityCandidates.clear();
   }
 
   rebuildDerivedIndexes(): void {
@@ -245,6 +255,7 @@ export class NetworkDomain {
     provider: SocialNetworkProvider;
     profiles: SocialProfileNetworkInput[];
     sourceName?: string;
+    provenance?: IdentityProvenance;
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
@@ -262,6 +273,7 @@ export class NetworkDomain {
       now
     });
     const ownerNode = this.ensureOwnerNetworkNode(session.user, now);
+    const provenance = input.provenance ?? "imported";
 
     for (const profile of profiles) {
       const relationship = normalizeSocialRelationship(profile.relationship);
@@ -277,6 +289,7 @@ export class NetworkDomain {
         email: profile.email,
         providerSubject: profile.providerSubject ?? profile.handle ?? profile.name,
         handle: profile.handle,
+        provenance,
         now
       });
       this.createNetworkEdge({
@@ -314,6 +327,7 @@ export class NetworkDomain {
             normalizedConnection.handle ??
             normalizedConnection.name,
           handle: normalizedConnection.handle,
+          provenance,
           now
         });
         this.createNetworkEdge({
@@ -361,6 +375,7 @@ export class NetworkDomain {
       provider: input.provider,
       profiles: [],
       sourceName: `${providerDisplayName(identity.provider)} network`,
+      provenance: "verified",
       now
     });
   }
@@ -507,6 +522,318 @@ export class NetworkDomain {
     return node;
   }
 
+  /**
+   * "Who is this?" - resolves a free-text name/phone/email/handle against the caller's own
+   * phonebook, ranked phone/email hash match > confirmed-identity handle match > exact name match
+   * > substring name match. Used by the runtime capability an agent calls before acting on a
+   * person by name (e.g. "tell Kamau I'll take 20 bags") instead of guessing a node id itself.
+   */
+  resolveContact(input: {
+    sessionId: string | null;
+    query: string;
+    now?: Date;
+  }): ContactResolutionSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const query = input.query.trim();
+
+    if (query.length === 0) {
+      throw new Cp2Error(
+        400,
+        "network_resolve_query_required",
+        "A contact name, phone, email, or handle is required."
+      );
+    }
+
+    const nodes = [...this.networkNodes.values()].filter(
+      (node) => node.ownerUserId === session.user.id && node.degree > 0
+    );
+    const bestByNode = new Map<string, ContactResolutionMatchSummary>();
+    const record = (
+      node: NetworkNodeSummary,
+      matchType: ContactResolutionMatchSummary["matchType"],
+      confidence: number
+    ) => {
+      const existing = bestByNode.get(node.id);
+      if (existing === undefined || confidence > existing.confidence) {
+        bestByNode.set(node.id, { node, matchType, confidence });
+      }
+    };
+
+    for (const hashType of ["phone", "email"] as const) {
+      let candidateHash: string | null = null;
+      try {
+        candidateHash = createContactHash(hashType, query);
+      } catch {
+        candidateHash = null;
+      }
+      if (candidateHash === null) continue;
+      for (const node of nodes) {
+        const matches = node.contactHashIds.some((hashId) => {
+          const hash = this.contactHashes.get(hashId);
+          return (
+            hash !== undefined && hash.hashType === hashType && hash.hashValue === candidateHash
+          );
+        });
+        if (matches) record(node, hashType, 0.95);
+      }
+    }
+
+    const normalizedQuery = query.toLowerCase();
+    for (const node of nodes) {
+      for (const identityId of node.externalIdentityIds) {
+        const identity = this.externalIdentities.get(identityId);
+        if (identity?.handle !== null && identity?.handle !== undefined) {
+          if (identity.handle.toLowerCase() === normalizedQuery) {
+            record(node, "handle", 0.9);
+          }
+        }
+      }
+      const normalizedName = node.displayName.trim().toLowerCase();
+      if (normalizedName === normalizedQuery) {
+        record(node, "name", 0.85);
+      } else if (normalizedName.includes(normalizedQuery)) {
+        record(node, "name", 0.5);
+      }
+    }
+
+    return {
+      query,
+      matches: [...bestByNode.values()]
+        .map((match) => ({ ...match, node: sanitizeNetworkNode(match.node) }))
+        .sort((left, right) => right.confidence - left.confidence)
+    };
+  }
+
+  listIdentityCandidates(input: {
+    sessionId: string | null;
+    now?: Date;
+  }): IdentityCandidateSummary[] {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    return [...this.identityCandidates.values()]
+      .filter(
+        (candidate) => candidate.ownerUserId === session.user.id && candidate.status === "pending"
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  /**
+   * The only entry point for an external observation (today: ComputerRuntime reading untrusted
+   * web content) to reach the phonebook. Never mutates networkNodes/externalIdentities - it only
+   * ever creates a pending IdentityCandidateSummary, which requires an explicit
+   * confirmIdentityCandidate call from the owner (never from browser content) before it can become
+   * a real identity. `nodeId` is a best-effort guess (exact display-name match only - see
+   * findBestNodeMatchForCandidate) that the owner can accept, override, or reject.
+   */
+  proposeIdentityCandidate(input: {
+    sessionId: string | null;
+    provider: string;
+    providerSubject: string;
+    displayName: string;
+    handle?: string | null;
+    evidence: string;
+    now?: Date;
+  }): IdentityCandidateSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const provider = input.provider.trim().toLowerCase();
+    const providerSubject = input.providerSubject.trim();
+    const displayName = input.displayName.trim();
+    const evidence = input.evidence.trim();
+
+    if (
+      provider.length === 0 ||
+      providerSubject.length === 0 ||
+      displayName.length === 0 ||
+      evidence.length === 0
+    ) {
+      throw new Cp2Error(
+        400,
+        "identity_candidate_invalid",
+        "provider, providerSubject, displayName, and evidence are required."
+      );
+    }
+
+    const providerSubjectHash = createContactHash("social", `${provider}:${providerSubject}`);
+    const alreadyConfirmedId = this.externalIdentityIdBySubject.get(
+      `${session.user.id}:${provider}:${providerSubjectHash}`
+    );
+
+    if (alreadyConfirmedId !== undefined) {
+      throw new Cp2Error(
+        409,
+        "identity_candidate_already_confirmed",
+        "This identity is already linked to a contact."
+      );
+    }
+
+    const existingPending = [...this.identityCandidates.values()].find(
+      (candidate) =>
+        candidate.ownerUserId === session.user.id &&
+        candidate.status === "pending" &&
+        candidate.provider === provider &&
+        candidate.providerSubjectHash === providerSubjectHash
+    );
+
+    if (existingPending !== undefined) {
+      return existingPending;
+    }
+
+    const bestMatch = this.findBestNodeMatchForCandidate(session.user.id, displayName);
+    const candidate: IdentityCandidateSummary = {
+      id: randomUUID(),
+      ownerUserId: session.user.id,
+      nodeId: bestMatch?.id ?? null,
+      provider,
+      providerSubject,
+      providerSubjectHash,
+      displayName,
+      handle: input.handle?.trim() || null,
+      evidence,
+      confidence: bestMatch !== null ? 0.5 : 0.15,
+      status: "pending",
+      createdAt: now.toISOString(),
+      resolvedAt: null
+    };
+    this.identityCandidates.set(candidate.id, candidate);
+    return candidate;
+  }
+
+  confirmIdentityCandidate(input: {
+    sessionId: string | null;
+    candidateId: string;
+    targetNodeId?: string | null;
+    createNewContact?: boolean;
+    now?: Date;
+  }): NetworkNodeSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const candidate = this.requirePendingIdentityCandidate(session.user.id, input.candidateId);
+
+    let targetNode: NetworkNodeSummary;
+    if (input.createNewContact === true) {
+      targetNode = this.createManualNetworkNode({
+        ownerUserId: session.user.id,
+        displayName: candidate.displayName,
+        now
+      });
+    } else {
+      const nodeId = input.targetNodeId ?? candidate.nodeId;
+      if (nodeId === null || nodeId === undefined) {
+        throw new Cp2Error(
+          409,
+          "identity_candidate_ambiguous",
+          "Choose an existing contact for this identity, or confirm it as a new contact."
+        );
+      }
+      targetNode = this.requireNetworkNode(nodeId, session.user.id);
+    }
+
+    const identity = this.ensureExternalIdentity(
+      {
+        ownerUserId: session.user.id,
+        provider: candidate.provider,
+        providerSubject: candidate.providerSubject,
+        displayName: candidate.displayName,
+        handle: candidate.handle,
+        now
+      },
+      "observed"
+    );
+    targetNode = this.attachExternalIdentityToNode(targetNode, identity.id, now);
+
+    this.identityCandidates.set(candidate.id, {
+      ...candidate,
+      status: "confirmed",
+      resolvedAt: now.toISOString()
+    });
+
+    return targetNode;
+  }
+
+  rejectIdentityCandidate(input: {
+    sessionId: string | null;
+    candidateId: string;
+    now?: Date;
+  }): void {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const candidate = this.requirePendingIdentityCandidate(session.user.id, input.candidateId);
+    this.identityCandidates.set(candidate.id, {
+      ...candidate,
+      status: "rejected",
+      resolvedAt: now.toISOString()
+    });
+  }
+
+  /** Direct, owner-authored identity entry ("Kamau's Instagram is @kamau_cereals") - provenance
+   * "user_entered", attached immediately since the owner typing it themselves already is the
+   * confirmation. Distinct from proposeIdentityCandidate, which is for untrusted observations. */
+  addManualIdentity(input: {
+    sessionId: string | null;
+    nodeId: string;
+    provider: string;
+    providerSubject: string;
+    displayName?: string;
+    handle?: string | null;
+    now?: Date;
+  }): NetworkNodeSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const node = this.requireNetworkNode(input.nodeId, session.user.id);
+    const provider = input.provider.trim().toLowerCase();
+    const providerSubject = input.providerSubject.trim();
+
+    if (provider.length === 0 || providerSubject.length === 0) {
+      throw new Cp2Error(
+        400,
+        "network_identity_invalid",
+        "provider and providerSubject are required."
+      );
+    }
+
+    const identity = this.ensureExternalIdentity(
+      {
+        ownerUserId: session.user.id,
+        provider,
+        providerSubject,
+        displayName: input.displayName?.trim() || node.displayName,
+        handle: input.handle?.trim() || null,
+        now
+      },
+      "user_entered"
+    );
+    return this.attachExternalIdentityToNode(node, identity.id, now);
+  }
+
+  unlinkIdentity(input: {
+    sessionId: string | null;
+    nodeId: string;
+    externalIdentityId: string;
+    now?: Date;
+  }): NetworkNodeSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const node = this.requireNetworkNode(input.nodeId, session.user.id);
+
+    if (!node.externalIdentityIds.includes(input.externalIdentityId)) {
+      throw new Cp2Error(
+        404,
+        "network_identity_not_linked",
+        "This identity is not linked to that contact."
+      );
+    }
+
+    const updated: NetworkNodeSummary = {
+      ...node,
+      externalIdentityIds: node.externalIdentityIds.filter((id) => id !== input.externalIdentityId),
+      updatedAt: now.toISOString()
+    };
+    this.networkNodes.set(node.id, updated);
+    return updated;
+  }
+
   private ensureOwnerNetworkNode(user: UserSummary, now: Date): NetworkNodeSummary {
     const existing = [...this.networkNodes.values()].find(
       (node) => node.ownerUserId === user.id && node.degree === 0
@@ -529,7 +856,7 @@ export class NetworkDomain {
       sokoBusinessId: null,
       sokoAgentId: null,
       contactHashIds: [],
-      externalIdentityId: null,
+      externalIdentityIds: [],
       visibilityStatus: "direct",
       consentStatus: "granted",
       createdAt: now.toISOString(),
@@ -647,6 +974,7 @@ export class NetworkDomain {
     email?: string | null | undefined;
     providerSubject?: string | null | undefined;
     handle?: string | null | undefined;
+    provenance?: IdentityProvenance;
     now: Date;
   }): NetworkNodeSummary {
     const contactHashIds: string[] = [];
@@ -677,14 +1005,17 @@ export class NetworkDomain {
 
     const externalIdentityId =
       input.kind === "external_social"
-        ? this.ensureExternalIdentity({
-            ownerUserId: input.ownerUserId,
-            provider: input.sourcePlatform,
-            providerSubject: input.providerSubject ?? input.displayName,
-            displayName: input.displayName,
-            handle: input.handle ?? null,
-            now: input.now
-          }).id
+        ? this.ensureExternalIdentity(
+            {
+              ownerUserId: input.ownerUserId,
+              provider: input.sourcePlatform,
+              providerSubject: input.providerSubject ?? input.displayName,
+              displayName: input.displayName,
+              handle: input.handle ?? null,
+              now: input.now
+            },
+            input.provenance ?? "imported"
+          ).id
         : null;
     const sokoLink = this.findSokoIdentityLink({
       ownerUserId: input.ownerUserId,
@@ -704,7 +1035,7 @@ export class NetworkDomain {
       sokoBusinessId: sokoLink?.linkedBusinessId ?? null,
       sokoAgentId: sokoLink?.linkedAgentId ?? null,
       contactHashIds,
-      externalIdentityId,
+      externalIdentityIds: externalIdentityId === null ? [] : [externalIdentityId],
       visibilityStatus: input.degree === 1 ? "direct" : "agent_mediated",
       consentStatus: input.degree === 1 ? "pending" : "agent_required",
       createdAt: input.now.toISOString(),
@@ -781,14 +1112,17 @@ export class NetworkDomain {
     return contactHash;
   }
 
-  private ensureExternalIdentity(input: {
-    ownerUserId: string;
-    provider: string;
-    providerSubject: string;
-    displayName: string;
-    handle: string | null;
-    now: Date;
-  }): ExternalIdentitySummary {
+  private ensureExternalIdentity(
+    input: {
+      ownerUserId: string;
+      provider: string;
+      providerSubject: string;
+      displayName: string;
+      handle: string | null;
+      now: Date;
+    },
+    provenance: IdentityProvenance
+  ): ExternalIdentitySummary {
     const providerSubjectHash = createContactHash(
       "social",
       `${input.provider}:${input.providerSubject}`
@@ -807,6 +1141,7 @@ export class NetworkDomain {
       providerSubjectHash,
       displayName: input.displayName,
       handle: input.handle,
+      provenance,
       createdAt: input.now.toISOString()
     };
     this.externalIdentities.set(identity.id, identity);
@@ -850,6 +1185,7 @@ export class NetworkDomain {
         linkedBusinessId: linkedBusiness?.id ?? null,
         linkedAgentId: linkedBusiness?.sokoId ?? null,
         confidence: 0.95,
+        provenance: "imported",
         createdAt: input.now.toISOString()
       };
     }
@@ -895,6 +1231,11 @@ export class NetworkDomain {
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
       identityLinks: [...this.sokoIdentityLinks.values()]
         .filter((link) => link.ownerUserId === ownerUserId)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+      identityCandidates: [...this.identityCandidates.values()]
+        .filter(
+          (candidate) => candidate.ownerUserId === ownerUserId && candidate.status === "pending"
+        )
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
     };
   }
@@ -933,6 +1274,94 @@ export class NetworkDomain {
     }
 
     return node;
+  }
+
+  private requirePendingIdentityCandidate(
+    ownerUserId: string,
+    candidateId: string
+  ): IdentityCandidateSummary {
+    const candidate = this.identityCandidates.get(candidateId);
+
+    if (candidate === undefined || candidate.ownerUserId !== ownerUserId) {
+      throw new Cp2Error(404, "identity_candidate_not_found", "Identity candidate was not found.");
+    }
+
+    if (candidate.status !== "pending") {
+      throw new Cp2Error(
+        409,
+        "identity_candidate_already_resolved",
+        "This identity candidate has already been resolved."
+      );
+    }
+
+    return candidate;
+  }
+
+  /**
+   * Deliberately conservative: an exact, case-insensitive display-name match only. This is a
+   * suggestion the owner still has to confirm, never an auto-merge - per
+   * docs/architecture/phonebook-identity-resolution.md, nobody gets linked to an existing contact
+   * on name similarity alone.
+   */
+  private findBestNodeMatchForCandidate(
+    ownerUserId: string,
+    displayName: string
+  ): NetworkNodeSummary | null {
+    const normalized = displayName.trim().toLowerCase();
+    return (
+      [...this.networkNodes.values()].find(
+        (node) =>
+          node.ownerUserId === ownerUserId &&
+          node.degree > 0 &&
+          node.displayName.trim().toLowerCase() === normalized
+      ) ?? null
+    );
+  }
+
+  private createManualNetworkNode(input: {
+    ownerUserId: string;
+    displayName: string;
+    now: Date;
+  }): NetworkNodeSummary {
+    const node: NetworkNodeSummary = {
+      id: randomUUID(),
+      ownerUserId: input.ownerUserId,
+      kind: "external_contact",
+      displayName: input.displayName,
+      degree: 1,
+      sourceId: null,
+      sourceType: "manual",
+      sourcePlatform: null,
+      sokoUserId: null,
+      sokoBusinessId: null,
+      sokoAgentId: null,
+      contactHashIds: [],
+      externalIdentityIds: [],
+      visibilityStatus: "direct",
+      consentStatus: "granted",
+      createdAt: input.now.toISOString(),
+      updatedAt: input.now.toISOString()
+    };
+    this.networkNodes.set(node.id, node);
+    return node;
+  }
+
+  private attachExternalIdentityToNode(
+    node: NetworkNodeSummary,
+    externalIdentityId: string,
+    now: Date
+  ): NetworkNodeSummary {
+    if (node.externalIdentityIds.includes(externalIdentityId)) {
+      return node;
+    }
+
+    const updated: NetworkNodeSummary = {
+      ...node,
+      externalIdentityIds: [...node.externalIdentityIds, externalIdentityId],
+      updatedAt: now.toISOString()
+    };
+    this.networkNodes.set(node.id, updated);
+    return updated;
   }
 
   private updateAgentRouteStatus(

@@ -70,6 +70,34 @@ interface NetworkProviderSyncParams {
   provider: string;
 }
 
+interface NetworkResolveQuery {
+  query?: string;
+}
+
+interface IdentityCandidateParams {
+  candidateId: string;
+}
+
+interface IdentityCandidateConfirmBody {
+  targetNodeId?: string | null;
+  createNewContact?: boolean;
+}
+
+interface NetworkNodeIdentityParams {
+  nodeId: string;
+}
+
+interface NetworkIdentityUnlinkParams extends NetworkNodeIdentityParams {
+  externalIdentityId: string;
+}
+
+interface NetworkIdentityAddBody {
+  provider?: string;
+  providerSubject?: string;
+  displayName?: string;
+  handle?: string | null;
+}
+
 export function registerNetworkRoutes(app: FastifyInstance, store: Cp2Store): void {
   app.post(
     "/network/sync/contacts",
@@ -124,7 +152,8 @@ export function registerNetworkRoutes(app: FastifyInstance, store: Cp2Store): vo
             sessionId,
             provider,
             profiles,
-            sourceName: "Google Contacts"
+            sourceName: "Google Contacts",
+            provenance: "verified"
           });
         }
         return store.syncConnectedSocialProvider({ sessionId, provider });
@@ -232,6 +261,108 @@ export function registerNetworkRoutes(app: FastifyInstance, store: Cp2Store): vo
         return store.deleteNetworkSource({
           sessionId: readSessionCookie(request.headers.cookie),
           sourceId: parseString(request.params.sourceId, "sourceId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/network/contacts/resolve",
+    async (request: FastifyRequest<{ Querystring: NetworkResolveQuery }>, reply) => {
+      try {
+        return store.resolveContact({
+          sessionId: readSessionCookie(request.headers.cookie),
+          query: parseString(request.query.query, "query")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/network/identity-candidates", async (request, reply) => {
+    try {
+      return {
+        candidates: store.listIdentityCandidates({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/network/identity-candidates/:candidateId/confirm",
+    async (
+      request: FastifyRequest<{
+        Params: IdentityCandidateParams;
+        Body: IdentityCandidateConfirmBody;
+      }>,
+      reply
+    ) => {
+      try {
+        return store.confirmIdentityCandidate({
+          sessionId: readSessionCookie(request.headers.cookie),
+          candidateId: parseString(request.params.candidateId, "candidateId"),
+          targetNodeId: parseNullableString(request.body?.targetNodeId),
+          createNewContact: request.body?.createNewContact === true
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/network/identity-candidates/:candidateId/reject",
+    async (request: FastifyRequest<{ Params: IdentityCandidateParams }>, reply) => {
+      try {
+        store.rejectIdentityCandidate({
+          sessionId: readSessionCookie(request.headers.cookie),
+          candidateId: parseString(request.params.candidateId, "candidateId")
+        });
+        return { rejected: true };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/network/nodes/:nodeId/identities",
+    async (
+      request: FastifyRequest<{ Params: NetworkNodeIdentityParams; Body: NetworkIdentityAddBody }>,
+      reply
+    ) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return store.addManualIdentity({
+          sessionId: readSessionCookie(request.headers.cookie),
+          nodeId: parseString(request.params.nodeId, "nodeId"),
+          provider: parseString(body.provider, "provider"),
+          providerSubject: parseString(body.providerSubject, "providerSubject"),
+          ...(parseOptionalString(body.displayName) === undefined
+            ? {}
+            : { displayName: parseOptionalString(body.displayName) as string }),
+          handle: parseNullableString(body.handle)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/network/nodes/:nodeId/identities/:externalIdentityId",
+    async (request: FastifyRequest<{ Params: NetworkIdentityUnlinkParams }>, reply) => {
+      try {
+        return store.unlinkIdentity({
+          sessionId: readSessionCookie(request.headers.cookie),
+          nodeId: parseString(request.params.nodeId, "nodeId"),
+          externalIdentityId: parseString(request.params.externalIdentityId, "externalIdentityId")
         });
       } catch (error) {
         return sendCp2Error(reply, error);
