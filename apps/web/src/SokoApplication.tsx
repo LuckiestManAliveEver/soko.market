@@ -755,6 +755,7 @@ export function OwnerApp() {
       setStatusMessage,
       navigateToView,
       requireMessagingSignIn,
+      searchBuyFeed: handleSearchBuyFeed,
       loadProducts,
       loadSuppliers,
       loadCustomers,
