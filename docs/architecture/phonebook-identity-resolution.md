@@ -37,7 +37,7 @@ Every `ExternalIdentitySummary` and `SokoIdentityLinkSummary` carries an `Identi
 
 ## The observed path never mutates the phonebook directly
 
-`NetworkDomain.proposeIdentityCandidate` is the *only* entry point external observations may use.
+`NetworkDomain.proposeIdentityCandidate` is the _only_ entry point external observations may use.
 It never touches `networkNodes` or `externalIdentities` - it only ever creates a pending
 `IdentityCandidateSummary`, with a best-effort `nodeId` guess (an exact, case-insensitive
 display-name match - see `findBestNodeMatchForCandidate` - never a fuzzy or partial match, and
@@ -77,15 +77,15 @@ ExternalIdentitySummary (provenance: "observed") attached to a NetworkNodeSummar
 All are user-scoped (`requirePinVerifiedSession`, no `businessId`), matching every other
 `NetworkDomain` capability:
 
-| Tool name | Store method | Purpose |
-| --- | --- | --- |
-| `network.contacts.resolve` | `resolveContact` | "Who is this?" - resolve a name/phone/email/handle against the owner's own phonebook, ranked phone/email hash match > confirmed handle match > exact name > substring name. |
-| `network.identity.list` | `listIdentityCandidates` | List pending identity candidates awaiting confirmation. |
-| `network.identity.propose` | `proposeIdentityCandidate` | Record an observed identity as pending. Never mutates the phonebook. |
-| `network.identity.confirm` | `confirmIdentityCandidate` | Attach a pending candidate's identity to an existing or brand-new contact. |
-| `network.identity.reject` | `rejectIdentityCandidate` | Discard a pending candidate. |
-| `network.identity.unlink` | `unlinkIdentity` | Remove a previously attached identity from a contact (correcting a bad link). |
-| `network.identity.add` | `addManualIdentity` | Directly attach an owner-authored identity (provenance `user_entered`). |
+| Tool name                  | Store method               | Purpose                                                                                                                                                                     |
+| -------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `network.contacts.resolve` | `resolveContact`           | "Who is this?" - resolve a name/phone/email/handle against the owner's own phonebook, ranked phone/email hash match > confirmed handle match > exact name > substring name. |
+| `network.identity.list`    | `listIdentityCandidates`   | List pending identity candidates awaiting confirmation.                                                                                                                     |
+| `network.identity.propose` | `proposeIdentityCandidate` | Record an observed identity as pending. Never mutates the phonebook.                                                                                                        |
+| `network.identity.confirm` | `confirmIdentityCandidate` | Attach a pending candidate's identity to an existing or brand-new contact.                                                                                                  |
+| `network.identity.reject`  | `rejectIdentityCandidate`  | Discard a pending candidate.                                                                                                                                                |
+| `network.identity.unlink`  | `unlinkIdentity`           | Remove a previously attached identity from a contact (correcting a bad link).                                                                                               |
+| `network.identity.add`     | `addManualIdentity`        | Directly attach an owner-authored identity (provenance `user_entered`).                                                                                                     |
 
 `NetworkNodeSummary.externalIdentityIds` is an array (not a single nullable id) precisely so one
 contact can accumulate a phone, an email, an Instagram handle, a WhatsApp number, and a linked Soko
@@ -94,7 +94,7 @@ account without becoming multiple phonebook entries.
 ## What this deliberately does not do
 
 - It does not silently merge two people because their names are similar. `findBestNodeMatchForCandidate`
-  only ever proposes an *exact* case-insensitive display-name match, and even then the result is a
+  only ever proposes an _exact_ case-insensitive display-name match, and even then the result is a
   guess a human still has to confirm.
 - It does not require email or a specific social provider to exist before a contact can be
   resolved - phone-only phonebook contacts (from `syncPhoneContacts`) are resolvable by name and

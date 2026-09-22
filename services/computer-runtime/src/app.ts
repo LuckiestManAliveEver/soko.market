@@ -64,9 +64,8 @@ export function buildComputerRuntimeApp(options: {
       return { suspended: true };
     }
   );
-  app.post<{ Params: { sessionId: string } }>(
-    "/v1/sessions/:sessionId/resume",
-    async (request) => runtime.resume(request.params.sessionId)
+  app.post<{ Params: { sessionId: string } }>("/v1/sessions/:sessionId/resume", async (request) =>
+    runtime.resume(request.params.sessionId)
   );
   app.delete<{ Params: { sessionId: string } }>("/v1/sessions/:sessionId", async (request) => {
     await runtime.close(request.params.sessionId);
