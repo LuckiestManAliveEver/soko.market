@@ -15,6 +15,7 @@ import { importsRuntimeTools } from "../domains/imports.js";
 import { messagingRuntimeTools } from "../domains/messaging.js";
 import { workspaceRuntimeTools } from "../domains/workspace.js";
 import { sharedRuntimeTools } from "../domains/shared.js";
+import { computerRuntimeTools } from "../domains/computer.js";
 
 /**
  * The single canonical runtime-tool registry. Domain modules own metadata; this file only
@@ -36,5 +37,6 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
   ...importsRuntimeTools,
   ...messagingRuntimeTools,
   ...workspaceRuntimeTools,
-  ...sharedRuntimeTools
+  ...sharedRuntimeTools,
+  ...computerRuntimeTools
 };

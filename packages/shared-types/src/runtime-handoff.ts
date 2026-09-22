@@ -43,7 +43,17 @@ export interface RuntimeRejectedPath {
 }
 
 export type RuntimeContextReferenceKind =
-  "recall" | "message" | "document" | "artifact" | "external";
+  | "recall"
+  | "message"
+  | "document"
+  | "artifact"
+  | "external"
+  /** A ComputerRuntime session this checkpoint was captured for/around - refId is the
+   *  ComputerSession id (docs/architecture/computer-runtime.md). Never the session's content
+   *  itself (screenshots, page text, credentials); those stay in the session's own store, exactly
+   *  like every other RuntimeContextReferenceKind is a pointer, not a copy (see the interface
+   *  doc comment below). */
+  | "computer_session";
 
 /** A pointer into durable state (recall, a conversation message, a stored document, ...) - never
  *  the content itself. Keeping this a reference, not a copy, is what keeps `recall` (long-term

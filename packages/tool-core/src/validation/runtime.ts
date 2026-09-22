@@ -370,6 +370,49 @@ export function validateRuntimeToolInput(
         input.status.trim().length > 0
         ? valid()
         : invalid("Logistics runtime draft needs which delivery and the new status.");
+
+    case "computer.session.create":
+      return valid();
+
+    case "computer.session.resume":
+    case "computer.checkpoint":
+    case "computer.suspend":
+    case "computer.close":
+    case "computer.control.take":
+    case "computer.control.release":
+      return requiredStrings(input, ["computerSessionId"], "Which computer session?");
+
+    case "computer.navigate":
+      return requiredStrings(
+        input,
+        ["computerSessionId", "url"],
+        "Which computer session, and what URL should it navigate to?"
+      );
+
+    case "computer.observe":
+    case "computer.scroll":
+      return requiredStrings(input, ["computerSessionId"], "Which computer session?");
+
+    case "computer.click":
+      return requiredStrings(
+        input,
+        ["computerSessionId", "targetDescription"],
+        "Which computer session, and what should be clicked?"
+      );
+
+    case "computer.type":
+      return requiredStrings(
+        input,
+        ["computerSessionId", "targetDescription", "text"],
+        "Which computer session, what field, and what text?"
+      );
+
+    case "computer.upload":
+      return requiredStrings(
+        input,
+        ["computerSessionId", "targetDescription", "attachmentId"],
+        "Which computer session, what file input, and which attachment?"
+      );
   }
 }
 

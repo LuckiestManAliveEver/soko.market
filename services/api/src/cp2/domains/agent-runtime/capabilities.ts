@@ -19,6 +19,7 @@ import { executeNetworkCapability } from "./network-capabilities.js";
 import { executeCoreReadCapability } from "./core-read-capabilities.js";
 import { executeCommerceCapability } from "./commerce-capabilities.js";
 import { executeCommercialRecordsCapability } from "./commercial-records-capabilities.js";
+import { executeComputerCapability } from "./computer-capabilities.js";
 import {
   findRuntimeCustomerByName,
   findRuntimeProductByName,
@@ -68,6 +69,21 @@ export async function executeRuntimeCapability(
     case "commerce.search":
     case "commerce.checkout":
       return executeCommerceCapability(deps, input);
+
+    case "computer.session.create":
+    case "computer.session.resume":
+    case "computer.navigate":
+    case "computer.observe":
+    case "computer.click":
+    case "computer.type":
+    case "computer.scroll":
+    case "computer.upload":
+    case "computer.control.take":
+    case "computer.control.release":
+    case "computer.checkpoint":
+    case "computer.suspend":
+    case "computer.close":
+      return executeComputerCapability(deps, input);
 
     case "product.create":
       return deps.createProduct({

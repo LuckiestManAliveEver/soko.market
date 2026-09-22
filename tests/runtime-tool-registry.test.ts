@@ -51,7 +51,20 @@ describe("runtime tool registry", () => {
       "document_import.confirm",
       "messaging.send",
       "workspace.deliver",
-      "unknown.clarify"
+      "unknown.clarify",
+      "computer.session.create",
+      "computer.session.resume",
+      "computer.navigate",
+      "computer.observe",
+      "computer.click",
+      "computer.type",
+      "computer.scroll",
+      "computer.upload",
+      "computer.control.take",
+      "computer.control.release",
+      "computer.checkpoint",
+      "computer.suspend",
+      "computer.close"
     ]);
   });
 
@@ -110,7 +123,20 @@ describe("runtime tool registry", () => {
       ["document_import.confirm", "high", "import:write", true, false, false],
       ["messaging.send", "high", "customer:write", true, false, false],
       ["workspace.deliver", "medium", "business:read", false, false, false],
-      ["unknown.clarify", "low", "business:read", false, true, false]
+      ["unknown.clarify", "low", "business:read", false, true, false],
+      ["computer.session.create", "medium", "computer:use", false, false, false],
+      ["computer.session.resume", "low", "computer:use", false, false, false],
+      ["computer.navigate", "low", "computer:use", false, true, false],
+      ["computer.observe", "low", "computer:use", false, true, false],
+      ["computer.click", "medium", "computer:use", false, false, false],
+      ["computer.type", "medium", "computer:use", false, false, false],
+      ["computer.scroll", "low", "computer:use", false, true, false],
+      ["computer.upload", "medium", "computer:use", false, false, false],
+      ["computer.control.take", "low", "computer:control", false, false, false],
+      ["computer.control.release", "low", "computer:control", false, false, false],
+      ["computer.checkpoint", "low", "computer:use", false, true, false],
+      ["computer.suspend", "low", "computer:use", false, false, false],
+      ["computer.close", "low", "computer:use", false, false, false]
     ]);
   });
 

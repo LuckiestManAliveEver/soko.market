@@ -51,8 +51,14 @@ describe("registered-user purge script", () => {
     // (infra/db/migrations/088_runtime_experiences.sql, docs/architecture/experience-memory.md)
     // added cp2_runtime_experiences, classified DELETE: business-scoped recall/lesson records, same
     // family as cp2_agent_owner_corrections above.
-    expect(plan.size).toBe(195);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(188);
+    // ComputerRuntime (infra/db/migrations/089_computer_runtime.sql,
+    // docs/architecture/computer-runtime.md) added cp2_computer_sessions and
+    // cp2_computer_approvals to postgres-store.ts's normalizedCollections (each DELETE, approvals
+    // before sessions since it references them), plus cp2_computer_profiles - a hand-written
+    // typed-column table like cp2_external_registry_connections, not part of normalizedCollections,
+    // but still account-scoped encrypted browser-profile data that must be purged (DELETE).
+    expect(plan.size).toBe(198);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(191);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

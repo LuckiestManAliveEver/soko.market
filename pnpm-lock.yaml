@@ -89,6 +89,9 @@ importers:
       '@simplewebauthn/browser':
         specifier: ^13.0.0
         version: 13.3.0
+      '@soko/computer-runtime':
+        specifier: workspace:*
+        version: link:../../packages/computer-runtime
       '@soko/offline-runtime':
         specifier: workspace:*
         version: link:../../packages/offline-runtime
@@ -144,6 +147,8 @@ importers:
       '@soko/tool-core':
         specifier: workspace:*
         version: link:../tool-core
+
+  packages/computer-runtime: {}
 
   packages/event-core:
     dependencies:
@@ -244,6 +249,9 @@ importers:
       '@soko/business-core':
         specifier: workspace:*
         version: link:../../packages/business-core
+      '@soko/computer-runtime':
+        specifier: workspace:*
+        version: link:../../packages/computer-runtime
       '@soko/event-core':
         specifier: workspace:*
         version: link:../../packages/event-core
@@ -302,6 +310,25 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+
+  services/computer-worker:
+    dependencies:
+      '@soko/computer-runtime':
+        specifier: workspace:*
+        version: link:../../packages/computer-runtime
+      fastify:
+        specifier: ^5.2.1
+        version: 5.9.0
+      playwright:
+        specifier: ^1.61.1
+        version: 1.61.1
+    devDependencies:
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
   services/sync:
     dependencies:

@@ -16,6 +16,7 @@
     "@mlc-ai/web-llm": "0.2.85",
     "@mlc-ai/web-xgrammar": "0.1.27",
     "@simplewebauthn/browser": "^13.0.0",
+    "@soko/computer-runtime": "workspace:*",
     "@soko/offline-runtime": "workspace:*",
     "@soko/shared-types": "workspace:*",
     "@soko/sync-core": "workspace:*",

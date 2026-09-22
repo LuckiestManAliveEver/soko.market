@@ -3,6 +3,7 @@ import { Suspense, type ReactNode } from "react";
 import type { ConversationMessageContent } from "@soko/shared-types";
 
 import {
+  ComputerSessionCard,
   CustomerManagementCard,
   FulfilmentSplitCard,
   ImportManagementCard,
@@ -143,6 +144,17 @@ const generatedSurfaceRegistry: Partial<
         <LogisticsManagementCard
           businessId={content.businessId}
           {...(content.customerName === undefined ? {} : { customerName: content.customerName })}
+        />
+      </Suspense>
+    );
+  },
+  "computer-session": (content) => {
+    if (content.type !== "computer-session") return null;
+    return (
+      <Suspense fallback={<div className="inline-loading-card">Opening browser…</div>}>
+        <ComputerSessionCard
+          businessId={content.businessId}
+          computerSessionId={content.computerSessionId}
         />
       </Suspense>
     );

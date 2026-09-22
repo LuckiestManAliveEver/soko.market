@@ -67,6 +67,11 @@ export const normalizedCollections: NormalizedCollection[] = [
   // Durable execution event log (docs/architecture/durable-execution-plane.md). Purely additive
   // next to the checkpoint/transfer tables above; append-only, no FK ordering constraint on them.
   { key: "runtimeExecutionEvents", tableName: "cp2_runtime_execution_events" },
+  // ComputerRuntime (089_computer_runtime.sql, docs/architecture/computer-runtime.md). Sessions
+  // must persist before approvals: cp2_computer_approvals.session_id is a foreign key into
+  // cp2_computer_sessions.
+  { key: "computerSessions", tableName: "cp2_computer_sessions" },
+  { key: "computerApprovals", tableName: "cp2_computer_approvals" },
   { key: "modelCatalog", tableName: "cp2_model_catalog" },
   { key: "agentCatalog", tableName: "cp2_agent_catalog" },
   { key: "platformOperators", tableName: "cp2_platform_operators" },
@@ -2278,6 +2283,40 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     createdAt: timestampToIso(row.created_at),
     updatedAt: timestampToIso(row.updated_at)
   }));
+
+  const computerProfilesResult = await timedQuery<{
+    id: string;
+    account_id: string;
+    label: string;
+    site: string;
+    status: "connected" | "disconnected" | "needs_reauth";
+    encrypted_state: string | null;
+    created_at: Date;
+    updated_at: Date;
+  }>(
+    pool,
+    "load computer profiles",
+    `
+      select id, account_id, label, site, status, encrypted_state, created_at, updated_at
+      from cp2_computer_profiles
+      order by account_id, created_at, id
+    `
+  );
+  snapshot.computerProfiles = computerProfilesResult.rows.map((row) => ({
+    id: row.id,
+    accountId: row.account_id,
+    label: row.label,
+    site: row.site,
+    status:
+      row.status === "connected"
+        ? "CONNECTED"
+        : row.status === "needs_reauth"
+          ? "NEEDS_REAUTH"
+          : "DISCONNECTED",
+    encryptedState: row.encrypted_state,
+    createdAt: timestampToIso(row.created_at),
+    updatedAt: timestampToIso(row.updated_at)
+  }));
 }
 
 /**
@@ -2735,6 +2774,11 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     client,
     "cp2_external_registry_connections",
     snapshotRecords(snapshot.externalRegistryConnections)
+  );
+  await deleteMissingRows(
+    client,
+    "cp2_computer_profiles",
+    snapshotRecords(snapshot.computerProfiles)
   );
   await deleteMissingRows(client, "receipt_line_items", snapshotRecords(snapshot.receiptLineItems));
   await deleteMissingRows(client, "payments", snapshotRecords(snapshot.payments));
@@ -3296,6 +3340,38 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         connection.encryptedToken,
         connection.createdAt,
         connection.updatedAt
+      ]
+    );
+  }
+
+  for (const profile of snapshot.computerProfiles) {
+    const status =
+      profile.status === "CONNECTED"
+        ? "connected"
+        : profile.status === "NEEDS_REAUTH"
+          ? "needs_reauth"
+          : "disconnected";
+    await client.query(
+      `
+        insert into cp2_computer_profiles (
+          id, account_id, label, site, status, encrypted_state, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        on conflict (id) do update set
+          label = excluded.label,
+          status = excluded.status,
+          encrypted_state = excluded.encrypted_state,
+          updated_at = excluded.updated_at
+      `,
+      [
+        profile.id,
+        profile.accountId,
+        profile.label,
+        profile.site,
+        status,
+        profile.encryptedState,
+        profile.createdAt,
+        profile.updatedAt
       ]
     );
   }
@@ -4238,6 +4314,7 @@ function emptySnapshot(): Cp2Snapshot {
     externalIdentities: [],
     sokoIdentityLinks: [],
     externalRegistryConnections: [],
+    computerProfiles: [],
     auditEvents: []
   };
 }

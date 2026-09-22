@@ -188,6 +188,15 @@ services:
           name: soko-market-ocr-worker
           type: pserv
           property: hostport
+      - key: COMPUTER_WORKER_URL
+        fromService:
+          name: soko-market-computer-worker
+          type: pserv
+          property: hostport
+      - key: COMPUTER_WORKER_CONCURRENCY
+        value: "8"
+      - key: COMPUTER_WORKER_TIMEOUT_MS
+        value: "45000"
       - key: OCR_CONCURRENCY
         value: "1"
       - key: OCR_JOB_TIMEOUT_SECONDS
@@ -274,6 +283,38 @@ services:
         value: "5"
       - key: OCR_CONCURRENCY
         value: "1"
+
+  # Isolated computer-use (browser automation) worker (docs/architecture/computer-runtime.md,
+  # services/computer-worker/). Private, not public: only soko-market reaches it, over Render's
+  # private network at the "hostport" wired into COMPUTER_WORKER_URL above. This is the process
+  # boundary that keeps a browser crash or a malicious webpage's misbehavior from ever touching
+  # the main API process (task brief §25, computer-runtime-audit.md §3) - the only place in this
+  # deployment that loads a browser engine.
+  - type: pserv
+    name: soko-market-computer-worker
+    runtime: docker
+    branch: main
+    autoDeployTrigger: commit
+    # Headless Chromium plus concurrent sessions is memory-hungry; size up from starter once real
+    # concurrent-session traffic is observed on this service's Render metrics.
+    plan: starter
+    region: oregon
+    dockerfilePath: ./services/computer-worker/Dockerfile
+    dockerContext: .
+    buildFilter:
+      paths:
+        - render.yaml
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - packages/computer-runtime/**
+        - packages/shared-types/**
+        - services/computer-worker/**
+    envVars:
+      - key: COMPUTER_WORKER_PORT
+        value: "8091"
+      - key: COMPUTER_WORKER_HOST
+        value: 0.0.0.0
 
   - type: web
     name: soko-market-web-staging

@@ -562,7 +562,8 @@ export type ConversationMessageContent =
   | { type: "invoice-management"; businessId: string; customerName?: string }
   | { type: "payment-management"; businessId: string; customerName?: string }
   | { type: "import-management"; businessId: string; importJobId?: string }
-  | { type: "logistics-management"; businessId: string; customerName?: string };
+  | { type: "logistics-management"; businessId: string; customerName?: string }
+  | { type: "computer-session"; businessId: string; computerSessionId: string };
 
 export interface AccountShopSummary {
   business: BusinessSummary;
@@ -3467,6 +3468,19 @@ export type RuntimeToolName =
   | "document_import.confirm"
   | "messaging.send"
   | "workspace.deliver"
+  | "computer.session.create"
+  | "computer.session.resume"
+  | "computer.navigate"
+  | "computer.observe"
+  | "computer.click"
+  | "computer.type"
+  | "computer.scroll"
+  | "computer.upload"
+  | "computer.control.take"
+  | "computer.control.release"
+  | "computer.checkpoint"
+  | "computer.suspend"
+  | "computer.close"
   | "unknown.clarify";
 
 export type RuntimeParserIntent =

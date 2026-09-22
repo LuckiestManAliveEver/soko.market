@@ -114,6 +114,7 @@ export const PaymentManagementCard = lazy(() => import("./PaymentManagementCard"
 export const ImportManagementCard = lazy(() => import("./ImportManagementCard"));
 export const LogisticsManagementCard = lazy(() => import("./LogisticsManagementCard"));
 export const StatusBroadcastCard = lazy(() => import("./StatusBroadcastCard"));
+export const ComputerSessionCard = lazy(() => import("./ComputerSessionCard"));
 export const UnifiedCartSummary = lazy(() => import("./UnifiedCartSummary"));
 export const FulfilmentSplitCard = lazy(() => import("./FulfilmentSplitCard"));
 

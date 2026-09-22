@@ -27,6 +27,7 @@ import type {
   UnifiedCheckoutSummary
 } from "@soko/shared-types";
 import type { BusinessPermission } from "@soko/business-core";
+import type { ComputerActionResult, ComputerSession } from "@soko/computer-runtime";
 
 import type { ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
 import type { AgentRuntimeAdapter } from "../../../agent-harness/agent-runtime-adapter.js";
@@ -169,4 +170,102 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
   agentRuntimeAdapterResolver: (adapterId: string) => AgentRuntimeAdapter | undefined;
   runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
   runtimeModelProvider?: RuntimeModelProvider;
+
+  // ComputerRuntime (docs/architecture/computer-runtime.md) - delegates to
+  // services/api/src/cp2/domains/computer-runtime/store.ts, matching this interface's existing
+  // "flat delegate closure per capability" shape (createAgentRoute, searchBuyFeed, ...) rather
+  // than a nested sub-object, so it composes into executeComputerCapability's dispatch the same
+  // way every other domain here does.
+  computerSessionCreate: (input: {
+    sessionId: string | null;
+    businessId: string;
+    conversationId?: string;
+    profileId?: string | null;
+    startUrl?: string | null;
+    now: Date;
+  }) => Promise<ComputerSession>;
+  computerSessionResume: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    now: Date;
+  }) => Promise<ComputerSession>;
+  computerNavigate: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    url: string;
+    now: Date;
+  }) => Promise<ComputerActionResult>;
+  computerObserve: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    now: Date;
+  }) => Promise<ComputerActionResult>;
+  computerClick: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    targetDescription: string;
+    targetRef?: string;
+    now: Date;
+  }) => Promise<ComputerActionResult>;
+  computerType: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    targetDescription: string;
+    targetRef?: string;
+    text: string;
+    submit?: boolean;
+    now: Date;
+  }) => Promise<ComputerActionResult>;
+  computerScroll: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    direction: "up" | "down";
+    amountPx?: number;
+    now: Date;
+  }) => Promise<ComputerActionResult>;
+  computerUpload: (input: {
+    sessionId: string | null;
+    businessId: string;
+    conversationId?: string;
+    computerSessionId: string;
+    targetDescription: string;
+    attachmentId: string;
+    now: Date;
+  }) => Promise<ComputerActionResult>;
+  computerControlTake: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    now: Date;
+  }) => ComputerSession;
+  computerControlRelease: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    now: Date;
+  }) => Promise<ComputerSession>;
+  computerCheckpoint: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    now: Date;
+  }) => Promise<{ checkpointId: string }>;
+  computerSuspend: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    now: Date;
+  }) => Promise<void>;
+  computerClose: (input: {
+    sessionId: string | null;
+    businessId: string;
+    computerSessionId: string;
+    now: Date;
+  }) => Promise<void>;
 }

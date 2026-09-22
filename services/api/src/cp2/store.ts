@@ -305,6 +305,18 @@ import {
   type RuntimeOperationDedupRecord
 } from "./domains/runtime-handoff/store.js";
 import {
+  ComputerRuntimeDomain,
+  type StoredComputerApproval,
+  type StoredComputerProfile,
+  type StoredComputerSession
+} from "./domains/computer-runtime/store.js";
+import {
+  createComputerWorkerProviderFromEnvironment,
+  createRemoteComputerWorkerProvider
+} from "./computer-worker-provider.js";
+import type { ComputerRuntimeProvider } from "@soko/computer-runtime";
+import type { Metrics } from "@soko/observability";
+import {
   ModelTemplatesDomain,
   type ModelTemplatesSnapshot
 } from "./domains/model-templates/store.js";
@@ -654,6 +666,8 @@ export interface Cp2Snapshot extends ModelTemplatesSnapshot, VocabularySnapshot 
   runtimeTaskInstances?: RuntimeTaskInstance[];
   runtimeOperationDedup?: RuntimeOperationDedupRecord[];
   runtimeExecutionEvents?: RuntimeExecutionEvent[];
+  computerSessions?: StoredComputerSession[];
+  computerApprovals?: StoredComputerApproval[];
   modelCatalog?: AiModelSummary[];
   agentCatalog?: AgentDefinition[];
   platformOperators?: PlatformOperatorGrant[];
@@ -739,6 +753,7 @@ export interface Cp2Snapshot extends ModelTemplatesSnapshot, VocabularySnapshot 
   externalIdentities: ExternalIdentitySummary[];
   sokoIdentityLinks: SokoIdentityLinkSummary[];
   externalRegistryConnections: ExternalConnectionRecord[];
+  computerProfiles: StoredComputerProfile[];
   auditEvents: BusinessEvent[];
 }
 
@@ -753,6 +768,14 @@ export interface Cp2StoreOptions {
     shopId: string;
   }) => ModelRuntimeAdapter | undefined;
   agentRuntimeAdapterResolver?: (adapterId: string) => AgentRuntimeAdapter | undefined;
+  /** Injectable for tests and for a future non-remote-worker provider; defaults to
+   *  createRemoteComputerWorkerProvider() reading COMPUTER_WORKER_URL. */
+  computerRuntimeProvider?: ComputerRuntimeProvider;
+  computerNavigationPolicy?: { allowedDomains?: string[]; blockedDomains?: string[] };
+  /** Prometheus metrics sink. Only computerRuntimeDomain currently reads this (recordHttpRequest
+   *  etc. are wired at the app.ts route layer, not through Cp2Store) - see
+   *  docs/architecture/computer-runtime.md "Observability". */
+  metrics?: Metrics;
   platformDefaultRuntime?: PlatformDefaultRuntimePolicy;
   pushNotificationSender?: PushNotificationSender;
   messageEmailNotificationSender?: MessageEmailNotificationSender;
@@ -1271,6 +1294,120 @@ export class Cp2Store {
       confirmSupplierImport: (input) => this.confirmSupplierImport(input),
       sendChannelMessage: (input) => this.sendChannelMessage(input),
       deliverWorkspaceFile: (input) => this.messagingDomain.deliverWorkspaceFile(input),
+      computerSessionCreate: (input) =>
+        this.computerRuntimeDomain.createSession(
+          input.sessionId,
+          input.businessId,
+          input.conversationId,
+          {
+            ...(input.profileId === undefined ? {} : { profileId: input.profileId }),
+            ...(input.startUrl === undefined ? {} : { startUrl: input.startUrl })
+          },
+          input.now
+        ),
+      computerSessionResume: (input) =>
+        this.computerRuntimeDomain.resumeSession(
+          input.sessionId,
+          input.businessId,
+          input.computerSessionId,
+          input.now
+        ),
+      computerNavigate: (input) =>
+        this.computerRuntimeDomain.navigate(
+          input.sessionId,
+          input.businessId,
+          { computerSessionId: input.computerSessionId, url: input.url },
+          input.now
+        ),
+      computerObserve: (input) =>
+        this.computerRuntimeDomain.observe(
+          input.sessionId,
+          input.businessId,
+          { computerSessionId: input.computerSessionId },
+          input.now
+        ),
+      computerClick: (input) =>
+        this.computerRuntimeDomain.click(
+          input.sessionId,
+          input.businessId,
+          {
+            computerSessionId: input.computerSessionId,
+            targetDescription: input.targetDescription,
+            ...(input.targetRef === undefined ? {} : { targetRef: input.targetRef })
+          },
+          input.now
+        ),
+      computerType: (input) =>
+        this.computerRuntimeDomain.type(
+          input.sessionId,
+          input.businessId,
+          {
+            computerSessionId: input.computerSessionId,
+            targetDescription: input.targetDescription,
+            ...(input.targetRef === undefined ? {} : { targetRef: input.targetRef }),
+            text: input.text,
+            ...(input.submit === undefined ? {} : { submit: input.submit })
+          },
+          input.now
+        ),
+      computerScroll: (input) =>
+        this.computerRuntimeDomain.scroll(
+          input.sessionId,
+          input.businessId,
+          {
+            computerSessionId: input.computerSessionId,
+            direction: input.direction,
+            ...(input.amountPx === undefined ? {} : { amountPx: input.amountPx })
+          },
+          input.now
+        ),
+      computerUpload: (input) =>
+        this.computerRuntimeDomain.upload(
+          input.sessionId,
+          input.businessId,
+          input.conversationId,
+          {
+            computerSessionId: input.computerSessionId,
+            targetDescription: input.targetDescription,
+            attachmentId: input.attachmentId
+          },
+          input.now
+        ),
+      computerControlTake: (input) =>
+        this.computerRuntimeDomain.takeControl(
+          input.sessionId,
+          input.businessId,
+          input.computerSessionId,
+          input.now
+        ),
+      computerControlRelease: (input) =>
+        this.computerRuntimeDomain.releaseControl(
+          input.sessionId,
+          input.businessId,
+          input.computerSessionId,
+          input.now
+        ),
+      computerCheckpoint: (input) =>
+        this.computerRuntimeDomain.checkpointSession(
+          input.sessionId,
+          input.businessId,
+          input.computerSessionId,
+          input.now
+        ),
+      computerSuspend: (input) =>
+        this.computerRuntimeDomain.suspendSession(
+          input.sessionId,
+          input.businessId,
+          input.computerSessionId,
+          input.now
+        ),
+      computerClose: (input) =>
+        this.computerRuntimeDomain.closeSession(
+          input.sessionId,
+          input.businessId,
+          input.computerSessionId,
+          input.now
+        ),
       products: this.salesDomain.productsMap,
       customers: this.salesDomain.customersMap,
       invoices: this.salesDomain.invoicesMap,
@@ -1462,6 +1599,48 @@ export class Cp2Store {
       },
       recordAuditEvent: (input) => this.recordAuditEvent(input)
     });
+    this.computerRuntimeDomain = new ComputerRuntimeDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
+      requireAuthenticatedActor: (sessionId, now) => this.requireAuthenticatedActor(sessionId, now),
+      provider:
+        this.options.computerRuntimeProvider ??
+        createComputerWorkerProviderFromEnvironment(process.env, (event) =>
+          this.options.metrics?.recordResourceEvent(event)
+        ) ??
+        createRemoteComputerWorkerProvider({ endpoint: "http://127.0.0.1:8091" }),
+      checkpointTask: (sessionId, input, now) =>
+        this.runtimeHandoffDomain.createCheckpoint(
+          sessionId,
+          {
+            taskId: input.taskId,
+            ...(input.nextAction === undefined ? {} : { nextAction: input.nextAction }),
+            ...(input.relevantContext === undefined
+              ? {}
+              : { relevantContext: input.relevantContext })
+          },
+          now
+        ),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      encryptSecret: (value) => encryptOAuthToken(value),
+      decryptSecret: (value) => decryptOAuthToken(value),
+      createConversationMessage: (input) => this.createConversationMessage(input),
+      resolveAttachment: async (input) => {
+        const { record, bytes } = await this.messagingDomain.getConversationAttachment({
+          sessionId: input.sessionId,
+          conversationId: input.conversationId,
+          attachmentId: input.attachmentId,
+          now: input.now
+        });
+        return { filename: record.filename, mimeType: record.mimeType, bytes };
+      },
+      ...(this.options.computerNavigationPolicy === undefined
+        ? {}
+        : { navigationPolicy: this.options.computerNavigationPolicy }),
+      ...(this.options.metrics === undefined
+        ? {}
+        : { onMetric: (event) => this.options.metrics?.recordComputerRuntimeEvent(event) })
+    });
     this.seedCatalogDefaultsIfEmpty();
   }
 
@@ -1513,6 +1692,11 @@ export class Cp2Store {
   // agent+model+host a task uses) or `messagingDomain` (transcript), matching invariant 1.4:
   // runtime state, runtime binding, and conversation are independent concerns.
   private readonly runtimeHandoffDomain: RuntimeHandoffDomain;
+  // ComputerRuntime (docs/architecture/computer-runtime.md) - a computer-use execution capability,
+  // owned as its own domain for the same reason runtimeHandoffDomain is: independent state and
+  // invariants (session/control-mode/approval lifecycle) from conversation transcript, runtime
+  // binding, and the checkpoint chain it references but does not duplicate.
+  private readonly computerRuntimeDomain: ComputerRuntimeDomain;
   // DB-hosted model/agent catalog (see infra/db/migrations/071_platform_catalog.sql) and the
   // platform-operator grants that authorize editing it - see requirePlatformOperator,
   // listModelCatalog/upsertModelCatalogEntry/removeModelCatalogEntry, and the agent-catalog
@@ -3399,6 +3583,36 @@ export class Cp2Store {
       payload: { businessId: completed.businessId }
     });
     return completed;
+  }
+
+  // ComputerRuntime (docs/architecture/computer-runtime.md) - thin delegations to
+  // computerRuntimeDomain for the REST-direct surface (take/release control must be a fast,
+  // deterministic UI action, not a natural-language chat turn; approval decisions and profile
+  // management are likewise conventional UI routes calling the same canonical domain operations
+  // the computer.* capabilities use - see capability-first-runtime.md).
+  getComputerSessionView(...args: Parameters<ComputerRuntimeDomain["getSessionView"]>) {
+    return this.computerRuntimeDomain.getSessionView(...args);
+  }
+  takeComputerControl(...args: Parameters<ComputerRuntimeDomain["takeControl"]>) {
+    return this.computerRuntimeDomain.takeControl(...args);
+  }
+  releaseComputerControl(...args: Parameters<ComputerRuntimeDomain["releaseControl"]>) {
+    return this.computerRuntimeDomain.releaseControl(...args);
+  }
+  decideComputerApproval(...args: Parameters<ComputerRuntimeDomain["decideApproval"]>) {
+    return this.computerRuntimeDomain.decideApproval(...args);
+  }
+  saveComputerSessionAsProfile(...args: Parameters<ComputerRuntimeDomain["saveSessionAsProfile"]>) {
+    return this.computerRuntimeDomain.saveSessionAsProfile(...args);
+  }
+  disconnectComputerProfile(...args: Parameters<ComputerRuntimeDomain["disconnectProfile"]>) {
+    return this.computerRuntimeDomain.disconnectProfile(...args);
+  }
+  listComputerProfiles(...args: Parameters<ComputerRuntimeDomain["listProfiles"]>) {
+    return this.computerRuntimeDomain.listProfiles(...args);
+  }
+  closeComputerSession(...args: Parameters<ComputerRuntimeDomain["closeSession"]>) {
+    return this.computerRuntimeDomain.closeSession(...args);
   }
 
   // Runtime Handoff Protocol (docs/architecture/runtime-handoff-protocol.md) - thin delegations to
@@ -6905,6 +7119,8 @@ export class Cp2Store {
       runtimeTaskInstances: [...this.runtimeHandoffDomain.taskInstancesMap.values()],
       runtimeOperationDedup: [...this.runtimeHandoffDomain.operationDedupMap.values()],
       runtimeExecutionEvents: [...this.runtimeHandoffDomain.executionEventsMap.values()],
+      computerSessions: [...this.computerRuntimeDomain.sessionsMap.values()],
+      computerApprovals: [...this.computerRuntimeDomain.approvalsMap.values()],
       modelCatalog: [...this.modelCatalog.values()].map(cloneModelCatalogEntry),
       agentCatalog: [...this.agentCatalog.values()].map(cloneAgentCatalogEntry),
       platformOperators: [...this.platformOperators.values()],
@@ -6993,6 +7209,7 @@ export class Cp2Store {
       externalIdentities: [...this.networkDomain.externalIdentitiesMap.values()],
       sokoIdentityLinks: [...this.networkDomain.sokoIdentityLinksMap.values()],
       externalRegistryConnections: [...this.externalConnectionsDomain.connectionsMap.values()],
+      computerProfiles: [...this.computerRuntimeDomain.profilesMap.values()],
       auditEvents: [...this.auditEvents]
     };
   }
@@ -7015,6 +7232,7 @@ export class Cp2Store {
     this.vocabularyDomain.clear();
     this.nativeRuntimeBindings.clear();
     this.runtimeHandoffDomain.clear();
+    this.computerRuntimeDomain.clear();
     this.modelCatalog.clear();
     this.agentCatalog.clear();
     this.platformOperators.clear();
@@ -7111,6 +7329,7 @@ export class Cp2Store {
     this.vocabularyDomain.restore(snapshot);
     this.nativeRuntimeBindings.restore(snapshot);
     this.runtimeHandoffDomain.restore(snapshot);
+    this.computerRuntimeDomain.restore(snapshot);
     this.salesDomain.restore(snapshot);
 
     for (const state of snapshot.marketplaceIntroStates ?? []) {

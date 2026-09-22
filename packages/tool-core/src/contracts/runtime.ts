@@ -135,6 +135,19 @@ export type RuntimeToolName =
   | "document_import.confirm"
   | "messaging.send"
   | "workspace.deliver"
+  | "computer.session.create"
+  | "computer.session.resume"
+  | "computer.navigate"
+  | "computer.observe"
+  | "computer.click"
+  | "computer.type"
+  | "computer.scroll"
+  | "computer.upload"
+  | "computer.control.take"
+  | "computer.control.release"
+  | "computer.checkpoint"
+  | "computer.suspend"
+  | "computer.close"
   | "unknown.clarify";
 
 /**

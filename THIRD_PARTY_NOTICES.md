@@ -22,6 +22,23 @@ No required paid OCR API is used by the default production receipt OCR flow.
 
 Phone numbers are normalized only; the authentication system does not perform SMS verification.
 
+## Computer runtime (browser automation)
+
+- Playwright 1.61.1 — Apache License 2.0 — drives the isolated Chromium instance inside
+  `services/computer-worker` (docs/architecture/computer-runtime.md). Used as a library
+  dependency and through its `mcr.microsoft.com/playwright` base Docker image; no Playwright
+  source was copied into this repository. Chromium itself is distributed under the BSD-style
+  Chromium license via that same base image.
+- Fastify 5.x — MIT — already a direct dependency of `@soko/api`; reused unmodified as the
+  computer worker's own minimal HTTP server.
+
+No code from Stagehand, Browser Use, Browser Use Web UI, Open Operator, Skyvern, or BrowserCode
+was copied into this repository. Those projects were reviewed only as architectural references
+(see `docs/adr/ADR-computer-runtime-ownership.md`) for the provider-adapter and human-takeover
+patterns; Soko's `ComputerRuntimeProvider` contract (`packages/computer-runtime/src/provider.ts`)
+is an original, provider-neutral interface, and the shipped provider talks to Playwright directly
+rather than depending on any of those frameworks' own libraries.
+
 ## Optional on-device AI models
 
 Soko can download these optional GGUF weights directly from Hugging Face into private device

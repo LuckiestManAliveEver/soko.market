@@ -93,7 +93,9 @@ export type BusinessPermission =
   | "beta:telemetry"
   | "launch:read"
   | "launch:write"
-  | "launch:support";
+  | "launch:support"
+  | "computer:use"
+  | "computer:control";
 
 const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
   owner: new Set([
@@ -136,7 +138,9 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "beta:telemetry",
     "launch:read",
     "launch:write",
-    "launch:support"
+    "launch:support",
+    "computer:use",
+    "computer:control"
   ]),
   manager: new Set([
     "business:read",
@@ -169,7 +173,9 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "beta:support",
     "beta:telemetry",
     "launch:read",
-    "launch:support"
+    "launch:support",
+    "computer:use",
+    "computer:control"
   ]),
   sales_agent: new Set([
     "business:read",
@@ -188,7 +194,9 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "beta:support",
     "beta:telemetry",
     "launch:read",
-    "launch:support"
+    "launch:support",
+    "computer:use",
+    "computer:control"
   ]),
   cashier: new Set([
     "business:read",

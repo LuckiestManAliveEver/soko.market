@@ -71,6 +71,7 @@ import {
 } from "./domains/sales/routes.js";
 import { registerAgentRuntimeRoutes } from "./domains/agent-runtime/routes.js";
 import { registerRuntimeHandoffRoutes } from "./domains/runtime-handoff/routes.js";
+import { registerComputerRuntimeRoutes } from "./domains/computer-runtime/routes.js";
 import { registerMessagingRoutes } from "./domains/messaging/routes.js";
 import { registerOtpRoutes } from "./domains/otp/routes.js";
 import { registerDeviceBootstrapRoutes } from "./domains/device-bootstrap/routes.js";
@@ -1564,6 +1565,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     huggingFaceAgentCatalog
   );
   registerRuntimeHandoffRoutes(app, store);
+  registerComputerRuntimeRoutes(app, store);
   registerModelTemplateRoutes(app, store);
 
   registerRuntimeRegistryRoutes(app, {

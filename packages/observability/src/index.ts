@@ -48,6 +48,24 @@ export interface InstrumentPoolOptions {
   maxConnections?: number;
 }
 
+/** Mirrors @soko/computer-runtime's ComputerRuntimeMetricEvent shape structurally (this package
+ *  stays dependency-free of @soko/computer-runtime, same reasoning as ResourceControlMetricEvent
+ *  above) - the computer-runtime domain's onMetric callback feeds these in directly. */
+export type ComputerRuntimeMetricEvent =
+  | { type: "session_created" }
+  | { type: "session_closed" }
+  | {
+      type: "action";
+      toolName: string;
+      outcome: "executed" | "blocked" | "awaiting_approval" | "rejected" | "outcome_unknown";
+    }
+  | { type: "approval_requested" }
+  | { type: "approval_approved" }
+  | { type: "approval_rejected" }
+  | { type: "human_takeover" }
+  | { type: "checkpoint" }
+  | { type: "provider_error" };
+
 export interface Metrics {
   readonly registry: Registry;
   readonly contentType: string;
@@ -98,6 +116,12 @@ export interface Metrics {
    * Rethrows whatever `fn` throws after recording it.
    */
   timeScheduledJob<T>(job: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Feeds one ComputerRuntime domain event (docs/architecture/computer-runtime.md) into the
+   * computer_* counters below - the same event-driven-counter pattern recordResourceEvent already
+   * uses, since these are all point-in-time occurrences rather than something to sample live.
+   */
+  recordComputerRuntimeEvent(event: ComputerRuntimeMetricEvent): void;
 }
 
 export interface CreateMetricsOptions {
@@ -304,6 +328,60 @@ export function createMetrics(options: CreateMetricsOptions): Metrics {
     registers: [registry]
   });
 
+  // ComputerRuntime (docs/architecture/computer-runtime.md).
+  const computerSessionsCreatedCounter = new Counter({
+    name: "computer_sessions_created_total",
+    help: "Computer-use sessions created.",
+    registers: [registry]
+  });
+  const computerSessionsActiveGauge = new Gauge({
+    name: "computer_sessions_active",
+    help: "Computer-use sessions not yet closed.",
+    registers: [registry]
+  });
+  const computerActionsCounter = new Counter({
+    name: "computer_actions_total",
+    help: "Computer-use actions dispatched, by tool and outcome.",
+    labelNames: ["tool_name", "outcome"],
+    registers: [registry]
+  });
+  const computerActionsFailedCounter = new Counter({
+    name: "computer_actions_failed_total",
+    help: "Computer-use actions that did not execute (blocked, rejected, or outcome-unknown).",
+    labelNames: ["tool_name", "outcome"],
+    registers: [registry]
+  });
+  const computerApprovalsRequestedCounter = new Counter({
+    name: "computer_approvals_requested_total",
+    help: "Consequential computer-use actions that required explicit user approval.",
+    registers: [registry]
+  });
+  const computerApprovalsApprovedCounter = new Counter({
+    name: "computer_approvals_approved_total",
+    help: "Computer-use approvals approved by the user.",
+    registers: [registry]
+  });
+  const computerApprovalsRejectedCounter = new Counter({
+    name: "computer_approvals_rejected_total",
+    help: "Computer-use approvals rejected by the user.",
+    registers: [registry]
+  });
+  const computerHumanTakeoversCounter = new Counter({
+    name: "computer_human_takeovers_total",
+    help: "Times a human took control of a computer-use session from the agent.",
+    registers: [registry]
+  });
+  const computerRuntimeHandoffsCounter = new Counter({
+    name: "computer_runtime_handoffs_total",
+    help: "RuntimeHandoff checkpoints captured for a computer-use session.",
+    registers: [registry]
+  });
+  const computerProviderErrorsCounter = new Counter({
+    name: "computer_provider_errors_total",
+    help: "Errors returned by the isolated computer-use worker.",
+    registers: [registry]
+  });
+
   return {
     registry,
     contentType: registry.contentType,
@@ -389,6 +467,42 @@ export function createMetrics(options: CreateMetricsOptions): Metrics {
       }
       if (event.type === "opened" || event.type === "closed" || event.type === "half_open_probe") {
         circuitBreakerTransitionCounter.inc({ name: event.name, state: event.type });
+      }
+    },
+
+    recordComputerRuntimeEvent(event) {
+      switch (event.type) {
+        case "session_created":
+          computerSessionsCreatedCounter.inc();
+          computerSessionsActiveGauge.inc();
+          return;
+        case "session_closed":
+          computerSessionsActiveGauge.dec();
+          return;
+        case "action":
+          computerActionsCounter.inc({ tool_name: event.toolName, outcome: event.outcome });
+          if (event.outcome !== "executed") {
+            computerActionsFailedCounter.inc({ tool_name: event.toolName, outcome: event.outcome });
+          }
+          return;
+        case "approval_requested":
+          computerApprovalsRequestedCounter.inc();
+          return;
+        case "approval_approved":
+          computerApprovalsApprovedCounter.inc();
+          return;
+        case "approval_rejected":
+          computerApprovalsRejectedCounter.inc();
+          return;
+        case "human_takeover":
+          computerHumanTakeoversCounter.inc();
+          return;
+        case "checkpoint":
+          computerRuntimeHandoffsCounter.inc();
+          return;
+        case "provider_error":
+          computerProviderErrorsCounter.inc();
+          return;
       }
     },
 
