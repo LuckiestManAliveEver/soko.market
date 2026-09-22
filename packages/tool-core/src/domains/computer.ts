@@ -5,6 +5,18 @@ const computerInputSchema = {
   properties: {
     sessionId: { type: "string", description: "Computer session id." },
     profileId: { type: "string", description: "Optional persistent browser profile id." },
+    externalSurfaceId: {
+      type: "string",
+      description: "Provider-neutral id of the authorized external UI surface."
+    },
+    externalSurfaceType: {
+      type: "string",
+      description: "External surface type: web, pwa, desktop, or mobile-web."
+    },
+    externalSurfaceProvider: {
+      type: "string",
+      description: "Optional external surface provider label for audit metadata."
+    },
     approvalId: {
       type: "string",
       description: "One-time approval id for the exact proposed action."

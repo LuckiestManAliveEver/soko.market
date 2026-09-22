@@ -75,7 +75,7 @@ export function ComputerRuntimeCard(props: { businessId: string; conversationId:
           conversationId: props.conversationId,
           taskId: props.conversationId,
           profileId: profile.id,
-          executionHostId: "browser-computer"
+          externalSurface: { id: "generic-web", type: "web" }
         }
       });
       setSession(created);

@@ -17,6 +17,85 @@ export type ComputerActionKind =
 
 export type ComputerActionRisk = "READ" | "MUTATE" | "CONSEQUENTIAL";
 
+export type ExternalSurfaceType = "web" | "pwa" | "desktop" | "mobile-web";
+
+/** Serializable identity for an authorized UI operated by ComputerRuntime. It is deliberately
+ * not a native agent definition and must never be added to the native agent registry implicitly. */
+export interface ExternalSurfaceDescriptor {
+  id: string;
+  type: ExternalSurfaceType;
+  provider?: string;
+}
+
+export interface SurfaceLaunchContext {
+  accountId: string;
+  businessId: string | null;
+  conversationId: string | null;
+  profileId?: string | null;
+}
+
+export interface SurfaceSession {
+  id: string;
+  surface: ExternalSurfaceDescriptor;
+  computerSessionId: string;
+}
+
+export type SurfaceObservation = ComputerObservation;
+
+/** Provider-neutral adapter contract. Implementations delegate UI operation to ComputerRuntime;
+ * an ExternalSurface is a computational surface, never a second agent runtime. */
+export interface ExternalSurface {
+  id: string;
+  type: ExternalSurfaceType;
+  provider?: string;
+  launch(context: SurfaceLaunchContext): Promise<SurfaceSession>;
+  attach(sessionId: string): Promise<SurfaceSession>;
+  inspect(sessionId: string): Promise<SurfaceObservation>;
+  close(sessionId: string): Promise<void>;
+}
+
+export type CapabilityExecutionMode =
+  | "internal"
+  | "native_agent"
+  | "mcp"
+  | "api"
+  | "installed_integration"
+  | "computer_use"
+  | "unsupported";
+
+export interface CapabilityAvailability {
+  internal?: boolean;
+  nativeAgent?: boolean;
+  mcp?: boolean;
+  api?: boolean;
+  installedIntegration?: boolean;
+  authorizedSurface?: boolean;
+}
+
+export interface CapabilityResolution {
+  executionMode: CapabilityExecutionMode;
+  reason: string;
+  considered: CapabilityExecutionMode[];
+}
+
+export interface ComputerExecutionMetadata {
+  executionMode: "computer_use";
+  orchestratingAgentId: string;
+  orchestratingModelId?: string;
+  externalSurface: ExternalSurfaceDescriptor;
+  capabilityResolution: CapabilityResolution;
+}
+
+/** Portable computer-use state. Secure browser material remains in protected profile/session
+ * storage and is referenced here only by opaque identifiers. */
+export interface ComputerRuntimeCheckpoint extends ComputerExecutionMetadata {
+  computerSessionId: string;
+  currentUrl?: string;
+  observationRef?: string;
+  browserStateRef?: string;
+  pendingApproval?: string;
+}
+
 export type ComputerRuntimeStatus =
   | "RUNNING"
   | "SUSPENDED"
@@ -55,6 +134,7 @@ export interface ComputerSession {
   controlMode: ComputerControlMode;
   status: ComputerRuntimeStatus;
   currentUrl: string | null;
+  execution: ComputerExecutionMetadata;
   createdAt: string;
   updatedAt: string;
 }
@@ -109,6 +189,10 @@ export interface ComputerAuditEvent {
   businessId: string | null;
   conversationId: string | null;
   agentId: string | null;
+  modelId: string | null;
+  executionMode: "computer_use";
+  externalSurface: ExternalSurfaceDescriptor;
+  resolutionReason: string;
   runtimeInstanceId: string | null;
   computerSessionId: string;
   executionHostId: string;
@@ -141,6 +225,9 @@ export interface CreateComputerSessionInput {
   executionHostId: string;
   taskId?: string | null;
   agentId?: string | null;
+  modelId?: string | null;
+  externalSurface?: ExternalSurfaceDescriptor;
+  capabilityAvailability?: CapabilityAvailability;
   runtimeInstanceId?: string | null;
 }
 

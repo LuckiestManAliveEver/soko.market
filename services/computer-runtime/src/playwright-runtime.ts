@@ -3,6 +3,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import type {
   ComputerAction,
   ComputerActionResult,
+  ComputerExecutionMetadata,
   ComputerNavigationPolicy,
   ComputerObservation,
   ComputerSession,
@@ -25,6 +26,7 @@ export interface WorkerSessionInput {
   profileId: string | null;
   executionHostId: string;
   runtimeInstanceId: string | null;
+  execution: ComputerExecutionMetadata;
   storageState?: string | null;
   policy: ComputerNavigationPolicy;
 }
@@ -55,6 +57,7 @@ export class PlaywrightComputerRuntime {
       controlMode: "AGENT_CONTROLLED",
       status: "RUNNING",
       currentUrl: null,
+      execution: input.execution,
       createdAt: now,
       updatedAt: now
     };

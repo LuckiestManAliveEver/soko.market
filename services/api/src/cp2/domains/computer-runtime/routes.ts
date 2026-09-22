@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { ComputerAction, ComputerActionKind } from "@soko/shared-types";
+import type {
+  ComputerAction,
+  ComputerActionKind,
+  ExternalSurfaceDescriptor,
+  ExternalSurfaceType
+} from "@soko/shared-types";
 import { Cp2Error, readSessionCookie, type Cp2Store } from "../../store.js";
 import {
   parseNullableString,
@@ -44,6 +49,19 @@ function action(body: unknown, sessionId: string): ComputerAction {
   };
 }
 
+function externalSurface(body: Record<string, unknown>): ExternalSurfaceDescriptor {
+  const value = parseRequestBody(body.externalSurface ?? {});
+  const type = String(value.type ?? "web");
+  if (!["web", "pwa", "desktop", "mobile-web"].includes(type)) {
+    throw new Cp2Error(400, "external_surface_type_invalid", "External surface type is invalid.");
+  }
+  return {
+    id: parseString(value.id ?? "generic-web", "externalSurface.id"),
+    type: type as ExternalSurfaceType,
+    ...(typeof value.provider === "string" ? { provider: value.provider } : {})
+  };
+}
+
 export function registerComputerRuntimeRoutes(app: FastifyInstance, store: Cp2Store): void {
   app.get("/v1/computer/profiles", async (request, reply) => {
     try {
@@ -60,14 +78,12 @@ export function registerComputerRuntimeRoutes(app: FastifyInstance, store: Cp2St
   app.post("/v1/computer/profiles", async (request, reply) => {
     try {
       const body = parseRequestBody(request.body);
-      return reply
-        .code(201)
-        .send(
-          store.createComputerProfile(readSessionCookie(request.headers.cookie), {
-            businessId: parseNullableString(body.businessId ?? null),
-            label: parseString(body.label, "label")
-          })
-        );
+      return reply.code(201).send(
+        store.createComputerProfile(readSessionCookie(request.headers.cookie), {
+          businessId: parseNullableString(body.businessId ?? null),
+          label: parseString(body.label, "label")
+        })
+      );
     } catch (error) {
       return sendCp2Error(reply, error);
     }
@@ -95,11 +111,7 @@ export function registerComputerRuntimeRoutes(app: FastifyInstance, store: Cp2St
           conversationId: parseNullableString(body.conversationId ?? null),
           taskId: parseNullableString(body.taskId ?? null),
           profileId: parseNullableString(body.profileId ?? null),
-          executionHostId: parseString(
-            body.executionHostId ?? "browser-computer",
-            "executionHostId"
-          ),
-          agentId: parseNullableString(body.agentId ?? null),
+          externalSurface: externalSurface(body),
           runtimeInstanceId: parseNullableString(body.runtimeInstanceId ?? null),
           ...(typeof body.policy === "object" && body.policy !== null
             ? { policy: body.policy }

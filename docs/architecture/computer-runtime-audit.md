@@ -8,7 +8,12 @@ The native runtime graph is provider-neutral and lives in `cp2_native_runtime_ag
 
 Runtime continuity is already represented by immutable `RuntimeHandoff` checkpoints in `packages/shared-types/src/runtime-handoff.ts` and the `cp2_runtime_handoffs`, `cp2_runtime_task_heads`, and `cp2_runtime_task_instances` tables from migration `083_runtime_handoff_protocol.sql`.
 
-There is no current production browser automation provider, live browser stream, encrypted browser-profile store, or computer worker service in the repo.
+> Historical note: this audit describes the pre-implementation baseline. The worker, live view,
+> encrypted profiles, persistence, approvals, and external-surface compatibility layer are now
+> implemented. See `docs/architecture/computer-runtime.md` for the current architecture.
+
+At the time of this audit there was no production browser automation provider, live browser stream,
+encrypted browser-profile store, or computer worker service in the repo.
 
 ## Reusable Components
 
@@ -24,7 +29,7 @@ Older generic names such as `agents`, `models`, `agent_model_bindings`, `executi
 
 Execution Fabric tables were retired. Computer use should extend the native runtime graph rather than revive the retired fabric.
 
-## Missing Components
+## Missing Components At Audit Time
 
 - Isolated browser worker service.
 - Provider adapter, such as Stagehand or remote CDP, with license review.

@@ -30,6 +30,24 @@ describe("computer runtime browser integration", () => {
         profileId: null,
         executionHostId: "browser-computer",
         runtimeInstanceId: "conversation-a",
+        execution: {
+          executionMode: "computer_use",
+          orchestratingAgentId: "openclaw",
+          orchestratingModelId: "spark",
+          externalSurface: { id: "generic-web", type: "web" },
+          capabilityResolution: {
+            executionMode: "computer_use",
+            reason: "Test authorized UI fallback.",
+            considered: [
+              "internal",
+              "native_agent",
+              "mcp",
+              "api",
+              "installed_integration",
+              "computer_use"
+            ]
+          }
+        },
         policy: {
           allowedDomains: ["127.0.0.1"],
           blockedDomains: [],

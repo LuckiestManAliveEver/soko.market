@@ -3,7 +3,8 @@ import type {
   ComputerActionResult,
   ComputerNavigationPolicy,
   ComputerObservation,
-  ComputerSession
+  ComputerSession,
+  ComputerExecutionMetadata
 } from "@soko/shared-types";
 
 export interface ComputerWorkerClient {
@@ -14,6 +15,7 @@ export interface ComputerWorkerClient {
     profileId: string | null;
     executionHostId: string;
     runtimeInstanceId: string | null;
+    execution: ComputerExecutionMetadata;
     storageState: string | null;
     policy: ComputerNavigationPolicy;
   }): Promise<ComputerSession>;

@@ -5,13 +5,20 @@ import type {
   ComputerActionResult,
   ComputerApproval,
   ComputerAuditEvent,
+  CapabilityAvailability,
+  ComputerExecutionMetadata,
   ComputerNavigationPolicy,
   ComputerObservation,
   ComputerProfile,
   ComputerProfileRecord,
-  ComputerSession
+  ComputerSession,
+  ExternalSurfaceDescriptor
 } from "@soko/shared-types";
-import { classifyComputerAction, compileUntrustedWebObservation } from "@soko/tool-core";
+import {
+  classifyComputerAction,
+  compileUntrustedWebObservation,
+  resolveCapabilityRoute
+} from "@soko/tool-core";
 import { decryptOAuthToken, encryptOAuthToken } from "../../oauth.js";
 import { Cp2Error } from "../../cp2-error.js";
 import type { ComputerWorkerClient } from "../../../computer-runtime/client.js";
@@ -20,6 +27,7 @@ export interface ManagedComputerSession {
   session: ComputerSession;
   taskId: string | null;
   agentId: string | null;
+  modelId: string | null;
   currentObservation: ComputerObservation | null;
 }
 
@@ -162,7 +170,10 @@ export class ComputerRuntimeDomain {
       profileId: string | null;
       executionHostId: string;
       agentId: string | null;
+      modelId: string | null;
       runtimeInstanceId: string | null;
+      externalSurface?: ExternalSurfaceDescriptor;
+      capabilityAvailability?: CapabilityAvailability;
       policy?: Partial<ComputerNavigationPolicy>;
     },
     now = new Date()
@@ -174,6 +185,37 @@ export class ComputerRuntimeDomain {
     const storageState = profile?.encryptedStorageState
       ? decryptOAuthToken(profile.encryptedStorageState)
       : null;
+    const capabilityResolution = resolveCapabilityRoute({
+      ...input.capabilityAvailability,
+      authorizedSurface: input.capabilityAvailability?.authorizedSurface ?? true
+    });
+    if (capabilityResolution.executionMode !== "computer_use") {
+      throw new Cp2Error(
+        capabilityResolution.executionMode === "unsupported" ? 422 : 409,
+        capabilityResolution.executionMode === "unsupported"
+          ? "computer_capability_unsupported"
+          : "computer_programmatic_capability_preferred",
+        capabilityResolution.reason
+      );
+    }
+    if (!input.agentId) {
+      throw new Cp2Error(
+        409,
+        "computer_orchestrating_agent_required",
+        "Computer use must remain owned by an active Soko agent."
+      );
+    }
+    const externalSurface: ExternalSurfaceDescriptor = input.externalSurface ?? {
+      id: "generic-web",
+      type: "web"
+    };
+    const execution: ComputerExecutionMetadata = {
+      executionMode: "computer_use",
+      orchestratingAgentId: input.agentId,
+      ...(input.modelId ? { orchestratingModelId: input.modelId } : {}),
+      externalSurface,
+      capabilityResolution
+    };
     const created = await this.deps.worker.createSession({
       accountId: actor.account.id,
       businessId: input.businessId,
@@ -181,6 +223,7 @@ export class ComputerRuntimeDomain {
       profileId: profile?.id ?? null,
       executionHostId: input.executionHostId,
       runtimeInstanceId: input.runtimeInstanceId,
+      execution,
       storageState,
       policy: { ...defaultPolicy, ...input.policy }
     });
@@ -188,6 +231,7 @@ export class ComputerRuntimeDomain {
       session: created,
       taskId: input.taskId,
       agentId: input.agentId,
+      modelId: input.modelId,
       currentObservation: null
     });
     this.audit(actor.account.id, {
@@ -432,11 +476,7 @@ export class ComputerRuntimeDomain {
     return { ...managed.session };
   }
 
-  async resumeSession(
-    sessionId: string | null,
-    computerSessionId: string,
-    now = new Date()
-  ) {
+  async resumeSession(sessionId: string | null, computerSessionId: string, now = new Date()) {
     const { managed } = this.ownedSession(sessionId, computerSessionId, now);
     const resumed = await this.deps.worker.resume(computerSessionId);
     managed.session = resumed.session;
@@ -594,6 +634,10 @@ export class ComputerRuntimeDomain {
       businessId: input.managed.session.businessId,
       conversationId: input.managed.session.conversationId,
       agentId: input.managed.agentId,
+      modelId: input.managed.modelId,
+      executionMode: "computer_use",
+      externalSurface: input.managed.session.execution.externalSurface,
+      resolutionReason: input.managed.session.execution.capabilityResolution.reason,
       runtimeInstanceId: input.managed.session.runtimeInstanceId,
       computerSessionId: input.managed.session.id,
       executionHostId: input.managed.session.executionHostId,
@@ -622,6 +666,12 @@ export class ComputerRuntimeDomain {
       occurredAt: event.startedAt,
       payload: {
         actionType: event.actionType,
+        executionMode: event.executionMode,
+        orchestratingAgentId: event.agentId,
+        orchestratingModelId: event.modelId,
+        externalSurfaceId: event.externalSurface.id,
+        externalSurfaceType: event.externalSurface.type,
+        resolutionReason: event.resolutionReason,
         domain: event.domain,
         risk: event.risk,
         approvalRequired: event.approvalRequired,
@@ -631,7 +681,10 @@ export class ComputerRuntimeDomain {
       }
     });
   }
-  private profileView({ encryptedStorageState, ...profile }: ComputerProfileRecord): ComputerProfile {
+  private profileView({
+    encryptedStorageState,
+    ...profile
+  }: ComputerProfileRecord): ComputerProfile {
     void encryptedStorageState;
     return profile;
   }

@@ -37,9 +37,14 @@ export function validateRuntimeToolInput(
     case "computer.session.create":
     case "computer.session.resume": {
       const profileId = input.profileId;
-      return profileId === undefined || typeof profileId === "string"
-        ? valid()
-        : invalid("Computer profile id must be a string when provided.");
+      if (profileId !== undefined && typeof profileId !== "string")
+        return invalid("Computer profile id must be a string when provided.");
+      if (
+        input.externalSurfaceType !== undefined &&
+        !["web", "pwa", "desktop", "mobile-web"].includes(String(input.externalSurfaceType))
+      )
+        return invalid("External surface type must be web, pwa, desktop, or mobile-web.");
+      return valid();
     }
 
     case "computer.navigate": {

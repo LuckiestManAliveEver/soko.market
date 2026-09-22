@@ -1238,6 +1238,21 @@ export class Cp2Store {
               profileId: typeof values.profileId === "string" ? values.profileId : null,
               executionHostId: checkpoint?.runtime.executionHostId ?? "browser-computer",
               agentId: checkpoint?.runtime.agentId ?? null,
+              modelId: checkpoint?.runtime.modelId ?? null,
+              externalSurface: {
+                id:
+                  typeof values.externalSurfaceId === "string"
+                    ? values.externalSurfaceId
+                    : "generic-web",
+                type: ["web", "pwa", "desktop", "mobile-web"].includes(
+                  String(values.externalSurfaceType)
+                )
+                  ? (values.externalSurfaceType as "web" | "pwa" | "desktop" | "mobile-web")
+                  : "web",
+                ...(typeof values.externalSurfaceProvider === "string"
+                  ? { provider: values.externalSurfaceProvider }
+                  : {})
+              },
               runtimeInstanceId: input.conversationId ?? null
             },
             input.now
@@ -1560,6 +1575,31 @@ export class Cp2Store {
           expectedHandoffId: resolved.taskHead.activeHandoffId,
           promote: true,
           currentState: `Computer session ${input.session.id}: ${input.state}.`,
+          completedActions: [
+            ...previous.completedActions.filter(
+              (item) => item.id !== `computer-session:${input.session.id}`
+            ),
+            {
+              id: `computer-session:${input.session.id}`,
+              description: `Checkpoint ${input.session.execution.externalSurface.id} ComputerRuntime state`,
+              status: "completed",
+              metadata: {
+                executionMode: "computer_use",
+                computerSessionId: input.session.id,
+                orchestratingAgentId: input.session.execution.orchestratingAgentId,
+                orchestratingModelId: input.session.execution.orchestratingModelId ?? null,
+                externalSurface: input.session.execution.externalSurface,
+                capabilityResolution: input.session.execution.capabilityResolution,
+                currentUrl: input.session.currentUrl,
+                observationRef: input.observation?.screenshotRef ?? null,
+                browserStateRef: input.session.profileId
+                  ? `computer-profile:${input.session.profileId}`
+                  : null,
+                pendingApproval: input.approval?.id ?? null,
+                controlMode: input.session.controlMode
+              }
+            }
+          ],
           pendingActions: input.pendingAction
             ? [
                 {
@@ -1567,7 +1607,11 @@ export class Cp2Store {
                   description: input.pendingAction.semanticIntent ?? input.pendingAction.kind,
                   status: "pending",
                   metadata: {
+                    executionMode: "computer_use",
                     computerSessionId: input.session.id,
+                    orchestratingAgentId: input.session.execution.orchestratingAgentId,
+                    orchestratingModelId: input.session.execution.orchestratingModelId ?? null,
+                    externalSurface: input.session.execution.externalSurface,
                     actionHash: input.approval?.actionHash ?? null,
                     approvalId: input.approval?.id ?? null
                   }
@@ -3661,8 +3705,38 @@ export class Cp2Store {
   clearComputerProfile(...args: Parameters<ComputerRuntimeDomain["clearProfile"]>) {
     return this.requireComputerRuntime().clearProfile(...args);
   }
-  createComputerSession(...args: Parameters<ComputerRuntimeDomain["createSession"]>) {
-    return this.requireComputerRuntime().createSession(...args);
+  createComputerSession(
+    sessionId: string | null,
+    input: Omit<
+      Parameters<ComputerRuntimeDomain["createSession"]>[1],
+      "agentId" | "modelId" | "executionHostId"
+    >,
+    now = new Date()
+  ) {
+    const taskId = input.taskId ?? input.conversationId;
+    if (!taskId) {
+      throw new Cp2Error(
+        400,
+        "computer_task_required",
+        "Computer use must be attached to a Soko task with an active agent."
+      );
+    }
+    const checkpoint = this.runtimeHandoffDomain.resolveHandoff(
+      sessionId,
+      taskId,
+      now
+    ).activeHandoff;
+    return this.requireComputerRuntime().createSession(
+      sessionId,
+      {
+        ...input,
+        taskId,
+        executionHostId: checkpoint.runtime.executionHostId,
+        agentId: checkpoint.runtime.agentId,
+        modelId: checkpoint.runtime.modelId
+      },
+      now
+    );
   }
   getComputerSession(...args: Parameters<ComputerRuntimeDomain["getSession"]>) {
     return this.requireComputerRuntime().getSession(...args);

@@ -30,6 +30,7 @@ class FakeWorker implements ComputerWorkerClient {
       controlMode: this.controlMode,
       status: "RUNNING" as const,
       currentUrl: null,
+      execution: input.execution,
       createdAt: now,
       updatedAt: now
     };
@@ -163,7 +164,9 @@ describe("computer runtime security", () => {
       taskId: null,
       profileId: null,
       executionHostId: "host",
-      agentId: null,
+      agentId: "openclaw",
+      modelId: "spark",
+      externalSurface: { id: "generic-web", type: "web" },
       runtimeInstanceId: null
     });
     const action: ComputerAction = {
@@ -204,7 +207,9 @@ describe("computer runtime security", () => {
       taskId: null,
       profileId: null,
       executionHostId: "host",
-      agentId: null,
+      agentId: "openclaw",
+      modelId: "spark",
+      externalSurface: { id: "generic-web", type: "web" },
       runtimeInstanceId: null
     });
     await domain.takeControl("cookie", "computer-1");
