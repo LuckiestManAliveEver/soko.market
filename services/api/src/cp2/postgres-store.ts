@@ -67,6 +67,10 @@ export const normalizedCollections: NormalizedCollection[] = [
   // Durable execution event log (docs/architecture/durable-execution-plane.md). Purely additive
   // next to the checkpoint/transfer tables above; append-only, no FK ordering constraint on them.
   { key: "runtimeExecutionEvents", tableName: "cp2_runtime_execution_events" },
+  { key: "computerSessions", tableName: "cp2_computer_sessions" },
+  { key: "computerProfiles", tableName: "cp2_computer_profiles" },
+  { key: "computerApprovals", tableName: "cp2_computer_approvals" },
+  { key: "computerAudits", tableName: "cp2_computer_audits" },
   { key: "modelCatalog", tableName: "cp2_model_catalog" },
   { key: "agentCatalog", tableName: "cp2_agent_catalog" },
   { key: "platformOperators", tableName: "cp2_platform_operators" },
@@ -192,6 +196,7 @@ export const normalizedCollections: NormalizedCollection[] = [
   { key: "contactHashes", tableName: "cp2_contact_hashes" },
   { key: "externalIdentities", tableName: "cp2_external_identities" },
   { key: "sokoIdentityLinks", tableName: "cp2_soko_identity_links" },
+  { key: "identityCandidates", tableName: "cp2_identity_candidates" },
   { key: "auditEvents", tableName: "cp2_audit_events" }
 ];
 
@@ -319,6 +324,11 @@ const mutatingMethodNames = new Set([
   "refreshSessionCredential",
   "revokeDeviceSession",
   "rejectAgentRoute",
+  "proposeIdentityCandidate",
+  "confirmIdentityCandidate",
+  "rejectIdentityCandidate",
+  "unlinkIdentity",
+  "addManualIdentity",
   "pushOfflineOperation",
   "replaySyncQueue",
   "replaySyncQueueItem",
@@ -4237,6 +4247,7 @@ function emptySnapshot(): Cp2Snapshot {
     contactHashes: [],
     externalIdentities: [],
     sokoIdentityLinks: [],
+    identityCandidates: [],
     externalRegistryConnections: [],
     auditEvents: []
   };
@@ -4279,6 +4290,11 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
 
   if (key === "runtimeTaskHeads" || key === "runtimeTaskInstances") {
     return requiredText(record, "taskId");
+  }
+
+  if (key === "computerSessions") {
+    const session = record.session as Record<string, unknown> | undefined;
+    return requiredText(session ?? {}, "id");
   }
 
   if (key === "accountPinHashes") {

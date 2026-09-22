@@ -71,6 +71,7 @@ import {
 } from "./domains/sales/routes.js";
 import { registerAgentRuntimeRoutes } from "./domains/agent-runtime/routes.js";
 import { registerRuntimeHandoffRoutes } from "./domains/runtime-handoff/routes.js";
+import { registerComputerRuntimeRoutes } from "./domains/computer-runtime/routes.js";
 import { registerMessagingRoutes } from "./domains/messaging/routes.js";
 import { registerOtpRoutes } from "./domains/otp/routes.js";
 import { registerDeviceBootstrapRoutes } from "./domains/device-bootstrap/routes.js";
@@ -111,6 +112,7 @@ import {
   type RuntimeRegistryImportStore
 } from "./runtime-registry/import-store.js";
 import type { RuntimeRegistryAdapter } from "./runtime-registry/types.js";
+import { HttpComputerWorkerClient } from "../computer-runtime/client.js";
 
 export interface Cp2RouteOptions {
   binaryUploadPipeline?: BinaryUploadPipeline;
@@ -273,7 +275,20 @@ interface AccountRestorationParams {
 }
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
-  const store = options.store ?? createCp2Store();
+  const computerRuntimeUrl = process.env.COMPUTER_RUNTIME_URL?.trim();
+  const computerRuntimeToken = process.env.COMPUTER_RUNTIME_SERVICE_TOKEN?.trim();
+  const store =
+    options.store ??
+    createCp2Store({
+      ...(computerRuntimeUrl && computerRuntimeToken
+        ? {
+            computerWorkerClient: new HttpComputerWorkerClient(
+              computerRuntimeUrl,
+              computerRuntimeToken
+            )
+          }
+        : {})
+    });
   const webPublicUrl = (options.webPublicUrl ?? "https://soko.market").replace(/\/+$/u, "");
   const telegramBotUsername = options.telegramBotUsername ?? "";
   const ocrProcessor = options.ocrProcessor;
@@ -1564,6 +1579,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     huggingFaceAgentCatalog
   );
   registerRuntimeHandoffRoutes(app, store);
+  registerComputerRuntimeRoutes(app, store);
   registerModelTemplateRoutes(app, store);
 
   registerRuntimeRegistryRoutes(app, {

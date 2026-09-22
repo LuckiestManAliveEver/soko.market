@@ -94,6 +94,10 @@ services:
         sync: false
       - key: AUTH_TOKEN_ENCRYPTION_KEY
         sync: false
+      - key: COMPUTER_RUNTIME_URL
+        sync: false
+      - key: COMPUTER_RUNTIME_SERVICE_TOKEN
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: SOKO_EMAIL_FROM
@@ -338,6 +342,30 @@ services:
         value: "true"
       - key: VITE_INFERENCE_MAX_FALLBACKS
         value: "3"
+
+  - type: pserv
+    name: soko-computer-runtime
+    runtime: docker
+    branch: main
+    plan: starter
+    region: oregon
+    dockerfilePath: ./services/computer-runtime/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    buildFilter:
+      paths:
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - packages/shared-types/**
+        - services/computer-runtime/**
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "8790"
+      - key: COMPUTER_RUNTIME_SERVICE_TOKEN
+        sync: false
 
   - type: cron
     name: soko-market-db-backup

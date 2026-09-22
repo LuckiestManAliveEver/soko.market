@@ -13,8 +13,11 @@ import type {
   BuyCheckoutItemInput,
   BuyFeedSummary,
   BusinessSummary,
+  ContactResolutionSummary,
+  IdentityCandidateSummary,
   MembershipSummary,
   ModelExecutionTarget,
+  NetworkNodeSummary,
   PlatformDefaultRuntimePolicy,
   NativeRuntimeBindingSummary,
   NativeRuntimeActivationInput,
@@ -23,6 +26,7 @@ import type {
   NativeRuntimeResolutionInput,
   ResolvedNativeRuntimeBinding,
   RuntimeContextSummary,
+  RuntimePlannedAction,
   RuntimeModelProvider,
   UnifiedCheckoutSummary
 } from "@soko/shared-types";
@@ -34,6 +38,13 @@ import type { SessionRecord } from "../../store.js";
 import type { AgentRuntimeCommerceDeps } from "./domain-deps-commerce.js";
 
 export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
+  executeComputerCapability?: (input: {
+    sessionId: string | null;
+    businessId: string;
+    conversationId?: string;
+    action: RuntimePlannedAction;
+    now: Date;
+  }) => Promise<unknown>;
   acquireRuntimeTurn?: (
     taskId: string,
     accountId: string,
@@ -93,6 +104,51 @@ export interface AgentRuntimeDomainDeps extends AgentRuntimeCommerceDeps {
     targetNodeId?: string | null;
     now?: Date;
   }) => AgentRouteSummary;
+  resolveContact: (input: {
+    sessionId: string | null;
+    query: string;
+    now?: Date;
+  }) => ContactResolutionSummary;
+  listIdentityCandidates: (input: {
+    sessionId: string | null;
+    now?: Date;
+  }) => IdentityCandidateSummary[];
+  proposeIdentityCandidate: (input: {
+    sessionId: string | null;
+    provider: string;
+    providerSubject: string;
+    displayName: string;
+    handle?: string | null;
+    evidence: string;
+    now?: Date;
+  }) => IdentityCandidateSummary;
+  confirmIdentityCandidate: (input: {
+    sessionId: string | null;
+    candidateId: string;
+    targetNodeId?: string | null;
+    createNewContact?: boolean;
+    now?: Date;
+  }) => NetworkNodeSummary;
+  rejectIdentityCandidate: (input: {
+    sessionId: string | null;
+    candidateId: string;
+    now?: Date;
+  }) => void;
+  unlinkIdentity: (input: {
+    sessionId: string | null;
+    nodeId: string;
+    externalIdentityId: string;
+    now?: Date;
+  }) => NetworkNodeSummary;
+  addManualIdentity: (input: {
+    sessionId: string | null;
+    nodeId: string;
+    provider: string;
+    providerSubject: string;
+    displayName?: string;
+    handle?: string | null;
+    now?: Date;
+  }) => NetworkNodeSummary;
   searchBuyFeed: (input: { sessionId: string | null; query: string; now?: Date }) => BuyFeedSummary;
   createUnifiedCheckout: (input: {
     sessionId: string | null;

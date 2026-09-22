@@ -51,8 +51,11 @@ describe("registered-user purge script", () => {
     // (infra/db/migrations/088_runtime_experiences.sql, docs/architecture/experience-memory.md)
     // added cp2_runtime_experiences, classified DELETE: business-scoped recall/lesson records, same
     // family as cp2_agent_owner_corrections above.
-    expect(plan.size).toBe(195);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(188);
+    // Phonebook identity resolution (docs/architecture/phonebook-identity-resolution.md) added
+    // cp2_identity_candidates, classified DELETE - pending identity candidates are account-scoped
+    // and must not survive an account purge.
+    expect(plan.size).toBe(200);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(193);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")
