@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import type { ProductCaptureJobSummary } from "@soko/shared-types";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { apiFetch } from "./lib/api";
@@ -23,6 +23,17 @@ interface ProductCaptureDraft {
   extractedText: string;
 }
 
+interface GalleryPhotoDraft {
+  id: string;
+  file: File;
+  previewUrl: string;
+  title: string;
+  category: string;
+  description: string;
+  price: string;
+  shareInCatalogue: boolean;
+}
+
 const emptyProductCaptureDraft: ProductCaptureDraft = {
   title: "",
   category: "",
@@ -44,6 +55,9 @@ export default function ProductCapturePanel(props: {
   const { isPending, runAction } = useAsyncActions();
   const [job, setJob] = useState<ProductCaptureJobSummary | null>(null);
   const [draft, setDraft] = useState<ProductCaptureDraft>(emptyProductCaptureDraft);
+  const [galleryPhotos, setGalleryPhotos] = useState<GalleryPhotoDraft[]>([]);
+  const galleryPhotosRef = useRef<GalleryPhotoDraft[]>([]);
+  const [selectedGalleryPhotoId, setSelectedGalleryPhotoId] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
   const [message, setMessage] = useState("");
   const storageKey = `soko-product-capture:${props.businessId}`;
@@ -72,6 +86,121 @@ export default function ProductCapturePanel(props: {
       cancelled = true;
     };
   }, [props.businessId]);
+
+  useEffect(() => {
+    galleryPhotosRef.current = galleryPhotos;
+  }, [galleryPhotos]);
+
+  useEffect(
+    () => () => {
+      galleryPhotosRef.current.forEach((photo) => URL.revokeObjectURL(photo.previewUrl));
+    },
+    []
+  );
+
+  function importGalleryPhotos(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    const acceptedPhotos: GalleryPhotoDraft[] = [];
+    const rejectedPhotos: string[] = [];
+
+    files.forEach((file) => {
+      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+        rejectedPhotos.push(file.name);
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        rejectedPhotos.push(file.name);
+        return;
+      }
+      acceptedPhotos.push({
+        id:
+          typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `gallery-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+        title: nameWithoutExtension(file.name),
+        category: "",
+        description: "",
+        price: "",
+        shareInCatalogue: true
+      });
+    });
+
+    if (acceptedPhotos.length > 0) {
+      setGalleryPhotos((current) => [...acceptedPhotos, ...current]);
+      setSelectedGalleryPhotoId(acceptedPhotos[0]?.id ?? null);
+    }
+    setMessage(
+      rejectedPhotos.length > 0
+        ? `Imported ${acceptedPhotos.length} photo${acceptedPhotos.length === 1 ? "" : "s"}. Skipped ${rejectedPhotos.length} unsupported or oversized file${rejectedPhotos.length === 1 ? "" : "s"}.`
+        : `Imported ${acceptedPhotos.length} gallery photo${acceptedPhotos.length === 1 ? "" : "s"}.`
+    );
+    event.target.value = "";
+  }
+
+  function updateGalleryPhoto(photoId: string, updates: Partial<GalleryPhotoDraft>) {
+    setGalleryPhotos((current) =>
+      current.map((photo) => (photo.id === photoId ? { ...photo, ...updates } : photo))
+    );
+  }
+
+  function removeGalleryPhoto(photoId: string) {
+    setGalleryPhotos((current) => {
+      const removed = current.find((photo) => photo.id === photoId);
+      if (removed !== undefined) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((photo) => photo.id !== photoId);
+    });
+    setSelectedGalleryPhotoId((current) => (current === photoId ? null : current));
+  }
+
+  async function useGalleryPhotoForCapture(photo: GalleryPhotoDraft) {
+    await startCapture(photo.file);
+    setDraft((current) => ({
+      ...current,
+      title: photo.title.trim() || current.title,
+      category: photo.category.trim() || current.category,
+      description: photo.description.trim() || current.description,
+      visiblePrice: photo.price.trim() || current.visiblePrice,
+      keepImageAsProductMedia: photo.shareInCatalogue
+    }));
+  }
+
+  async function shareGalleryPhotos() {
+    const photosToShare = galleryPhotos.filter((photo) => photo.shareInCatalogue);
+    if (photosToShare.length === 0) {
+      setMessage("Choose at least one photo to share.");
+      return;
+    }
+
+    const sharePayload = {
+      title: `${props.businessId} gallery photos`,
+      text: photosToShare
+        .map((photo) => {
+          const price = photo.price.trim().length > 0 ? ` - ${photo.price.trim()}` : "";
+          return `${photo.title.trim() || photo.file.name}${price}`;
+        })
+        .join("\n"),
+      files: photosToShare.map((photo) => photo.file)
+    };
+
+    if (navigator.canShare?.({ files: sharePayload.files }) === true) {
+      await navigator.share(sharePayload);
+      setMessage(
+        `Shared ${photosToShare.length} gallery photo${photosToShare.length === 1 ? "" : "s"}.`
+      );
+      return;
+    }
+
+    if (navigator.share !== undefined) {
+      await navigator.share({ title: sharePayload.title, text: sharePayload.text });
+      setMessage("Shared the bound photo details. This browser does not share local files.");
+      return;
+    }
+
+    await navigator.clipboard?.writeText(sharePayload.text);
+    setMessage("Copied the bound photo details. This browser does not support native sharing.");
+  }
 
   async function startCapture(file: File) {
     if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
@@ -176,13 +305,154 @@ export default function ProductCapturePanel(props: {
   const possibleDuplicates = props.products.filter((product) =>
     job?.possibleDuplicateProductIds.includes(product.id)
   );
+  const selectedGalleryPhoto =
+    galleryPhotos.find((photo) => photo.id === selectedGalleryPhotoId) ?? galleryPhotos[0] ?? null;
 
   return (
     <section className="record-form product-capture-card" aria-label="Add product from photo">
       <div className="section-heading">
         <p className="eyebrow">Camera catalogue</p>
         <h3>Add a product from a photo</h3>
-        <p>Take or upload a product photo, review the extracted details, then publish it.</p>
+        <p>Connect your local gallery, bind product details, then publish or share the photos.</p>
+      </div>
+      <div className="local-gallery-panel" aria-label="Local gallery import">
+        <div className="surface-header-row">
+          <div>
+            <p className="eyebrow">Local gallery</p>
+            <strong>{galleryPhotos.length} imported</strong>
+          </div>
+          <button
+            type="button"
+            className="secondary"
+            disabled={galleryPhotos.length === 0 || isPending("product-gallery-share")}
+            onClick={() =>
+              void runAction("product-gallery-share", async () => {
+                try {
+                  await shareGalleryPhotos();
+                } catch (error) {
+                  setMessage(getUserFacingErrorMessage(error));
+                }
+              })
+            }
+          >
+            Share selected
+          </button>
+        </div>
+        <label>
+          Connect gallery
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            multiple
+            onChange={importGalleryPhotos}
+          />
+        </label>
+        {galleryPhotos.length > 0 ? (
+          <div className="local-gallery-grid" aria-label="Imported gallery photos">
+            {galleryPhotos.map((photo) => (
+              <button
+                key={photo.id}
+                type="button"
+                className={photo.id === selectedGalleryPhoto?.id ? "active" : ""}
+                onClick={() => setSelectedGalleryPhotoId(photo.id)}
+              >
+                <img src={photo.previewUrl} alt={photo.title || photo.file.name} />
+                <span>{photo.title || photo.file.name}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {selectedGalleryPhoto === null ? null : (
+          <div className="gallery-binding-editor" aria-label="Bind photo details">
+            <img
+              className="product-capture-preview"
+              src={selectedGalleryPhoto.previewUrl}
+              alt={selectedGalleryPhoto.title || selectedGalleryPhoto.file.name}
+            />
+            <div className="gallery-binding-fields">
+              <label>
+                Photo title
+                <input
+                  value={selectedGalleryPhoto.title}
+                  onChange={(event) =>
+                    updateGalleryPhoto(selectedGalleryPhoto.id, { title: event.target.value })
+                  }
+                />
+              </label>
+              <div className="form-row">
+                <label>
+                  Category
+                  <input
+                    value={selectedGalleryPhoto.category}
+                    onChange={(event) =>
+                      updateGalleryPhoto(selectedGalleryPhoto.id, {
+                        category: event.target.value
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Price
+                  <input
+                    inputMode="decimal"
+                    value={selectedGalleryPhoto.price}
+                    onChange={(event) =>
+                      updateGalleryPhoto(selectedGalleryPhoto.id, { price: event.target.value })
+                    }
+                  />
+                </label>
+              </div>
+              <label>
+                Details
+                <textarea
+                  rows={2}
+                  value={selectedGalleryPhoto.description}
+                  onChange={(event) =>
+                    updateGalleryPhoto(selectedGalleryPhoto.id, {
+                      description: event.target.value
+                    })
+                  }
+                />
+              </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={selectedGalleryPhoto.shareInCatalogue}
+                  onChange={(event) =>
+                    updateGalleryPhoto(selectedGalleryPhoto.id, {
+                      shareInCatalogue: event.target.checked
+                    })
+                  }
+                />
+                Include when sharing and publishing
+              </label>
+              <div className="row-actions">
+                <button
+                  type="button"
+                  disabled={isPending("product-gallery-capture")}
+                  onClick={() =>
+                    void runAction("product-gallery-capture", async () => {
+                      try {
+                        await useGalleryPhotoForCapture(selectedGalleryPhoto);
+                      } catch (error) {
+                        setMessage(getUserFacingErrorMessage(error));
+                      }
+                    })
+                  }
+                >
+                  Import into product review
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => removeGalleryPhoto(selectedGalleryPhoto.id)}
+                >
+                  Remove photo
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
       <label>
         Product photo
@@ -443,4 +713,10 @@ function readFileAsDataUrl(file: File): Promise<string> {
 function dataUrlPayload(dataUrl: string): string {
   const separatorIndex = dataUrl.indexOf(",");
   return separatorIndex === -1 ? dataUrl : dataUrl.slice(separatorIndex + 1);
+}
+
+function nameWithoutExtension(fileName: string): string {
+  const trimmed = fileName.trim();
+  const extensionIndex = trimmed.lastIndexOf(".");
+  return extensionIndex > 0 ? trimmed.slice(0, extensionIndex) : trimmed;
 }
