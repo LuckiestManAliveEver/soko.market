@@ -1630,32 +1630,9 @@ button:disabled {
   margin: 0;
 }
 
-.identity-network-email-form,
-.identity-network-email-form label,
 .identity-network-actions {
   display: grid;
   gap: 8px;
-}
-
-.identity-network-email-form {
-  grid-template-columns: minmax(180px, 1fr) minmax(120px, 0.6fr) auto;
-}
-
-.identity-network-email-form label {
-  color: #cbdcd2;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.identity-network-email-form input {
-  background: #242424;
-  border: 1px solid #344739;
-  border-radius: 8px;
-  min-height: 42px;
-  padding: 9px 10px;
-}
-
-.identity-network-actions {
   grid-template-columns: repeat(auto-fit, minmax(180px, max-content));
 }
 
@@ -1666,12 +1643,6 @@ button:disabled {
   min-height: auto;
   padding: 2px 0;
   text-decoration: underline;
-}
-
-@media (max-width: 720px) {
-  .identity-network-email-form {
-    grid-template-columns: 1fr;
-  }
 }
 
 .setup-error {

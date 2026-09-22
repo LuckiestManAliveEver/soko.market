@@ -1886,7 +1886,6 @@ export function OwnerApp() {
                   graph={networkGraph}
                   oauthProviders={oauthProviders}
                   oauthProvidersLoaded={oauthProvidersLoaded}
-                  onSessionChange={acceptAuthenticatedSession}
                   onGoogleContacts={authenticateSocialProfile}
                   onPhoneContactsSync={syncSelectedNetworkPhoneContacts}
                 />
