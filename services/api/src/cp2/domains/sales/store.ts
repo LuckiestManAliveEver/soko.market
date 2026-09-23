@@ -34,6 +34,7 @@ import {
   normalizeInvoiceInput,
   normalizePaymentInput,
   normalizeProductInput,
+  snapshotInvoiceLineWeight,
   normalizeStockAdjustmentInput,
   paymentRecordedEvent,
   productCreatedEvent,
@@ -357,6 +358,7 @@ export class SalesDomain {
       quantity: normalized.quantity,
       buyingPrice: normalized.buyingPrice,
       sellingPrice: normalized.sellingPrice,
+      unitWeightGrams: normalized.unitWeightGrams ?? null,
       fieldValues: normalized.fieldValues,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString()
@@ -425,6 +427,10 @@ export class SalesDomain {
       quantity: normalized.quantity,
       buyingPrice: normalized.buyingPrice,
       sellingPrice: normalized.sellingPrice,
+      unitWeightGrams:
+        normalized.unitWeightGrams === undefined
+          ? (existing.unitWeightGrams ?? null)
+          : normalized.unitWeightGrams,
       fieldValues:
         input.product.fieldValues === undefined
           ? (existing.fieldValues ?? {})
@@ -863,8 +869,18 @@ export class SalesDomain {
       );
     }
 
+    // A4: snapshot each line's weight from the catalogue as it stands at confirmation. Confirmed
+    // invoices are immutable, so later product edits can never alter these historical values.
+    const weightedItems = invoice.items.map((item) => ({
+      ...item,
+      ...snapshotInvoiceLineWeight(
+        this.requireProduct(input.businessId, item.productId).unitWeightGrams,
+        item.quantity
+      )
+    }));
     const confirmed: InvoiceSummary = {
       ...invoice,
+      items: weightedItems,
       status: "confirmed",
       confirmedAt: now.toISOString(),
       updatedAt: now.toISOString()

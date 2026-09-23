@@ -2,6 +2,8 @@ export type RuntimeName = "api" | "sync" | "ai-runtime" | "web";
 
 export * from "./commerce-address.js";
 export * from "./computer-runtime.js";
+export * from "./fulfillment.js";
+export * from "./grams.js";
 export * from "./phone-number.js";
 export * from "./portable-agent.js";
 export * from "./runtime-handoff.js";
@@ -9,6 +11,8 @@ export * from "./runtime-registry.js";
 export * from "./store-links.js";
 export * from "./workload.js";
 
+import type { WeightStatus, WeightUnresolvedReason } from "./fulfillment.js";
+import type { GramsString } from "./grams.js";
 import type { PortableAgentManifest } from "./portable-agent.js";
 
 export interface HealthResponse {
@@ -199,7 +203,7 @@ export type AccountIdentityLevel = "device" | "verified_contact" | "strong";
 export type OAuthProvider =
   "google" | "facebook" | "apple" | "github" | "microsoft" | "linkedin" | "x" | "tiktok";
 
-export type BusinessRole = "owner" | "manager" | "sales_agent" | "cashier" | "view_only";
+export type BusinessRole = "owner" | "manager" | "sales_agent" | "cashier" | "view_only" | "driver";
 
 export type SupportedLanguage = "en" | "sw";
 
@@ -234,6 +238,9 @@ export interface BusinessSummary {
   name: string;
   language: SupportedLanguage;
   sokoId: string;
+  /** IANA timezone (for example `Africa/Nairobi`) for cutoff and "next day" rules. Business data,
+   *  never a code default; absent/null until the owner configures it. */
+  timezone?: string | null;
 }
 
 /**
@@ -1326,6 +1333,9 @@ export interface ProductSummary {
   quantity: number;
   buyingPrice: number | null;
   sellingPrice: number | null;
+  /** Authoritative mass of ONE sellable unit (a sack, a carton...) in whole grams, as a decimal
+   *  string (A22). Absent/null means unknown - never zero. */
+  unitWeightGrams?: GramsString | null;
   /** Values for business-defined catalogue fields, keyed by ProductFieldDefinition.id. */
   fieldValues?: Record<string, string>;
   createdAt: string;
@@ -2172,6 +2182,12 @@ export interface InvoiceItemSummary {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  /** Weight snapshot taken when the invoice is confirmed; later catalogue edits never change it.
+   *  All absent on drafts and on lines confirmed before snapshots existed. */
+  unitWeightGramsSnapshot?: GramsString | null;
+  totalWeightGrams?: GramsString | null;
+  weightStatus?: WeightStatus | null;
+  weightUnresolvedReason?: WeightUnresolvedReason | null;
 }
 
 export interface InvoiceTotals {

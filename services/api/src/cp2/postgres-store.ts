@@ -353,6 +353,7 @@ const mutatingMethodNames = new Set([
   "updateLaunchIncidentStatus",
   "updateLaunchSettings",
   "updateLogisticsStatus",
+  "updateBusinessTimezone",
   "updateNotificationStatus",
   "updateOwnerPhone",
   "updateProduct",
@@ -1506,17 +1507,19 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     name: string;
     language: string;
     soko_id: string | null;
+    timezone: string | null;
     created_at: Date;
   }>(
     pool,
     "load businesses",
-    "select id, name, language, soko_id, created_at from businesses order by id"
+    "select id, name, language, soko_id, timezone, created_at from businesses order by id"
   );
   snapshot.businesses = businessesResult.rows.map((row) => ({
     id: row.id,
     name: row.name,
     language: row.language,
     sokoId: row.soko_id,
+    timezone: row.timezone,
     createdAt: timestampToIso(row.created_at)
   })) as Cp2Snapshot["businesses"];
 
@@ -1549,6 +1552,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     quantity: string;
     buying_price: string | null;
     selling_price: string | null;
+    unit_weight_grams: string | null;
     primary_media_id: string | null;
     created_at: Date;
     updated_at: Date;
@@ -1556,12 +1560,20 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     pool,
     "load products",
     `
-      select id, business_id, name, sku, aliases, unit, quantity, buying_price, selling_price, primary_media_id, created_at, updated_at
+      select id, business_id, name, sku, aliases, unit, quantity, buying_price, selling_price,
+             unit_weight_grams, primary_media_id, created_at, updated_at
       from products
       order by business_id, name, id
     `
   );
+  // The relational row is authoritative for every column it has, but it does not carry every
+  // ProductSummary field (for example business-defined `fieldValues`). Start from the
+  // compatibility record loaded above so those fields survive a restart instead of being dropped.
+  const compatibilityProductsById = new Map(
+    snapshotRecords(snapshot.products).map((record) => [String(record.id), record])
+  );
   snapshot.products = productsResult.rows.map((row) => ({
+    ...compatibilityProductsById.get(row.id),
     id: row.id,
     businessId: row.business_id,
     name: row.name,
@@ -1571,6 +1583,8 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     quantity: numberFromDatabase(row.quantity),
     buyingPrice: nullableNumberFromDatabase(row.buying_price),
     sellingPrice: nullableNumberFromDatabase(row.selling_price),
+    // pg returns BIGINT as a decimal string, which is exactly the A22 record format.
+    unitWeightGrams: row.unit_weight_grams,
     primaryMediaId: row.primary_media_id,
     createdAt: timestampToIso(row.created_at),
     updatedAt: timestampToIso(row.updated_at)
@@ -1879,11 +1893,16 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     quantity: string;
     unit_price: string;
     line_total: string;
+    unit_weight_grams_snapshot: string | null;
+    total_weight_grams: string | null;
+    weight_status: string | null;
+    weight_unresolved_reason: string | null;
   }>(
     pool,
     "load invoice items",
     `
-      select id, invoice_id, product_id, product_name, quantity, unit_price, line_total
+      select id, invoice_id, product_id, product_name, quantity, unit_price, line_total,
+             unit_weight_grams_snapshot, total_weight_grams, weight_status, weight_unresolved_reason
       from invoice_items
       order by invoice_id, id
     `
@@ -1898,7 +1917,17 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
       productName: row.product_name,
       quantity: numberFromDatabase(row.quantity),
       unitPrice: numberFromDatabase(row.unit_price),
-      lineTotal: numberFromDatabase(row.line_total)
+      lineTotal: numberFromDatabase(row.line_total),
+      // Only snapshotted (post-089 confirmed) lines carry weight fields; older lines stay as they
+      // were so their weight reads as NOT_SNAPSHOTTED rather than as a fabricated value.
+      ...(row.weight_status === null
+        ? {}
+        : {
+            unitWeightGramsSnapshot: row.unit_weight_grams_snapshot,
+            totalWeightGrams: row.total_weight_grams,
+            weightStatus: row.weight_status,
+            weightUnresolvedReason: row.weight_unresolved_reason
+          })
     };
     itemsByInvoiceId.set(row.invoice_id, [...(itemsByInvoiceId.get(row.invoice_id) ?? []), item]);
   }
@@ -2858,18 +2887,20 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   for (const record of snapshotRecords(snapshot.businesses)) {
     await client.query(
       `
-        insert into businesses (id, name, language, soko_id, created_at)
-        values ($1, $2, $3, $4, $5)
+        insert into businesses (id, name, language, soko_id, timezone, created_at)
+        values ($1, $2, $3, $4, $5, $6)
         on conflict (id) do update set
           name = excluded.name,
           language = excluded.language,
-          soko_id = excluded.soko_id
+          soko_id = excluded.soko_id,
+          timezone = excluded.timezone
       `,
       [
         requiredText(record, "id"),
         requiredText(record, "name"),
         requiredText(record, "language"),
         firstText(record, ["sokoId"]),
+        firstText(record, ["timezone"]),
         now
       ]
     );
@@ -2899,8 +2930,9 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     await client.query(
       `
         insert into products
-          (id, business_id, name, sku, aliases, unit, quantity, buying_price, selling_price, primary_media_id, created_at, updated_at)
-        values ($1, $2, $3, $4, $5::text[], $6, $7, $8, $9, $10, $11, $12)
+          (id, business_id, name, sku, aliases, unit, quantity, buying_price, selling_price,
+           unit_weight_grams, primary_media_id, created_at, updated_at)
+        values ($1, $2, $3, $4, $5::text[], $6, $7, $8, $9, $10::bigint, $11, $12, $13)
         on conflict (id) do update set
           business_id = excluded.business_id,
           name = excluded.name,
@@ -2910,6 +2942,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           quantity = excluded.quantity,
           buying_price = excluded.buying_price,
           selling_price = excluded.selling_price,
+          unit_weight_grams = excluded.unit_weight_grams,
           primary_media_id = excluded.primary_media_id,
           updated_at = excluded.updated_at
       `,
@@ -2923,6 +2956,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         record.quantity,
         record.buyingPrice ?? null,
         record.sellingPrice ?? null,
+        firstText(record, ["unitWeightGrams"]),
         firstText(record, ["primaryMediaId"]),
         requiredText(record, "createdAt"),
         requiredText(record, "updatedAt")
@@ -3457,6 +3491,36 @@ function accountSyncChangeToRecordsetRow(
   };
 }
 
+/**
+ * Fulfillment tables (090_fulfillment_foundation.sql) are Postgres-authoritative and never written
+ * by this snapshot writer - except here: when a business is purged from the store, its
+ * fulfillment rows (vehicles, policies, shop locations with their history, idempotency records)
+ * go with it. Nothing else can be touching them: a purged business fails authorization before any
+ * fulfillment transaction starts, and fulfillment transactions never take this writer's advisory
+ * lock, so no lock cycle is possible. Guarded so a database that predates 090 still saves.
+ */
+async function deletePurgedBusinessFulfillmentRows(
+  client: PoolClient,
+  businessIds: string[]
+): Promise<void> {
+  if (businessIds.length === 0) return;
+  const exists = await client.query<{ present: boolean }>(
+    "select to_regclass('public.fulfillment_vehicles') is not null as present"
+  );
+  if (exists.rows[0]?.present !== true) return;
+  for (const tableName of [
+    "fulfillment_idempotency_records",
+    "fulfillment_shop_locations",
+    "fulfillment_business_settings",
+    "fulfillment_dispatch_policies",
+    "fulfillment_vehicles"
+  ]) {
+    await client.query(`delete from ${tableName} where business_id = any($1::uuid[])`, [
+      businessIds
+    ]);
+  }
+}
+
 async function deleteRemovedAccountRelationalGraph(
   client: PoolClient,
   snapshot: Cp2Snapshot
@@ -3558,6 +3622,7 @@ async function deleteRemovedAccountRelationalGraph(
     [userIds, [...userIds, ...businessIds, ...accountIds], businessIds, accountIds]
   );
 
+  await deletePurgedBusinessFulfillmentRows(client, businessIds);
   await client.query("delete from payments where business_id = any($1::uuid[])", [businessIds]);
   await client.query(
     "delete from invoice_items where invoice_id in (select id from invoices where business_id = any($1::uuid[]))",
@@ -4091,15 +4156,20 @@ async function saveInvoicesAndItems(client: PoolClient, records: SnapshotRecord[
       await client.query(
         `
           insert into invoice_items
-            (id, invoice_id, product_id, product_name, quantity, unit_price, line_total)
-          values ($1, $2, $3, $4, $5, $6, $7)
+            (id, invoice_id, product_id, product_name, quantity, unit_price, line_total,
+             unit_weight_grams_snapshot, total_weight_grams, weight_status, weight_unresolved_reason)
+          values ($1, $2, $3, $4, $5, $6, $7, $8::bigint, $9::bigint, $10, $11)
           on conflict (id) do update set
             invoice_id = excluded.invoice_id,
             product_id = excluded.product_id,
             product_name = excluded.product_name,
             quantity = excluded.quantity,
             unit_price = excluded.unit_price,
-            line_total = excluded.line_total
+            line_total = excluded.line_total,
+            unit_weight_grams_snapshot = excluded.unit_weight_grams_snapshot,
+            total_weight_grams = excluded.total_weight_grams,
+            weight_status = excluded.weight_status,
+            weight_unresolved_reason = excluded.weight_unresolved_reason
         `,
         [
           requiredText(item, "id"),
@@ -4108,7 +4178,11 @@ async function saveInvoicesAndItems(client: PoolClient, records: SnapshotRecord[
           requiredText(item, "productName"),
           item.quantity,
           item.unitPrice,
-          item.lineTotal
+          item.lineTotal,
+          firstText(item, ["unitWeightGramsSnapshot"]),
+          firstText(item, ["totalWeightGrams"]),
+          firstText(item, ["weightStatus"]),
+          firstText(item, ["weightUnresolvedReason"])
         ]
       );
     }

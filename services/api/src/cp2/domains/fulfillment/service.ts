@@ -1,0 +1,891 @@
+/**
+ * FulfillmentService - the Postgres-authoritative half of the corridor-fulfillment domain
+ * (docs/architecture/corridor-fulfillment.md §5, Phase 0 decision D1 option A).
+ *
+ * Unlike the Cp2Store domains, this state is NOT held in memory and NOT written by the snapshot
+ * writer: every read queries Postgres and every mutation commits inside its own request
+ * transaction (`withFulfillmentTransaction`), so the A17 invariants are enforced by the database
+ * before the caller gets a response. Pure rules (validation, weight) come from
+ * @soko/business-core; authorization and shop existence come from the Cp2Store through the narrow
+ * `FulfillmentServiceDeps` interface - this module never reaches into store internals.
+ *
+ * In `CP2_STORE=memory` mode there is no database, so `createUnavailableFulfillmentService`
+ * rejects every call with 503 `fulfillment_requires_postgres` (decision D2) instead of shipping a
+ * second, non-transactional implementation of the same rules.
+ */
+import { randomUUID } from "node:crypto";
+import type { Pool, PoolClient } from "pg";
+import {
+  validateCoordinates,
+  validateDispatchPolicyInput,
+  validateVehicleInput,
+  type BusinessPermission,
+  type DispatchPolicyInput
+} from "@soko/business-core";
+import {
+  formatGrams,
+  formatNullableGrams,
+  parseGrams,
+  type DispatchFallbackAction,
+  type DispatchOverflowStrategy,
+  type DispatchPolicySummary,
+  type ShopLocationStatusSummary,
+  type ShopLocationSummary,
+  type VehicleSummary
+} from "@soko/shared-types";
+import { Cp2Error, assertValid } from "../../cp2-error.js";
+import {
+  fulfillmentRequestHash,
+  normalizeIdempotencyKey,
+  runIdempotent,
+  withFulfillmentTransaction,
+  type FulfillmentTransactionOptions
+} from "./transaction.js";
+
+export const fulfillmentFoundationMigration = "090_fulfillment_foundation.sql";
+
+export interface FulfillmentServiceDeps {
+  /** Throws Cp2Error (401/403/404/410) exactly as in-store mutations do. */
+  authorize: (input: {
+    sessionId: string | null;
+    businessId: string;
+    permission: BusinessPermission;
+  }) => { userId: string };
+  hasPermission: (input: {
+    sessionId: string | null;
+    businessId: string;
+    permission: BusinessPermission;
+  }) => boolean;
+  /** Throws 404 unless `customerId` is a shop of `businessId`. */
+  requireCustomer: (businessId: string, customerId: string) => { id: string };
+}
+
+interface Actor {
+  sessionId: string | null;
+  businessId: string;
+  idempotencyKey?: string | null;
+  now?: Date;
+}
+
+export interface VehicleMutationInput {
+  name: string;
+  registration: string | null;
+  capacityGrams: bigint;
+  active: boolean;
+}
+
+export interface VehiclePatchInput {
+  name?: string;
+  registration?: string | null;
+  capacityGrams?: bigint;
+  active?: boolean;
+}
+
+export interface ShopLocationCaptureInput {
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number | null;
+}
+
+export interface EffectiveDispatchPolicySummary {
+  businessId: string;
+  defaultPolicyId: string | null;
+  policy: DispatchPolicySummary | null;
+}
+
+export interface FulfillmentService {
+  readonly available: boolean;
+  listVehicles(input: Actor & { includeInactive?: boolean }): Promise<VehicleSummary[]>;
+  createVehicle(input: Actor & { vehicle: VehicleMutationInput }): Promise<VehicleSummary>;
+  updateVehicle(
+    input: Actor & { vehicleId: string; patch: VehiclePatchInput }
+  ): Promise<VehicleSummary>;
+  listDispatchPolicies(
+    input: Actor & { includeHistory?: boolean }
+  ): Promise<DispatchPolicySummary[]>;
+  createDispatchPolicy(
+    input: Actor & { policy: DispatchPolicyInput; makeBusinessDefault: boolean }
+  ): Promise<DispatchPolicySummary>;
+  reviseDispatchPolicy(
+    input: Actor & { policyId: string; policy: DispatchPolicyInput }
+  ): Promise<DispatchPolicySummary>;
+  setDefaultDispatchPolicy(
+    input: Actor & { policyId: string }
+  ): Promise<EffectiveDispatchPolicySummary>;
+  getEffectiveDefaultPolicy(input: Actor): Promise<EffectiveDispatchPolicySummary>;
+  captureShopLocation(
+    input: Actor & { customerId: string; location: ShopLocationCaptureInput }
+  ): Promise<ShopLocationStatusSummary>;
+  getShopLocation(input: Actor & { customerId: string }): Promise<ShopLocationStatusSummary>;
+  listShopLocationHistory(input: Actor & { customerId: string }): Promise<ShopLocationSummary[]>;
+  /** A23 retention; returns the number of records removed. */
+  purgeExpiredIdempotencyRecords(input: { now?: Date; retentionHours?: number }): Promise<number>;
+}
+
+export function createUnavailableFulfillmentService(): FulfillmentService {
+  const unavailable = async (): Promise<never> => {
+    throw new Cp2Error(
+      503,
+      "fulfillment_requires_postgres",
+      "Delivery planning needs the database-backed store. It is not available in memory mode."
+    );
+  };
+  return {
+    available: false,
+    listVehicles: unavailable,
+    createVehicle: unavailable,
+    updateVehicle: unavailable,
+    listDispatchPolicies: unavailable,
+    createDispatchPolicy: unavailable,
+    reviseDispatchPolicy: unavailable,
+    setDefaultDispatchPolicy: unavailable,
+    getEffectiveDefaultPolicy: unavailable,
+    captureShopLocation: unavailable,
+    getShopLocation: unavailable,
+    listShopLocationHistory: unavailable,
+    purgeExpiredIdempotencyRecords: async () => 0
+  };
+}
+
+/** Fails fast at boot, like `assertDatabaseMigrated`, if migration 090 has not been applied. */
+export async function assertFulfillmentSchema(pool: Pool): Promise<void> {
+  const result = await pool.query<{ applied: boolean }>(
+    "select exists (select 1 from soko_schema_migrations where filename = $1) as applied",
+    [fulfillmentFoundationMigration]
+  );
+  if (result.rows[0]?.applied !== true) {
+    throw new Error(
+      `Database migrations are not up to date. Run "pnpm db:migrate" before starting the API. Missing ${fulfillmentFoundationMigration}.`
+    );
+  }
+}
+
+export function createPostgresFulfillmentService(input: {
+  pool: Pool;
+  deps: FulfillmentServiceDeps;
+  transactionOptions?: FulfillmentTransactionOptions;
+  idempotencyRetentionHours?: number;
+}): FulfillmentService {
+  const { pool, deps } = input;
+  const transaction = <T>(run: (client: PoolClient) => Promise<T>) =>
+    withFulfillmentTransaction(pool, run, input.transactionOptions);
+
+  const authorize = (actor: Actor, permission: BusinessPermission) =>
+    deps.authorize({ sessionId: actor.sessionId, businessId: actor.businessId, permission });
+
+  const idempotent = <T>(
+    client: PoolClient,
+    actor: Actor,
+    operation: string,
+    request: unknown,
+    now: Date,
+    mutate: () => Promise<T>
+  ) =>
+    runIdempotent(
+      client,
+      {
+        businessId: actor.businessId,
+        operation,
+        key: normalizeIdempotencyKey(actor.idempotencyKey),
+        requestHash: fulfillmentRequestHash(request),
+        now
+      },
+      mutate
+    );
+
+  async function requireVehicle(
+    client: PoolClient,
+    businessId: string,
+    vehicleId: string,
+    lock: boolean
+  ): Promise<VehicleRow> {
+    requireUuid(vehicleId, "vehicle_not_found", "Vehicle was not found.");
+    const result = await client.query<VehicleRow>(
+      `select * from fulfillment_vehicles where business_id = $1 and id = $2${lock ? " for update" : ""}`,
+      [businessId, vehicleId]
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw new Cp2Error(404, "vehicle_not_found", "Vehicle was not found.");
+    return row;
+  }
+
+  async function activePolicyVersion(
+    client: PoolClient | Pool,
+    businessId: string,
+    policyId: string
+  ): Promise<PolicyRow | null> {
+    if (!isUuid(policyId)) return null;
+    const result = await client.query<PolicyRow>(
+      `
+        select * from fulfillment_dispatch_policies
+        where business_id = $1 and policy_id = $2 and active
+      `,
+      [businessId, policyId]
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async function effectiveDefault(
+    client: PoolClient | Pool,
+    businessId: string
+  ): Promise<EffectiveDispatchPolicySummary> {
+    const settings = await client.query<{ default_policy_id: string | null }>(
+      "select default_policy_id from fulfillment_business_settings where business_id = $1",
+      [businessId]
+    );
+    const defaultPolicyId = settings.rows[0]?.default_policy_id ?? null;
+    const policy =
+      defaultPolicyId === null
+        ? null
+        : await activePolicyVersion(client, businessId, defaultPolicyId);
+    return {
+      businessId,
+      defaultPolicyId,
+      policy: policy === null ? null : policySummary(policy, defaultPolicyId)
+    };
+  }
+
+  async function setDefaultPointer(
+    client: PoolClient,
+    businessId: string,
+    policyId: string,
+    actorId: string,
+    now: Date
+  ): Promise<void> {
+    await client.query(
+      `
+        insert into fulfillment_business_settings (business_id, default_policy_id, updated_by, updated_at)
+        values ($1, $2, $3, $4)
+        on conflict (business_id) do update set
+          default_policy_id = excluded.default_policy_id,
+          updated_by = excluded.updated_by,
+          updated_at = excluded.updated_at
+      `,
+      [businessId, policyId, actorId, now]
+    );
+  }
+
+  async function defaultPolicyId(client: PoolClient | Pool, businessId: string) {
+    const result = await client.query<{ default_policy_id: string | null }>(
+      "select default_policy_id from fulfillment_business_settings where business_id = $1",
+      [businessId]
+    );
+    return result.rows[0]?.default_policy_id ?? null;
+  }
+
+  async function locationStatus(
+    client: PoolClient | Pool,
+    actor: Actor,
+    customerId: string
+  ): Promise<ShopLocationStatusSummary> {
+    const precise = deps.hasPermission({
+      sessionId: actor.sessionId,
+      businessId: actor.businessId,
+      permission: "shop_location:read_precise"
+    });
+    const result = await client.query<LocationRow>(
+      `
+        select * from fulfillment_shop_locations
+        where business_id = $1 and customer_id = $2 and superseded_at is null
+      `,
+      [actor.businessId, customerId]
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      return {
+        businessId: actor.businessId,
+        customerId,
+        locationStatus: "UNRESOLVED",
+        coordinatesRedacted: !precise,
+        current: null
+      };
+    }
+    const location = locationSummary(row);
+    return {
+      businessId: actor.businessId,
+      customerId,
+      locationStatus: "RESOLVED",
+      coordinatesRedacted: !precise,
+      current: precise
+        ? location
+        : { ...location, latitude: null, longitude: null, accuracyMeters: null }
+    };
+  }
+
+  return {
+    available: true,
+
+    async listVehicles(actor) {
+      authorize(actor, "fulfillment:read");
+      const result = await pool.query<VehicleRow>(
+        `
+          select * from fulfillment_vehicles
+          where business_id = $1 ${actor.includeInactive === true ? "" : "and active"}
+          order by name, id
+        `,
+        [actor.businessId]
+      );
+      return result.rows.map(vehicleSummary);
+    },
+
+    async createVehicle(actor) {
+      const { userId } = authorize(actor, "fulfillment:manage");
+      const vehicle = normalizeVehicle(actor.vehicle);
+      assertValid(validateVehicleInput(vehicle));
+      const now = actor.now ?? new Date();
+      return transaction((client) =>
+        idempotent(
+          client,
+          actor,
+          "fulfillment.createVehicle",
+          { ...vehicle, capacityGrams: formatGrams(vehicle.capacityGrams) },
+          now,
+          async () => {
+            const result = await client
+              .query<VehicleRow>(
+                `
+                  insert into fulfillment_vehicles
+                    (id, business_id, name, registration, capacity_grams, active, created_by, created_at, updated_at)
+                  values ($1, $2, $3, $4, $5::bigint, $6, $7, $8, $8)
+                  returning *
+                `,
+                [
+                  randomUUID(),
+                  actor.businessId,
+                  vehicle.name,
+                  vehicle.registration,
+                  formatGrams(vehicle.capacityGrams),
+                  vehicle.active,
+                  userId,
+                  now
+                ]
+              )
+              .catch(rethrowRegistrationConflict);
+            const created = vehicleSummary(result.rows[0] as VehicleRow);
+            logFulfillmentEvent("fulfillment.vehicle_created", {
+              businessId: actor.businessId,
+              vehicleId: created.id,
+              capacityGrams: created.capacityGrams
+            });
+            return created;
+          }
+        )
+      );
+    },
+
+    async updateVehicle(actor) {
+      const { userId } = authorize(actor, "fulfillment:manage");
+      const now = actor.now ?? new Date();
+      return transaction(async (client) => {
+        const existing = await requireVehicle(client, actor.businessId, actor.vehicleId, true);
+        const next = normalizeVehicle({
+          name: actor.patch.name ?? existing.name,
+          registration:
+            actor.patch.registration === undefined
+              ? existing.registration
+              : actor.patch.registration,
+          capacityGrams:
+            actor.patch.capacityGrams ?? parseGrams(existing.capacity_grams, "capacityGrams"),
+          active: actor.patch.active ?? existing.active
+        });
+        assertValid(validateVehicleInput(next));
+        const result = await client
+          .query<VehicleRow>(
+            `
+              update fulfillment_vehicles
+              set name = $3, registration = $4, capacity_grams = $5::bigint, active = $6, updated_at = $7
+              where business_id = $1 and id = $2
+              returning *
+            `,
+            [
+              actor.businessId,
+              existing.id,
+              next.name,
+              next.registration,
+              formatGrams(next.capacityGrams),
+              next.active,
+              now
+            ]
+          )
+          .catch(rethrowRegistrationConflict);
+        const updated = vehicleSummary(result.rows[0] as VehicleRow);
+        logFulfillmentEvent("fulfillment.vehicle_updated", {
+          businessId: actor.businessId,
+          vehicleId: updated.id,
+          actorId: userId,
+          capacityGrams: updated.capacityGrams,
+          active: updated.active
+        });
+        return updated;
+      });
+    },
+
+    async listDispatchPolicies(actor) {
+      authorize(actor, "fulfillment:read");
+      const defaultId = await defaultPolicyId(pool, actor.businessId);
+      const result = await pool.query<PolicyRow>(
+        `
+          select * from fulfillment_dispatch_policies
+          where business_id = $1 ${actor.includeHistory === true ? "" : "and active"}
+          order by name, policy_id, version desc
+        `,
+        [actor.businessId]
+      );
+      return result.rows.map((row) => policySummary(row, defaultId));
+    },
+
+    async createDispatchPolicy(actor) {
+      const { userId } = authorize(actor, "fulfillment:manage");
+      const policy = normalizePolicy(actor.policy);
+      assertValid(validateDispatchPolicyInput(policy));
+      const now = actor.now ?? new Date();
+      return transaction((client) =>
+        idempotent(
+          client,
+          actor,
+          "fulfillment.createDispatchPolicy",
+          { ...policyRequest(policy), makeBusinessDefault: actor.makeBusinessDefault },
+          now,
+          async () => {
+            const policyId = randomUUID();
+            const row = await insertPolicyVersion(client, {
+              businessId: actor.businessId,
+              policyId,
+              version: 1,
+              policy,
+              supersedesId: null,
+              actorId: userId,
+              now
+            });
+            if (actor.makeBusinessDefault) {
+              await setDefaultPointer(client, actor.businessId, policyId, userId, now);
+            }
+            const created = policySummary(
+              row,
+              actor.makeBusinessDefault ? policyId : await defaultPolicyId(client, actor.businessId)
+            );
+            logFulfillmentEvent("fulfillment.dispatch_policy_created", {
+              businessId: actor.businessId,
+              policyId,
+              version: 1,
+              isBusinessDefault: created.isBusinessDefault
+            });
+            return created;
+          }
+        )
+      );
+    },
+
+    async reviseDispatchPolicy(actor) {
+      const { userId } = authorize(actor, "fulfillment:manage");
+      const policy = normalizePolicy(actor.policy);
+      assertValid(validateDispatchPolicyInput(policy));
+      const now = actor.now ?? new Date();
+      return transaction((client) =>
+        idempotent(
+          client,
+          actor,
+          "fulfillment.reviseDispatchPolicy",
+          { policyId: actor.policyId, ...policyRequest(policy) },
+          now,
+          async () => {
+            // Serialize revisions of one lineage on a STABLE row: version 1 is never modified.
+            // Locking the active version instead would be wrong under READ COMMITTED - a waiter
+            // re-checks `active` after the winner commits, no longer matches, and sees nothing.
+            // The (policy_id, version) unique constraint is the database backstop.
+            await lockPolicyLineage(client, actor.businessId, actor.policyId);
+            const current = await activePolicyVersion(client, actor.businessId, actor.policyId);
+            if (current === null) {
+              throw new Cp2Error(
+                404,
+                "dispatch_policy_not_found",
+                "Dispatch policy was not found."
+              );
+            }
+            await client.query(
+              "update fulfillment_dispatch_policies set active = false where id = $1",
+              [current.id]
+            );
+            const row = await insertPolicyVersion(client, {
+              businessId: actor.businessId,
+              policyId: current.policy_id,
+              version: current.version + 1,
+              policy,
+              supersedesId: current.id,
+              actorId: userId,
+              now
+            });
+            const revised = policySummary(row, await defaultPolicyId(client, actor.businessId));
+            logFulfillmentEvent("fulfillment.dispatch_policy_revised", {
+              businessId: actor.businessId,
+              policyId: revised.policyId,
+              version: revised.version,
+              supersedesVersion: current.version
+            });
+            return revised;
+          }
+        )
+      );
+    },
+
+    async setDefaultDispatchPolicy(actor) {
+      const { userId } = authorize(actor, "fulfillment:manage");
+      const now = actor.now ?? new Date();
+      return transaction(async (client) => {
+        await lockPolicyLineage(client, actor.businessId, actor.policyId);
+        const policy = await activePolicyVersion(client, actor.businessId, actor.policyId);
+        if (policy === null) {
+          throw new Cp2Error(404, "dispatch_policy_not_found", "Dispatch policy was not found.");
+        }
+        await setDefaultPointer(client, actor.businessId, policy.policy_id, userId, now);
+        logFulfillmentEvent("fulfillment.default_policy_set", {
+          businessId: actor.businessId,
+          policyId: policy.policy_id,
+          version: policy.version
+        });
+        return effectiveDefault(client, actor.businessId);
+      });
+    },
+
+    async getEffectiveDefaultPolicy(actor) {
+      authorize(actor, "fulfillment:read");
+      return effectiveDefault(pool, actor.businessId);
+    },
+
+    async captureShopLocation(actor) {
+      const { userId } = authorize(actor, "shop_location:write");
+      deps.requireCustomer(actor.businessId, actor.customerId);
+      const location = normalizeLocation(actor.location);
+      assertValid(validateCoordinates(location));
+      const now = actor.now ?? new Date();
+      return transaction(async (client) => {
+        await idempotent(
+          client,
+          actor,
+          "fulfillment.captureShopLocation",
+          { customerId: actor.customerId, ...location },
+          now,
+          async () => {
+            await lockShopLocation(client, actor.businessId, actor.customerId);
+            const current = await client.query<{ id: string }>(
+              `
+                select id from fulfillment_shop_locations
+                where business_id = $1 and customer_id = $2 and superseded_at is null
+              `,
+              [actor.businessId, actor.customerId]
+            );
+            const previousId = current.rows[0]?.id ?? null;
+            if (previousId !== null) {
+              await client.query(
+                "update fulfillment_shop_locations set superseded_at = $2 where id = $1",
+                [previousId, now]
+              );
+            }
+            const id = randomUUID();
+            await client.query(
+              `
+                insert into fulfillment_shop_locations
+                  (id, business_id, customer_id, latitude, longitude, accuracy_meters,
+                   captured_at, captured_by, superseded_at, created_at)
+                values ($1, $2, $3, $4, $5, $6, $7, $8, null, $7)
+              `,
+              [
+                id,
+                actor.businessId,
+                actor.customerId,
+                location.latitude,
+                location.longitude,
+                location.accuracyMeters,
+                now,
+                userId
+              ]
+            );
+            // Stable IDs only - coordinates are personal/location data and never logged.
+            logFulfillmentEvent("fulfillment.shop_location_captured", {
+              businessId: actor.businessId,
+              customerId: actor.customerId,
+              locationId: id,
+              supersededLocationId: previousId
+            });
+            return { locationId: id };
+          }
+        );
+        return locationStatus(client, actor, actor.customerId);
+      });
+    },
+
+    async getShopLocation(actor) {
+      authorize(actor, "fulfillment:read");
+      deps.requireCustomer(actor.businessId, actor.customerId);
+      return locationStatus(pool, actor, actor.customerId);
+    },
+
+    async listShopLocationHistory(actor) {
+      authorize(actor, "shop_location:read_precise");
+      deps.requireCustomer(actor.businessId, actor.customerId);
+      const result = await pool.query<LocationRow>(
+        `
+          select * from fulfillment_shop_locations
+          where business_id = $1 and customer_id = $2
+          order by created_at desc, id desc
+        `,
+        [actor.businessId, actor.customerId]
+      );
+      return result.rows.map(locationSummary);
+    },
+
+    async purgeExpiredIdempotencyRecords(options) {
+      const now = options.now ?? new Date();
+      const hours = options.retentionHours ?? input.idempotencyRetentionHours ?? 24;
+      if (!Number.isInteger(hours) || hours < 24) {
+        throw new Error("Fulfillment idempotency records must be retained for at least 24 hours.");
+      }
+      const result = await pool.query(
+        "delete from fulfillment_idempotency_records where created_at < $1",
+        [new Date(now.getTime() - hours * 3_600_000)]
+      );
+      return result.rowCount ?? 0;
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rows, mapping, normalization
+// ---------------------------------------------------------------------------------------------
+
+interface VehicleRow {
+  id: string;
+  business_id: string;
+  name: string;
+  registration: string | null;
+  capacity_grams: string;
+  active: boolean;
+  created_by: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface PolicyRow {
+  id: string;
+  policy_id: string;
+  business_id: string;
+  version: number;
+  name: string;
+  target_load_grams: string;
+  minimum_dispatch_load_grams: string | null;
+  max_diversion_meters: number;
+  cutoff_local_time: string;
+  max_wait_hours: number;
+  fulfillment_lead_days: number;
+  under_threshold_fallback: string[];
+  overflow_strategy: string;
+  active: boolean;
+  supersedes_id: string | null;
+  created_by: string;
+  created_at: Date;
+}
+
+interface LocationRow {
+  id: string;
+  business_id: string;
+  customer_id: string;
+  latitude: string;
+  longitude: string;
+  accuracy_meters: number | null;
+  captured_at: Date;
+  captured_by: string;
+  superseded_at: Date | null;
+}
+
+/** Locks a policy lineage via its immutable version-1 row (A17 "stable serialization point"). */
+async function lockPolicyLineage(
+  client: PoolClient,
+  businessId: string,
+  policyId: string
+): Promise<void> {
+  if (!isUuid(policyId)) return;
+  await client.query(
+    `
+      select id from fulfillment_dispatch_policies
+      where business_id = $1 and policy_id = $2 and version = 1
+      for update
+    `,
+    [businessId, policyId]
+  );
+}
+
+/**
+ * Serializes location captures for one shop. A row lock cannot do this: the first capture for a
+ * shop has no row to lock, and the current row stops matching `superseded_at is null` once a
+ * concurrent capture supersedes it. So this is the one justified `pg_advisory_xact_lock`
+ * (A17): transaction-scoped (released at COMMIT/ROLLBACK, safe behind the transaction-mode
+ * pooler - never a session lock); the key is a 64-bit hash of a namespaced
+ * `business:customer` string; it protects only "who supersedes the current location of this
+ * shop". A hash collision can only make two unrelated captures wait for each other - it can never
+ * grant access across tenants, because every statement still filters by business_id. The
+ * one-current partial unique index remains the database backstop.
+ */
+async function lockShopLocation(
+  client: PoolClient,
+  businessId: string,
+  customerId: string
+): Promise<void> {
+  await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `soko.fulfillment.shop_location:${businessId}:${customerId}`
+  ]);
+}
+
+async function insertPolicyVersion(
+  client: PoolClient,
+  input: {
+    businessId: string;
+    policyId: string;
+    version: number;
+    policy: DispatchPolicyInput;
+    supersedesId: string | null;
+    actorId: string;
+    now: Date;
+  }
+): Promise<PolicyRow> {
+  const result = await client.query<PolicyRow>(
+    `
+      insert into fulfillment_dispatch_policies
+        (id, policy_id, business_id, version, name, target_load_grams, minimum_dispatch_load_grams,
+         max_diversion_meters, cutoff_local_time, max_wait_hours, fulfillment_lead_days,
+         under_threshold_fallback, overflow_strategy, active, supersedes_id, created_by, created_at)
+      values ($1, $2, $3, $4, $5, $6::bigint, $7::bigint, $8, $9, $10, $11, $12::text[], $13, true,
+              $14, $15, $16)
+      returning *
+    `,
+    [
+      randomUUID(),
+      input.policyId,
+      input.businessId,
+      input.version,
+      input.policy.name,
+      formatGrams(input.policy.targetLoadGrams),
+      formatNullableGrams(input.policy.minimumDispatchLoadGrams),
+      input.policy.maxDiversionMeters,
+      input.policy.cutoffLocalTime,
+      input.policy.maxWaitHours,
+      input.policy.fulfillmentLeadDays,
+      input.policy.underThresholdFallback,
+      input.policy.overflowStrategy,
+      input.supersedesId,
+      input.actorId,
+      input.now
+    ]
+  );
+  return result.rows[0] as PolicyRow;
+}
+
+function vehicleSummary(row: VehicleRow): VehicleSummary {
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    name: row.name,
+    registration: row.registration,
+    capacityGrams: row.capacity_grams,
+    active: row.active,
+    createdBy: row.created_by,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString()
+  };
+}
+
+function policySummary(row: PolicyRow, defaultPolicyId: string | null): DispatchPolicySummary {
+  return {
+    id: row.id,
+    policyId: row.policy_id,
+    businessId: row.business_id,
+    version: row.version,
+    name: row.name,
+    isBusinessDefault: row.policy_id === defaultPolicyId,
+    targetLoadGrams: row.target_load_grams,
+    minimumDispatchLoadGrams: row.minimum_dispatch_load_grams,
+    maxDiversionMeters: row.max_diversion_meters,
+    cutoffLocalTime: row.cutoff_local_time,
+    maxWaitHours: row.max_wait_hours,
+    fulfillmentLeadDays: row.fulfillment_lead_days,
+    underThresholdFallback: row.under_threshold_fallback as DispatchFallbackAction[],
+    overflowStrategy: row.overflow_strategy as DispatchOverflowStrategy,
+    active: row.active,
+    createdBy: row.created_by,
+    createdAt: row.created_at.toISOString()
+  };
+}
+
+function locationSummary(row: LocationRow): ShopLocationSummary {
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    customerId: row.customer_id,
+    latitude: Number(row.latitude),
+    longitude: Number(row.longitude),
+    accuracyMeters: row.accuracy_meters,
+    capturedAt: row.captured_at.toISOString(),
+    capturedBy: row.captured_by,
+    supersededAt: row.superseded_at === null ? null : row.superseded_at.toISOString()
+  };
+}
+
+function normalizeVehicle(input: VehicleMutationInput): VehicleMutationInput {
+  const registration = input.registration?.trim() ?? "";
+  return {
+    name: input.name.trim(),
+    registration: registration === "" ? null : registration,
+    capacityGrams: input.capacityGrams,
+    active: input.active
+  };
+}
+
+function normalizePolicy(input: DispatchPolicyInput): DispatchPolicyInput {
+  return { ...input, name: input.name.trim() };
+}
+
+function policyRequest(policy: DispatchPolicyInput) {
+  return {
+    ...policy,
+    targetLoadGrams: formatGrams(policy.targetLoadGrams),
+    minimumDispatchLoadGrams: formatNullableGrams(policy.minimumDispatchLoadGrams)
+  };
+}
+
+/** Stored as numeric(9,6) (about 0.1 m); rounding here keeps the response equal to the row. */
+function normalizeLocation(input: ShopLocationCaptureInput): ShopLocationCaptureInput {
+  const round6 = (value: number) => Math.round(value * 1e6) / 1e6;
+  return {
+    latitude: round6(input.latitude),
+    longitude: round6(input.longitude),
+    accuracyMeters:
+      input.accuracyMeters === null || !Number.isFinite(input.accuracyMeters)
+        ? input.accuracyMeters
+        : Math.round(input.accuracyMeters)
+  };
+}
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+function isUuid(value: string): boolean {
+  return uuidPattern.test(value);
+}
+
+function requireUuid(value: string, code: string, message: string): void {
+  if (!isUuid(value)) throw new Cp2Error(404, code, message);
+}
+
+function rethrowRegistrationConflict(error: unknown): never {
+  if ((error as { code?: string; constraint?: string } | null)?.code === "23505") {
+    throw new Cp2Error(
+      409,
+      "vehicle_registration_taken",
+      "Another vehicle in this business already has that registration."
+    );
+  }
+  throw error;
+}
+
+/** Phase 1 observability (A19): structured logs with stable ids, no personal data. */
+function logFulfillmentEvent(event: string, fields: Record<string, unknown>): void {
+  console.info(JSON.stringify({ event, ...fields }));
+}

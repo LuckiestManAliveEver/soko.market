@@ -16,6 +16,7 @@ import type {
   ProductImportDraft,
   ProductSummary
 } from "@soko/shared-types";
+import { isGramsString } from "@soko/shared-types";
 import { invalid, type ValidationResult, valid } from "@soko/tool-core";
 
 import { parseFlexibleImportRecords, parseImportNumber } from "../shared/content-parsing.js";
@@ -49,6 +50,9 @@ export interface ProductInput {
   quantity?: number;
   buyingPrice?: number | null;
   sellingPrice?: number | null;
+  /** Whole grams per sellable unit as a decimal string (A22). `undefined` leaves an existing
+   *  product's weight unchanged; `null` clears it back to unknown. */
+  unitWeightGrams?: string | null;
   fieldValues?: Record<string, string>;
 }
 
@@ -86,6 +90,7 @@ export interface NormalizedProductInput {
   quantity: number;
   buyingPrice: number | null;
   sellingPrice: number | null;
+  unitWeightGrams: string | null | undefined;
   fieldValues: Record<string, string>;
 }
 
@@ -129,6 +134,14 @@ export function validateProductInput(input: ProductInput): ValidationResult {
 
   if (!isValidQuantity(input.quantity ?? 0)) {
     errors.push("Product quantity must be a finite non-negative number.");
+  }
+
+  if (
+    input.unitWeightGrams !== null &&
+    input.unitWeightGrams !== undefined &&
+    (!isGramsString(input.unitWeightGrams) || input.unitWeightGrams === "0")
+  ) {
+    errors.push("Product unit weight must be a whole number of grams greater than zero.");
   }
 
   if (
@@ -309,6 +322,7 @@ export function normalizeProductInput(input: ProductInput): NormalizedProductInp
       input.sellingPrice === null || input.sellingPrice === undefined
         ? null
         : roundMoney(input.sellingPrice),
+    unitWeightGrams: input.unitWeightGrams,
     fieldValues: Object.fromEntries(
       Object.entries(input.fieldValues ?? {}).map(([fieldId, value]) => [fieldId, value.trim()])
     )

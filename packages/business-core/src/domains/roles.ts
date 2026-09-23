@@ -51,7 +51,14 @@ export function businessActionProposedEvent(input: {
   });
 }
 
-export const businessRoles = ["owner", "manager", "sales_agent", "cashier", "view_only"] as const;
+export const businessRoles = [
+  "owner",
+  "manager",
+  "sales_agent",
+  "cashier",
+  "view_only",
+  "driver"
+] as const;
 
 export type BusinessPermission =
   | "business:create"
@@ -72,6 +79,16 @@ export type BusinessPermission =
   | "payment:write"
   | "logistics:read"
   | "logistics:write"
+  // Corridor fulfillment (docs/architecture/corridor-fulfillment.md A8). `fulfillment:manage`
+  // covers corridors, vehicles, policies and the business timezone; `fulfillment:dispatch` covers
+  // manifests, vehicle assignment, approvals and corridor re-resolution; precise shop coordinates
+  // are only readable with `shop_location:read_precise`.
+  | "fulfillment:read"
+  | "fulfillment:dispatch"
+  | "fulfillment:manage"
+  | "shop_location:write"
+  | "shop_location:read_precise"
+  | "delivery:record"
   | "import:read"
   | "import:write"
   | "report:read"
@@ -115,6 +132,12 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "payment:write",
     "logistics:read",
     "logistics:write",
+    "fulfillment:read",
+    "fulfillment:dispatch",
+    "fulfillment:manage",
+    "shop_location:write",
+    "shop_location:read_precise",
+    "delivery:record",
     "import:read",
     "import:write",
     "report:read",
@@ -155,6 +178,11 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "payment:write",
     "logistics:read",
     "logistics:write",
+    "fulfillment:read",
+    "fulfillment:dispatch",
+    "shop_location:write",
+    "shop_location:read_precise",
+    "delivery:record",
     "import:read",
     "import:write",
     "report:read",
@@ -181,6 +209,8 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "payment:read",
     "logistics:read",
     "logistics:write",
+    "fulfillment:read",
+    "shop_location:write",
     "import:read",
     "notification:read",
     "tax:read",
@@ -215,7 +245,10 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "tax:read",
     "beta:read",
     "launch:read"
-  ])
+  ]),
+  // A business-scoped membership value (not a global role): a driver records delivery outcomes and
+  // nothing else. Which manifests a driver may see is scoped to assignment (Phase 1c/2).
+  driver: new Set(["business:read", "delivery:record"])
 };
 
 export function isBusinessRole(value: string): value is BusinessRole {

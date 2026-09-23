@@ -1,5 +1,16 @@
 import { withRuntimeDeadline } from "./runtime-deadline.js";
 import { isLocalRuntimeHost, isModelExecutionTarget } from "@soko/shared-types";
+import {
+  calculateOrderFulfillmentWeight,
+  isValidIanaTimeZone,
+  type BusinessPermission as FulfillmentBusinessPermission
+} from "@soko/business-core";
+import {
+  formatGrams,
+  type BusinessRole as FulfillmentBusinessRole,
+  type FulfillmentSettingsSummary,
+  type OrderFulfillmentWeightSummary
+} from "@soko/shared-types";
 import { runtimeAdapterIdForAgent } from "../agent-harness/agent-runtime-adapter.js";
 import type { RuntimeTransfer } from "@soko/shared-types";
 import { OfflineJournal, type OfflineReceipt } from "./offline-runtime.js";
@@ -4330,6 +4341,119 @@ export class Cp2Store {
       role,
       permission
     };
+  }
+
+  /**
+   * Authorization entry point for business services that live outside this in-memory store (the
+   * Postgres-authoritative FulfillmentService, docs/architecture/corridor-fulfillment.md §5.2).
+   * Same checks as every in-store mutation - session, deletion window, business, membership, role
+   * permission - and read-only, so it never triggers a snapshot save.
+   */
+  authorizeBusinessPermission(input: {
+    sessionId: string | null;
+    businessId: string;
+    permission: FulfillmentBusinessPermission;
+    now?: Date;
+  }): { userId: string; role: FulfillmentBusinessRole } {
+    const actor = this.requireAuthorizedActor(
+      input.sessionId,
+      input.businessId,
+      input.permission,
+      input.now
+    );
+    const membership = this.requireMembership(input.businessId, actor.user.id);
+    return { userId: actor.user.id, role: membership.role };
+  }
+
+  /** Whether the caller's membership in `businessId` grants `permission` (no throw). */
+  hasBusinessPermission(input: {
+    sessionId: string | null;
+    businessId: string;
+    permission: FulfillmentBusinessPermission;
+    now?: Date;
+  }): boolean {
+    try {
+      this.requireAuthorizedActor(input.sessionId, input.businessId, input.permission, input.now);
+      return true;
+    } catch (error) {
+      if (error instanceof Cp2Error && error.statusCode === 403) return false;
+      throw error;
+    }
+  }
+
+  /** Tenant-scoped existence check for a shop (customer) referenced by an external service. */
+  requireBusinessCustomer(businessId: string, customerId: string): { id: string; name: string } {
+    const customer = this.salesDomain.requireCustomer(businessId, customerId);
+    return { id: customer.id, name: customer.name };
+  }
+
+  getFulfillmentSettings(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): FulfillmentSettingsSummary {
+    this.requireAuthorizedActor(input.sessionId, input.businessId, "fulfillment:read", input.now);
+    return {
+      businessId: input.businessId,
+      timezone: this.requireBusiness(input.businessId).timezone ?? null
+    };
+  }
+
+  /** A11: the business timezone is business data set by its owner - never a code default. */
+  updateBusinessTimezone(input: {
+    sessionId: string | null;
+    businessId: string;
+    timezone: string | null;
+    now?: Date;
+  }): FulfillmentSettingsSummary {
+    const now = input.now ?? new Date();
+    const actor = this.requireAuthorizedActor(
+      input.sessionId,
+      input.businessId,
+      "fulfillment:manage",
+      now
+    );
+    if (input.timezone !== null && !isValidIanaTimeZone(input.timezone)) {
+      throw new Cp2Error(
+        400,
+        "timezone_invalid",
+        "Timezone must be an IANA timezone name such as Africa/Nairobi."
+      );
+    }
+    const business = this.requireBusiness(input.businessId);
+    const previousTimezone = business.timezone ?? null;
+    if (previousTimezone !== input.timezone) {
+      this.businesses.set(business.id, { ...business, timezone: input.timezone });
+      this.recordAuditEvent({
+        type: "business.timezone_updated",
+        aggregateType: "business",
+        aggregateId: business.id,
+        actorId: actor.user.id,
+        occurredAt: now.toISOString(),
+        payload: { previousTimezone, timezone: input.timezone }
+      });
+    }
+    return { businessId: business.id, timezone: input.timezone };
+  }
+
+  /**
+   * The canonical order fulfillment weight (A5) for one invoice, on the wire (A22). Derived only
+   * from the invoice's confirmation-time line snapshots via business-core's
+   * calculateOrderFulfillmentWeight - never re-summed here or in any caller.
+   */
+  getOrderFulfillmentWeight(input: {
+    sessionId: string | null;
+    businessId: string;
+    invoiceId: string;
+    now?: Date;
+  }): OrderFulfillmentWeightSummary {
+    this.requireAuthorizedActor(input.sessionId, input.businessId, "invoice:read", input.now);
+    const weight = calculateOrderFulfillmentWeight(
+      this.salesDomain.requireInvoice(input.businessId, input.invoiceId)
+    );
+    return weight.status === "RESOLVED"
+      ? { status: "RESOLVED", totalWeightGrams: formatGrams(weight.totalWeightGrams) }
+      : weight;
   }
 
   listProducts(
