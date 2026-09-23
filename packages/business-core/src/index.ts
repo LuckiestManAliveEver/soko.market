@@ -1,5 +1,6 @@
 export * from "./domains/roles.js";
 export * from "./domains/logistics.js";
+export * from "./domains/fulfillment.js";
 export * from "./domains/verification-tax.js";
 export * from "./domains/device-trust.js";
 export * from "./domains/beta.js";

@@ -62,6 +62,33 @@ const expectedTables = new Map([
     ]
   ]
 ]);
+// Corridor fulfillment (089/090, docs/architecture/corridor-fulfillment.md). Checked for columns
+// only: fulfillment tables deliberately hold no foreign keys into snapshot-managed tables (§5.2),
+// so they do not fit the PK/FK/UNIQUE/CHECK requirement applied to `expectedTables`.
+const expectedFulfillmentColumns = new Map([
+  ["products", ["unit_weight_grams"]],
+  [
+    "invoice_items",
+    [
+      "unit_weight_grams_snapshot",
+      "total_weight_grams",
+      "weight_status",
+      "weight_unresolved_reason"
+    ]
+  ],
+  ["businesses", ["timezone"]],
+  ["fulfillment_vehicles", ["id", "business_id", "capacity_grams", "active"]],
+  [
+    "fulfillment_dispatch_policies",
+    ["id", "policy_id", "business_id", "version", "target_load_grams", "active"]
+  ],
+  ["fulfillment_business_settings", ["business_id", "default_policy_id"]],
+  ["fulfillment_shop_locations", ["id", "business_id", "customer_id", "superseded_at"]],
+  [
+    "fulfillment_idempotency_records",
+    ["business_id", "operation", "idempotency_key", "request_hash", "response_snapshot"]
+  ]
+]);
 const expectedMigrations = new Map(
   await Promise.all(
     migrationFilenames.map(async (filename) => {
@@ -121,6 +148,22 @@ try {
       if (!constraintTypes.has(requiredType)) {
         throw new Error(`${tableName} is missing a ${requiredType} constraint.`);
       }
+    }
+  }
+
+  for (const [tableName, expectedColumns] of expectedFulfillmentColumns) {
+    const columns = await client.query(
+      `
+        select column_name
+        from information_schema.columns
+        where table_schema = 'public' and table_name = $1
+      `,
+      [tableName]
+    );
+    const actualColumns = new Set(columns.rows.map((row) => row.column_name));
+    const missingColumns = expectedColumns.filter((column) => !actualColumns.has(column));
+    if (missingColumns.length > 0) {
+      throw new Error(`${tableName} is missing columns: ${missingColumns.join(", ")}`);
     }
   }
 

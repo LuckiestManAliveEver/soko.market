@@ -23,6 +23,7 @@ import type {
   ProductFieldInputType,
   PublicCustomerCareRequestType
 } from "@soko/shared-types";
+import { GramsFormatError, formatGrams, parsePositiveGrams } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
 import {
@@ -81,6 +82,7 @@ interface ProductBody {
   quantity?: number;
   buyingPrice?: number | null;
   sellingPrice?: number | null;
+  unitWeightGrams?: unknown;
   fieldValues?: unknown;
 }
 
@@ -565,10 +567,26 @@ export function parseProductBody(body: ProductBody | null | undefined) {
       record.sellingPrice === undefined || record.sellingPrice === null
         ? null
         : parseNumber(record.sellingPrice, "sellingPrice"),
+    ...(record.unitWeightGrams === undefined
+      ? {}
+      : { unitWeightGrams: parseUnitWeightGrams(record.unitWeightGrams) }),
     ...(record.fieldValues === undefined
       ? {}
       : { fieldValues: parseProductFieldValues(record.fieldValues) })
   };
+}
+
+/** A22: grams cross JSON only as canonical decimal strings; numbers are rejected, never coerced. */
+function parseUnitWeightGrams(value: unknown): string | null {
+  if (value === null) return null;
+  try {
+    return formatGrams(parsePositiveGrams(value, "unitWeightGrams"));
+  } catch (error) {
+    if (error instanceof GramsFormatError) {
+      throw new Cp2Error(400, "unit_weight_grams_invalid", error.message);
+    }
+    throw error;
+  }
 }
 
 function parseProductFieldValues(value: unknown): Record<string, string> {

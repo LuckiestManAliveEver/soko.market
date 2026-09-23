@@ -156,6 +156,54 @@ for (const file of capabilityCallers) {
   }
 }
 
+// Corridor fulfillment boundaries (docs/architecture/corridor-fulfillment.md A20).
+const webSourceFiles = await listSourceFiles("apps/web/src");
+for (const file of webSourceFiles) {
+  const contents = await read(file);
+  if (
+    /from\s+["'](?:pg|pg\/[^"']*)["']/u.test(contents) ||
+    /from\s+["'][^"']*services\/api\//u.test(contents) ||
+    /from\s+["'][^"']*business-core\/src\/domains\/fulfillment[^"']*["']/u.test(contents)
+  ) {
+    violations.push(`${file}: frontend imports database or fulfillment implementation internals`);
+  }
+  if (/\bBigInt\s*\(/u.test(contents)) {
+    violations.push(
+      `${file}: gram values must be converted only by @soko/shared-types grams helpers (A22)`
+    );
+  }
+}
+
+// Pure fulfillment rules: no I/O, framework, persistence, or event dependencies.
+for (const file of (await listSourceFiles(businessCoreRoot)).filter((candidate) =>
+  /\/domains\/fulfillment[^/]*\.ts$/u.test(candidate)
+)) {
+  const contents = await read(file);
+  for (const match of contents.matchAll(/from\s+["']([^"']+)["']/gu)) {
+    const specifier = match[1];
+    if (specifier !== "@soko/shared-types" && specifier !== "@soko/tool-core") {
+      violations.push(`${file}: pure fulfillment rules may not import ${specifier}`);
+    }
+  }
+}
+
+// Fulfillment SQL/transaction internals are private to the fulfillment domain; every other layer
+// (other domains, MCP, messaging adapters, the capability dispatcher) goes through service.ts.
+const fulfillmentDomainPrefix = "services/api/src/cp2/domains/fulfillment/";
+for (const file of apiFiles.filter((candidate) => !candidate.startsWith(fulfillmentDomainPrefix))) {
+  const contents = await read(file);
+  if (/from\s+["'][^"']*\bfulfillment\/transaction(?:\.js)?["']/u.test(contents)) {
+    violations.push(`${file}: imports fulfillment transaction internals instead of service.ts`);
+  }
+}
+for (const file of apiFiles.filter((candidate) => candidate.startsWith(fulfillmentDomainPrefix))) {
+  if (/\bBigInt\s*\(/u.test(await read(file))) {
+    violations.push(
+      `${file}: gram values must be converted only by @soko/shared-types grams helpers (A22)`
+    );
+  }
+}
+
 const lineBudgets = new Map([
   ["packages/tool-core/src/index.ts", 25],
   ["packages/tool-core/src/parsers.ts", 25],

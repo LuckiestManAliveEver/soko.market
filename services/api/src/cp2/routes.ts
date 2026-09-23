@@ -55,6 +55,11 @@ import { registerNotificationsRoutes } from "./domains/notifications/routes.js";
 import { registerPasskeysRoutes } from "./domains/passkeys/routes.js";
 import { registerNetworkRoutes } from "./domains/network/routes.js";
 import { registerCommercialRecordsRoutes } from "./domains/commercial-records/routes.js";
+import { registerFulfillmentRoutes } from "./domains/fulfillment/routes.js";
+import {
+  createUnavailableFulfillmentService,
+  type FulfillmentService
+} from "./domains/fulfillment/service.js";
 import { registerSuppliersRoutes } from "./domains/suppliers/routes.js";
 import { registerDocumentImportsRoutes } from "./domains/document-imports/routes.js";
 import { registerCatalogueSharingRoutes } from "./domains/catalogue-sharing/routes.js";
@@ -128,6 +133,10 @@ export interface Cp2RouteOptions {
    *  (createPostgresRuntimeRegistryImportStore) in a deployment that persists imports. */
   runtimeRegistryImportStore?: RuntimeRegistryImportStore;
   ocrProcessor?: OcrExtractionProcessor;
+  /** Postgres-authoritative corridor fulfillment (docs/architecture/corridor-fulfillment.md).
+   *  Omitted in memory mode, where every fulfillment route answers 503
+   *  fulfillment_requires_postgres. */
+  fulfillmentService?: FulfillmentService;
   store?: Cp2Store;
   vapidPublicKey?: string;
   /** Origin the web PWA is actually served from - used only to build the universal `/s/:slug`
@@ -1907,6 +1916,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   registerLogisticsRoutes(app, store);
   registerCommercialRecordsRoutes(app, store);
+  registerFulfillmentRoutes(
+    app,
+    store,
+    options.fulfillmentService ?? createUnavailableFulfillmentService()
+  );
 
   app.get(
     "/businesses/:businessId/reports/summary",
@@ -2431,6 +2445,12 @@ const businessPermissions: BusinessPermission[] = [
   "payment:write",
   "logistics:read",
   "logistics:write",
+  "fulfillment:read",
+  "fulfillment:dispatch",
+  "fulfillment:manage",
+  "shop_location:write",
+  "shop_location:read_precise",
+  "delivery:record",
   "import:read",
   "import:write",
   "report:read",

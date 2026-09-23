@@ -1,8 +1,11 @@
-# Corridor Fulfillment — Phase 0 Repository Audit and Architecture
+# Corridor Fulfillment — Architecture
 
-Status: **Phase 0 audit complete. No application, schema, or migration changes have been made.**
-Phases 1a–3 are blocked until the owner decides the questions in §9. The most important is D1,
-which asks where fulfillment state is authoritative.
+Status: **Phase 0 audit complete. Phase 1a (foundation) implemented; see §11.** Phases 1b–3 have
+not started.
+
+The owner asked to continue past Phase 0 ("continue and fix any gaps"). Phase 1a therefore
+adopts the recommendation of every §9 decision it depends on (D1 = option A, D2, D6, D7, D8,
+D10). D3, D4, D5, D9 and D11 are still open; none of them blocks Phase 1a.
 
 This document records what the repository actually contains. The phased prompt ("Soko Corridor
 Fulfillment — Phased Agent Prompts v4", Part A) assumes some things that turned out to be wrong.
@@ -540,3 +543,109 @@ Pre-existing issues noticed (outside scope, not fixed):
   quantity). The tolerance comparison is `diversionMeters <= maxDiversionMeters` (inclusive).
   Ties use exact equality after rounding to millimetres, then `priority`, then lexical id.
 - Persisted diversion and along-distance values: `numeric(12,3)` metres.
+
+---
+
+## 11. Phase 1a implementation record
+
+### 11.1 Decisions applied
+
+| ID  | Applied as                                                                                                                                                                                                                  |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Option A. Fulfillment-owned tables are Postgres-authoritative, written only inside `FulfillmentService` transactions, and absent from `normalizedCollections`. Catalogue, invoice and business fields stay in the Cp2Store. |
+| D2  | In memory mode (`CP2_STORE=memory`) every fulfillment route answers `503 fulfillment_requires_postgres`. The pure rules run everywhere; the transactional layer is tested only on real Postgres.                            |
+| D6  | Exact-decimal line weight. `quantity x unitWeightGrams` is computed from the quantity's shortest decimal representation. A result that is not whole grams is `UNRESOLVED` (`NON_INTEGRAL_WEIGHT`), never rounded.           |
+| D7  | New permissions (§11.3). `manager` is the dispatcher. New business-scoped role `driver`.                                                                                                                                    |
+| D8  | CI runs PostgreSQL 16 and every Postgres-gated test file, serially.                                                                                                                                                         |
+| D10 | Coordinates are stored as `numeric(9,6)` (about 0.1 m). A purged business's fulfillment rows are deleted with it.                                                                                                           |
+
+### 11.2 What was built
+
+| Concern                                   | Where                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A22 gram serializer and kg display        | `packages/shared-types/src/grams.ts`: `parseGrams`/`parsePositiveGrams`/`formatGrams`/`formatKilogramsForDisplay`. Only canonical digit strings are accepted, up to the BIGINT maximum; JSON numbers are rejected.                                                                                                                            |
+| Wire types                                | `packages/shared-types/src/fulfillment.ts`. `ProductSummary.unitWeightGrams`, the `InvoiceItemSummary` weight snapshot fields and `BusinessSummary.timezone` are all optional, so historical records stay valid.                                                                                                                              |
+| Pure rules (A4, A5, A6, A7, A9, A10, A11) | `packages/business-core/src/domains/fulfillment.ts`: `calculateLineWeight`, `snapshotInvoiceLineWeight`, **`calculateOrderFulfillmentWeight`** (the one canonical order weight), `validateVehicleInput`, `validateDispatchPolicyInput`, `validateCoordinates`, `isValidIanaTimeZone`.                                                         |
+| Product weight                            | `ProductInput.unitWeightGrams` on create/update. Omitting it keeps the existing value; `null` clears it back to unknown.                                                                                                                                                                                                                      |
+| Line snapshot                             | `SalesDomain.confirmInvoice` snapshots each line from the catalogue at confirmation. Every confirmation path (online, offline replay, agent, storefront) goes through it.                                                                                                                                                                     |
+| Canonical order weight read               | `GET /businesses/:businessId/invoices/:invoiceId/fulfillment-weight` (`invoice:read`)                                                                                                                                                                                                                                                         |
+| Business timezone (A11)                   | `GET`/`PATCH /businesses/:businessId/fulfillment/settings`. Reading needs `fulfillment:read`; writing needs `fulfillment:manage` and a valid IANA zone.                                                                                                                                                                                       |
+| Vehicles (A7)                             | `/fulfillment/vehicles` (list, create, patch), table `fulfillment_vehicles`                                                                                                                                                                                                                                                                   |
+| Policies (A9/A10)                         | `/fulfillment/policies`, `/policies/:policyId/revisions`, `/fulfillment/default-policy`. Tables `fulfillment_dispatch_policies` (one immutable row per version) and `fulfillment_business_settings` (points at the default policy lineage; its active version is the effective default).                                                      |
+| Shop locations (A6)                       | `/fulfillment/shops/:customerId/location` (`GET`, `PUT` to capture) and `/location/history`. Table `fulfillment_shop_locations` is append-only with one current row per shop. Callers without `shop_location:read_precise` get `coordinatesRedacted: true`, and coordinates are never logged.                                                 |
+| Idempotency (A23)                         | Table `fulfillment_idempotency_records`, via `runIdempotent` in `domains/fulfillment/transaction.ts`, driven by the `Idempotency-Key` header. Retention is set by `FULFILLMENT_IDEMPOTENCY_RETENTION_HOURS` (24 h minimum); an interval runner in `index.ts` purges old records.                                                              |
+| Transaction shell (A17)                   | `withFulfillmentTransaction`: one `PoolClient`, `SET LOCAL lock_timeout`, and bounded retry on `40001`/`40P01`/`55P03`/recheck conflicts. Domain errors are never retried.                                                                                                                                                                    |
+| Store bridge                              | `Cp2Store.authorizeBusinessPermission`, `hasBusinessPermission` and `requireBusinessCustomer` (read-only, never trigger a snapshot save), plus `updateBusinessTimezone` (mutating) and `getOrderFulfillmentWeight`.                                                                                                                           |
+| Migrations                                | `089_fulfillment_weight_timezone.sql` and `090_fulfillment_foundation.sql`, each with a `.down.sql`. Nothing is backfilled.                                                                                                                                                                                                                   |
+| Boundaries (A20)                          | `scripts/check-boundaries.mjs`: the web app may not import `pg`, `services/api` or fulfillment internals, and may not call `BigInt(`; pure fulfillment rules may import only `shared-types`/`tool-core`; nothing outside the fulfillment domain may import `fulfillment/transaction`; the fulfillment domain may not call `BigInt(` directly. |
+| Schema verification                       | `db:verify-schema` checks the columns added by 089/090. It checks columns only, because fulfillment tables deliberately have no foreign keys (§5.2).                                                                                                                                                                                          |
+| CI                                        | A `postgres:16-alpine` service, then `pnpm db:migrate`, then `pnpm test:postgres` (`scripts/run-postgres-tests.mjs` finds every file gated on `CP2_POSTGRES_TEST_DATABASE_URL` and runs them serially).                                                                                                                                       |
+
+### 11.3 Permissions (A8)
+
+| Permission                   | owner | manager (dispatcher) | sales_agent | driver | cashier / view_only |
+| ---------------------------- | ----- | -------------------- | ----------- | ------ | ------------------- |
+| `fulfillment:read`           | ✓     | ✓                    | ✓ (limited) |        |                     |
+| `fulfillment:dispatch`       | ✓     | ✓                    |             |        |                     |
+| `fulfillment:manage`         | ✓     |                      |             |        |                     |
+| `shop_location:write`        | ✓     | ✓                    | ✓           |        |                     |
+| `shop_location:read_precise` | ✓     | ✓                    |             |        |                     |
+| `delivery:record`            | ✓     | ✓                    |             | ✓      |                     |
+
+"Limited" means Phase 1c must narrow what a salesperson sees in pools. Scoping a driver to their
+assigned manifests is Phase 1c/2 work.
+
+### 11.4 Deviations from the plan, and why
+
+- **Table names carry a `fulfillment_` prefix** (for example `fulfillment_vehicles`) so their
+  ownership is obvious next to the snapshot-managed tables.
+- **The default policy is a pointer table** (`fulfillment_business_settings`), not an
+  `is_business_default` column. Changing the default must not rewrite an immutable policy
+  version.
+- **Stable lock targets.** The first implementation locked "the active policy version" and "the
+  current shop location" with `FOR UPDATE`. The concurrency tests showed this is wrong under READ
+  COMMITTED: a waiter re-checks its `WHERE` clause after the winner commits, no longer matches,
+  and sees no row, which produced a spurious 404 and a duplicate current location. The fixes:
+  - Policy revisions lock the lineage's **version-1 row**, which is never modified.
+  - Shop-location captures use a transaction-scoped `pg_advisory_xact_lock`. No row can serve
+    here, because a shop's first capture has no row at all. The key is a 64-bit hash of
+    `soko.fulfillment.shop_location:<business>:<customer>`. A collision can only make two
+    unrelated captures wait for each other; it cannot cross tenants, because every statement
+    still filters by `business_id`. The partial unique index remains the backstop.
+
+  **The same trap applies to Phase 1c.** `createManifest` must lock the corridor row and
+  candidate rows by stable predicates (`id`), then re-read state in a fresh statement.
+
+- **Idempotent replay of a location capture** replays the _mutation_ once, but re-renders the
+  response for the current caller, because coordinate redaction depends on the caller's
+  permission. Every other operation returns the stored response unchanged.
+
+### 11.5 Gaps found and fixed along the way
+
+- **Product `fieldValues` were lost on every restart** (pre-existing). Relational hydration of
+  `products` replaced the whole record, so business-defined catalogue field values silently
+  vanished after a deploy. Relational hydration now starts from the compatibility record and
+  overrides only the relational columns. A Postgres restart test covers it.
+- **Postgres tests had rotted unnoticed** (pre-existing, because CI never ran them). The Vercel
+  inference mock in `tests/cp2-postgres-store.test.ts` returned a fixed `requestId`, but the
+  client now requires the result to echo the request's id. The mock now echoes it, and the test
+  asserts the exact id: equally strict, with the correct protocol. Two other Postgres files
+  failed only when run in parallel against one database, which is why they now run serially.
+  With these fixes, all 8 Postgres files (70 tests) pass.
+
+### 11.6 Known gaps carried forward
+
+- **There is no staff-invitation flow.** Memberships other than the business creator's owner
+  role can only be created in tests (`hydrateSnapshot`). Until a membership-management API
+  exists, only owners can use fulfillment in production. Field salespeople, dispatchers and
+  drivers need this before Phase 1c's field-sales flow is usable. It is a separate, auth-
+  sensitive change.
+- **Owner seed configuration (D9)** has not been applied; the owner's business id is still
+  unknown. Once it is known, apply the §7 values through the API (`PATCH /fulfillment/settings`
+  with `Africa/Nairobi`, then `POST /fulfillment/policies` with `makeBusinessDefault: true`,
+  `targetLoadGrams "6000000"`, `maxDiversionMeters 2000`, `cutoffLocalTime "18:00"`,
+  `maxWaitHours 72`, `fulfillmentLeadDays 1`, `overflowStrategy "NEXT_MANIFEST"`).
+- **No UI yet.** Phase 1a is API-only. The field-sales and operations UI is Phase 1c scope.
+- **The Chromium integration test** (`tests/computer-runtime-browser.integration.test.ts`) fails
+  in environments whose Playwright headless-shell build is missing. It fails identically on the
+  untouched baseline, and CI installs Chromium itself.

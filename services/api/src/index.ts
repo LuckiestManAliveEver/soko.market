@@ -60,6 +60,12 @@ import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-p
 import { createRateLimitRedisClient } from "./redis-client.js";
 import { createChannelGatewayFromEnvironment } from "./messaging/channel-gateway.js";
 import { createEmailMailboxProviderClient } from "./messaging/email-provider-client.js";
+import { createIntervalRunner, type IntervalRunner } from "./cp2/interval-runner.js";
+import {
+  assertFulfillmentSchema,
+  createPostgresFulfillmentService,
+  type FulfillmentService
+} from "./cp2/domains/fulfillment/service.js";
 
 const config = readEnvironment();
 // First measure: memory, CPU, and event-loop lag come from prom-client's Node defaults for free;
@@ -205,6 +211,30 @@ const cp2StoreOptions = {
 // zero-setup AI set INFERENCE_REQUIRED=true, making /health/ready fail unless the configured
 // Vercel execution host can reach the selected model artifact.
 const cp2Store = await createCp2StoreOrExplainSchemaFailure();
+// Corridor fulfillment is Postgres-authoritative (docs/architecture/corridor-fulfillment.md §5):
+// its own instrumented pool, per-request transactions, and no participation in the in-memory
+// snapshot. Memory mode gets no service, so its routes answer 503 fulfillment_requires_postgres.
+let fulfillmentPool: Pool | undefined;
+let fulfillmentService: FulfillmentService | undefined;
+if (shouldUsePostgresStore) {
+  fulfillmentPool = new Pool(
+    buildPgPoolConfig(config.databaseUrl, {
+      max: positiveIntegerFromEnv("DB_FULFILLMENT_POOL_MAX", 3)
+    })
+  );
+  metrics.instrumentPgPool(fulfillmentPool, { poolName: "fulfillment" });
+  await assertFulfillmentSchema(fulfillmentPool);
+  fulfillmentService = createPostgresFulfillmentService({
+    pool: fulfillmentPool,
+    deps: {
+      authorize: (input) => cp2Store.authorizeBusinessPermission(input),
+      hasPermission: (input) => cp2Store.hasBusinessPermission(input),
+      requireCustomer: (businessId, customerId) =>
+        cp2Store.requireBusinessCustomer(businessId, customerId)
+    },
+    idempotencyRetentionHours: positiveIntegerFromEnv("FULFILLMENT_IDEMPOTENCY_RETENTION_HOURS", 24)
+  });
+}
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
   bodyLimit: Math.max(
@@ -224,6 +254,7 @@ const apiOptions = {
     ...(ownerNodeBroker === undefined ? {} : { ownerNodeBroker }),
     ...(binaryUploadPipeline === undefined ? {} : { binaryUploadPipeline }),
     ...(ocrProcessor === undefined ? {} : { ocrProcessor }),
+    ...(fulfillmentService === undefined ? {} : { fulfillmentService }),
     ...(webPushConfiguration === null ? {} : { vapidPublicKey: webPushConfiguration.publicKey })
   }
 };
@@ -268,6 +299,7 @@ let sokoIdCooldownRunner: SokoIdCooldownRunner | null = null;
 let conversationRecycleBinRunner: ConversationRecycleBinRunner | null = null;
 let agentOwnerCorrectionRetentionRunner: AgentOwnerCorrectionRetentionRunner | null = null;
 let runtimeExperienceRetentionRunner: RuntimeExperienceRetentionRunner | null = null;
+let fulfillmentIdempotencyRetentionRunner: IntervalRunner<number> | null = null;
 const connectedMailboxSyncIntervalMs = readOptionalPositiveInteger(
   process.env.CONNECTED_MAILBOX_SYNC_INTERVAL_MS
 );
@@ -284,7 +316,9 @@ app.addHook("onClose", async () => {
   await agentOwnerCorrectionRetentionRunner?.stop();
   await runtimeExperienceRetentionRunner?.stop();
   rateLimitRedisClient.disconnect();
+  await fulfillmentIdempotencyRetentionRunner?.stop();
   await artifactPool?.end();
+  await fulfillmentPool?.end();
   if (isClosableStore(cp2Store)) {
     await cp2Store.close();
   }
@@ -364,6 +398,25 @@ if (process.env.ENABLE_RUNTIME_EXPERIENCE_RETENTION_RUNNER !== "false") {
       }
     },
     onError: (error) => app.log.error({ error }, "Runtime experience retention sweep failed.")
+  });
+}
+
+if (fulfillmentService !== undefined) {
+  const service = fulfillmentService;
+  fulfillmentIdempotencyRetentionRunner = createIntervalRunner({
+    job: "fulfillment_idempotency_retention",
+    intervalMs: positiveIntegerFromEnv("FULFILLMENT_IDEMPOTENCY_PURGE_INTERVAL_MS", 3_600_000),
+    run: () => service.purgeExpiredIdempotencyRecords({}),
+    timeScheduledJob: metrics.timeScheduledJob,
+    onResult: (purged) => {
+      if (purged > 0) {
+        app.log.info(
+          { event: "fulfillment_idempotency_records_purged", purged },
+          "Expired fulfillment idempotency records purged."
+        );
+      }
+    },
+    onError: (error) => app.log.error({ error }, "Fulfillment idempotency retention sweep failed.")
   });
 }
 
