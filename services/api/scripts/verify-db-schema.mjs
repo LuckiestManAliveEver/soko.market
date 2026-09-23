@@ -87,6 +87,26 @@ const expectedFulfillmentColumns = new Map([
   [
     "fulfillment_idempotency_records",
     ["business_id", "operation", "idempotency_key", "request_hash", "response_snapshot"]
+  ],
+  [
+    "fulfillment_corridors",
+    ["id", "business_id", "route_geometry", "distance_meters", "geometry_version", "priority"]
+  ],
+  ["fulfillment_corridor_geometry_versions", ["corridor_id", "version", "route_geometry"]],
+  ["fulfillment_orders", ["id", "business_id", "invoice_id", "customer_id", "confirmed_at"]],
+  [
+    "fulfillment_corridor_resolutions",
+    [
+      "id",
+      "fulfillment_order_id",
+      "corridor_id",
+      "corridor_geometry_version",
+      "shop_location_id",
+      "diversion_meters",
+      "distance_along_meters",
+      "resolution_method",
+      "superseded_at"
+    ]
   ]
 ]);
 const expectedMigrations = new Map(

@@ -41,6 +41,7 @@ import {
   withFulfillmentTransaction,
   type FulfillmentTransactionOptions
 } from "./transaction.js";
+import { createCorridorOperations, type CorridorOperations } from "./corridors.js";
 
 export const fulfillmentFoundationMigration = "090_fulfillment_foundation.sql";
 
@@ -58,6 +59,11 @@ export interface FulfillmentServiceDeps {
   }) => boolean;
   /** Throws 404 unless `customerId` is a shop of `businessId`. */
   requireCustomer: (businessId: string, customerId: string) => { id: string };
+  /** Throws 404 for an unknown order and 409 for a draft; returns the confirmed order's shop. */
+  requireConfirmedOrder: (
+    businessId: string,
+    invoiceId: string
+  ) => { invoiceId: string; customerId: string | null; confirmedAt: string };
 }
 
 interface Actor {
@@ -93,7 +99,7 @@ export interface EffectiveDispatchPolicySummary {
   policy: DispatchPolicySummary | null;
 }
 
-export interface FulfillmentService {
+export interface FulfillmentService extends CorridorOperations {
   readonly available: boolean;
   listVehicles(input: Actor & { includeInactive?: boolean }): Promise<VehicleSummary[]>;
   createVehicle(input: Actor & { vehicle: VehicleMutationInput }): Promise<VehicleSummary>;
@@ -143,6 +149,16 @@ export function createUnavailableFulfillmentService(): FulfillmentService {
     captureShopLocation: unavailable,
     getShopLocation: unavailable,
     listShopLocationHistory: unavailable,
+    listCorridors: unavailable,
+    getCorridor: unavailable,
+    createCorridor: unavailable,
+    updateCorridor: unavailable,
+    updateCorridorGeometry: unavailable,
+    listCorridorGeometryVersions: unavailable,
+    resolveCorridorForShop: unavailable,
+    resolveCorridorForOrder: unavailable,
+    assignCorridorManually: unavailable,
+    getResolutionStatus: unavailable,
     purgeExpiredIdempotencyRecords: async () => 0
   };
 }
@@ -314,6 +330,21 @@ export function createPostgresFulfillmentService(input: {
 
   return {
     available: true,
+
+    ...createCorridorOperations({
+      pool,
+      authorize,
+      requireCustomer: deps.requireCustomer,
+      requireConfirmedOrder: deps.requireConfirmedOrder,
+      transaction,
+      idempotent,
+      requireActivePolicyLineage: async (client, businessId, policyId) => {
+        if ((await activePolicyVersion(client, businessId, policyId)) === null) {
+          throw new Cp2Error(404, "dispatch_policy_not_found", "Dispatch policy was not found.");
+        }
+      },
+      log: logFulfillmentEvent
+    }),
 
     async listVehicles(actor) {
       authorize(actor, "fulfillment:read");

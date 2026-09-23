@@ -3504,17 +3504,32 @@ async function deletePurgedBusinessFulfillmentRows(
   businessIds: string[]
 ): Promise<void> {
   if (businessIds.length === 0) return;
-  const exists = await client.query<{ present: boolean }>(
-    "select to_regclass('public.fulfillment_vehicles') is not null as present"
+  const exists = await client.query<{ present: boolean; corridors: boolean }>(
+    `select to_regclass('public.fulfillment_vehicles') is not null as present,
+            to_regclass('public.fulfillment_corridor_resolutions') is not null as corridors`
   );
   if (exists.rows[0]?.present !== true) return;
+  const corridorTables = new Set([
+    "fulfillment_corridor_resolutions",
+    "fulfillment_orders",
+    "fulfillment_corridor_geometry_versions",
+    "fulfillment_corridors"
+  ]);
+  // Children before parents: resolutions reference orders, corridors, geometry versions and
+  // shop locations; corridors may reference a policy lineage by value only.
   for (const tableName of [
+    "fulfillment_corridor_resolutions",
+    "fulfillment_orders",
+    "fulfillment_corridor_geometry_versions",
+    "fulfillment_corridors",
     "fulfillment_idempotency_records",
     "fulfillment_shop_locations",
     "fulfillment_business_settings",
     "fulfillment_dispatch_policies",
     "fulfillment_vehicles"
   ]) {
+    // Databases migrated to 090 but not yet 091/092 have no corridor tables.
+    if (corridorTables.has(tableName) && exists.rows[0]?.corridors !== true) continue;
     await client.query(`delete from ${tableName} where business_id = any($1::uuid[])`, [
       businessIds
     ]);

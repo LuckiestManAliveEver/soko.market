@@ -107,3 +107,128 @@ export interface FulfillmentSettingsSummary {
   /** IANA timezone, or null when the business has not configured one yet. */
   timezone: string | null;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Phase 1b: corridors and resolution provenance (A14-A16)
+// ---------------------------------------------------------------------------------------------
+
+export interface CorridorLineString {
+  type: "LineString";
+  /** `[longitude, latitude]` pairs, origin first. */
+  coordinates: Array<[number, number]>;
+}
+
+export interface CorridorSummary {
+  id: string;
+  businessId: string;
+  name: string;
+  originLabel: string;
+  destinationLabel: string;
+  origin: { latitude: number; longitude: number };
+  destination: { latitude: number; longitude: number };
+  routeGeometry: CorridorLineString;
+  /** Server-computed route length. A distance, not a physical quantity: metres, 3 decimals. */
+  distanceMeters: number;
+  geometryVersion: number;
+  priority: number;
+  /** Policy lineage whose active version overrides the business default for this corridor. */
+  policyOverrideId: string | null;
+  active: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CorridorGeometryVersionSummary {
+  corridorId: string;
+  version: number;
+  routeGeometry: CorridorLineString;
+  distanceMeters: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+export type CorridorUnresolvedReasonCode =
+  | "NO_LOCATION"
+  | "NO_ACTIVE_CORRIDOR"
+  | "NO_DISPATCH_POLICY"
+  | "OUTSIDE_TOLERANCE"
+  | "INVALID_GEOMETRY";
+
+export type CorridorSelectionReasonCode =
+  "ONLY_CANDIDATE" | "SMALLEST_DIVERSION" | "PRIORITY_TIE_BREAK" | "ID_TIE_BREAK";
+
+export interface CorridorMatchSummary {
+  corridorId: string;
+  corridorName: string;
+  geometryVersion: number;
+  diversionMeters: number;
+  distanceAlongMeters: number;
+  segmentIndex: number;
+  maxDiversionMeters: number;
+}
+
+/** A computed (not persisted) corridor match for a shop's current delivery point. */
+export type CorridorMatchResultSummary =
+  | {
+      status: "RESOLVED";
+      shopLocationId: string;
+      selected: CorridorMatchSummary;
+      alternatives: CorridorMatchSummary[];
+      reason: CorridorSelectionReasonCode;
+    }
+  | {
+      status: "UNRESOLVED";
+      shopLocationId: string | null;
+      reason: CorridorUnresolvedReasonCode;
+      nearest: CorridorMatchSummary | null;
+    };
+
+export type CorridorResolutionMethod = "AUTO" | "MANUAL";
+
+/** One append-only provenance record: why an order was associated with a corridor (A16). */
+export interface CorridorResolutionSummary {
+  id: string;
+  businessId: string;
+  fulfillmentOrderId: string;
+  invoiceId: string;
+  corridorId: string;
+  corridorGeometryVersion: number;
+  shopLocationId: string;
+  diversionMeters: number;
+  distanceAlongMeters: number;
+  segmentIndex: number;
+  maxDiversionMeters: number;
+  resolutionMethod: CorridorResolutionMethod;
+  resolvedBy: string;
+  resolvedAt: string;
+  supersededAt: string | null;
+}
+
+export type CorridorResolutionStaleReason = "GEOMETRY_CHANGED" | "LOCATION_CHANGED";
+
+export interface CorridorResolutionStatusSummary {
+  businessId: string;
+  invoiceId: string;
+  resolutionStatus: "RESOLVED" | "UNRESOLVED";
+  current: CorridorResolutionSummary | null;
+  /** Computed, never repaired silently: a stale order must be re-resolved or confirmed. */
+  stale: boolean;
+  staleReasons: CorridorResolutionStaleReason[];
+  history: CorridorResolutionSummary[];
+}
+
+export type ResolveOrderCorridorResultSummary =
+  | {
+      outcome: "RESOLVED";
+      resolution: CorridorResolutionSummary;
+      alternatives: CorridorMatchSummary[];
+      reason: CorridorSelectionReasonCode | "MANUAL_ASSIGNMENT";
+    }
+  | {
+      outcome: "UNRESOLVED";
+      reason: CorridorUnresolvedReasonCode;
+      nearest: CorridorMatchSummary | null;
+      /** The previous resolution, if any, is left untouched (and may now be stale). */
+      current: CorridorResolutionSummary | null;
+    };

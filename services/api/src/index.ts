@@ -230,7 +230,9 @@ if (shouldUsePostgresStore) {
       authorize: (input) => cp2Store.authorizeBusinessPermission(input),
       hasPermission: (input) => cp2Store.hasBusinessPermission(input),
       requireCustomer: (businessId, customerId) =>
-        cp2Store.requireBusinessCustomer(businessId, customerId)
+        cp2Store.requireBusinessCustomer(businessId, customerId),
+      requireConfirmedOrder: (businessId, invoiceId) =>
+        cp2Store.requireConfirmedOrderReference(businessId, invoiceId)
     },
     idempotencyRetentionHours: positiveIntegerFromEnv("FULFILLMENT_IDEMPOTENCY_RETENTION_HOURS", 24)
   });
