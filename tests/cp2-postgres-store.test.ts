@@ -614,6 +614,7 @@ describePostgres("CP2 Postgres store", () => {
     const connectionString = databaseUrl ?? "";
     const modelId = "qwen2.5-0.5b-android";
     const inferenceCalls: string[] = [];
+    const inferenceRequestIds: string[] = [];
     const artifactStore: ModelArtifactStore = {
       async resolveArtifact(requestedModelId) {
         return {
@@ -651,18 +652,25 @@ describePostgres("CP2 Postgres store", () => {
           baseUrl: "https://vercel-inference.example",
           serviceToken: "postgres-integration-token-at-least-32-chars",
           timeoutMs: 1_000,
-          request: async (input) => {
+          request: async (input, init) => {
             const url = String(input);
             inferenceCalls.push(url);
             if (url.endsWith("/health")) {
               return new Response(JSON.stringify({ ok: true }), { status: 200 });
             }
+            // The Vercel client rejects a result whose requestId does not echo the request's own
+            // id (model-runtime.ts), so the fake runtime echoes it exactly like the real one.
+            const requestId =
+              typeof init?.body === "string"
+                ? ((JSON.parse(init.body) as { requestId?: string }).requestId ?? "")
+                : "";
+            inferenceRequestIds.push(requestId);
             const events = [
               { type: "status", state: "INITIALIZING" },
               { type: "status", state: "READY", cacheHit: false },
               {
                 type: "result",
-                requestId: "postgres-inference-request",
+                requestId,
                 text: JSON.stringify({ type: "response", message: "postgres market" }),
                 finishReason: "stop",
                 usage: { inputTokens: 7, outputTokens: 3 },
@@ -743,9 +751,10 @@ describePostgres("CP2 Postgres store", () => {
       model: {
         bindingId: activation.binding.id,
         modelId,
-        inferenceRequestId: "postgres-inference-request"
+        inferenceRequestId: inferenceRequestIds.at(-1)
       }
     });
+    expect(inferenceRequestIds.at(-1)).toMatch(/\S/u);
     expect(inferenceCalls.some((url) => url.endsWith("/v1/inference"))).toBe(true);
 
     await restoredApp.close();
