@@ -81,12 +81,29 @@ Vercel project environment (`services/ai-runtime/.env.example`):
 
 ```text
 SOKO_INFERENCE_SERVICE_TOKEN=<same value as Render's SOKO_INFERENCE_SERVICE_TOKEN>
+INFERENCE_PROVIDER=huggingface
+HF_TOKEN=<Hugging Face access token>
+HF_MODEL_MAP={"smollm2-360m":"HuggingFaceTB/SmolLM2-1.7B-Instruct","gpt-oss-20b":"openai/gpt-oss-20b"}
+HF_MODEL_ID=<optional fallback Hub model; leave empty for strict mapping>
+HF_INFERENCE_BASE_URL=https://router.huggingface.co/v1/
 MODEL_ARTIFACT_ALLOWED_HOSTS=<Neon object-storage hostname(s), comma-separated>
 VERCEL_MAX_ARTIFACT_BYTES=450000000
 INFERENCE_MAX_INPUT_CHARACTERS=64000
 INFERENCE_MAX_OUTPUT_TOKENS=512
 INFERENCE_RUNTIME_CACHE_ENTRIES=1
 ```
+
+`INFERENCE_PROVIDER=huggingface` sends generations to Hugging Face Inference Providers through
+their OpenAI-compatible chat completions endpoint. `HF_MODEL_MAP` maps each Soko catalog model ID
+to its Hugging Face Hub model ID. The model selected by the runtime binding is looked up for every
+request, so models are swappable through Soko's existing model activation flow without redeploying
+the inference service. Unmapped models are rejected unless `HF_MODEL_ID` defines an explicit
+fallback. In this mode the service does not download or load the GGUF artifact from the request;
+the artifact remains part of Soko's existing runtime-binding contract, but execution is delegated
+to Hugging Face.
+
+Set `INFERENCE_PROVIDER=llama-cpp` to use the older downloaded-GGUF path. Only that mode requires
+`MODEL_ARTIFACT_ALLOWED_HOSTS` and the Neon model-storage variables below to be populated.
 
 Render API environment (`render.yaml`'s `soko-market` service, `.env.example` at the repo
 root):

@@ -6,23 +6,32 @@ import type {
 } from "@soko/shared-types";
 
 import { downloadVerifiedArtifact } from "./artifact-loader.js";
+import { generateWithHuggingFace, type HuggingFaceRuntimeConfig } from "./huggingface-runtime.js";
 import { loadLlamaRuntime, type LoadedLlamaRuntime } from "./llama-runtime.js";
 import { RuntimeCache } from "./runtime-cache.js";
 import { InferenceServiceError } from "./service-error.js";
 
 export interface VercelInferenceConfig {
   serviceToken: string;
+  provider: "llama-cpp" | "huggingface";
   artifactAllowedHosts: ReadonlySet<string>;
   maximumArtifactBytes: number;
   maximumInputCharacters: number;
   maximumOutputTokens: number;
   cacheEntries: number;
+  huggingFace:
+    | (Omit<HuggingFaceRuntimeConfig, "modelId"> & {
+        defaultModelId: string | null;
+        models: ReadonlyMap<string, string>;
+      })
+    | null;
 }
 
 export interface VercelInferenceDependencies {
   cache?: RuntimeCache<LoadedLlamaRuntime>;
   downloadArtifact?: typeof downloadVerifiedArtifact;
   loadRuntime?: typeof loadLlamaRuntime;
+  generateWithHuggingFace?: typeof generateWithHuggingFace;
   request?: typeof fetch;
   now?: () => number;
 }
@@ -34,20 +43,34 @@ export function readVercelInferenceConfig(
   if (serviceToken.length < 32) {
     throw new Error("SOKO_INFERENCE_SERVICE_TOKEN must contain at least 32 characters.");
   }
+  const provider = providerValue(environment.INFERENCE_PROVIDER);
   const hosts = (environment.MODEL_ARTIFACT_ALLOWED_HOSTS ?? "")
     .split(",")
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
-  if (hosts.length === 0) {
+  if (provider === "llama-cpp" && hosts.length === 0) {
     throw new Error("MODEL_ARTIFACT_ALLOWED_HOSTS must contain at least one hostname.");
   }
   return {
     serviceToken,
+    provider,
     artifactAllowedHosts: new Set(hosts),
     maximumArtifactBytes: positiveInteger(environment.VERCEL_MAX_ARTIFACT_BYTES, 450_000_000),
     maximumInputCharacters: positiveInteger(environment.INFERENCE_MAX_INPUT_CHARACTERS, 64_000),
     maximumOutputTokens: positiveInteger(environment.INFERENCE_MAX_OUTPUT_TOKENS, 512),
-    cacheEntries: positiveInteger(environment.INFERENCE_RUNTIME_CACHE_ENTRIES, 1)
+    cacheEntries: positiveInteger(environment.INFERENCE_RUNTIME_CACHE_ENTRIES, 1),
+    huggingFace:
+      provider === "huggingface"
+        ? {
+            token: requiredSecret(environment.HF_TOKEN, "HF_TOKEN"),
+            defaultModelId: optionalText(environment.HF_MODEL_ID),
+            models: huggingFaceModelMap(environment.HF_MODEL_MAP, environment.HF_MODEL_ID),
+            baseUrl: optionalUrl(
+              environment.HF_INFERENCE_BASE_URL,
+              "https://router.huggingface.co/v1/"
+            )
+          }
+        : null
   };
 }
 
@@ -58,6 +81,7 @@ export function createVercelInferenceHandler(
   const cache = dependencies.cache ?? new RuntimeCache<LoadedLlamaRuntime>(config.cacheEntries);
   const downloadArtifact = dependencies.downloadArtifact ?? downloadVerifiedArtifact;
   const loadRuntime = dependencies.loadRuntime ?? loadLlamaRuntime;
+  const generateHf = dependencies.generateWithHuggingFace ?? generateWithHuggingFace;
   const now = dependencies.now ?? Date.now;
 
   return async (request) => {
@@ -77,8 +101,13 @@ export function createVercelInferenceHandler(
       return errorResponse(413, "INVALID_INFERENCE_REQUEST", "Request body is too large.", false);
     }
     let input: InferenceExecutionRequest;
+    let huggingFaceModelId: string | null = null;
     try {
       input = parseRequest(await request.json(), config);
+      huggingFaceModelId =
+        config.provider === "huggingface"
+          ? resolveHuggingFaceModel(config.huggingFace!, input.model.id)
+          : null;
     } catch (error) {
       return serviceErrorResponse(error);
     }
@@ -93,41 +122,64 @@ export function createVercelInferenceHandler(
           try {
             emit({ type: "status", state: "INITIALIZING" });
             const loadStartedAt = now();
-            const cacheKey = `${input.model.id}:${input.artifact.sha256 ?? input.artifact.id}`;
-            const acquired = await cache.acquire(cacheKey, async () => {
-              emit({ type: "status", state: "MODEL_LOADING" });
-              const downloaded = await downloadArtifact({
-                artifact: input.artifact,
-                allowedHosts: config.artifactAllowedHosts,
-                maximumBytes: config.maximumArtifactBytes,
-                ...(dependencies.request === undefined ? {} : { request: dependencies.request }),
-                signal: request.signal
-              });
-              return loadRuntime(downloaded.path);
-            });
-            const modelLoadMs = now() - loadStartedAt;
-            emit({ type: "status", state: "READY", cacheHit: acquired.cacheHit });
+            const acquired =
+              config.provider === "huggingface"
+                ? null
+                : await cache.acquire(
+                    `${input.model.id}:${input.artifact.sha256 ?? input.artifact.id}`,
+                    async () => {
+                      emit({ type: "status", state: "MODEL_LOADING" });
+                      const downloaded = await downloadArtifact({
+                        artifact: input.artifact,
+                        allowedHosts: config.artifactAllowedHosts,
+                        maximumBytes: config.maximumArtifactBytes,
+                        ...(dependencies.request === undefined
+                          ? {}
+                          : { request: dependencies.request }),
+                        signal: request.signal
+                      });
+                      return loadRuntime(downloaded.path);
+                    }
+                  );
+            const modelLoadMs = config.provider === "huggingface" ? 0 : now() - loadStartedAt;
+            emit({ type: "status", state: "READY", cacheHit: acquired?.cacheHit ?? false });
             const inferenceStartedAt = now();
-            const result = await acquired.runtime.generate({
-              prompt: input.prompt,
-              maximumTokens: input.generation.maxTokens,
-              temperature: input.generation.temperature,
-              signal: request.signal,
-              onText: (text) => {
-                firstTokenAt ??= now();
-                emit({ type: "delta", text });
-              }
-            });
+            const onText = (text: string) => {
+              firstTokenAt ??= now();
+              emit({ type: "delta", text });
+            };
+            const result =
+              config.provider === "huggingface"
+                ? await generateHf(
+                    { ...config.huggingFace!, modelId: huggingFaceModelId! },
+                    {
+                      prompt: input.prompt,
+                      maximumTokens: input.generation.maxTokens,
+                      temperature: input.generation.temperature,
+                      jsonOutput: input.generation.jsonOutput,
+                      signal: request.signal,
+                      onText
+                    },
+                    dependencies.request
+                  )
+                : await acquired!.runtime.generate({
+                    prompt: input.prompt,
+                    maximumTokens: input.generation.maxTokens,
+                    temperature: input.generation.temperature,
+                    signal: request.signal,
+                    onText
+                  });
             const completedAt = now();
+            const cacheHit = acquired?.cacheHit ?? false;
             const metrics = {
-              modelDownloadMs: acquired.cacheHit ? 0 : modelLoadMs,
+              modelDownloadMs: cacheHit ? 0 : modelLoadMs,
               modelLoadMs,
               firstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt,
               inferenceMs: completedAt - inferenceStartedAt,
               totalMs: completedAt - startedAt,
               inputTokens: result.inputTokens,
               outputTokens: result.outputTokens,
-              cacheHit: acquired.cacheHit
+              cacheHit
             };
             emit({
               type: "result",
@@ -227,7 +279,15 @@ export function createVercelReadyHandler(
         ready: true,
         service: "soko-ai-runtime",
         configured: true,
-        capabilities: { formats: ["gguf"], streaming: true, harnesses: ["pi"] },
+        capabilities: {
+          formats: config.provider === "huggingface" ? ["huggingface-chat-completions"] : ["gguf"],
+          streaming: true,
+          harnesses: ["pi"]
+        },
+        provider: config.provider,
+        huggingFaceModel: config.huggingFace?.defaultModelId ?? null,
+        huggingFaceModels:
+          config.huggingFace === null ? null : Object.fromEntries(config.huggingFace.models),
         artifactHosts: config.artifactAllowedHosts.size,
         maximumOutputTokens: config.maximumOutputTokens,
         cacheCapacity: config.cacheEntries
@@ -399,6 +459,84 @@ function urlString(value: unknown, name: string): string {
 function positiveInteger(value: string | undefined, fallback: number): number {
   if (value === undefined || value.trim() === "") return fallback;
   return positiveIntegerValue(Number(value), "configuration value");
+}
+
+function providerValue(value: string | undefined): VercelInferenceConfig["provider"] {
+  const normalized = value?.trim().toLowerCase() || "llama-cpp";
+  if (normalized === "llama-cpp" || normalized === "huggingface") return normalized;
+  throw new Error("INFERENCE_PROVIDER must be either llama-cpp or huggingface.");
+}
+
+function requiredSecret(value: string | undefined, name: string): string {
+  const text = requiredText(value, name);
+  if (text.length < 8) throw new Error(`${name} must be configured.`);
+  return text;
+}
+
+function requiredText(value: string | undefined, name: string): string {
+  const text = value?.trim() ?? "";
+  if (text === "") throw new Error(`${name} must be configured.`);
+  return text;
+}
+
+function optionalText(value: string | undefined): string | null {
+  const text = value?.trim() ?? "";
+  return text === "" ? null : text;
+}
+
+function huggingFaceModelMap(
+  value: string | undefined,
+  fallbackModelId: string | undefined
+): ReadonlyMap<string, string> {
+  const text = value?.trim() ?? "";
+  if (text === "") {
+    if (optionalText(fallbackModelId) === null) {
+      throw new Error("HF_MODEL_MAP or HF_MODEL_ID must be configured.");
+    }
+    return new Map();
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(
+      "HF_MODEL_MAP must be a JSON object of Soko model IDs to Hugging Face model IDs."
+    );
+  }
+  if (!record(parsed) || Object.keys(parsed).length === 0) {
+    throw new Error("HF_MODEL_MAP must contain at least one model mapping.");
+  }
+  const models = new Map<string, string>();
+  for (const [sokoModelId, huggingFaceModelId] of Object.entries(parsed)) {
+    if (
+      sokoModelId.trim() === "" ||
+      typeof huggingFaceModelId !== "string" ||
+      huggingFaceModelId.trim() === ""
+    ) {
+      throw new Error("HF_MODEL_MAP keys and values must be non-empty strings.");
+    }
+    models.set(sokoModelId, huggingFaceModelId.trim());
+  }
+  return models;
+}
+
+function resolveHuggingFaceModel(
+  config: NonNullable<VercelInferenceConfig["huggingFace"]>,
+  requestedModelId: string
+): string {
+  const modelId = config.models.get(requestedModelId) ?? config.defaultModelId;
+  if (modelId !== null) return modelId;
+  throw new InferenceServiceError(
+    "MODEL_NOT_FOUND",
+    `No Hugging Face model is configured for ${requestedModelId}.`,
+    false,
+    422
+  );
+}
+
+function optionalUrl(value: string | undefined, fallback: string): string {
+  const text = value?.trim() || fallback;
+  return new URL(text).toString();
 }
 
 function positiveIntegerValue(value: unknown, name: string): number {
