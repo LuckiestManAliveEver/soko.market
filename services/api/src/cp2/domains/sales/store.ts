@@ -20,7 +20,9 @@ import type {
   PublicCustomerCareRequestSummary,
   PublicCustomerCareRequestType,
   PublicOrderSummary,
-  PublicStorefrontMessageSummary
+  PublicStorefrontMessageSummary,
+  MessageChannel,
+  OrderSource
 } from "@soko/shared-types";
 import {
   createInvoicePaymentSummary,
@@ -102,6 +104,8 @@ export interface SalesDomainDeps {
   ) => void;
   businesses: Map<string, BusinessSummary>;
   quarantinedBusinessIds: Set<string>;
+  /** Called after an invoice is confirmed, on every confirmation path (fulfillment intake). */
+  onInvoiceConfirmed?: (invoice: InvoiceSummary, actorId: string) => void;
   recordPurchasePriceMutation?: (input: {
     businessId: string;
     product: ProductSummary;
@@ -743,7 +747,9 @@ export class SalesDomain {
       input: input.invoice,
       status: "draft",
       confirmedAt: null,
-      now
+      now,
+      source: input.invoice.source ?? "MANUAL",
+      createdByUserId: session.user.id
     });
 
     this.invoices.set(invoice.id, invoice);
@@ -788,7 +794,12 @@ export class SalesDomain {
       status: "draft",
       confirmedAt: null,
       now,
-      createdAt: existing.createdAt
+      createdAt: existing.createdAt,
+      // Provenance belongs to the order, not to the edit: keep it unless the edit names a source.
+      source: input.invoice.source ?? existing.source ?? null,
+      sourceMessageChannel:
+        input.invoice.sourceMessageChannel ?? existing.sourceMessageChannel ?? null,
+      createdByUserId: existing.createdByUserId ?? null
     });
 
     this.invoices.set(invoice.id, invoice);
@@ -887,6 +898,7 @@ export class SalesDomain {
     };
 
     this.invoices.set(confirmed.id, confirmed);
+    this.deps.onInvoiceConfirmed?.(confirmed, session.user.id);
     this.deps.appendBusinessEvent(
       invoiceConfirmedEvent({
         id: randomUUID(),
@@ -1135,7 +1147,10 @@ export class SalesDomain {
       },
       status: "draft",
       confirmedAt: null,
-      now
+      now,
+      // A storefront order is placed in the Soko storefront chat by a guest, not a member.
+      source: "SOKO_CHAT",
+      sourceMessageChannel: "soko"
     });
     this.invoices.set(invoice.id, invoice);
     const items = resolvedItems.map(({ product, quantity }) => ({
@@ -1302,6 +1317,10 @@ export class SalesDomain {
     confirmedAt: string | null;
     now: Date;
     createdAt?: string;
+    /** Provenance (Phase 1c). Callers that know the channel pass it; nothing branches on it. */
+    source?: OrderSource | null;
+    sourceMessageChannel?: MessageChannel | null;
+    createdByUserId?: string | null;
   }): InvoiceSummary {
     const preview = this.buildInvoicePreview(input.businessId, input.input);
     const items: InvoiceItemSummary[] = preview.items.map((item) => ({
@@ -1324,7 +1343,10 @@ export class SalesDomain {
       total: preview.total,
       confirmedAt: input.confirmedAt,
       createdAt: input.createdAt ?? input.now.toISOString(),
-      updatedAt: input.now.toISOString()
+      updatedAt: input.now.toISOString(),
+      source: input.source ?? input.input.source ?? null,
+      sourceMessageChannel: input.sourceMessageChannel ?? input.input.sourceMessageChannel ?? null,
+      createdByUserId: input.createdByUserId ?? null
     };
   }
 

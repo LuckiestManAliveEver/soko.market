@@ -5,6 +5,30 @@
  */
 import type { GramsString } from "./grams.js";
 
+/**
+ * Where a canonical order came from (Phase 1c). Descriptive only: no commerce or fulfillment logic
+ * may branch on it. When the source is a messaging channel, the invoice also carries the existing
+ * `MessageChannel` literal (for example `whatsapp_business`). Historical invoices have no source.
+ */
+export const orderSources = [
+  "FIELD_SALES",
+  "RETAIL_SALES",
+  "SOKO_CHAT",
+  "WHATSAPP",
+  "TELEGRAM",
+  "TIKTOK",
+  "INSTAGRAM",
+  "PHONE",
+  "MANUAL",
+  "API"
+] as const;
+
+export type OrderSource = (typeof orderSources)[number];
+
+export function isOrderSource(value: unknown): value is OrderSource {
+  return typeof value === "string" && (orderSources as readonly string[]).includes(value);
+}
+
 export type WeightStatus = "RESOLVED" | "UNRESOLVED";
 
 /**
@@ -232,3 +256,173 @@ export type ResolveOrderCorridorResultSummary =
       /** The previous resolution, if any, is left untouched (and may now be stale). */
       current: CorridorResolutionSummary | null;
     };
+
+// ---------------------------------------------------------------------------------------------
+// Phase 1c: intake, pools, manifests
+// ---------------------------------------------------------------------------------------------
+
+/** What the Postgres-authoritative fulfillment side needs to know about a confirmed order. */
+export interface ConfirmedOrderReference {
+  invoiceId: string;
+  customerId: string | null;
+  confirmedAt: string;
+  source: OrderSource | null;
+  /** A delivery logistics record exists (Phase 0 decision D4). */
+  deliveryIntent: boolean;
+  /** The canonical A5 weight, computed once from the confirmation-time line snapshots. */
+  weight: OrderFulfillmentWeightSummary;
+}
+
+export type CorridorPoolReadiness = "ACCUMULATING" | "DISPATCHABLE" | "DISPATCH_READY";
+
+/**
+ * A corridor pool, computed from live authoritative state (A13); nothing here is persisted.
+ * - `eligibleTotalWeightGrams` includes stale orders (A16: they stay in the pool total).
+ * - `allocatableWeightGrams` excludes stale orders; readiness is computed from it (A13: "eligible,
+ *   non-stale resolved weight"), because stale orders cannot be allocated until re-resolved.
+ * - Unresolved-weight orders count toward no gram total, only toward `unresolvedWeightCount`.
+ */
+export interface CorridorPoolSummary {
+  corridorId: string;
+  corridorName: string;
+  corridorActive: boolean;
+  geometryVersion: number;
+  policy: {
+    policyId: string;
+    version: number;
+    cutoffLocalTime: string;
+    maxWaitHours: number;
+  } | null;
+  eligibleOrderCount: number;
+  eligibleTotalWeightGrams: GramsString;
+  allocatableWeightGrams: GramsString;
+  targetLoadGrams: GramsString | null;
+  minimumDispatchLoadGrams: GramsString | null;
+  percentFilled: number | null;
+  oldestWaitingOrderConfirmedAt: string | null;
+  oldestWaitingOrderAgeSeconds: number | null;
+  nextCutoffAt: string | null;
+  timeUntilCutoffSeconds: number | null;
+  /** Null when the corridor has no effective dispatch policy. */
+  readiness: CorridorPoolReadiness | null;
+  needsResolution: boolean;
+  unresolvedWeightCount: number;
+  unresolvedLocationCount: number;
+  staleResolutionCount: number;
+  /** Orders heavier than the largest active vehicle (A21 REQUIRES_PLANNING). */
+  requiresPlanningCount: number;
+}
+
+export interface CorridorPoolOrderSummary {
+  invoiceId: string;
+  fulfillmentOrderId: string;
+  customerId: string | null;
+  customerName: string | null;
+  confirmedAt: string;
+  ageSeconds: number;
+  weightStatus: WeightStatus;
+  totalWeightGrams: GramsString | null;
+  stale: boolean;
+  staleReasons: Array<"GEOMETRY_CHANGED" | "LOCATION_CHANGED">;
+  distanceAlongMeters: number;
+  diversionMeters: number;
+  requiresPlanning: boolean;
+}
+
+export interface CorridorPoolDetailSummary extends CorridorPoolSummary {
+  orders: CorridorPoolOrderSummary[];
+}
+
+/** Orders in fulfillment that are on no corridor yet, or not yet taken in. Never hidden. */
+export interface UnassignedFulfillmentSummary {
+  orderCount: number;
+  unresolvedLocationCount: number;
+  noCorridorCount: number;
+  unresolvedWeightCount: number;
+  pendingIntakeCount: number;
+  orphanedCount: number;
+}
+
+export interface ActivePoolsSummary {
+  businessId: string;
+  timezone: string | null;
+  generatedAt: string;
+  pools: CorridorPoolSummary[];
+  unassigned: UnassignedFulfillmentSummary;
+}
+
+export type ManifestStatus = "DRAFT" | "OPEN" | "CLOSED" | "DEPARTED" | "COMPLETED" | "CANCELLED";
+
+export type ManifestStopDeliveryStatus = "PENDING" | "ARRIVED" | "DELIVERED" | "FAILED" | "SKIPPED";
+
+export type ManifestStopReleaseReason =
+  "REMOVED_BY_DISPATCHER" | "ORDER_CANCELLED" | "DELIVERY_FAILED" | "DELIVERY_SKIPPED";
+
+export interface ManifestStopSummary {
+  id: string;
+  manifestId: string;
+  invoiceId: string;
+  fulfillmentOrderId: string;
+  customerId: string | null;
+  customerName: string | null;
+  sequence: number;
+  distanceAlongMeters: number;
+  diversionMeters: number;
+  latitude: number;
+  longitude: number;
+  orderWeightGrams: GramsString;
+  allocationActive: boolean;
+  deliveryStatus: ManifestStopDeliveryStatus;
+  deliveryNote: string | null;
+  releaseReason: ManifestStopReleaseReason | null;
+  deliveryRecordedAt: string | null;
+}
+
+export interface ManifestSummary {
+  id: string;
+  businessId: string;
+  corridorId: string;
+  corridorGeometryVersion: number;
+  policyId: string;
+  policyVersion: number;
+  vehicleId: string;
+  vehicleCapacityGrams: GramsString;
+  status: ManifestStatus;
+  /** Weight loaded on the trip: active stops while OPEN, frozen at close. */
+  totalWeightGrams: GramsString;
+  plannedDepartureAt: string | null;
+  closedAt: string | null;
+  completedAt: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  stops: ManifestStopSummary[];
+}
+
+export interface CreateManifestResultSummary {
+  manifest: ManifestSummary;
+  allocatedInvoiceIds: string[];
+  /** Fit-able orders left pooled because the vehicle was full (A21 skip-and-continue). */
+  skippedInvoiceIds: string[];
+  /** Orders heavier than this vehicle (A21 REQUIRES_PLANNING). */
+  requiresPlanningInvoiceIds: string[];
+}
+
+export type FulfillmentOrderStateCode =
+  "POOLED" | "ALLOCATED" | "DELIVERED" | "CANCELLED" | "ORPHANED";
+
+export interface OrderFulfillmentStatusSummary {
+  businessId: string;
+  invoiceId: string;
+  intakeStatus: "NOT_FOR_DELIVERY" | "PENDING_INTAKE" | "TAKEN_IN";
+  state: FulfillmentOrderStateCode | null;
+  weight: OrderFulfillmentWeightSummary;
+  corridor: CorridorResolutionStatusSummary | null;
+  allocation: {
+    manifestId: string;
+    manifestStatus: ManifestStatus;
+    stopId: string;
+    sequence: number;
+    deliveryStatus: ManifestStopDeliveryStatus;
+  } | null;
+}

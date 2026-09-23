@@ -64,6 +64,7 @@ import { createIntervalRunner, type IntervalRunner } from "./cp2/interval-runner
 import {
   assertFulfillmentSchema,
   createPostgresFulfillmentService,
+  fulfillmentDepsFromStore,
   type FulfillmentService
 } from "./cp2/domains/fulfillment/service.js";
 
@@ -226,16 +227,13 @@ if (shouldUsePostgresStore) {
   await assertFulfillmentSchema(fulfillmentPool);
   fulfillmentService = createPostgresFulfillmentService({
     pool: fulfillmentPool,
-    deps: {
-      authorize: (input) => cp2Store.authorizeBusinessPermission(input),
-      hasPermission: (input) => cp2Store.hasBusinessPermission(input),
-      requireCustomer: (businessId, customerId) =>
-        cp2Store.requireBusinessCustomer(businessId, customerId),
-      requireConfirmedOrder: (businessId, invoiceId) =>
-        cp2Store.requireConfirmedOrderReference(businessId, invoiceId)
-    },
+    deps: fulfillmentDepsFromStore(cp2Store),
     idempotencyRetentionHours: positiveIntegerFromEnv("FULFILLMENT_IDEMPOTENCY_RETENTION_HOURS", 24)
   });
+  // Orders enter fulfillment when they become deliverable (docs/architecture/corridor-fulfillment.md
+  // §5.3). The reconciler runner below catches any intake this misses.
+  const intakeService = fulfillmentService;
+  cp2Store.setFulfillmentIntakeListener((input) => intakeService.intakeOrder(input));
 }
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
@@ -302,6 +300,11 @@ let conversationRecycleBinRunner: ConversationRecycleBinRunner | null = null;
 let agentOwnerCorrectionRetentionRunner: AgentOwnerCorrectionRetentionRunner | null = null;
 let runtimeExperienceRetentionRunner: RuntimeExperienceRetentionRunner | null = null;
 let fulfillmentIdempotencyRetentionRunner: IntervalRunner<number> | null = null;
+let fulfillmentIntakeReconcileRunner: IntervalRunner<{
+  takenIn: number;
+  orphaned: number;
+  failed: number;
+}> | null = null;
 const connectedMailboxSyncIntervalMs = readOptionalPositiveInteger(
   process.env.CONNECTED_MAILBOX_SYNC_INTERVAL_MS
 );
@@ -319,6 +322,7 @@ app.addHook("onClose", async () => {
   await runtimeExperienceRetentionRunner?.stop();
   rateLimitRedisClient.disconnect();
   await fulfillmentIdempotencyRetentionRunner?.stop();
+  await fulfillmentIntakeReconcileRunner?.stop();
   await artifactPool?.end();
   await fulfillmentPool?.end();
   if (isClosableStore(cp2Store)) {
@@ -419,6 +423,21 @@ if (fulfillmentService !== undefined) {
       }
     },
     onError: (error) => app.log.error({ error }, "Fulfillment idempotency retention sweep failed.")
+  });
+  fulfillmentIntakeReconcileRunner = createIntervalRunner({
+    job: "fulfillment_intake_reconcile",
+    intervalMs: positiveIntegerFromEnv("FULFILLMENT_INTAKE_RECONCILE_INTERVAL_MS", 300_000),
+    run: () => service.reconcileIntake(),
+    timeScheduledJob: metrics.timeScheduledJob,
+    onResult: (result) => {
+      if (result.takenIn + result.orphaned + result.failed > 0) {
+        app.log.info(
+          { event: "fulfillment_intake_reconciled", ...result },
+          "Fulfillment intake reconciled."
+        );
+      }
+    },
+    onError: (error) => app.log.error({ error }, "Fulfillment intake reconcile failed.")
   });
 }
 

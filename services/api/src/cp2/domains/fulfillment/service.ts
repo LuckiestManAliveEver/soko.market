@@ -25,6 +25,8 @@ import {
 import {
   formatGrams,
   formatNullableGrams,
+  type ConfirmedOrderReference,
+  type FulfillmentStatus,
   parseGrams,
   type DispatchFallbackAction,
   type DispatchOverflowStrategy,
@@ -42,6 +44,12 @@ import {
   type FulfillmentTransactionOptions
 } from "./transaction.js";
 import { createCorridorOperations, type CorridorOperations } from "./corridors.js";
+import {
+  createDispatchOperations,
+  type DispatchInternalOperations,
+  type DispatchOperations
+} from "./dispatch.js";
+import type { Cp2Store } from "../../store.js";
 
 export const fulfillmentFoundationMigration = "090_fulfillment_foundation.sql";
 
@@ -60,10 +68,53 @@ export interface FulfillmentServiceDeps {
   /** Throws 404 unless `customerId` is a shop of `businessId`. */
   requireCustomer: (businessId: string, customerId: string) => { id: string };
   /** Throws 404 for an unknown order and 409 for a draft; returns the confirmed order's shop. */
-  requireConfirmedOrder: (
-    businessId: string,
-    invoiceId: string
-  ) => { invoiceId: string; customerId: string | null; confirmedAt: string };
+  requireConfirmedOrder: (businessId: string, invoiceId: string) => ConfirmedOrderReference;
+  /** Display name of a shop for manifests and pools; null if it no longer exists. */
+  customerName: (businessId: string, customerId: string) => string | null;
+  businessTimezone: (businessId: string) => string | null;
+  listIntakeCandidates: () => Array<{ businessId: string; invoiceId: string; actorId: string }>;
+  existingInvoiceIds: (businessId: string, invoiceIds: readonly string[]) => Set<string>;
+  /** Projects fulfillment progress onto the canonical LogisticsSummary (never forced). */
+  applyLogisticsStatus: (input: {
+    businessId: string;
+    invoiceId: string;
+    status: FulfillmentStatus;
+    actorId: string;
+  }) => void;
+}
+
+/** The one mapping from the Cp2Store's public bridge to FulfillmentServiceDeps (index.ts, tests). */
+export function fulfillmentDepsFromStore(store: Cp2Store): FulfillmentServiceDeps {
+  return {
+    authorize: (input) => store.authorizeBusinessPermission(input),
+    hasPermission: (input) => store.hasBusinessPermission(input),
+    requireCustomer: (businessId, customerId) =>
+      store.requireBusinessCustomer(businessId, customerId),
+    requireConfirmedOrder: (businessId, invoiceId) =>
+      store.requireConfirmedOrderReference(businessId, invoiceId),
+    customerName: (businessId, customerId) => {
+      try {
+        return store.requireBusinessCustomer(businessId, customerId).name;
+      } catch {
+        return null;
+      }
+    },
+    businessTimezone: (businessId) => store.businessTimezone(businessId),
+    listIntakeCandidates: () => store.listFulfillmentIntakeCandidates(),
+    existingInvoiceIds: (businessId, invoiceIds) =>
+      store.existingInvoiceIds(businessId, invoiceIds),
+    applyLogisticsStatus: (input) => {
+      const result = store.applyFulfillmentLogisticsStatus(input);
+      if (!result.applied && result.status !== null) {
+        logFulfillmentEvent("fulfillment.logistics_projection_skipped", {
+          businessId: input.businessId,
+          invoiceId: input.invoiceId,
+          requested: input.status,
+          current: result.status
+        });
+      }
+    }
+  };
 }
 
 interface Actor {
@@ -99,7 +150,8 @@ export interface EffectiveDispatchPolicySummary {
   policy: DispatchPolicySummary | null;
 }
 
-export interface FulfillmentService extends CorridorOperations {
+export interface FulfillmentService
+  extends CorridorOperations, DispatchOperations, DispatchInternalOperations {
   readonly available: boolean;
   listVehicles(input: Actor & { includeInactive?: boolean }): Promise<VehicleSummary[]>;
   createVehicle(input: Actor & { vehicle: VehicleMutationInput }): Promise<VehicleSummary>;
@@ -159,6 +211,19 @@ export function createUnavailableFulfillmentService(): FulfillmentService {
     resolveCorridorForOrder: unavailable,
     assignCorridorManually: unavailable,
     getResolutionStatus: unavailable,
+    getActivePools: unavailable,
+    getCorridorPool: unavailable,
+    getOrderFulfillment: unavailable,
+    intakeOrderForDispatcher: unavailable,
+    createManifest: unavailable,
+    listManifests: unavailable,
+    getManifest: unavailable,
+    removeOrderFromManifest: unavailable,
+    closeManifest: unavailable,
+    recordDelivery: unavailable,
+    cancelOrderFulfillment: unavailable,
+    intakeOrder: unavailable,
+    reconcileIntake: async () => ({ takenIn: 0, orphaned: 0, failed: 0 }),
     purgeExpiredIdempotencyRecords: async () => 0
   };
 }
@@ -328,23 +393,43 @@ export function createPostgresFulfillmentService(input: {
     };
   }
 
+  const corridors = createCorridorOperations({
+    pool,
+    authorize,
+    requireCustomer: deps.requireCustomer,
+    requireConfirmedOrder: deps.requireConfirmedOrder,
+    transaction,
+    idempotent,
+    requireActivePolicyLineage: async (client, businessId, policyId) => {
+      if ((await activePolicyVersion(client, businessId, policyId)) === null) {
+        throw new Cp2Error(404, "dispatch_policy_not_found", "Dispatch policy was not found.");
+      }
+    },
+    log: logFulfillmentEvent
+  });
+  const dispatch = createDispatchOperations({
+    pool,
+    authorize,
+    hasPermission: (actor, permission) =>
+      deps.hasPermission({ sessionId: actor.sessionId, businessId: actor.businessId, permission }),
+    requireConfirmedOrder: deps.requireConfirmedOrder,
+    customerName: deps.customerName,
+    businessTimezone: deps.businessTimezone,
+    listIntakeCandidates: deps.listIntakeCandidates,
+    existingInvoiceIds: deps.existingInvoiceIds,
+    applyLogisticsStatus: deps.applyLogisticsStatus,
+    getResolutionStatus: (actor) => corridors.getResolutionStatus(actor),
+    resolveCorridorAsSystem: (input) => corridors.resolveCorridorAsSystem(input),
+    transaction,
+    idempotent,
+    log: logFulfillmentEvent
+  });
+
   return {
     available: true,
+    ...dispatch,
 
-    ...createCorridorOperations({
-      pool,
-      authorize,
-      requireCustomer: deps.requireCustomer,
-      requireConfirmedOrder: deps.requireConfirmedOrder,
-      transaction,
-      idempotent,
-      requireActivePolicyLineage: async (client, businessId, policyId) => {
-        if ((await activePolicyVersion(client, businessId, policyId)) === null) {
-          throw new Cp2Error(404, "dispatch_policy_not_found", "Dispatch policy was not found.");
-        }
-      },
-      log: logFulfillmentEvent
-    }),
+    ...corridors,
 
     async listVehicles(actor) {
       authorize(actor, "fulfillment:read");

@@ -9,7 +9,7 @@ export class Cp2Error extends Error {
     readonly code: string,
     message: string,
     readonly retryable?: boolean,
-    readonly details?: Record<string, string | number | boolean | null>
+    readonly details?: Record<string, unknown>
   ) {
     super(message);
   }

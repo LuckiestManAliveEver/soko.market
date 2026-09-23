@@ -16,7 +16,12 @@ import type {
   ProductImportDraft,
   ProductSummary
 } from "@soko/shared-types";
-import { isGramsString } from "@soko/shared-types";
+import {
+  isGramsString,
+  isOrderSource,
+  type MessageChannel,
+  type OrderSource
+} from "@soko/shared-types";
 import { invalid, type ValidationResult, valid } from "@soko/tool-core";
 
 import { parseFlexibleImportRecords, parseImportNumber } from "../shared/content-parsing.js";
@@ -72,6 +77,9 @@ export interface InvoiceInput {
   customerName?: string | null;
   taxRate?: number | null;
   items: InvoiceLineInput[];
+  /** Descriptive provenance (Phase 1c); omitted means MANUAL for member-created orders. */
+  source?: OrderSource | null;
+  sourceMessageChannel?: MessageChannel | null;
 }
 
 export interface PaymentInput {
@@ -236,6 +244,10 @@ export function validateInvoiceInput(input: InvoiceInput): ValidationResult {
 
   if (normalizeOptionalText(input.customerName).length > 120) {
     errors.push("Invoice customer name must be 120 characters or fewer.");
+  }
+
+  if (input.source !== null && input.source !== undefined && !isOrderSource(input.source)) {
+    errors.push("Invoice source is not supported.");
   }
 
   for (const [index, item] of input.items.entries()) {

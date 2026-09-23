@@ -23,7 +23,14 @@ import type {
   ProductFieldInputType,
   PublicCustomerCareRequestType
 } from "@soko/shared-types";
-import { GramsFormatError, formatGrams, parsePositiveGrams } from "@soko/shared-types";
+import {
+  GramsFormatError,
+  formatGrams,
+  isOrderSource,
+  parsePositiveGrams,
+  type FulfillmentMethod,
+  type OrderSource
+} from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
 import {
@@ -106,6 +113,7 @@ interface InvoiceBody {
   customerName?: string | null;
   taxRate?: number | null;
   items?: InvoiceItemBody[];
+  source?: unknown;
 }
 
 interface PaymentBody {
@@ -436,12 +444,19 @@ export function registerSalesRoutes(app: FastifyInstance, store: Cp2Store): void
 
   app.post(
     "/businesses/:businessId/invoices/:invoiceId/confirm",
-    async (request: FastifyRequest<{ Params: InvoiceParams }>, reply) => {
+    async (request: FastifyRequest<{ Params: InvoiceParams; Body: unknown }>, reply) => {
       try {
+        const body =
+          request.body === undefined || request.body === null ? {} : parseRequestBody(request.body);
+        const fulfillmentMethod =
+          body.fulfillmentMethod === undefined || body.fulfillmentMethod === null
+            ? undefined
+            : parseConfirmFulfillmentMethod(body.fulfillmentMethod);
         return store.confirmInvoice({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
-          invoiceId: request.params.invoiceId
+          invoiceId: request.params.invoiceId,
+          ...(fulfillmentMethod === undefined ? {} : { fulfillmentMethod })
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -651,8 +666,23 @@ export function parseInvoiceBody(body: InvoiceBody | null | undefined) {
     customerId: parseNullableString(record.customerId),
     customerName: parseNullableString(record.customerName),
     taxRate: record.taxRate === undefined ? 0 : parseNullableNumber(record.taxRate, "taxRate"),
-    items: parseInvoiceItems(record.items)
+    items: parseInvoiceItems(record.items),
+    ...(record.source === undefined || record.source === null
+      ? {}
+      : { source: parseOrderSource(record.source) })
   };
+}
+
+/** D4: `delivery` at confirmation records delivery intent, which enters corridor fulfillment. */
+function parseConfirmFulfillmentMethod(value: unknown): FulfillmentMethod {
+  if (value === "delivery" || value === "pickup") return value;
+  throw new Cp2Error(400, "fulfillment_method_invalid", "Fulfillment method is not supported.");
+}
+
+/** Descriptive provenance only (Phase 1c); unknown values are rejected, never coerced. */
+function parseOrderSource(value: unknown): OrderSource {
+  if (isOrderSource(value)) return value;
+  throw new Cp2Error(400, "order_source_invalid", "Order source is not supported.");
 }
 
 /** Exported - routes.ts's `parseSyncMutationPayload` offline-sync-replay dispatcher calls this too. */

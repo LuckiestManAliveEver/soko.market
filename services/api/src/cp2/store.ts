@@ -3,10 +3,14 @@ import { isLocalRuntimeHost, isModelExecutionTarget } from "@soko/shared-types";
 import {
   calculateOrderFulfillmentWeight,
   isValidIanaTimeZone,
+  validateLogisticsStatusTransition,
   type BusinessPermission as FulfillmentBusinessPermission
 } from "@soko/business-core";
 import {
   formatGrams,
+  type ConfirmedOrderReference,
+  type FulfillmentMethod,
+  type FulfillmentStatus,
   type BusinessRole as FulfillmentBusinessRole,
   type FulfillmentSettingsSummary,
   type OrderFulfillmentWeightSummary
@@ -1017,7 +1021,9 @@ export class Cp2Store {
       businesses: this.businesses,
       quarantinedBusinessIds: this.quarantinedBusinessIds,
       recordPurchasePriceMutation: (input) =>
-        this.commercialRecordsDomain.recordProductPriceMutation(input)
+        this.commercialRecordsDomain.recordProductPriceMutation(input),
+      onInvoiceConfirmed: (invoice, actorId) =>
+        this.notifyFulfillmentIntake(invoice.businessId, invoice.id, actorId)
     });
     this.catalogueSharing = new CatalogueSharingDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -1098,7 +1104,9 @@ export class Cp2Store {
         this.requireAuthorizedActor(sessionId, businessId, permission, now),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event),
       requireInvoice: (businessId, invoiceId) =>
-        this.salesDomain.requireInvoice(businessId, invoiceId)
+        this.salesDomain.requireInvoice(businessId, invoiceId),
+      onLogisticsCreated: (logistics) =>
+        this.notifyFulfillmentIntake(logistics.businessId, logistics.invoiceId, logistics.actorId)
     });
     this.supplierDomain = new SupplierDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -1715,6 +1723,9 @@ export class Cp2Store {
   private readonly agentCatalog = new Map<string, AgentDefinition>();
   private readonly platformOperators = new Map<string, PlatformOperatorGrant>();
   private readonly quarantinedBusinessIds = new Set<string>();
+  private fulfillmentIntakeListener:
+    | ((input: { businessId: string; invoiceId: string; actorId: string }) => Promise<unknown>)
+    | null = null;
   private readonly syncChanges: SyncChange[] = [];
   private readonly nextSyncSequenceByAccount = new Map<string, number>();
   // mcpAccessTokens/mcpTokenIdByHash now live inside `mcpTokensDomain`
@@ -4392,10 +4403,7 @@ export class Cp2Store {
    * FulfillmentService. Drafts are not orders yet: they can change freely and never enter
    * fulfillment. Read-only.
    */
-  requireConfirmedOrderReference(
-    businessId: string,
-    invoiceId: string
-  ): { invoiceId: string; customerId: string | null; confirmedAt: string } {
+  requireConfirmedOrderReference(businessId: string, invoiceId: string): ConfirmedOrderReference {
     const invoice = this.salesDomain.requireInvoice(businessId, invoiceId);
     if (invoice.status !== "confirmed" || invoice.confirmedAt === null) {
       throw new Cp2Error(
@@ -4404,11 +4412,141 @@ export class Cp2Store {
         "Only confirmed orders can be assigned to a delivery corridor."
       );
     }
+    const weight = calculateOrderFulfillmentWeight(invoice);
+    const logistics = this.logisticsDomain
+      .logisticsForBusiness(businessId)
+      .find((record) => record.invoiceId === invoice.id);
     return {
       invoiceId: invoice.id,
       customerId: invoice.customerId,
-      confirmedAt: invoice.confirmedAt
+      confirmedAt: invoice.confirmedAt,
+      source: invoice.source ?? null,
+      deliveryIntent: logistics?.method === "delivery",
+      weight:
+        weight.status === "RESOLVED"
+          ? { status: "RESOLVED", totalWeightGrams: formatGrams(weight.totalWeightGrams) }
+          : weight
     };
+  }
+
+  /**
+   * Registers the Postgres-authoritative FulfillmentService's intake. Called at most once per
+   * process. The listener runs after the synchronous store call that made an order eligible
+   * (confirmation of an order with a delivery record, or a delivery record for a confirmed
+   * order) has returned; the intake reconciler covers anything it misses (crash, error).
+   */
+  setFulfillmentIntakeListener(
+    listener:
+      | ((input: { businessId: string; invoiceId: string; actorId: string }) => Promise<unknown>)
+      | null
+  ): void {
+    this.fulfillmentIntakeListener = listener;
+  }
+
+  /** Every confirmed order with delivery intent, for the intake reconciler. Read-only. */
+  listFulfillmentIntakeCandidates(): Array<{
+    businessId: string;
+    invoiceId: string;
+    actorId: string;
+  }> {
+    const candidates: Array<{ businessId: string; invoiceId: string; actorId: string }> = [];
+    for (const logistics of this.logisticsDomain.logisticsMap.values()) {
+      if (
+        logistics.method !== "delivery" ||
+        this.quarantinedBusinessIds.has(logistics.businessId)
+      ) {
+        continue;
+      }
+      const invoice = this.salesDomain.invoicesMap.get(logistics.invoiceId);
+      if (invoice?.status === "confirmed" && invoice.businessId === logistics.businessId) {
+        candidates.push({
+          businessId: logistics.businessId,
+          invoiceId: logistics.invoiceId,
+          actorId: logistics.actorId
+        });
+      }
+    }
+    return candidates;
+  }
+
+  /** Whether each invoice id still exists in `businessId` (orphan detection). Read-only. */
+  existingInvoiceIds(businessId: string, invoiceIds: readonly string[]): Set<string> {
+    return new Set(
+      invoiceIds.filter((id) => this.salesDomain.invoicesMap.get(id)?.businessId === businessId)
+    );
+  }
+
+  /**
+   * Projects Postgres-authoritative fulfillment progress onto the canonical, customer-facing
+   * LogisticsSummary (allocated -> ready, delivered -> completed, cancelled -> cancelled) through
+   * the existing transition rules. A transition those rules do not allow is skipped and reported,
+   * never forced. System-initiated: the fulfillment operation was already authorized.
+   */
+  applyFulfillmentLogisticsStatus(input: {
+    businessId: string;
+    invoiceId: string;
+    status: FulfillmentStatus;
+    actorId: string;
+    now?: Date;
+  }): { applied: boolean; status: FulfillmentStatus | null } {
+    const now = input.now ?? new Date();
+    const existing = this.logisticsDomain
+      .logisticsForBusiness(input.businessId)
+      .find((record) => record.invoiceId === input.invoiceId);
+    if (existing === undefined) return { applied: false, status: null };
+    if (existing.status === input.status) return { applied: true, status: existing.status };
+    if (!validateLogisticsStatusTransition(existing.status, input.status, existing.method).ok) {
+      return { applied: false, status: existing.status };
+    }
+    const updated: LogisticsSummary = {
+      ...existing,
+      status: input.status,
+      updatedAt: now.toISOString(),
+      completedAt: input.status === "completed" ? now.toISOString() : existing.completedAt,
+      cancelledAt: input.status === "cancelled" ? now.toISOString() : existing.cancelledAt
+    };
+    this.logisticsDomain.logisticsMap.set(updated.id, updated);
+    this.recordAuditEvent({
+      type: "logistics.status_projected",
+      aggregateType: "logistics",
+      aggregateId: updated.id,
+      actorId: input.actorId,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        previousStatus: existing.status,
+        status: input.status
+      }
+    });
+    return { applied: true, status: updated.status };
+  }
+
+  private notifyFulfillmentIntake(businessId: string, invoiceId: string, actorId: string): void {
+    const listener = this.fulfillmentIntakeListener;
+    if (listener === null) return;
+    const invoice = this.salesDomain.invoicesMap.get(invoiceId);
+    const logistics = this.logisticsDomain
+      .logisticsForBusiness(businessId)
+      .find((record) => record.invoiceId === invoiceId);
+    if (invoice?.status !== "confirmed" || logistics?.method !== "delivery") return;
+    // After the synchronous store call returns; a failure is logged and left to the reconciler.
+    queueMicrotask(() => {
+      listener({ businessId, invoiceId, actorId }).catch((error: unknown) => {
+        console.error(
+          JSON.stringify({
+            event: "fulfillment.intake_failed",
+            businessId,
+            invoiceId,
+            error: error instanceof Error ? error.message : String(error)
+          })
+        );
+      });
+    });
+  }
+
+  /** The business's configured IANA timezone (A11), or null. Read-only, no authorization. */
+  businessTimezone(businessId: string): string | null {
+    return this.businesses.get(businessId)?.timezone ?? null;
   }
 
   getFulfillmentSettings(input: {
@@ -5316,10 +5454,28 @@ export class Cp2Store {
   ): ReturnType<SalesDomain["updateInvoice"]> {
     return this.salesDomain.updateInvoice(...args);
   }
+  /**
+   * Confirms an order and, when `fulfillmentMethod` is given, records its fulfillment intent in
+   * the same synchronous call (Phase 0 decision D4): a `delivery` logistics record is what makes a
+   * confirmed order enter corridor fulfillment. The permission is checked before confirmation so
+   * a caller who may confirm but not record logistics can never leave a half-done order.
+   */
   confirmInvoice(
-    ...args: Parameters<SalesDomain["confirmInvoice"]>
-  ): ReturnType<SalesDomain["confirmInvoice"]> {
-    return this.salesDomain.confirmInvoice(...args);
+    input: Parameters<SalesDomain["confirmInvoice"]>[0] & { fulfillmentMethod?: FulfillmentMethod }
+  ): ReturnType<SalesDomain["confirmInvoice"]> & { logistics?: LogisticsSummary } {
+    const { fulfillmentMethod, ...confirmInput } = input;
+    if (fulfillmentMethod !== undefined) {
+      this.requireAuthorizedActor(input.sessionId, input.businessId, "logistics:write", input.now);
+    }
+    const result = this.salesDomain.confirmInvoice(confirmInput);
+    if (fulfillmentMethod === undefined) return result;
+    const logistics = this.logisticsDomain.createLogistics({
+      sessionId: input.sessionId,
+      businessId: input.businessId,
+      logistics: { invoiceId: result.invoice.id, method: fulfillmentMethod },
+      ...(input.now === undefined ? {} : { now: input.now })
+    });
+    return { ...result, logistics };
   }
   listPayments(
     ...args: Parameters<SalesDomain["listPayments"]>

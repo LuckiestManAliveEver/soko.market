@@ -132,7 +132,12 @@ export async function createCustomer(app: TestApp, owner: TestOwner, name = "Mam
 export async function confirmInvoice(
   app: TestApp,
   owner: TestOwner,
-  input: { customerId?: string; items: Array<{ productId: string; quantity: number }> }
+  input: {
+    customerId?: string;
+    items: Array<{ productId: string; quantity: number }>;
+    fulfillmentMethod?: "delivery" | "pickup";
+    source?: string;
+  }
 ) {
   const draft = await ok<{ id: string }>(
     app,
@@ -141,6 +146,7 @@ export async function confirmInvoice(
     owner.cookie,
     {
       ...(input.customerId === undefined ? {} : { customerId: input.customerId }),
+      ...(input.source === undefined ? {} : { source: input.source }),
       taxRate: 0,
       items: input.items.map((item) => ({ ...item, unitPrice: 100 }))
     }
@@ -157,5 +163,38 @@ export async function confirmInvoice(
         weightUnresolvedReason?: string | null;
       }>;
     };
-  }>(app, "POST", `/businesses/${owner.businessId}/invoices/${draft.id}/confirm`, owner.cookie, {});
+    logistics?: { id: string; method: string; status: string };
+  }>(
+    app,
+    "POST",
+    `/businesses/${owner.businessId}/invoices/${draft.id}/confirm`,
+    owner.cookie,
+    input.fulfillmentMethod === undefined ? {} : { fulfillmentMethod: input.fulfillmentMethod }
+  );
+}
+
+/**
+ * Rolls back every migration from the newest down to `fromPrefix` (inclusive) in reverse order,
+ * like `db:rollback`, runs `between`, then re-applies them in order. Later migrations reference
+ * earlier fulfillment tables, so a migration can only be reversed together with everything after
+ * it. Run inside a transaction the caller rolls back.
+ */
+export async function withMigrationsReversed(
+  client: { query: (sql: string) => Promise<unknown> },
+  fromPrefix: string,
+  between: () => Promise<void>
+): Promise<void> {
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const migrations = readdirSync("infra/db/migrations")
+    .filter((name) => name.endsWith(".sql") && name >= fromPrefix)
+    .sort();
+  for (const name of [...migrations].reverse()) {
+    await client.query(
+      readFileSync(`infra/db/rollbacks/${name.replace(/\.sql$/u, ".down.sql")}`, "utf8")
+    );
+  }
+  await between();
+  for (const name of migrations) {
+    await client.query(readFileSync(`infra/db/migrations/${name}`, "utf8"));
+  }
 }

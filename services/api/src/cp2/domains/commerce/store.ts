@@ -40,7 +40,9 @@ import type {
   UnifiedCheckoutFailureSummary,
   UnifiedCheckoutHandoffSummary,
   UnifiedCheckoutSummary,
-  UserSummary
+  UserSummary,
+  MessageChannel,
+  OrderSource
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import type { ProductMediaRecord, PublicStorefrontSummary } from "../../store.js";
@@ -94,6 +96,8 @@ export interface CommerceDomainDeps {
     status: "draft" | "confirmed";
     confirmedAt: string | null;
     now: Date;
+    source?: OrderSource | null;
+    sourceMessageChannel?: MessageChannel | null;
   }) => InvoiceSummary;
   nextInvoiceNumber: (businessId: string) => string;
   productMedia: Map<string, ProductMediaRecord>;
@@ -1118,7 +1122,10 @@ export class CommerceDomain {
         },
         status: "draft",
         confirmedAt: null,
-        now
+        now,
+        // Marketplace checkout by a Soko buyer account (web or the commerce.checkout capability).
+        source: "SOKO_CHAT",
+        sourceMessageChannel: "soko"
       });
       this.deps.invoices.set(invoice.id, invoice);
 

@@ -1,6 +1,8 @@
 import { type CustomerFormState, type CustomerSummary } from "./soko-application-shared";
+import ShopLocationCard from "./ShopLocationCard";
 
 export interface CustomerSurfaceProps {
+  businessId: string;
   customers: CustomerSummary[];
   form: CustomerFormState;
   onFormChange: (form: CustomerFormState) => void;
@@ -59,6 +61,10 @@ export function CustomerSurface(props: CustomerSurfaceProps) {
           </button>
         </div>
       </section>
+
+      {props.form.id === null ? null : (
+        <ShopLocationCard businessId={props.businessId} customerId={props.form.id} />
+      )}
 
       <section className="record-list" aria-label="Customers">
         {props.customers.length === 0 ? (

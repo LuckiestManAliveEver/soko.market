@@ -11,7 +11,7 @@ export * from "./runtime-registry.js";
 export * from "./store-links.js";
 export * from "./workload.js";
 
-import type { WeightStatus, WeightUnresolvedReason } from "./fulfillment.js";
+import type { OrderSource, WeightStatus, WeightUnresolvedReason } from "./fulfillment.js";
 import type { GramsString } from "./grams.js";
 import type { PortableAgentManifest } from "./portable-agent.js";
 
@@ -2208,6 +2208,11 @@ export interface InvoiceSummary extends InvoiceTotals {
   confirmedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Phase 1c order provenance. Absent/null on invoices created before it existed. */
+  source?: OrderSource | null;
+  sourceMessageChannel?: MessageChannel | null;
+  /** The business member who created the order; null for buyer- or guest-created orders. */
+  createdByUserId?: string | null;
 }
 
 export interface InvoicePreview extends InvoiceTotals {

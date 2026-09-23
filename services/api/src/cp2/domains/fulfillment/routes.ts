@@ -12,7 +12,8 @@ import {
   parseNullableGrams,
   parsePositiveGrams,
   type DispatchFallbackAction,
-  type DispatchOverflowStrategy
+  type DispatchOverflowStrategy,
+  type ManifestStatus
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
@@ -29,6 +30,7 @@ import {
   type BusinessParams
 } from "../../route-helpers.js";
 import type { FulfillmentService, VehiclePatchInput } from "./service.js";
+import type { DeliveryOutcome } from "./dispatch.js";
 
 interface VehicleParams extends BusinessParams {
   vehicleId: string;
@@ -44,6 +46,10 @@ interface ShopParams extends BusinessParams {
 
 interface CorridorParams extends BusinessParams {
   corridorId: string;
+}
+
+interface ManifestParams extends BusinessParams {
+  manifestId: string;
 }
 
 interface InvoiceParams extends BusinessParams {
@@ -487,7 +493,206 @@ export function registerFulfillmentRoutes(
       }
     }
   );
+
+  // ---- Phase 1c: pools, order fulfillment, manifests -----------------------------------------
+
+  app.get(
+    "/businesses/:businessId/fulfillment/pools",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return await fulfillment.getActivePools(actor(request));
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/pools/:corridorId",
+    async (request: FastifyRequest<{ Params: CorridorParams }>, reply) => {
+      try {
+        return await fulfillment.getCorridorPool({
+          ...actor(request),
+          corridorId: request.params.corridorId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/orders/:invoiceId",
+    async (request: FastifyRequest<{ Params: InvoiceParams }>, reply) => {
+      try {
+        return await fulfillment.getOrderFulfillment({
+          ...actor(request),
+          invoiceId: request.params.invoiceId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/orders/:invoiceId/intake",
+    async (request: FastifyRequest<{ Params: InvoiceParams }>, reply) => {
+      try {
+        return await fulfillment.intakeOrderForDispatcher({
+          ...actor(request),
+          invoiceId: request.params.invoiceId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/orders/:invoiceId/cancel",
+    async (request: FastifyRequest<{ Params: InvoiceParams; Body: unknown }>, reply) => {
+      try {
+        const body =
+          request.body === undefined || request.body === null ? {} : parseRequestBody(request.body);
+        return await fulfillment.cancelOrderFulfillment({
+          ...actor(request),
+          invoiceId: request.params.invoiceId,
+          reason: parseNullableString(body.reason)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/manifests",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Querystring: { status?: string } }>,
+      reply
+    ) => {
+      try {
+        const status = request.query.status;
+        if (status !== undefined && !manifestStatuses.includes(status as ManifestStatus)) {
+          throw new Cp2Error(400, "manifest_status_invalid", "Manifest status is not supported.");
+        }
+        return await fulfillment.listManifests({
+          ...actor(request),
+          ...(status === undefined ? {} : { status: status as ManifestStatus })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/manifests",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        let orderIds: string[] | undefined;
+        if (body.orderIds !== undefined && body.orderIds !== null) {
+          if (
+            !Array.isArray(body.orderIds) ||
+            !body.orderIds.every((id) => typeof id === "string")
+          ) {
+            throw new Cp2Error(400, "invalid_selection", "orderIds must be an array of order ids.");
+          }
+          orderIds = body.orderIds as string[];
+        }
+        return await fulfillment.createManifest({
+          ...actor(request),
+          corridorId: parseString(body.corridorId, "corridorId"),
+          vehicleId: parseString(body.vehicleId, "vehicleId"),
+          ...(orderIds === undefined ? {} : { orderIds }),
+          plannedDepartureAt: parseNullableString(body.plannedDepartureAt)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/manifests/:manifestId",
+    async (request: FastifyRequest<{ Params: ManifestParams }>, reply) => {
+      try {
+        return await fulfillment.getManifest({
+          ...actor(request),
+          manifestId: request.params.manifestId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/manifests/:manifestId/close",
+    async (request: FastifyRequest<{ Params: ManifestParams }>, reply) => {
+      try {
+        return await fulfillment.closeManifest({
+          ...actor(request),
+          manifestId: request.params.manifestId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/manifests/:manifestId/orders/:invoiceId/remove",
+    async (request: FastifyRequest<{ Params: ManifestParams & { invoiceId: string } }>, reply) => {
+      try {
+        return await fulfillment.removeOrderFromManifest({
+          ...actor(request),
+          manifestId: request.params.manifestId,
+          invoiceId: request.params.invoiceId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/manifests/:manifestId/stops/:stopId/delivery",
+    async (
+      request: FastifyRequest<{ Params: ManifestParams & { stopId: string }; Body: unknown }>,
+      reply
+    ) => {
+      try {
+        const body = parseRequestBody(request.body);
+        const outcome = parseString(body.outcome, "outcome");
+        if (!deliveryOutcomes.includes(outcome as DeliveryOutcome)) {
+          throw new Cp2Error(400, "delivery_outcome_invalid", "Delivery outcome is not supported.");
+        }
+        return await fulfillment.recordDelivery({
+          ...actor(request),
+          manifestId: request.params.manifestId,
+          stopId: request.params.stopId,
+          outcome: outcome as DeliveryOutcome,
+          note: parseNullableString(body.note)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 }
+
+const manifestStatuses: ManifestStatus[] = [
+  "DRAFT",
+  "OPEN",
+  "CLOSED",
+  "DEPARTED",
+  "COMPLETED",
+  "CANCELLED"
+];
+const deliveryOutcomes: DeliveryOutcome[] = ["ARRIVED", "DELIVERED", "FAILED", "SKIPPED"];
 
 function parseGramsField(value: unknown, field: string, positive: true): bigint;
 function parseGramsField(value: unknown, field: string, positive: false): bigint | null;

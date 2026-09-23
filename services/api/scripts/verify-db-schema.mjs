@@ -93,7 +93,49 @@ const expectedFulfillmentColumns = new Map([
     ["id", "business_id", "route_geometry", "distance_meters", "geometry_version", "priority"]
   ],
   ["fulfillment_corridor_geometry_versions", ["corridor_id", "version", "route_geometry"]],
-  ["fulfillment_orders", ["id", "business_id", "invoice_id", "customer_id", "confirmed_at"]],
+  ["invoices", ["source", "source_message_channel", "created_by_user_id"]],
+  [
+    "fulfillment_orders",
+    [
+      "id",
+      "business_id",
+      "invoice_id",
+      "customer_id",
+      "confirmed_at",
+      "weight_status",
+      "total_weight_grams",
+      "state",
+      "source"
+    ]
+  ],
+  [
+    "fulfillment_manifests",
+    [
+      "id",
+      "business_id",
+      "corridor_id",
+      "corridor_geometry_version",
+      "policy_id",
+      "policy_version",
+      "vehicle_id",
+      "vehicle_capacity_grams",
+      "status",
+      "total_weight_grams"
+    ]
+  ],
+  [
+    "fulfillment_manifest_stops",
+    [
+      "id",
+      "manifest_id",
+      "fulfillment_order_id",
+      "sequence",
+      "order_weight_grams",
+      "allocation_active",
+      "delivery_status",
+      "release_reason"
+    ]
+  ],
   [
     "fulfillment_corridor_resolutions",
     [
