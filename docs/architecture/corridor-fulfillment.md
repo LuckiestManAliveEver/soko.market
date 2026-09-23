@@ -720,3 +720,94 @@ assigned manifests is Phase 1c/2 work.
   confirmation and intake.
 - Allocation must refuse stale orders. The staleness computation built here is what it uses.
 - The §11.6 gaps (staff invitation, owner seed configuration, UI) still stand.
+
+---
+
+## 13. Phase 1c implementation record
+
+### 13.1 What was built
+
+| Concern                   | Where                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Order source (A3.1)       | Migration 093 adds `invoices.source` (CHECK over the ten sources), `source_message_channel` and `created_by_user_id`. New invoices default to `MANUAL` and record the creating user. Storefront and marketplace checkout record `SOKO_CHAT` / `soko`. Historical rows stay NULL, meaning unknown, and nothing is inferred. `updateInvoice` preserves provenance.    |
+| Delivery intent (D4)      | `POST /invoices/:id/confirm` accepts an optional `fulfillmentMethod` (`delivery` or `pickup`). It checks `logistics:write` before confirming, then creates the canonical `LogisticsSummary`. An order enters fulfillment only when a delivery logistics record exists; confirming without one never blocks.                                                         |
+| Intake                    | The sales and logistics domains call `onInvoiceConfirmed` / `onLogisticsCreated`. `Cp2Store` forwards these to the fulfillment intake listener on a microtask, so confirmation never waits on Postgres. Intake upserts `fulfillment_orders` with the weight snapshot and runs automatic corridor resolution.                                                        |
+| Reconciler                | `fulfillmentIntakeReconcileRunner` runs every `FULFILLMENT_INTAKE_RECONCILE_INTERVAL_MS` (default 5 min). It takes in delivery orders whose intake never ran. It marks rows whose invoice has gone from the store `ORPHANED`, and never deletes them.                                                                                                               |
+| Pools and readiness (A13) | `GET /fulfillment/pools` returns per-corridor totals, readiness, percent filled, cutoff countdown in the business timezone (DST-safe), oldest waiting age, and stale / unknown-weight counts. It also returns an **unassigned** bucket (no GPS, off every corridor, pending intake, orphaned), so no order is hidden. `GET /pools/:corridorId` adds the order list. |
+| Manifests (A21)           | Migration 094: `fulfillment_manifests` and `fulfillment_manifest_stops`. Each manifest snapshots geometry version, policy version, vehicle capacity, each stop's coordinates, distance along, diversion and weight. `POST /fulfillment/manifests` without `orderIds` is skip-and-continue; with `orderIds` it is all-or-nothing, with `details.rejections`.         |
+| Lifecycle (A12)           | Remove (OPEN only), close (OPEN → CLOSED, needs at least one active stop), order cancel (releases an OPEN stop and recomputes the total; refused with 409 `order_dispatched` once CLOSED), and delivery outcomes `ARRIVED` / `DELIVERED` / `FAILED` / `SKIPPED`. Failed and skipped need a note and return the order to the pool with its original age.             |
+| Logistics projection      | Canonical logistics status follows fulfillment: allocation → `ready`, delivered → `completed`, cancelled → `cancelled`. `Cp2Store.applyFulfillmentLogisticsStatus` validates each transition and audits it as `logistics.status_projected`.                                                                                                                         |
+| Database invariants       | `CHECK (total_weight_grams <= vehicle_capacity_grams)`; the partial unique index `fulfillment_manifest_stops_one_active_allocation_idx` (at most one active allocation per order); `UNIQUE (manifest_id, sequence)`; release-reason consistency; composite tenant FKs. The concurrency tests prove each by direct insert.                                           |
+| UI                        | `ShopLocationCard` (GPS capture in the customer editor, showing the server's corridor decision) and `CorridorDispatchCard` (pools, create manifest, close, remove, record delivery), mounted in the existing Customers and Logistics surfaces. Copy is in English and Swahili, following the browser language (`fulfillment-copy.ts`).                              |
+
+### 13.2 Permissions
+
+| Operation                                                      | Permission             |
+| -------------------------------------------------------------- | ---------------------- |
+| Pools summary, order fulfillment status, manifest list/detail  | `fulfillment:read`     |
+| Pool order list, create/close manifest, remove, cancel, intake | `fulfillment:dispatch` |
+| Record a delivery outcome                                      | `delivery:record`      |
+
+A `sales_agent` can see the pools summary but not the order list or manifests' write routes. A
+`driver` can record deliveries but cannot create manifests.
+
+### 13.3 Decisions and deviations
+
+- **Table names** are `fulfillment_manifests` / `fulfillment_manifest_stops`, not the §7 draft's
+  `delivery_manifests` / `manifest_stops`, so every fulfillment-owned table shares one prefix
+  (D1 option A). Intake, weight and state columns live on `fulfillment_orders` (093), not on
+  `invoices`.
+- **Readiness uses allocatable weight.** A stale order still counts in
+  `eligibleTotalWeightGrams` and is flagged, but not in `allocatableWeightGrams`, which drives
+  readiness. So a map edit can never make a pool look ready with orders that cannot be loaded.
+- **Cancellation is fulfillment-only.** No commercial invoice cancellation exists (D3), so the
+  optional 095 migration was not needed. `POST /fulfillment/orders/:id/cancel` withdraws the
+  order from delivery and projects the logistics record to `cancelled`.
+- **An allocated order cannot be re-resolved or reassigned** (409 `order_allocated`). It must
+  leave its manifest first, so a stop can never point at a corridor it is not on.
+- **Automatic intake is fire-and-forget.** The in-memory store is synchronous, and a Postgres
+  failure must not fail a sale. The reconciler is the safety net, and the unassigned bucket's
+  `pendingIntakeCount` makes any backlog visible.
+
+### 13.4 Gaps found and fixed
+
+- **Migration tests with dependent FKs.** Each phase's migration test now unwinds every later
+  migration in reverse (`withMigrationsReversed`) before rolling back its own, then re-applies
+  them all. This keeps the 089/091 tests valid as 093/094 add FKs into their tables.
+- **The Postgres snapshot dropped new invoice provenance.** `source`,
+  `source_message_channel` and `created_by_user_id` are now written and hydrated, so provenance
+  survives a restart.
+- **Business purge would have failed once a manifest existed.** Stops hold an FK to
+  `fulfillment_orders`, and the purge deleted orders first. The purge now deletes stops, then
+  manifests, then the Phase 1b tables. The D10 purge test now includes a manifest and stop, and
+  it reproduced the FK violation before the fix. `db:verify-schema` now also checks the 093/094
+  columns.
+
+### 13.5 Tests
+
+- `tests/fulfillment-dispatch.test.ts` (pure): the readiness matrix, the A21 cases, and cutoff
+  across Nairobi, Lagos and a New York DST gap and overlap.
+- `tests/fulfillment-dispatch-postgres.test.ts` (22, real Postgres), covering:
+  - intake on confirm, pickup, no intent and a later logistics record;
+  - reconciler and orphans;
+  - pooling with unpaid, part-paid, unknown-weight, cancelled, stale and reassigned orders;
+  - readiness at target − 1 g, target, and the minimum boundaries;
+  - every A21 capacity case;
+  - snapshots that later edits do not change;
+  - the full lifecycle;
+  - cross-tenant and role permissions;
+  - the races: concurrent automatic creation, overlapping explicit selections, membership races with cancel and reassign, and an idempotency race;
+  - database-level invariants;
+  - migrations 093/094 down and up;
+  - **the 14-step Phase 1 end-to-end Definition of Done.**
+- `tests/corridor-fulfillment-cards.test.tsx` (jsdom): the cards render server readiness and
+  exact kilograms, create manifests only on an explicit click, require a reason for failed
+  deliveries, and capture GPS. It also checks that the Swahili copy covers every string.
+
+### 13.6 Known gaps carried forward
+
+- **Staff invitation (§11.6)** still does not exist. Non-owner roles (sales agent, dispatcher,
+  driver) are exercised in tests but cannot yet be granted in production.
+- **Owner seed configuration (D9)** still waits on the business id.
+- **Departure** (`CLOSED → DEPARTED`) is not exposed. Delivery recording accepts `CLOSED` or
+  `DEPARTED`, so drivers are not blocked. Phase 2 owns the departure decision.

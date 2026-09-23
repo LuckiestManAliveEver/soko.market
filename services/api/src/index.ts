@@ -431,7 +431,10 @@ if (fulfillmentService !== undefined) {
     timeScheduledJob: metrics.timeScheduledJob,
     onResult: (result) => {
       if (result.takenIn + result.orphaned + result.failed > 0) {
-        app.log.info({ event: "fulfillment_intake_reconciled", ...result }, "Fulfillment intake reconciled.");
+        app.log.info(
+          { event: "fulfillment_intake_reconciled", ...result },
+          "Fulfillment intake reconciled."
+        );
       }
     },
     onError: (error) => app.log.error({ error }, "Fulfillment intake reconcile failed.")

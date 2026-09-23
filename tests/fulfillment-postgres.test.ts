@@ -664,6 +664,7 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
       const corridorId = randomUUID();
       const orderId = randomUUID();
       const locationId = randomUUID();
+      const resolutionId = randomUUID();
       const line = JSON.stringify({
         type: "LineString",
         coordinates: [
@@ -700,7 +701,45 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
             shop_location_id, diversion_meters, distance_along_meters, segment_index,
             max_diversion_meters, resolution_method, resolved_by, resolved_at)
          values ($1, $2, $3, $4, 1, $5, 0, 5559.7, 0, 2000, 'AUTO', 'test', now())`,
-        [randomUUID(), purged.businessId, orderId, corridorId, locationId]
+        [resolutionId, purged.businessId, orderId, corridorId, locationId]
+      );
+      // Phase 1c: a manifest with one stop, so purge must delete stops before orders.
+      const manifestId = randomUUID();
+      const references = await pool.query<{
+        vehicle_id: string;
+        policy_row: string;
+        policy_id: string;
+      }>(
+        `select v.id as vehicle_id, p.id as policy_row, p.policy_id
+         from fulfillment_vehicles v, fulfillment_dispatch_policies p
+         where v.business_id = $1 and p.business_id = $1`,
+        [purged.businessId]
+      );
+      const reference = references.rows[0]!;
+      await pool.query(
+        `insert into fulfillment_manifests
+           (id, business_id, corridor_id, corridor_geometry_version, policy_version_id, policy_id,
+            policy_version, vehicle_id, vehicle_capacity_grams, status, total_weight_grams,
+            created_by, created_at, updated_at)
+         values ($1, $2, $3, 1, $4, $5, 1, $6, 7000000, 'OPEN', 1000, 'test', now(), now())`,
+        [
+          manifestId,
+          purged.businessId,
+          corridorId,
+          reference.policy_row,
+          reference.policy_id,
+          reference.vehicle_id
+        ]
+      );
+      await pool.query(
+        `insert into fulfillment_manifest_stops
+           (id, business_id, manifest_id, fulfillment_order_id, invoice_id, corridor_resolution_id,
+            shop_location_id, sequence, distance_along_meters, diversion_meters, latitude, longitude,
+            order_weight_grams, allocation_active, delivery_status, created_at, updated_at)
+         select $1, $2, $3, o.id, o.invoice_id, $4, $5, 1, 5559.7, 0, -1.25, 36.8, 1000, true,
+                'PENDING', now(), now()
+         from fulfillment_orders o where o.id = $6`,
+        [randomUUID(), purged.businessId, manifestId, resolutionId, locationId, orderId]
       );
 
       const snapshot = pgStore.snapshot();
@@ -731,7 +770,9 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
                (select count(*) from fulfillment_idempotency_records where business_id = $1)::int as keys,
                (select count(*) from fulfillment_corridors where business_id = $1)::int as corridors,
                (select count(*) from fulfillment_orders where business_id = $1)::int as orders,
-               (select count(*) from fulfillment_corridor_resolutions where business_id = $1)::int as resolutions`,
+               (select count(*) from fulfillment_corridor_resolutions where business_id = $1)::int as resolutions,
+               (select count(*) from fulfillment_manifests where business_id = $1)::int as manifests,
+               (select count(*) from fulfillment_manifest_stops where business_id = $1)::int as stops`,
             [businessId]
           )
         ).rows[0];
@@ -742,7 +783,9 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
         keys: 0,
         corridors: 0,
         orders: 0,
-        resolutions: 0
+        resolutions: 0,
+        manifests: 0,
+        stops: 0
       });
       expect(await remaining(kept.businessId)).toEqual({
         vehicles: 1,
@@ -751,7 +794,9 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
         keys: 1,
         corridors: 0,
         orders: 0,
-        resolutions: 0
+        resolutions: 0,
+        manifests: 0,
+        stops: 0
       });
       await pgApp.close();
     }, 30_000);

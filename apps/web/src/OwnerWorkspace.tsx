@@ -494,6 +494,7 @@ export function renderOwnerWorkspace(input: OwnerWorkspaceBindings) {
     case "customers":
       return (
         <CustomerSurface
+          businessId={businessId}
           customers={customers}
           form={customerForm}
           onFormChange={setCustomerForm}

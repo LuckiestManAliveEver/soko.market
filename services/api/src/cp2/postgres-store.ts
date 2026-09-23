@@ -3512,9 +3512,10 @@ async function deletePurgedBusinessFulfillmentRows(
   businessIds: string[]
 ): Promise<void> {
   if (businessIds.length === 0) return;
-  const exists = await client.query<{ present: boolean; corridors: boolean }>(
+  const exists = await client.query<{ present: boolean; corridors: boolean; manifests: boolean }>(
     `select to_regclass('public.fulfillment_vehicles') is not null as present,
-            to_regclass('public.fulfillment_corridor_resolutions') is not null as corridors`
+            to_regclass('public.fulfillment_corridor_resolutions') is not null as corridors,
+            to_regclass('public.fulfillment_manifests') is not null as manifests`
   );
   if (exists.rows[0]?.present !== true) return;
   const corridorTables = new Set([
@@ -3523,9 +3524,14 @@ async function deletePurgedBusinessFulfillmentRows(
     "fulfillment_corridor_geometry_versions",
     "fulfillment_corridors"
   ]);
-  // Children before parents: resolutions reference orders, corridors, geometry versions and
-  // shop locations; corridors may reference a policy lineage by value only.
+  const manifestTables = new Set(["fulfillment_manifest_stops", "fulfillment_manifests"]);
+  // Children before parents: stops reference manifests, orders, resolutions and shop locations;
+  // manifests reference corridors, geometry versions and vehicles; resolutions reference orders,
+  // corridors, geometry versions and shop locations; corridors may reference a policy lineage by
+  // value only.
   for (const tableName of [
+    "fulfillment_manifest_stops",
+    "fulfillment_manifests",
     "fulfillment_corridor_resolutions",
     "fulfillment_orders",
     "fulfillment_corridor_geometry_versions",
@@ -3538,6 +3544,8 @@ async function deletePurgedBusinessFulfillmentRows(
   ]) {
     // Databases migrated to 090 but not yet 091/092 have no corridor tables.
     if (corridorTables.has(tableName) && exists.rows[0]?.corridors !== true) continue;
+    // Databases migrated to 092 but not yet 094 have no manifest tables.
+    if (manifestTables.has(tableName) && exists.rows[0]?.manifests !== true) continue;
     await client.query(`delete from ${tableName} where business_id = any($1::uuid[])`, [
       businessIds
     ]);
