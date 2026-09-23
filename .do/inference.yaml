@@ -27,6 +27,22 @@ services:
       - key: MODEL_ARTIFACT_ALLOWED_HOSTS
         scope: RUN_TIME
         value: ""
+      - key: INFERENCE_PROVIDER
+        scope: RUN_TIME
+        value: "huggingface"
+      - key: HF_TOKEN
+        scope: RUN_TIME
+        type: SECRET
+        value: ""
+      - key: HF_MODEL_ID
+        scope: RUN_TIME
+        value: ""
+      - key: HF_MODEL_MAP
+        scope: RUN_TIME
+        value: '{"smollm2-360m":"HuggingFaceTB/SmolLM2-1.7B-Instruct","gpt-oss-20b":"openai/gpt-oss-20b"}'
+      - key: HF_INFERENCE_BASE_URL
+        scope: RUN_TIME
+        value: "https://router.huggingface.co/v1/"
       - key: VERCEL_MAX_ARTIFACT_BYTES
         scope: RUN_TIME
         value: "450000000"

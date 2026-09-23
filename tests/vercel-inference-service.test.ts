@@ -22,11 +22,13 @@ const token = "test-inference-token-that-is-at-least-32-characters";
 function baseConfig(overrides: Partial<VercelInferenceConfig> = {}): VercelInferenceConfig {
   return {
     serviceToken: token,
+    provider: "llama-cpp",
     artifactAllowedHosts: new Set(["models.example.neon.tech"]),
     maximumArtifactBytes: 450_000_000,
     maximumInputCharacters: 64_000,
     maximumOutputTokens: 512,
     cacheEntries: 1,
+    huggingFace: null,
     ...overrides
   };
 }
@@ -179,6 +181,100 @@ describe("Vercel inference request handler", () => {
       usage: { inputTokens: 4, outputTokens: 2 }
     });
     expect((result.metrics as Record<string, unknown>).cacheHit).toBe(false);
+  });
+
+  it("can stream through Hugging Face Inference Providers without downloading a GGUF artifact", async () => {
+    const downloadArtifact = vi.fn();
+    const handler = createVercelInferenceHandler(
+      baseConfig({
+        provider: "huggingface",
+        artifactAllowedHosts: new Set(),
+        huggingFace: {
+          token: "hf_test_token",
+          defaultModelId: null,
+          models: new Map([["smollm2-360m", "openai/gpt-oss-20b"]]),
+          baseUrl: "https://router.huggingface.co/v1/"
+        }
+      }),
+      {
+        downloadArtifact,
+        request: vi.fn(async () => {
+          const encoder = new TextEncoder();
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  encoder.encode(
+                    'data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}\n\n'
+                  )
+                );
+                controller.enqueue(
+                  encoder.encode(
+                    'data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n'
+                  )
+                );
+                controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+                controller.close();
+              }
+            }),
+            { status: 200, headers: { "content-type": "text/event-stream" } }
+          );
+        }) as unknown as typeof fetch
+      }
+    );
+
+    const response = await handler(post(requestBody()));
+    const events = await readNdjson(response);
+    expect(downloadArtifact).not.toHaveBeenCalled();
+    expect(events.some((event) => event.type === "delta" && event.text === "Hel")).toBe(true);
+    expect(events.at(-1)).toMatchObject({
+      type: "result",
+      text: "Hello",
+      finishReason: "stop",
+      usage: { inputTokens: 3, outputTokens: 2 }
+    });
+  });
+
+  it("selects the mapped Hugging Face model for each requested Soko model", async () => {
+    const requestedModels: string[] = [];
+    const handler = createVercelInferenceHandler(
+      baseConfig({
+        provider: "huggingface",
+        artifactAllowedHosts: new Set(),
+        huggingFace: {
+          token: "hf_test_token",
+          defaultModelId: null,
+          models: new Map([
+            ["smollm2-360m", "HuggingFaceTB/SmolLM2-1.7B-Instruct"],
+            ["gpt-oss-20b", "openai/gpt-oss-20b"]
+          ]),
+          baseUrl: "https://router.huggingface.co/v1/"
+        }
+      }),
+      {
+        request: vi.fn(async (_url, init) => {
+          requestedModels.push((JSON.parse(String(init?.body)) as { model: string }).model);
+          return new Response(
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+            { status: 200 }
+          );
+        }) as unknown as typeof fetch
+      }
+    );
+
+    await readNdjson(await handler(post(requestBody())));
+    await readNdjson(
+      await handler(
+        post(
+          requestBody({
+            model: { id: "gpt-oss-20b", runtimeContractVersion: "1" },
+            artifact: artifact({ modelId: "gpt-oss-20b" })
+          })
+        )
+      )
+    );
+
+    expect(requestedModels).toEqual(["HuggingFaceTB/SmolLM2-1.7B-Instruct", "openai/gpt-oss-20b"]);
   });
 
   it("reuses a warm runtime from the cache on a second request for the same model", async () => {
@@ -334,6 +430,27 @@ describe("Vercel inference ready handler", () => {
     expect(body).toMatchObject({ ok: true, ready: true, configured: true, artifactHosts: 1 });
   });
 
+  it("reports Hugging Face provider readiness without requiring artifact hosts", async () => {
+    const handler = createVercelReadyHandler({
+      SOKO_INFERENCE_SERVICE_TOKEN: token,
+      INFERENCE_PROVIDER: "huggingface",
+      HF_TOKEN: "hf_test_token",
+      HF_MODEL_MAP: '{"smollm2-360m":"openai/gpt-oss-20b"}'
+    });
+    const response = handler();
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      ready: true,
+      provider: "huggingface",
+      huggingFaceModel: null,
+      huggingFaceModels: { "smollm2-360m": "openai/gpt-oss-20b" },
+      capabilities: { formats: ["huggingface-chat-completions"] },
+      artifactHosts: 0
+    });
+  });
+
   it("reports 503 not-ready when required configuration is missing, without leaking the token", async () => {
     const handler = createVercelReadyHandler({ SOKO_INFERENCE_SERVICE_TOKEN: "too-short" });
     const response = handler();
@@ -362,6 +479,26 @@ describe("readVercelInferenceConfig", () => {
         MODEL_ARTIFACT_ALLOWED_HOSTS: ""
       })
     ).toThrow(/MODEL_ARTIFACT_ALLOWED_HOSTS/u);
+  });
+
+  it("supports Hugging Face-hosted OSS models without an artifact host allowlist", () => {
+    const config = readVercelInferenceConfig({
+      SOKO_INFERENCE_SERVICE_TOKEN: token,
+      INFERENCE_PROVIDER: "huggingface",
+      HF_TOKEN: "hf_test_token",
+      HF_MODEL_MAP:
+        '{"smollm2-360m":"HuggingFaceTB/SmolLM2-1.7B-Instruct","gpt-oss-20b":"openai/gpt-oss-20b"}'
+    });
+    expect(config.provider).toBe("huggingface");
+    expect(config.artifactAllowedHosts.size).toBe(0);
+    expect(config.huggingFace?.defaultModelId).toBeNull();
+    expect(config.huggingFace?.models).toEqual(
+      new Map([
+        ["smollm2-360m", "HuggingFaceTB/SmolLM2-1.7B-Instruct"],
+        ["gpt-oss-20b", "openai/gpt-oss-20b"]
+      ])
+    );
+    expect(config.huggingFace?.baseUrl).toBe("https://router.huggingface.co/v1/");
   });
 
   it("applies documented defaults", () => {

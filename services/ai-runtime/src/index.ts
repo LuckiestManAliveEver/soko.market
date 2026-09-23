@@ -1,4 +1,9 @@
 export { downloadVerifiedArtifact } from "./artifact-loader.js";
+export {
+  generateWithHuggingFace,
+  type HuggingFaceGenerationInput,
+  type HuggingFaceRuntimeConfig
+} from "./huggingface-runtime.js";
 export { loadLlamaRuntime, type LoadedLlamaRuntime } from "./llama-runtime.js";
 export { RuntimeCache, type DisposableRuntime } from "./runtime-cache.js";
 export { InferenceServiceError } from "./service-error.js";
