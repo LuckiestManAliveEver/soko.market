@@ -4,7 +4,6 @@
  * Every test uses fresh businesses, and the migration test runs inside a transaction it rolls
  * back, so the shared database is left exactly as it was found.
  */
-import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -15,6 +14,7 @@ import { createPostgresCp2Store } from "../services/api/src/cp2/postgres-store";
 import { createCp2Store, type Cp2Store } from "../services/api/src/cp2/store";
 import {
   createPostgresFulfillmentService,
+  fulfillmentDepsFromStore,
   type FulfillmentService
 } from "../services/api/src/cp2/domains/fulfillment/service";
 import {
@@ -26,6 +26,7 @@ import {
   ok,
   request,
   signUp,
+  withMigrationsReversed,
   type TestApp
 } from "./fixtures/fulfillment-test-helpers";
 
@@ -66,14 +67,7 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
     store = createCp2Store();
     service = createPostgresFulfillmentService({
       pool,
-      deps: {
-        authorize: (input) => store.authorizeBusinessPermission(input),
-        hasPermission: (input) => store.hasBusinessPermission(input),
-        requireCustomer: (businessId, customerId) =>
-          store.requireBusinessCustomer(businessId, customerId),
-        requireConfirmedOrder: (businessId, invoiceId) =>
-          store.requireConfirmedOrderReference(businessId, invoiceId)
-      }
+      deps: fulfillmentDepsFromStore(store)
     });
     app = buildApi({ cp2: { store, fulfillmentService: service } });
   });
@@ -639,14 +633,7 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
       const pgStore = await createPostgresCp2Store({ databaseUrl: connectionString });
       const pgService = createPostgresFulfillmentService({
         pool,
-        deps: {
-          authorize: (input) => pgStore.authorizeBusinessPermission(input),
-          hasPermission: (input) => pgStore.hasBusinessPermission(input),
-          requireCustomer: (businessId, customerId) =>
-            pgStore.requireBusinessCustomer(businessId, customerId),
-          requireConfirmedOrder: (businessId, invoiceId) =>
-            pgStore.requireConfirmedOrderReference(businessId, invoiceId)
-        }
+        deps: fulfillmentDepsFromStore(pgStore)
       });
       const pgApp = buildApi({
         cp2: { store: pgStore, fulfillmentService: pgService },
@@ -773,7 +760,6 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
   describe("migrations 089/090", () => {
     it("reverse and re-apply cleanly over historical data without inventing weight or location", async () => {
       const client = await pool.connect();
-      const read = (path: string) => readFileSync(path, "utf8");
       try {
         await client.query("begin");
         const businessId = randomUUID();
@@ -799,24 +785,17 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
           [randomUUID(), invoiceId, productId]
         );
 
-        // Unwind in reverse like db:rollback: later migrations reference 090's tables.
-        await client.query(read("infra/db/rollbacks/092_fulfillment_orders_resolutions.down.sql"));
-        await client.query(read("infra/db/rollbacks/091_fulfillment_corridors.down.sql"));
-        await client.query(read("infra/db/rollbacks/090_fulfillment_foundation.down.sql"));
-        await client.query(read("infra/db/rollbacks/089_fulfillment_weight_timezone.down.sql"));
-        const afterDown = await client.query(
-          `select column_name from information_schema.columns
-           where table_schema = 'public' and table_name in ('products', 'invoice_items', 'businesses')
-             and column_name in ('unit_weight_grams', 'total_weight_grams', 'timezone')`
-        );
-        expect(afterDown.rows).toEqual([]);
-        const tables = await client.query("select to_regclass('fulfillment_vehicles') as name");
-        expect(tables.rows[0]).toEqual({ name: null });
-
-        await client.query(read("infra/db/migrations/089_fulfillment_weight_timezone.sql"));
-        await client.query(read("infra/db/migrations/090_fulfillment_foundation.sql"));
-        await client.query(read("infra/db/migrations/091_fulfillment_corridors.sql"));
-        await client.query(read("infra/db/migrations/092_fulfillment_orders_resolutions.sql"));
+        // Unwind 089 and everything after it in reverse, like db:rollback, then re-apply.
+        await withMigrationsReversed(client, "089", async () => {
+          const afterDown = await client.query(
+            `select column_name from information_schema.columns
+             where table_schema = 'public' and table_name in ('products', 'invoice_items', 'businesses')
+               and column_name in ('unit_weight_grams', 'total_weight_grams', 'timezone')`
+          );
+          expect(afterDown.rows).toEqual([]);
+          const tables = await client.query("select to_regclass('fulfillment_vehicles') as name");
+          expect(tables.rows[0]).toEqual({ name: null });
+        });
         const historical = await client.query(
           `select p.unit_weight_grams, i.weight_status, i.total_weight_grams, b.timezone
            from products p

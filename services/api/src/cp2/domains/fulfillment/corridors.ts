@@ -20,6 +20,7 @@ import {
   type CorridorResolution
 } from "@soko/business-core";
 import type {
+  ConfirmedOrderReference,
   CorridorGeometryVersionSummary,
   CorridorLineString,
   CorridorMatchResultSummary,
@@ -32,6 +33,7 @@ import type {
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { FulfillmentRecheckConflict } from "./transaction.js";
+import { upsertFulfillmentOrder } from "./order-rows.js";
 
 export interface CorridorActor {
   sessionId: string | null;
@@ -92,14 +94,22 @@ export interface CorridorOperations {
   ): Promise<CorridorResolutionStatusSummary>;
 }
 
+/** Internal operations for trusted callers inside the fulfillment domain (never routed). */
+export interface CorridorInternalOperations {
+  /** AUTO-resolve on behalf of an actor who already caused the order to enter fulfillment. */
+  resolveCorridorAsSystem(input: {
+    businessId: string;
+    invoiceId: string;
+    actorId: string;
+    now?: Date;
+  }): Promise<ResolveOrderCorridorResultSummary>;
+}
+
 export interface CorridorOperationsContext {
   pool: Pool;
   authorize: (actor: CorridorActor, permission: BusinessPermission) => { userId: string };
   requireCustomer: (businessId: string, customerId: string) => { id: string };
-  requireConfirmedOrder: (
-    businessId: string,
-    invoiceId: string
-  ) => { invoiceId: string; customerId: string | null; confirmedAt: string };
+  requireConfirmedOrder: (businessId: string, invoiceId: string) => ConfirmedOrderReference;
   transaction: <T>(run: (client: PoolClient) => Promise<T>) => Promise<T>;
   idempotent: <T>(
     client: PoolClient,
@@ -117,7 +127,9 @@ export interface CorridorOperationsContext {
   log: (event: string, fields: Record<string, unknown>) => void;
 }
 
-export function createCorridorOperations(context: CorridorOperationsContext): CorridorOperations {
+export function createCorridorOperations(
+  context: CorridorOperationsContext
+): CorridorOperations & CorridorInternalOperations {
   const { pool } = context;
 
   async function requireCorridor(
@@ -223,27 +235,6 @@ export function createCorridorOperations(context: CorridorOperationsContext): Co
     return { resolution, names };
   }
 
-  async function ensureFulfillmentOrder(
-    client: PoolClient,
-    businessId: string,
-    order: { invoiceId: string; customerId: string | null; confirmedAt: string },
-    now: Date
-  ): Promise<string> {
-    await client.query(
-      `
-        insert into fulfillment_orders (id, business_id, invoice_id, customer_id, confirmed_at, created_at)
-        values ($1, $2, $3, $4, $5, $6)
-        on conflict (business_id, invoice_id) do nothing
-      `,
-      [randomUUID(), businessId, order.invoiceId, order.customerId, order.confirmedAt, now]
-    );
-    const result = await client.query<{ id: string }>(
-      "select id from fulfillment_orders where business_id = $1 and invoice_id = $2",
-      [businessId, order.invoiceId]
-    );
-    return (result.rows[0] as { id: string }).id;
-  }
-
   async function currentResolution(
     client: PoolClient | Pool,
     businessId: string,
@@ -269,9 +260,11 @@ export function createCorridorOperations(context: CorridorOperationsContext): Co
    */
   async function writeResolution(
     actor: CorridorActor & { invoiceId: string },
-    mode: { method: "AUTO" } | { method: "MANUAL"; corridorId: string }
+    mode: { method: "AUTO" } | { method: "MANUAL"; corridorId: string },
+    /** Set only by trusted internal callers (intake) that already established the actor. */
+    systemActorId?: string
   ): Promise<ResolveOrderCorridorResultSummary> {
-    const { userId } = context.authorize(actor, "fulfillment:dispatch");
+    const userId = systemActorId ?? context.authorize(actor, "fulfillment:dispatch").userId;
     const invoiceId = actor.invoiceId;
     const order = context.requireConfirmedOrder(actor.businessId, invoiceId);
     const now = actor.now ?? new Date();
@@ -279,12 +272,13 @@ export function createCorridorOperations(context: CorridorOperationsContext): Co
       mode.method === "AUTO" ? "fulfillment.resolveCorridorForOrder" : "fulfillment.assignCorridor";
     return context.transaction((client) =>
       context.idempotent(client, actor, operation, { invoiceId, ...mode }, now, async () => {
-        const fulfillmentOrderId = await ensureFulfillmentOrder(
+        const { row: orderRow } = await upsertFulfillmentOrder(
           client,
           actor.businessId,
           order,
           now
         );
+        const fulfillmentOrderId = orderRow.id;
         const previous = await currentResolution(client, actor.businessId, fulfillmentOrderId);
         const location = await currentShopLocation(client, actor.businessId, order.customerId);
         const { resolution, names } = await computeMatch(client, actor.businessId, location);
@@ -340,10 +334,24 @@ export function createCorridorOperations(context: CorridorOperationsContext): Co
           previous?.corridor_id ?? null,
           chosen.corridorId
         ]);
-        await client.query(
-          "select id from fulfillment_orders where business_id = $1 and id = $2 for update",
+        const lockedOrder = await client.query<{ state: string }>(
+          "select state from fulfillment_orders where business_id = $1 and id = $2 for update",
           [actor.businessId, fulfillmentOrderId]
         );
+        // A16: resolution only changes before allocation. An allocated order must first be removed
+        // from its manifest; delivered, cancelled or orphaned orders are no longer in the pool.
+        const state = lockedOrder.rows[0]?.state;
+        if (state !== "POOLED") {
+          throw new Cp2Error(
+            409,
+            state === "ALLOCATED" ? "order_allocated" : "order_not_pooled",
+            state === "ALLOCATED"
+              ? "Remove the order from its manifest before changing its corridor."
+              : "This order is no longer waiting for delivery.",
+            false,
+            { state: state ?? null }
+          );
+        }
         const lockedCorridor = locked.get(chosen.corridorId);
         const recheckPrevious = await currentResolution(
           client,
@@ -669,6 +677,18 @@ export function createCorridorOperations(context: CorridorOperationsContext): Co
     },
 
     resolveCorridorForOrder: (actor) => writeResolution(actor, { method: "AUTO" }),
+
+    resolveCorridorAsSystem: (input) =>
+      writeResolution(
+        {
+          sessionId: null,
+          businessId: input.businessId,
+          invoiceId: input.invoiceId,
+          ...(input.now === undefined ? {} : { now: input.now })
+        },
+        { method: "AUTO" },
+        input.actorId
+      ),
 
     assignCorridorManually: (actor) =>
       writeResolution(actor, { method: "MANUAL", corridorId: actor.corridorId }),

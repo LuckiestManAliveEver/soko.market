@@ -354,6 +354,7 @@ const mutatingMethodNames = new Set([
   "updateLaunchSettings",
   "updateLogisticsStatus",
   "updateBusinessTimezone",
+  "applyFulfillmentLogisticsStatus",
   "updateNotificationStatus",
   "updateOwnerPhone",
   "updateProduct",
@@ -1875,12 +1876,16 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     confirmed_at: Date | null;
     created_at: Date;
     updated_at: Date;
+    source: string | null;
+    source_message_channel: string | null;
+    created_by_user_id: string | null;
   }>(
     pool,
     "load invoices",
     `
       select id, business_id, invoice_number, status, customer_id, customer_name,
-             subtotal, tax_rate, tax_total, total, confirmed_at, created_at, updated_at
+             subtotal, tax_rate, tax_total, total, confirmed_at, created_at, updated_at,
+             source, source_message_channel, created_by_user_id
       from invoices
       order by business_id, created_at, id
     `
@@ -1946,7 +1951,10 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     total: numberFromDatabase(row.total),
     confirmedAt: row.confirmed_at === null ? null : timestampToIso(row.confirmed_at),
     createdAt: timestampToIso(row.created_at),
-    updatedAt: timestampToIso(row.updated_at)
+    updatedAt: timestampToIso(row.updated_at),
+    source: row.source,
+    sourceMessageChannel: row.source_message_channel,
+    createdByUserId: row.created_by_user_id
   })) as unknown as Cp2Snapshot["invoices"];
 
   const paymentsResult = await timedQuery<{
@@ -4126,10 +4134,14 @@ async function saveInvoicesAndItems(client: PoolClient, records: SnapshotRecord[
       `
         insert into invoices (
           id, business_id, invoice_number, status, customer_id, customer_name,
-          subtotal, tax_rate, tax_total, total, confirmed_at, created_at, updated_at
+          subtotal, tax_rate, tax_total, total, confirmed_at, created_at, updated_at,
+          source, source_message_channel, created_by_user_id
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         on conflict (id) do update set
+          source = excluded.source,
+          source_message_channel = excluded.source_message_channel,
+          created_by_user_id = excluded.created_by_user_id,
           status = excluded.status,
           customer_id = excluded.customer_id,
           customer_name = excluded.customer_name,
@@ -4153,7 +4165,10 @@ async function saveInvoicesAndItems(client: PoolClient, records: SnapshotRecord[
         record.total,
         firstText(record, ["confirmedAt"]),
         requiredText(record, "createdAt"),
-        requiredText(record, "updatedAt")
+        requiredText(record, "updatedAt"),
+        firstText(record, ["source"]),
+        firstText(record, ["sourceMessageChannel"]),
+        firstText(record, ["createdByUserId"])
       ]
     );
   }

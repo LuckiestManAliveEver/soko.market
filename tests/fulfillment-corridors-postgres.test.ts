@@ -3,7 +3,6 @@
  * resolution with append-only provenance, staleness, manual assignment, security and concurrency.
  * Skipped unless CP2_POSTGRES_TEST_DATABASE_URL points at a migrated database.
  */
-import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -11,7 +10,10 @@ import type { Pool as PgPool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store, type Cp2Store } from "../services/api/src/cp2/store";
-import { createPostgresFulfillmentService } from "../services/api/src/cp2/domains/fulfillment/service";
+import {
+  createPostgresFulfillmentService,
+  fulfillmentDepsFromStore
+} from "../services/api/src/cp2/domains/fulfillment/service";
 import {
   addMember,
   confirmInvoice,
@@ -21,6 +23,7 @@ import {
   ok,
   request,
   signUp,
+  withMigrationsReversed,
   type TestApp,
   type TestOwner
 } from "./fixtures/fulfillment-test-helpers";
@@ -81,14 +84,7 @@ describePostgres("corridor fulfillment Phase 1b on PostgreSQL", () => {
     store = createCp2Store();
     const service = createPostgresFulfillmentService({
       pool,
-      deps: {
-        authorize: (input) => store.authorizeBusinessPermission(input),
-        hasPermission: (input) => store.hasBusinessPermission(input),
-        requireCustomer: (businessId, customerId) =>
-          store.requireBusinessCustomer(businessId, customerId),
-        requireConfirmedOrder: (businessId, invoiceId) =>
-          store.requireConfirmedOrderReference(businessId, invoiceId)
-      }
+      deps: fulfillmentDepsFromStore(store)
     });
     app = buildApi({ cp2: { store, fulfillmentService: service } });
   });
@@ -770,17 +766,14 @@ describePostgres("corridor fulfillment Phase 1b on PostgreSQL", () => {
   describe("migrations 091/092", () => {
     it("reverse and re-apply cleanly", async () => {
       const client = await pool.connect();
-      const read = (path: string) => readFileSync(path, "utf8");
       try {
         await client.query("begin");
-        await client.query(read("infra/db/rollbacks/092_fulfillment_orders_resolutions.down.sql"));
-        await client.query(read("infra/db/rollbacks/091_fulfillment_corridors.down.sql"));
-        const gone = await client.query(
-          "select to_regclass('fulfillment_corridors') as corridors, to_regclass('fulfillment_orders') as orders"
-        );
-        expect(gone.rows[0]).toEqual({ corridors: null, orders: null });
-        await client.query(read("infra/db/migrations/091_fulfillment_corridors.sql"));
-        await client.query(read("infra/db/migrations/092_fulfillment_orders_resolutions.sql"));
+        await withMigrationsReversed(client, "091", async () => {
+          const gone = await client.query(
+            "select to_regclass('fulfillment_corridors') as corridors, to_regclass('fulfillment_orders') as orders"
+          );
+          expect(gone.rows[0]).toEqual({ corridors: null, orders: null });
+        });
         const back = await client.query(
           "select to_regclass('fulfillment_corridor_resolutions') is not null as present"
         );

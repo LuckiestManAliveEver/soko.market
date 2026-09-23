@@ -37,6 +37,8 @@ export interface LogisticsDomainDeps {
   ) => AuthenticatedActorView;
   appendBusinessEvent: (event: BusinessEvent) => void;
   requireInvoice: (businessId: string, invoiceId: string) => InvoiceSummary;
+  /** Called after a logistics record is created (a delivery record marks delivery intent). */
+  onLogisticsCreated?: (logistics: LogisticsSummary) => void;
 }
 
 export class LogisticsDomain {
@@ -134,6 +136,7 @@ export class LogisticsDomain {
 
     this.logistics.set(logistics.id, logistics);
     this.logisticsByInvoice.set(invoice.id, logistics.id);
+    this.deps.onLogisticsCreated?.(logistics);
     this.deps.appendBusinessEvent(
       logisticsCreatedEvent({
         id: randomUUID(),
