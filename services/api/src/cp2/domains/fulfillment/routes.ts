@@ -42,6 +42,10 @@ interface ShopParams extends BusinessParams {
   customerId: string;
 }
 
+interface CorridorParams extends BusinessParams {
+  corridorId: string;
+}
+
 interface InvoiceParams extends BusinessParams {
   invoiceId: string;
 }
@@ -290,6 +294,193 @@ export function registerFulfillmentRoutes(
         return await fulfillment.listShopLocationHistory({
           ...actor(request),
           customerId: request.params.customerId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  // ---- Phase 1b: corridors and resolution provenance ------------------------------------------
+
+  app.get(
+    "/businesses/:businessId/fulfillment/corridors",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Querystring: IncludeQuery }>,
+      reply
+    ) => {
+      try {
+        return await fulfillment.listCorridors({
+          ...actor(request),
+          includeInactive: request.query.include === "inactive"
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/corridors",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return await fulfillment.createCorridor({
+          ...actor(request),
+          corridor: {
+            name: parseString(body.name, "name"),
+            originLabel: parseString(body.originLabel, "originLabel"),
+            destinationLabel: parseString(body.destinationLabel, "destinationLabel"),
+            // Validated (and its length computed) by the pure geometry module, never trusted.
+            routeGeometry: body.routeGeometry,
+            ...(body.priority === undefined
+              ? {}
+              : { priority: parseNonNegativeInteger(body.priority, "priority") }),
+            ...(body.policyOverrideId === undefined
+              ? {}
+              : { policyOverrideId: parseNullableString(body.policyOverrideId) }),
+            ...(body.active === undefined ? {} : { active: parseBoolean(body.active, "active") })
+          }
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/corridors/:corridorId",
+    async (request: FastifyRequest<{ Params: CorridorParams }>, reply) => {
+      try {
+        return await fulfillment.getCorridor({
+          ...actor(request),
+          corridorId: request.params.corridorId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/fulfillment/corridors/:corridorId",
+    async (request: FastifyRequest<{ Params: CorridorParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        if (body.routeGeometry !== undefined) {
+          throw new Cp2Error(
+            400,
+            "corridor_geometry_separate",
+            "Change route geometry with PUT .../geometry so it gets a new geometry version."
+          );
+        }
+        return await fulfillment.updateCorridor({
+          ...actor(request),
+          corridorId: request.params.corridorId,
+          patch: {
+            ...(body.name === undefined ? {} : { name: parseString(body.name, "name") }),
+            ...(body.originLabel === undefined
+              ? {}
+              : { originLabel: parseString(body.originLabel, "originLabel") }),
+            ...(body.destinationLabel === undefined
+              ? {}
+              : { destinationLabel: parseString(body.destinationLabel, "destinationLabel") }),
+            ...(body.priority === undefined
+              ? {}
+              : { priority: parseNonNegativeInteger(body.priority, "priority") }),
+            ...(body.policyOverrideId === undefined
+              ? {}
+              : { policyOverrideId: parseNullableString(body.policyOverrideId) }),
+            ...(body.active === undefined ? {} : { active: parseBoolean(body.active, "active") })
+          }
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.put(
+    "/businesses/:businessId/fulfillment/corridors/:corridorId/geometry",
+    async (request: FastifyRequest<{ Params: CorridorParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return await fulfillment.updateCorridorGeometry({
+          ...actor(request),
+          corridorId: request.params.corridorId,
+          routeGeometry: body.routeGeometry
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/corridors/:corridorId/geometry-versions",
+    async (request: FastifyRequest<{ Params: CorridorParams }>, reply) => {
+      try {
+        return await fulfillment.listCorridorGeometryVersions({
+          ...actor(request),
+          corridorId: request.params.corridorId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/shops/:customerId/corridor-match",
+    async (request: FastifyRequest<{ Params: ShopParams }>, reply) => {
+      try {
+        return await fulfillment.resolveCorridorForShop({
+          ...actor(request),
+          customerId: request.params.customerId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/orders/:invoiceId/corridor",
+    async (request: FastifyRequest<{ Params: InvoiceParams }>, reply) => {
+      try {
+        return await fulfillment.getResolutionStatus({
+          ...actor(request),
+          invoiceId: request.params.invoiceId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/orders/:invoiceId/corridor/resolve",
+    async (request: FastifyRequest<{ Params: InvoiceParams }>, reply) => {
+      try {
+        return await fulfillment.resolveCorridorForOrder({
+          ...actor(request),
+          invoiceId: request.params.invoiceId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/orders/:invoiceId/corridor/assign",
+    async (request: FastifyRequest<{ Params: InvoiceParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return await fulfillment.assignCorridorManually({
+          ...actor(request),
+          invoiceId: request.params.invoiceId,
+          corridorId: parseString(body.corridorId, "corridorId")
         });
       } catch (error) {
         return sendCp2Error(reply, error);

@@ -83,6 +83,9 @@ describePostgres("progressive identity PostgreSQL persistence", () => {
 
   it("persists a proof-gated device-account merge without losing conversations", async () => {
     const connectionString = databaseUrl ?? "";
+    // A phone number unique to this run: the database is shared across runs, and a fixed number
+    // would make the merge target accumulate every earlier run's merged conversations.
+    const phone = `+2547339${String(Date.now()).slice(-5)}`;
     const store = await createPostgresCp2Store({ databaseUrl: connectionString });
     const app = buildApi({
       cp2: { store },
@@ -91,7 +94,7 @@ describePostgres("progressive identity PostgreSQL persistence", () => {
     const existing = await app.inject({
       method: "POST",
       url: "/auth/pin/continue",
-      payload: { method: "phone", contact: "+254733987621", pin: "8642" }
+      payload: { method: "phone", contact: phone, pin: "8642" }
     });
     expect(existing.statusCode).toBe(200);
     const targetAccountId = existing.json<{ account: { id: string } }>().account.id;
@@ -109,14 +112,14 @@ describePostgres("progressive identity PostgreSQL persistence", () => {
       method: "PUT",
       url: "/account/phone",
       headers: { cookie },
-      payload: { phoneNumber: "+254733987621", country: "KE" }
+      payload: { phoneNumber: phone, country: "KE" }
     });
     expect(collision.statusCode).toBe(409);
     const merged = await app.inject({
       method: "POST",
       url: "/auth/identity/merge/pin",
       headers: { cookie },
-      payload: { method: "phone", contact: "+254733987621", pin: "8642" }
+      payload: { method: "phone", contact: phone, pin: "8642" }
     });
     expect(merged.statusCode).toBe(200);
     expect(merged.json<{ account: { id: string } }>().account.id).toBe(targetAccountId);

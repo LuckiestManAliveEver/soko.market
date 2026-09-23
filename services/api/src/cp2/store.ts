@@ -4387,6 +4387,30 @@ export class Cp2Store {
     return { id: customer.id, name: customer.name };
   }
 
+  /**
+   * Tenant-scoped reference to a confirmed canonical order (invoice) for the Postgres-authoritative
+   * FulfillmentService. Drafts are not orders yet: they can change freely and never enter
+   * fulfillment. Read-only.
+   */
+  requireConfirmedOrderReference(
+    businessId: string,
+    invoiceId: string
+  ): { invoiceId: string; customerId: string | null; confirmedAt: string } {
+    const invoice = this.salesDomain.requireInvoice(businessId, invoiceId);
+    if (invoice.status !== "confirmed" || invoice.confirmedAt === null) {
+      throw new Cp2Error(
+        409,
+        "order_not_confirmed",
+        "Only confirmed orders can be assigned to a delivery corridor."
+      );
+    }
+    return {
+      invoiceId: invoice.id,
+      customerId: invoice.customerId,
+      confirmedAt: invoice.confirmedAt
+    };
+  }
+
   getFulfillmentSettings(input: {
     sessionId: string | null;
     businessId: string;

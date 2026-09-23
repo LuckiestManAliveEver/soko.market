@@ -1,7 +1,7 @@
 # Corridor Fulfillment — Architecture
 
-Status: **Phase 0 audit complete. Phase 1a (foundation) implemented; see §11.** Phases 1b–3 have
-not started.
+Status: **Phase 0 audit complete. Phase 1a (foundation) merged in #56, see §11. Phase 1b
+(corridor geometry, matching, provenance) implemented, see §12.** Phases 1c–3 have not started.
 
 The owner asked to continue past Phase 0 ("continue and fix any gaps"). Phase 1a therefore
 adopts the recommendation of every §9 decision it depends on (D1 = option A, D2, D6, D7, D8,
@@ -649,3 +649,74 @@ assigned manifests is Phase 1c/2 work.
 - **The Chromium integration test** (`tests/computer-runtime-browser.integration.test.ts`) fails
   in environments whose Playwright headless-shell build is missing. It fails identically on the
   untouched baseline, and CI installs Chromium itself.
+
+---
+
+## 12. Phase 1b implementation record
+
+### 12.1 What was built
+
+| Concern                   | Where                                                                                                                                                                                                                                                                                                  |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Pure geometry (A14/A15)   | `packages/business-core/src/domains/fulfillment-geometry.ts`: `validateCorridorGeometry`, `corridorLengthMeters`, `projectPointOntoCorridor`, `resolveCorridor`. It has no imports, and `check-boundaries.mjs` enforces that.                                                                          |
+| Corridors                 | Table `fulfillment_corridors`. Geometry is a GeoJSON `LineString` stored as jsonb; the length is computed by the server; `priority` defaults to 100 in the schema; `policy_override_id` names a policy lineage. Routes: `GET`/`POST /fulfillment/corridors`, `GET`/`PATCH /corridors/:id`.             |
+| Geometry versioning (A16) | `PUT /corridors/:id/geometry` increments `geometry_version` and inserts a row in `fulfillment_corridor_geometry_versions`; `GET .../geometry-versions` lists every version. `PATCH` rejects geometry, so no edit can skip versioning.                                                                  |
+| Match without persisting  | `GET /fulfillment/shops/:customerId/corridor-match` implements `resolveCorridorForShop` (needs `fulfillment:read`).                                                                                                                                                                                    |
+| Fulfillment order row     | Table `fulfillment_orders`: the stable, lockable row for one confirmed invoice, created on first resolution (`UNIQUE (business_id, invoice_id)`). Phase 1c adds intake, weight and pool state.                                                                                                         |
+| Provenance (A16)          | Table `fulfillment_corridor_resolutions` records corridor, geometry version, shop location, diversion, distance along, segment, tolerance, `AUTO`/`MANUAL`, who and when. It is append-only: only `superseded_at` is ever stamped on an old record, and there is at most one current record per order. |
+| Resolution writes         | `POST /fulfillment/orders/:invoiceId/corridor/resolve` (AUTO) and `.../corridor/assign` (MANUAL, qualifying corridors only). Both need `fulfillment:dispatch` and accept an `Idempotency-Key`.                                                                                                         |
+| Staleness (A16)           | `GET /fulfillment/orders/:invoiceId/corridor` returns the current record, `stale` and `staleReasons` (`GEOMETRY_CHANGED`, `LOCATION_CHANGED`), and the full history. Staleness is computed, never repaired silently.                                                                                   |
+| Database invariants       | Composite tenant FKs from resolutions to orders, corridors, geometry versions and shop locations; one current record per order; `CHECK (diversion_meters <= max_diversion_meters)`, so an off-corridor record cannot be stored.                                                                        |
+| Migrations                | `091_fulfillment_corridors.sql` and `092_fulfillment_orders_resolutions.sql`, each with a `.down.sql`. Business purge and `db:verify-schema` cover the new tables.                                                                                                                                     |
+
+### 12.2 Numeric tolerances (A15, documented)
+
+- Each segment is projected into a local equirectangular plane centred on its midpoint latitude,
+  with R = 6,371,008.8 m, and the projection parameter is clamped to [0, 1]. Longitude
+  differences are normalized to [-180, 180).
+- Measured against a great-circle (haversine) reference on a 44 km Thika Road polyline, route
+  length is within 1e-4 relative error and distance-along at a vertex is within 2 m
+  (`tests/fulfillment-geometry.test.ts`).
+- Eligibility is inclusive (`diversion <= maxDiversionMeters`). Ties compare diversion rounded
+  to the millimetre, then lower `priority`, then lexical corridor id. Within one corridor,
+  equal-distance segments resolve to the lower segment index.
+- Persisted distances are `numeric(12,3)` (millimetres). API values are rounded to the stored
+  precision.
+
+### 12.3 Decisions and deviations
+
+- **Unresolved reasons.** The reasons are `NO_LOCATION`, `NO_ACTIVE_CORRIDOR`,
+  `OUTSIDE_TOLERANCE` and `INVALID_GEOMETRY`, plus **`NO_DISPATCH_POLICY`**. The extra reason
+  covers a corridor that exists but has no effective policy (neither an override nor a business
+  default), because its tolerance is then unknown. `NO_LOCATION` takes precedence, since a shop
+  without a delivery point cannot be matched whatever corridors exist. An unresolved outcome
+  persists nothing and leaves any previous resolution untouched.
+- **Order without a shop.** An invoice with no customer resolves as `NO_LOCATION`: there is no
+  delivery point.
+- **The recheck is "locks still cover it", not "nothing changed".** The first version retried
+  whenever a newer resolution had been appended during lock acquisition. Five concurrent
+  re-resolutions of one order then exhausted the bounded retry and one request got a 409. The
+  recheck now requires only that the post-lock current record's corridor is one this
+  transaction has locked. That is exactly A17's source-and-target rule. The chosen corridor's
+  geometry version, its active flag and the shop's current location must still be unchanged.
+- **Lock order in practice:** corridors (ascending id) → `fulfillment_orders` row. A geometry
+  edit locks its corridor row, so a resolution can never be recorded against a geometry version
+  being replaced (proven by a concurrency test).
+
+### 12.4 Gaps found and fixed
+
+- **Migration test ordering.** The Phase 1a migration test rolled back 090 on its own. Once 092
+  holds a foreign key into `fulfillment_shop_locations`, that no longer works. The test now
+  unwinds 092 → 089 in reverse, exactly as `db:rollback` does, and re-applies the full stack.
+- **A pre-existing Postgres test was not re-runnable.** `progressive-identity-postgres` used a
+  fixed phone number, so on any reused database the merge target collected every earlier run's
+  conversations, and its exact count assertion failed from the second run on. It passed in CI
+  only because CI uses a fresh database. It now uses a phone number unique to each run and keeps
+  the exact assertion. The whole Postgres suite passes twice in a row on the same database.
+
+### 12.5 Carried forward to Phase 1c
+
+- Nothing calls `resolveCorridorForOrder` automatically yet. Phase 1c wires it into order
+  confirmation and intake.
+- Allocation must refuse stale orders. The staleness computation built here is what it uses.
+- The §11.6 gaps (staff invitation, owner seed configuration, UI) still stand.
