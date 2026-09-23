@@ -158,8 +158,10 @@ function parseChunk(value: string): {
   const usage = record(parsed) && record(parsed.usage) ? parsed.usage : null;
   return {
     text: typeof delta?.content === "string" ? delta.content : "",
-    finishReason: record(choice) && typeof choice.finish_reason === "string" ? choice.finish_reason : null,
-    inputTokens: record(usage) && typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : null,
+    finishReason:
+      record(choice) && typeof choice.finish_reason === "string" ? choice.finish_reason : null,
+    inputTokens:
+      record(usage) && typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : null,
     outputTokens:
       record(usage) && typeof usage.completion_tokens === "number" ? usage.completion_tokens : null
   };
@@ -178,7 +180,13 @@ async function huggingFaceFailure(response: Response): Promise<InferenceServiceE
     code,
     "Hugging Face inference failed.",
     retryable,
-    response.status === 404 ? 404 : response.status === 429 ? 429 : response.status >= 500 ? 503 : 502,
+    response.status === 404
+      ? 404
+      : response.status === 429
+        ? 429
+        : response.status >= 500
+          ? 503
+          : 502,
     { cause: body }
   );
 }
