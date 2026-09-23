@@ -65,6 +65,7 @@
     "restart:dev": "pnpm clean:dev && pnpm dev",
     "start": "pnpm --filter @soko/api start",
     "test": "vitest run",
+    "test:postgres": "node scripts/run-postgres-tests.mjs",
     "test:mcp:openai": "node scripts/test-openai-soko-mcp.mjs",
     "test:live-model-runtime": "RUN_LIVE_MODEL_RUNTIME_TEST=true vitest run tests/live-render-model-runtime.test.ts",
     "test:ui-cert": "playwright test e2e/responsive-accessibility.spec.ts",

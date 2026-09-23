@@ -9,6 +9,22 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    services:
+      # Real PostgreSQL for migration and concurrency tests (corridor-fulfillment.md A18), same
+      # major version as local development (docker-compose.yml postgres:16-alpine).
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: soko_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d soko_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,6 +48,14 @@ jobs:
 
       - name: Check
         run: pnpm run ci
+
+      - name: PostgreSQL migrations and integration tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/soko_test
+          CP2_POSTGRES_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/soko_test
+        run: |
+          pnpm db:migrate
+          pnpm test:postgres
 
       - name: Responsive and accessibility certification
         run: pnpm test:ui-cert
