@@ -40,7 +40,8 @@ const en = {
   readiness: {
     ACCUMULATING: "Filling",
     DISPATCHABLE: "Can dispatch",
-    DISPATCH_READY: "Ready to dispatch"
+    DISPATCH_READY: "Ready to dispatch",
+    APPROVAL_REQUIRED: "Approval required"
   } satisfies Record<CorridorPoolReadiness, string>,
   staleCount: (count: number) => `${count} need re-checking after a map change`,
   unknownWeightCount: (count: number) => `${count} with unknown weight`,
@@ -114,7 +115,8 @@ const sw: FulfillmentCopy = {
   readiness: {
     ACCUMULATING: "Inajaa",
     DISPATCHABLE: "Inaweza kutumwa",
-    DISPATCH_READY: "Tayari kutumwa"
+    DISPATCH_READY: "Tayari kutumwa",
+    APPROVAL_REQUIRED: "Inahitaji idhini"
   } satisfies Record<CorridorPoolReadiness, string>,
   staleCount: (count: number) => `${count} zinahitaji kukaguliwa upya baada ya ramani kubadilika`,
   unknownWeightCount: (count: number) => `${count} hazina uzito unaojulikana`,

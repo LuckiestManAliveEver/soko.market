@@ -1,7 +1,10 @@
 # Corridor Fulfillment — Architecture
 
-Status: **Phase 0 audit complete. Phase 1a (foundation) merged in #56, see §11. Phase 1b
-(corridor geometry, matching, provenance) implemented, see §12.** Phases 1c–3 have not started.
+Status: **Phase 0 and Phases 1a–1c are implemented and merged (PRs #56–#58; see §§11–13).
+Phase 2 now includes deterministic policy evaluation, persisted approvals, vehicle/day
+reservations, departure, and a transactional fulfillment outbox. Scheduled execution, outbox
+delivery, runtime tools, and the driver view remain open. Phase 3 order-channel integration has
+not started.**
 
 The owner asked to continue past Phase 0 ("continue and fix any gaps"). Phase 1a therefore
 adopts the recommendation of every §9 decision it depends on (D1 = option A, D2, D6, D7, D8,
@@ -811,3 +814,50 @@ A `sales_agent` can see the pools summary but not the order list or manifests' w
 - **Owner seed configuration (D9)** still waits on the business id.
 - **Departure** (`CLOSED → DEPARTED`) is not exposed. Delivery recording accepts `CLOSED` or
   `DEPARTED`, so drivers are not blocked. Phase 2 owns the departure decision.
+
+---
+
+## 14. Phase 2 implementation record
+
+### 14.1 Implemented
+
+- `evaluateDispatchPolicy` is a pure, clock-independent policy evaluator. It distinguishes ready,
+  wait, deterministic fallback recommendation and approval-required outcomes; observes configured
+  fallback order; and selects vehicles by smallest fitting capacity then lexical id.
+- `canTransitionManifest` is the central manifest state-machine validator for
+  `DRAFT → OPEN → CLOSED → DEPARTED → COMPLETED`, with cancellation limited to pre-departure
+  states.
+- Focused unit tests cover target/max-wait boundaries, fallback ordering, deterministic vehicle and
+  compatible-corridor selection, approval escalation and invalid manifest transitions.
+- Migration 098 adds one idempotent evaluation per corridor/business day, approval records, one
+  active vehicle reservation per vehicle/business-local service day, `departed_at`, and a narrow
+  transactional fulfillment outbox with event-key deduplication.
+- HTTP/service operations evaluate a corridor, list and decide approvals, and move a closed
+  manifest to `DEPARTED`. An open approval takes precedence over load readiness in pool responses.
+- Planned manifests reserve their vehicle inside manifest creation. Unscheduled manifests reserve
+  it inside departure. Both paths lock the vehicle first and rely on the partial unique index as
+  the final concurrency invariant.
+- Manifest created/closed/departed, approval required, threshold reached, and delivery outcomes
+  append outbox rows in the same transaction as their state mutation. Gram values in payloads are
+  decimal strings.
+- Real PostgreSQL tests exercise daily evaluation deduplication, approval precedence and decision,
+  same-day booking collision, departure, outbox atomic visibility, and the reservation unique index.
+
+### 14.2 Still required before Phase 2 is complete
+
+- A scheduler that invokes the business-local, per-day evaluator after cutoff. The evaluator itself
+  is persisted and idempotent; only periodic orchestration remains.
+- Manifest cancellation and reservation release. Departure and automatic completion are present.
+- Asynchronous outbox delivery and retry processing. Transactional writes and deduplication are
+  present.
+- Driver-focused manifest UI and permission-scoped assignment.
+- Fulfillment operations in the runtime tool registry (not direct MCP methods), including mutation
+  confirmation, permission checks and idempotency.
+- Threshold-crossing detection and the remaining Phase 2 integration/end-to-end tests.
+
+### 14.3 Phase 3 status
+
+The repository already has an authenticated Telegram webhook and outbound `sendMessage`, but no
+adapter translates a Telegram identity/conversation into the canonical invoice/order flow. That
+adapter, official WhatsApp Business integration, and outbox-driven customer notifications remain
+Phase 3 work. No channel-specific order model should be introduced.
