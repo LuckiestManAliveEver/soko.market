@@ -528,6 +528,72 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
       expect(rows.rows.filter((row) => row.superseded_at === null)).toHaveLength(1);
     });
 
+    it("timestamps a capture after waiting for the shop-location lock", async () => {
+      const owner = await createOwner(app);
+      const shop = await createCustomer(app, owner);
+      const lockClient = await pool.connect();
+      let pendingCapture: ReturnType<typeof request>;
+      let seededAt: Date;
+      try {
+        await lockClient.query("begin");
+        await lockClient.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          `soko.fulfillment.shop_location:${owner.businessId}:${shop.id}`
+        ]);
+
+        pendingCapture = request(
+          app,
+          "PUT",
+          url(owner.businessId, `shops/${shop.id}/location`),
+          owner.cookie,
+          { latitude: -1.286389, longitude: 36.817223 }
+        );
+        let captureIsWaiting = false;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const waiting = await pool.query(
+            `
+              select 1 from pg_stat_activity
+              where wait_event = 'advisory'
+                and query like 'select pg_advisory_xact_lock%'
+              limit 1
+            `
+          );
+          if (waiting.rowCount !== null && waiting.rowCount > 0) {
+            captureIsWaiting = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(captureIsWaiting).toBe(true);
+        seededAt = new Date();
+        await pool.query(
+          `
+            insert into fulfillment_shop_locations
+              (id, business_id, customer_id, latitude, longitude, captured_at, captured_by, created_at)
+            values ($1, $2, $3, 0, 0, $4, 'test', $4)
+          `,
+          [randomUUID(), owner.businessId, shop.id, seededAt]
+        );
+        await lockClient.query("commit");
+      } finally {
+        await lockClient.query("rollback").catch(() => undefined);
+        lockClient.release();
+      }
+
+      const result = await pendingCapture;
+      expect(result.status, result.body).toBe(200);
+      const rows = await pool.query<{ captured_at: Date; superseded_at: Date | null }>(
+        `
+          select captured_at, superseded_at from fulfillment_shop_locations
+          where business_id = $1 and customer_id = $2
+          order by captured_at
+        `,
+        [owner.businessId, shop.id]
+      );
+      expect(rows.rows).toHaveLength(2);
+      expect(rows.rows[0]?.superseded_at?.getTime()).toBeGreaterThanOrEqual(seededAt.getTime());
+      expect(rows.rows.filter((row) => row.superseded_at === null)).toHaveLength(1);
+    });
+
     it("enforces one current location in the database itself", async () => {
       const businessId = randomUUID();
       const customerId = randomUUID();

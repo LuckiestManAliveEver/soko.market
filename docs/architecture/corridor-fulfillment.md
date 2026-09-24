@@ -812,8 +812,8 @@ A `sales_agent` can see the pools summary but not the order list or manifests' w
 - **Staff invitation (§11.6)** still does not exist. Non-owner roles (sales agent, dispatcher,
   driver) are exercised in tests but cannot yet be granted in production.
 - **Owner seed configuration (D9)** still waits on the business id.
-- **Departure** (`CLOSED → DEPARTED`) is not exposed. Delivery recording accepts `CLOSED` or
-  `DEPARTED`, so drivers are not blocked. Phase 2 owns the departure decision.
+- Named driver assignment and assignment-scoped driver access are not yet exposed. Phase 2 added
+  the explicit `CLOSED → DEPARTED` operation and the mobile manifest departure control.
 
 ---
 
