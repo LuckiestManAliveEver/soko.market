@@ -3335,6 +3335,10 @@ export class Cp2Store {
     );
   }
 
+  runFulfillmentForMcp<T>(principal: McpPrincipal, operation: () => Promise<T>): Promise<T> {
+    return this.mcpPrincipalContext.run(principal, operation);
+  }
+
   subscribeSyncChanges(input: {
     sessionId: string | null;
     listener: (event: SyncRealtimeChangesAvailableEvent) => void;
@@ -4463,6 +4467,25 @@ export class Cp2Store {
         weight.status === "RESOLVED"
           ? { status: "RESOLVED", totalWeightGrams: formatGrams(weight.totalWeightGrams) }
           : weight
+    };
+  }
+
+  /** Canonical, tenant-scoped delivery detail projected into the driver manifest view. */
+  fulfillmentDeliveryDetails(
+    businessId: string,
+    invoiceId: string
+  ): {
+    items: Array<{ productName: string; quantity: number }>;
+    payOnDeliveryAmount: number | null;
+  } {
+    const invoice = this.salesDomain.requireInvoice(businessId, invoiceId);
+    const payment = this.salesDomain.buildInvoicePaymentSummary(invoice);
+    return {
+      items: invoice.items.map((item) => ({
+        productName: item.productName,
+        quantity: item.quantity
+      })),
+      payOnDeliveryAmount: payment.balanceDue > 0 ? payment.balanceDue : null
     };
   }
 

@@ -372,6 +372,12 @@ export interface ManifestStopSummary {
   latitude: number;
   longitude: number;
   orderWeightGrams: GramsString;
+  items: Array<{
+    productName: string;
+    quantity: number;
+  }>;
+  /** Outstanding canonical invoice balance; null when the order is fully paid. */
+  payOnDeliveryAmount: number | null;
   allocationActive: boolean;
   deliveryStatus: ManifestStopDeliveryStatus;
   deliveryNote: string | null;

@@ -1249,5 +1249,56 @@ describePostgres("corridor fulfillment Phase 1c on PostgreSQL", () => {
         )
       ).rejects.toMatchObject({ code: "23505" });
     });
+
+    it("cancels a planned manifest, releases its orders and makes the vehicle available", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      const order = await deliveryOrder(owner, 1000 * KG, alongX(0.4));
+      const plannedDepartureAt = "2026-09-27T05:00:00.000Z";
+      const created = await createManifest(owner, { corridorId, vehicleId, plannedDepartureAt });
+      const cancelled = await ok<ManifestView>(
+        app,
+        "POST",
+        url(owner, `manifests/${created.body.manifest.id}/cancel`),
+        owner.cookie,
+        { reason: "Vehicle maintenance" }
+      );
+      expect(cancelled.status).toBe("CANCELLED");
+      expect((await orderStatus(owner, order.invoiceId)).state).toBe("POOLED");
+      const reservation = await pool.query<{ active: boolean; release_reason: string }>(
+        "select active, release_reason from fulfillment_vehicle_reservations where manifest_id = $1",
+        [created.body.manifest.id]
+      );
+      expect(reservation.rows[0]).toEqual({ active: false, release_reason: "Vehicle maintenance" });
+
+      const replacement = await createManifest(owner, {
+        corridorId,
+        vehicleId,
+        plannedDepartureAt
+      });
+      expect(replacement.status).toBe(200);
+    });
+
+    it("runs cutoff evaluation idempotently and delivers the transactional outbox", async () => {
+      const { owner, corridorId } = await setupBusiness({ targetKg: 1000 });
+      await deliveryOrder(owner, 1000 * KG, alongX(0.5));
+      const now = new Date("2026-09-28T20:00:00.000Z");
+      const first = await service.evaluateDueDispatches({ now });
+      const second = await service.evaluateDueDispatches({ now });
+      expect(first.evaluated).toBeGreaterThanOrEqual(1);
+      expect(second.evaluated).toBeGreaterThanOrEqual(1);
+      const evaluations = await pool.query<{ count: number }>(
+        "select count(*)::int as count from fulfillment_dispatch_evaluations where business_id = $1 and corridor_id = $2",
+        [owner.businessId, corridorId]
+      );
+      expect(evaluations.rows[0]?.count).toBe(1);
+
+      const delivered = await service.deliverPendingOutboxEvents({ now, batchSize: 200 });
+      expect(delivered.delivered).toBeGreaterThan(0);
+      const pending = await pool.query<{ count: number }>(
+        "select count(*)::int as count from fulfillment_outbox_events where business_id = $1 and delivered_at is null",
+        [owner.businessId]
+      );
+      expect(pending.rows[0]?.count).toBe(0);
+    });
   });
 });

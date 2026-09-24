@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
+import type { FulfillmentService } from "../services/api/src/cp2/domains/fulfillment/service";
 
 interface McpTokenResponse {
   accessToken: string;
@@ -16,6 +17,86 @@ interface McpTokenResponse {
 }
 
 describe("CP23 MCP tool gateway", () => {
+  it("exposes tenant-scoped fulfillment load and dispatch evaluation with decimal gram values", async () => {
+    const getCorridorPool = vi.fn(async () => ({
+      corridorId: "11111111-1111-4111-8111-111111111111",
+      eligibleTotalWeightGrams: "4000000",
+      allocatableWeightGrams: "4000000",
+      readiness: "DISPATCHABLE",
+      orders: []
+    }));
+    const evaluateDispatch = vi.fn(async () => ({
+      outcome: "READY",
+      readiness: "DISPATCH_READY",
+      maxWaitReached: false,
+      recommendation: null,
+      reason: "TARGET_REACHED"
+    }));
+    const fulfillmentService = {
+      available: true,
+      getCorridorPool,
+      evaluateDispatch
+    } as unknown as FulfillmentService;
+    const app = buildApi({ cp2: { fulfillmentService } });
+    const cookie = await createSession(app, "254700000298");
+    const shop = await postJson<{ business: { id: string } }>(
+      app,
+      "/businesses",
+      { name: "MCP Dispatch Shop", language: "en" },
+      cookie
+    );
+    const token = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      { name: "Dispatch agent", scopes: ["mcp:read", "mcp:act"], shopId: shop.business.id },
+      cookie,
+      { origin: "http://localhost:5173" }
+    );
+    const initialized = await mcpPost(app, token.accessToken, initializeRequest());
+    const sessionId = String(initialized.headers["mcp-session-id"]);
+    const listed = await mcpPost(
+      app,
+      token.accessToken,
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+      sessionId
+    );
+    expect(listed.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual(
+      expect.arrayContaining(["fulfillment.get_corridor_load", "fulfillment.evaluate_dispatch"])
+    );
+    const corridorId = "11111111-1111-4111-8111-111111111111";
+    const load = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(3, "fulfillment.get_corridor_load", { shopId: shop.business.id, corridorId }),
+      sessionId
+    );
+    expect(load.json().result).toMatchObject({
+      isError: false,
+      structuredContent: { eligibleTotalWeightGrams: "4000000" }
+    });
+    const evaluation = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(4, "fulfillment.evaluate_dispatch", {
+        shopId: shop.business.id,
+        corridorId,
+        idempotencyKey: "evaluate-corridor-once"
+      }),
+      sessionId
+    );
+    expect(evaluation.json().result).toMatchObject({
+      isError: false,
+      structuredContent: { outcome: "READY" }
+    });
+    expect(getCorridorPool).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: null, businessId: shop.business.id, corridorId })
+    );
+    expect(evaluateDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: "evaluate-corridor-once" })
+    );
+    await app.close();
+  });
+
   it("links ChatGPT through OAuth 2.1 authorization code with PKCE", async () => {
     const app = buildApi();
     const cookie = await createSession(app, "254700000230");

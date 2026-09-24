@@ -315,6 +315,12 @@ let fulfillmentIntakeReconcileRunner: IntervalRunner<{
   orphaned: number;
   failed: number;
 }> | null = null;
+let fulfillmentDispatchEvaluationRunner: IntervalRunner<{
+  evaluated: number;
+  skipped: number;
+  failed: number;
+}> | null = null;
+let fulfillmentOutboxRunner: IntervalRunner<{ delivered: number; failed: number }> | null = null;
 const connectedMailboxSyncIntervalMs = readOptionalPositiveInteger(
   process.env.CONNECTED_MAILBOX_SYNC_INTERVAL_MS
 );
@@ -333,6 +339,8 @@ app.addHook("onClose", async () => {
   rateLimitRedisClient.disconnect();
   await fulfillmentIdempotencyRetentionRunner?.stop();
   await fulfillmentIntakeReconcileRunner?.stop();
+  await fulfillmentDispatchEvaluationRunner?.stop();
+  await fulfillmentOutboxRunner?.stop();
   await artifactPool?.end();
   await fulfillmentPool?.end();
   if (isClosableStore(cp2Store)) {
@@ -448,6 +456,36 @@ if (fulfillmentService !== undefined) {
       }
     },
     onError: (error) => app.log.error({ error }, "Fulfillment intake reconcile failed.")
+  });
+  fulfillmentDispatchEvaluationRunner = createIntervalRunner({
+    job: "fulfillment_dispatch_evaluation",
+    intervalMs: positiveIntegerFromEnv("FULFILLMENT_DISPATCH_EVALUATION_INTERVAL_MS", 300_000),
+    run: () => service.evaluateDueDispatches(),
+    timeScheduledJob: metrics.timeScheduledJob,
+    onResult: (result) => {
+      if (result.evaluated + result.failed > 0) {
+        app.log.info(
+          { event: "fulfillment_dispatch_evaluated", ...result },
+          "Due corridor dispatch policies evaluated."
+        );
+      }
+    },
+    onError: (error) => app.log.error({ error }, "Fulfillment dispatch evaluation failed.")
+  });
+  fulfillmentOutboxRunner = createIntervalRunner({
+    job: "fulfillment_outbox_delivery",
+    intervalMs: positiveIntegerFromEnv("FULFILLMENT_OUTBOX_INTERVAL_MS", 30_000),
+    run: () => service.deliverPendingOutboxEvents(),
+    timeScheduledJob: metrics.timeScheduledJob,
+    onResult: (result) => {
+      if (result.delivered + result.failed > 0) {
+        app.log.info(
+          { event: "fulfillment_outbox_processed", ...result },
+          "Fulfillment outbox processed."
+        );
+      }
+    },
+    onError: (error) => app.log.error({ error }, "Fulfillment outbox delivery failed.")
   });
 }
 

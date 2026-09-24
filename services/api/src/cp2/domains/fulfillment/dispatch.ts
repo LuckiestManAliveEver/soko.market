@@ -58,6 +58,7 @@ export interface DispatchActor {
   businessId: string;
   idempotencyKey?: string | null;
   now?: Date;
+  [scheduledEvaluation]?: true;
 }
 
 export type DeliveryOutcome = Exclude<ManifestStopDeliveryStatus, "PENDING">;
@@ -95,6 +96,9 @@ export interface DispatchOperations {
   ): Promise<ManifestSummary>;
   closeManifest(input: DispatchActor & { manifestId: string }): Promise<ManifestSummary>;
   departManifest(input: DispatchActor & { manifestId: string }): Promise<ManifestSummary>;
+  cancelManifest(
+    input: DispatchActor & { manifestId: string; reason: string }
+  ): Promise<ManifestSummary>;
   evaluateDispatch(
     input: DispatchActor & { corridorId: string }
   ): Promise<DispatchEvaluationSummary>;
@@ -134,7 +138,14 @@ export interface DispatchInternalOperations {
     orphaned: number;
     failed: number;
   }>;
+  evaluateDueDispatches(input?: { now?: Date }): Promise<{
+    evaluated: number;
+    skipped: number;
+    failed: number;
+  }>;
 }
+
+const scheduledEvaluation = Symbol("scheduledEvaluation");
 
 export interface DispatchOperationsContext {
   pool: Pool;
@@ -142,6 +153,13 @@ export interface DispatchOperationsContext {
   hasPermission: (actor: DispatchActor, permission: BusinessPermission) => boolean;
   requireConfirmedOrder: (businessId: string, invoiceId: string) => ConfirmedOrderReference;
   customerName: (businessId: string, customerId: string) => string | null;
+  deliveryDetails: (
+    businessId: string,
+    invoiceId: string
+  ) => {
+    items: Array<{ productName: string; quantity: number }>;
+    payOnDeliveryAmount: number | null;
+  };
   businessTimezone: (businessId: string) => string | null;
   listIntakeCandidates: () => Array<{ businessId: string; invoiceId: string; actorId: string }>;
   existingInvoiceIds: (businessId: string, invoiceIds: readonly string[]) => Set<string>;
@@ -387,7 +405,9 @@ export function createDispatchOperations(
       createdBy: manifest.created_by,
       createdAt: manifest.created_at.toISOString(),
       updatedAt: manifest.updated_at.toISOString(),
-      stops: stops.rows.map((stop) => stopSummary(stop, context.customerName))
+      stops: stops.rows.map((stop) =>
+        stopSummary(stop, context.customerName, context.deliveryDetails)
+      )
     };
   }
 
@@ -1456,8 +1476,90 @@ export function createDispatchOperations(
       });
     },
 
-    async evaluateDispatch(actor) {
+    async cancelManifest(actor) {
       const { userId } = context.authorize(actor, "fulfillment:dispatch");
+      const reason = actor.reason.trim();
+      if (reason === "" || reason.length > 240) {
+        throw new Cp2Error(
+          400,
+          "manifest_cancellation_reason_invalid",
+          "Give a reason of 1 to 240 characters."
+        );
+      }
+      const now = actor.now ?? new Date();
+      const cancelled = await context.transaction(async (client) => {
+        const manifest = await lockManifest(client, actor.businessId, actor.manifestId);
+        if (!canTransitionManifest(manifest.status, "CANCELLED")) {
+          throw new Cp2Error(
+            409,
+            "manifest_transition_invalid",
+            `A ${manifest.status} manifest cannot be cancelled.`
+          );
+        }
+        await client.query(
+          `update fulfillment_orders
+              set state = 'POOLED', updated_at = $3
+            where business_id = $1 and state = 'ALLOCATED'
+              and id in (
+                select fulfillment_order_id from fulfillment_manifest_stops
+                 where business_id = $1 and manifest_id = $2 and allocation_active
+              )`,
+          [actor.businessId, manifest.id, now]
+        );
+        const released = await client.query<{ invoice_id: string }>(
+          `update fulfillment_manifest_stops
+             set allocation_active = false, released_at = $3,
+                 release_reason = 'REMOVED_BY_DISPATCHER', updated_at = $3
+           where business_id = $1 and manifest_id = $2 and allocation_active
+           returning invoice_id`,
+          [actor.businessId, manifest.id, now]
+        );
+        await client.query(
+          `update fulfillment_vehicle_reservations
+             set active = false, released_at = $3, release_reason = $4, updated_at = $3
+           where business_id = $1 and manifest_id = $2 and active`,
+          [actor.businessId, manifest.id, now, reason]
+        );
+        const updated = (
+          await client.query<ManifestRow>(
+            `update fulfillment_manifests
+                set status = 'CANCELLED', updated_at = $3
+              where business_id = $1 and id = $2
+              returning *`,
+            [actor.businessId, manifest.id, now]
+          )
+        ).rows[0] as ManifestRow;
+        await appendOutbox(client, {
+          businessId: actor.businessId,
+          eventType: "manifest.cancelled",
+          eventKey: `manifest.cancelled:${manifest.id}`,
+          payload: {
+            manifestId: manifest.id,
+            reason,
+            releasedInvoiceIds: released.rows.map((row) => row.invoice_id)
+          },
+          now
+        });
+        return {
+          summary: await manifestSummary(client, actor.businessId, updated),
+          invoiceIds: released.rows.map((row) => row.invoice_id)
+        };
+      });
+      for (const invoiceId of cancelled.invoiceIds) {
+        context.applyLogisticsStatus({
+          businessId: actor.businessId,
+          invoiceId,
+          status: "ready",
+          actorId: userId
+        });
+      }
+      return cancelled.summary;
+    },
+
+    async evaluateDispatch(actor) {
+      const userId = actor[scheduledEvaluation]
+        ? "system:fulfillment-cutoff"
+        : context.authorize(actor, "fulfillment:dispatch").userId;
       const now = actor.now ?? new Date();
       const timeZone = context.businessTimezone(actor.businessId);
       if (timeZone === null) {
@@ -1523,6 +1625,12 @@ export function createDispatchOperations(
                 }
               : evaluation.recommendation;
         const evaluationId = randomUUID();
+        const previousOutcome = (
+          await client.query<{ outcome: EvaluationRow["outcome"] }>(
+            "select outcome from fulfillment_dispatch_evaluations where business_id = $1 and corridor_id = $2 order by business_date desc, evaluated_at desc limit 1",
+            [actor.businessId, corridor.id]
+          )
+        ).rows[0]?.outcome;
         const inserted = await client.query<EvaluationRow>(
           `
             insert into fulfillment_dispatch_evaluations
@@ -1582,7 +1690,11 @@ export function createDispatchOperations(
             now
           });
         }
-        if (persisted.outcome === "READY") {
+        if (
+          inserted.rows[0] !== undefined &&
+          persisted.outcome === "READY" &&
+          previousOutcome !== "READY"
+        ) {
           await appendOutbox(client, {
             businessId: actor.businessId,
             eventType: "corridor.threshold_reached",
@@ -1599,6 +1711,54 @@ export function createDispatchOperations(
           reason: persisted.reason
         } as DispatchEvaluationSummary;
       });
+    },
+
+    async evaluateDueDispatches(input = {}) {
+      const now = input.now ?? new Date();
+      const corridors = await pool.query<{
+        business_id: string;
+        id: string;
+        policy_override_id: string | null;
+      }>(
+        "select business_id, id, policy_override_id from fulfillment_corridors where active order by business_id, id"
+      );
+      let evaluated = 0;
+      let skipped = 0;
+      let failed = 0;
+      for (const corridor of corridors.rows) {
+        const timeZone = context.businessTimezone(corridor.business_id);
+        if (timeZone === null) {
+          skipped += 1;
+          continue;
+        }
+        const policy = await effectivePolicy(
+          pool,
+          corridor.business_id,
+          corridor.policy_override_id
+        );
+        if (policy === null || !isAtOrAfterLocalCutoff(now, timeZone, policy.cutoff_local_time)) {
+          skipped += 1;
+          continue;
+        }
+        try {
+          await this.evaluateDispatch({
+            sessionId: null,
+            businessId: corridor.business_id,
+            corridorId: corridor.id,
+            now,
+            [scheduledEvaluation]: true
+          });
+          evaluated += 1;
+        } catch (error) {
+          failed += 1;
+          context.log("fulfillment.scheduled_evaluation_failed", {
+            businessId: corridor.business_id,
+            corridorId: corridor.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+      return { evaluated, skipped, failed };
     },
 
     async listDispatchApprovals(actor) {
@@ -1965,6 +2125,19 @@ function formatLocalDate(instant: Date, timeZone: string): string {
   return `${date.year}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`;
 }
 
+function isAtOrAfterLocalCutoff(instant: Date, timeZone: string, cutoff: string): boolean {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(instant);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "00";
+  return `${value("hour")}:${value("minute")}:${value("second")}` >= cutoff.slice(0, 8);
+}
+
 function isPgUniqueViolation(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }
@@ -2001,8 +2174,10 @@ function staleReasons(row: PoolRow): Array<"GEOMETRY_CHANGED" | "LOCATION_CHANGE
 
 function stopSummary(
   stop: StopRow,
-  customerName: (businessId: string, customerId: string) => string | null
+  customerName: (businessId: string, customerId: string) => string | null,
+  deliveryDetails: DispatchOperationsContext["deliveryDetails"]
 ): ManifestStopSummary {
+  const details = deliveryDetails(stop.business_id, stop.invoice_id);
   return {
     id: stop.id,
     manifestId: stop.manifest_id,
@@ -2017,6 +2192,8 @@ function stopSummary(
     latitude: Number(stop.latitude),
     longitude: Number(stop.longitude),
     orderWeightGrams: stop.order_weight_grams,
+    items: details.items,
+    payOnDeliveryAmount: details.payOnDeliveryAmount,
     allocationActive: stop.allocation_active,
     deliveryStatus: stop.delivery_status,
     deliveryNote: stop.delivery_note,

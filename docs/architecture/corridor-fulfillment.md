@@ -1,10 +1,10 @@
 # Corridor Fulfillment — Architecture
 
 Status: **Phase 0 and Phases 1a–1c are implemented and merged (PRs #56–#58; see §§11–13).
-Phase 2 now includes deterministic policy evaluation, persisted approvals, vehicle/day
-reservations, departure, and a transactional fulfillment outbox. Scheduled execution, outbox
-delivery, runtime tools, and the driver view remain open. Phase 3 order-channel integration has
-not started.**
+Phase 2 is implemented: deterministic policy evaluation, persisted approvals, vehicle/day
+reservations, scheduled cutoff execution, manifest cancellation, departure, asynchronous
+transactional-outbox delivery, MCP tools, and the mobile driver workflow. Phase 3 order-channel
+integration has not started.**
 
 The owner asked to continue past Phase 0 ("continue and fix any gaps"). Phase 1a therefore
 adopts the recommendation of every §9 decision it depends on (D1 = option A, D2, D6, D7, D8,
@@ -843,17 +843,24 @@ A `sales_agent` can see the pools summary but not the order list or manifests' w
 - Real PostgreSQL tests exercise daily evaluation deduplication, approval precedence and decision,
   same-day booking collision, departure, outbox atomic visibility, and the reservation unique index.
 
-### 14.2 Still required before Phase 2 is complete
+### 14.2 Completion record
 
-- A scheduler that invokes the business-local, per-day evaluator after cutoff. The evaluator itself
-  is persisted and idempotent; only periodic orchestration remains.
-- Manifest cancellation and reservation release. Departure and automatic completion are present.
-- Asynchronous outbox delivery and retry processing. Transactional writes and deduplication are
-  present.
-- Driver-focused manifest UI and permission-scoped assignment.
-- Fulfillment operations in the runtime tool registry (not direct MCP methods), including mutation
-  confirmation, permission checks and idempotency.
-- Threshold-crossing detection and the remaining Phase 2 integration/end-to-end tests.
+- A periodic runner evaluates active corridors only after the effective business-local cutoff.
+  The persisted business-day uniqueness key makes repeated sweeps idempotent, including DST zones.
+- Authorized cancellation is a central pre-departure state transition. It atomically releases the
+  vehicle reservation and active stops, returns orders to their original pool priority, and emits
+  `manifest.cancelled`.
+- A bounded asynchronous worker claims outbox rows with `FOR UPDATE SKIP LOCKED`, records attempts
+  and errors, and marks successful delivery. Event IDs and event keys provide deduplication.
+- The mobile manifest workflow exposes departure, ordered map-linked stops, canonical invoice
+  items, outstanding pay-on-delivery amount, stop outcomes, and reason-gated failures/skips.
+- The MCP gateway exposes tenant-scoped corridor load and dispatch evaluation through the public
+  fulfillment service. Reads require `mcp:read`; evaluation requires `mcp:act`, server permission
+  checks, and an A23 idempotency key. Gram values remain decimal strings.
+- Threshold events are emitted only when a persisted evaluation crosses into `READY`.
+- Unit, UI, MCP, and real-PostgreSQL suites cover timezone boundaries, policy fallback, approval,
+  lifecycle validation, cancellation release, scheduler/outbox idempotency, tenant isolation,
+  decimal gram serialization, and database-enforced vehicle/order concurrency.
 
 ### 14.3 Phase 3 status
 
