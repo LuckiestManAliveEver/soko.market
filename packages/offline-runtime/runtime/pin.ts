@@ -5,8 +5,7 @@ export function validateBinding(binding: RuntimeBinding): void {
     binding.agentId,
     binding.agentVersion,
     binding.modelId,
-    binding.modelVersion,
-    binding.harnessVersion
+    binding.modelVersion
   ]) {
     if (typeof value !== "string" || !value.trim())
       throw new Error("Runtime versions must be immutable and explicit.");

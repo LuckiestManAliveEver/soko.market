@@ -1,3 +1,9 @@
+/** Companion to initialSql, generated from 003_drop_harness_version_pin_column.sql. Unlike
+ *  offlineOrdersSql's CREATE TABLE IF NOT EXISTS, ALTER TABLE DROP COLUMN is not idempotent -
+ *  running it twice against an already-migrated database throws. sqlite-client.ts only execs this
+ *  when local_migrations doesn't yet have version 3, instead of unconditionally on every open. */
+export const dropHarnessVersionPinColumnSql =
+  "ALTER TABLE device_runtime_pins DROP COLUMN harness_version;\nINSERT OR IGNORE INTO local_migrations VALUES (3, strftime('%Y-%m-%dT%H:%M:%fZ','now'));\n";
 /** Additive companion to initialSql, generated from 002_offline_orders.sql. Kept as a second
  *  export rather than folded into initialSql so 001_initial.sql's applied content never changes -
  *  see the comment on 002_offline_orders.sql. */

@@ -543,25 +543,6 @@ export class AgentRuntimeDomain {
     return projectActiveNativeBinding(active, input.businessId, session.account.id);
   }
 
-  /** The harness (AgentRuntimeAdapter) currently selected for this shop's agent, or the platform
-   *  default if nothing has been explicitly activated yet - what a "current harness" selector
-   *  should show. */
-  getAgentRuntimeHarness(input: {
-    sessionId: string | null;
-    businessId: string;
-    agentId: string;
-    now?: Date;
-  }): { agentRuntimeAdapterId: string } {
-    const now = input.now ?? new Date();
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
-    this.requireBusinessAgent(input.businessId, input.agentId, now);
-    return {
-      agentRuntimeAdapterId:
-        this.deps.resolveAgentRuntimeAdapterId(input.agentId) ??
-        this.deps.platformDefaultRuntime.agentRuntimeAdapterId
-    };
-  }
-
   removeAgentModelBinding(input: {
     sessionId: string | null;
     businessId: string;
@@ -678,8 +659,6 @@ export class AgentRuntimeDomain {
     executionMode: PreferredExecutionMode;
     permissions: AgentModelBindingPermissions;
     costResponsibility?: "merchant";
-    // Absent keeps this shop's current harness (or the platform default, if none is set yet).
-    agentRuntimeAdapterId?: string;
     signal?: AbortSignal;
     onStage?: (stage: string, elapsedMs: number) => void;
     now?: Date;
@@ -695,16 +674,6 @@ export class AgentRuntimeDomain {
     input.onStage?.("auth_resolved", Date.now() - startedAt);
     this.requireBusinessAgent(input.businessId, input.agentId, now);
     input.onStage?.("agent_resolved", Date.now() - startedAt);
-    if (
-      input.agentRuntimeAdapterId !== undefined &&
-      this.deps.agentRuntimeAdapterResolver(input.agentRuntimeAdapterId) === undefined
-    ) {
-      throw new Cp2Error(
-        404,
-        "AGENT_RUNTIME_ADAPTER_NOT_FOUND",
-        "The requested agent runtime adapter is not registered."
-      );
-    }
     const model = this.requireCanonicalAiModel(input.modelId);
     if (model.id !== platformSharedModelId && input.costResponsibility !== "merchant") {
       throw new Cp2Error(
@@ -724,9 +693,6 @@ export class AgentRuntimeDomain {
     );
     if (
       existingActive !== null &&
-      // An explicit harness request always goes through the full (re)activation path below, even
-      // when it happens to match what's already active - it's a deliberate action, not a probe.
-      input.agentRuntimeAdapterId === undefined &&
       existingActive.model.id === input.modelId &&
       existingActive.executionTarget === input.executionTarget
     ) {
@@ -808,10 +774,7 @@ export class AgentRuntimeDomain {
         checkedAt: health.checkedAt,
         auditType: "agent_model.activation_succeeded",
         latencyMs: health.latencyMs,
-        bumpProfile: true,
-        ...(input.agentRuntimeAdapterId === undefined
-          ? {}
-          : { agentRuntimeAdapterId: input.agentRuntimeAdapterId })
+        bumpProfile: true
       });
       input.onStage?.("binding_staged", Date.now() - startedAt);
       return { binding: result, healthCheck: health };
@@ -853,7 +816,10 @@ export class AgentRuntimeDomain {
   /** Writes the (sole) native runtime binding and re-reads it back joined with its model/role so
    *  the HTTP response and audit trail are built from exactly what was persisted, not from the
    *  input that requested it. Shared by activateAgentModel's fast (re-verify) and full paths -
-   *  both do nothing but a health check before reaching here. */
+   *  both do nothing but a health check before reaching here. The engine (AgentRuntimeAdapter) is
+   *  never an independent input here - it's always read off the business's current agent
+   *  definition, so swapping engines happens by picking a different agent definition
+   *  (updateAgentProfile's agentDefinitionId), not by passing an adapter id into activation. */
   private finalizeVerifiedActivation(input: {
     businessId: string;
     agentId: string;
@@ -865,17 +831,22 @@ export class AgentRuntimeDomain {
     auditType: string;
     latencyMs: number;
     bumpProfile: boolean;
-    agentRuntimeAdapterId?: string;
   }): AgentModelBindingSummary {
     const profile = this.currentAgentProfile(input.businessId, new Date(input.checkedAt));
+    const agentDefinition = this.deps.resolveAgentCatalogEntry(profile.agentDefinitionId);
+    if (this.deps.agentRuntimeAdapterResolver(agentDefinition.runtimeAdapterId) === undefined) {
+      throw new Cp2Error(
+        404,
+        "AGENT_RUNTIME_ADAPTER_NOT_FOUND",
+        "This agent's runtime adapter is not registered."
+      );
+    }
     const nativeBinding = this.deps.activateVerifiedRuntimeBinding({
       businessId: input.businessId,
       accountId: input.accountId,
       agentId: profile.agentId,
       agentName: profile.name,
-      ...(input.agentRuntimeAdapterId === undefined
-        ? {}
-        : { agentRuntimeAdapterId: input.agentRuntimeAdapterId }),
+      agentRuntimeAdapterId: agentDefinition.runtimeAdapterId,
       model: input.model,
       executionTarget: input.executionTarget,
       fallbackModel: null,
@@ -1243,6 +1214,15 @@ export class AgentRuntimeDomain {
       now
     );
     const profile = this.currentAgentProfile(input.businessId, now);
+    const agentDefinition = this.deps.resolveAgentCatalogEntry(profile.agentDefinitionId);
+    // An untouched business displays the repository's hosted-first zero-setup engine (Pi), matching
+    // what ensureDefaultRuntimeForTurn actually provisions for it below - not Shopkeeper's own
+    // declared engine, which would misreport what's really running until a chat turn or explicit
+    // activation catches the native runtime record up to the agent definition's choice.
+    const usesPlatformDefaultAgent = profile.agentDefinitionId === defaultAgentDefinitionId;
+    const defaultDisplayAdapterId = usesPlatformDefaultAgent
+      ? this.deps.platformDefaultRuntime.agentRuntimeAdapterId
+      : agentDefinition.runtimeAdapterId;
     // Settings (the quick switcher and the readiness banner) reads this endpoint to show a shop's
     // runtime as ready the moment it exists, without requiring a chat message first - so this
     // still runs the same idempotent zero-setup repair the first chat turn would. That repair step
@@ -1266,9 +1246,10 @@ export class AgentRuntimeDomain {
     if (resolution === null) {
       const defaultModel = this.deps.resolveCatalogModel(this.deps.platformDefaultRuntime.modelId);
       return {
-        harness: {
-          id: this.deps.platformDefaultRuntime.agentRuntimeAdapterId,
-          name: this.deps.platformDefaultRuntime.agentName
+        agent: {
+          id: agentDefinition.id,
+          name: agentDefinition.displayName,
+          runtimeAdapterId: defaultDisplayAdapterId
         },
         model: {
           id: this.deps.platformDefaultRuntime.modelId,
@@ -1286,7 +1267,7 @@ export class AgentRuntimeDomain {
       };
     }
 
-    const harnessId = runtimeAdapterIdForAgent(resolution.agent);
+    const agentRuntimeAdapterId = runtimeAdapterIdForAgent(resolution.agent);
     const executionTargetCandidate = resolution.selected.host?.type;
     const executionTarget = isModelExecutionTarget(executionTargetCandidate)
       ? executionTargetCandidate
@@ -1300,33 +1281,43 @@ export class AgentRuntimeDomain {
             agentId: resolution.agent.id,
             shopId: input.businessId
           });
-    const harness = this.deps.agentRuntimeAdapterResolver(harnessId);
-    let ready = resolution.selected.available && adapter !== undefined && harness !== undefined;
-    if (ready && adapter !== undefined && harness !== undefined) {
+    const runtimeAdapter = this.deps.agentRuntimeAdapterResolver(agentRuntimeAdapterId);
+    let ready =
+      resolution.selected.available && adapter !== undefined && runtimeAdapter !== undefined;
+    if (ready && adapter !== undefined && runtimeAdapter !== undefined) {
       try {
-        const [modelAvailability, harnessAvailability] = await withRuntimeDeadline((signal) =>
-          Promise.all([
-            adapter.canRun({
-              modelId: resolution.selected.model.id,
-              agentId: resolution.agent.id,
-              shopId: input.businessId,
-              signal
-            }),
-            harness.canRun({
-              agent: resolution.agent,
-              modelId: resolution.selected.model.id,
-              conversationId: input.conversationId ?? "runtime-unbound",
-              shopId: input.businessId
-            })
-          ])
+        const [modelAvailability, runtimeAdapterAvailability] = await withRuntimeDeadline(
+          (signal) =>
+            Promise.all([
+              adapter.canRun({
+                modelId: resolution.selected.model.id,
+                agentId: resolution.agent.id,
+                shopId: input.businessId,
+                signal
+              }),
+              runtimeAdapter.canRun({
+                agent: resolution.agent,
+                modelId: resolution.selected.model.id,
+                conversationId: input.conversationId ?? "runtime-unbound",
+                shopId: input.businessId
+              })
+            ])
         );
-        ready = modelAvailability.available && harnessAvailability.available;
+        ready = modelAvailability.available && runtimeAdapterAvailability.available;
       } catch {
         ready = false;
       }
     }
     return {
-      harness: { id: harnessId, name: resolution.agent.name },
+      agent: {
+        id: agentDefinition.id,
+        name: agentDefinition.displayName,
+        // The actually-resolved native runtime agent's adapter, not the definition's own declared
+        // one - they can briefly disagree for an untouched account until a turn or explicit
+        // activation catches the native runtime record up to the agent definition's choice (see
+        // defaultDisplayAdapterId above for the same reasoning in the no-binding-yet branch).
+        runtimeAdapterId: agentRuntimeAdapterId
+      },
       model: { id: resolution.selected.model.id, name: resolution.selected.model.name },
       execution: {
         type: executionTarget ?? this.deps.platformDefaultRuntime.executionTarget,
@@ -3076,9 +3067,16 @@ export class AgentRuntimeDomain {
     const agentName = usesPlatformDefaultAgent
       ? this.deps.platformDefaultRuntime.agentName
       : input.profile.name;
+    // An untouched business (still on the platform default agent definition) gets the repository's
+    // hosted-first zero-setup engine (Pi), matching the platform default model/execution target it
+    // also gets below - this is a deployment-wide bootstrap choice, not a per-agent one. Any other,
+    // explicitly chosen agent definition uses its own declared engine instead of being hardcoded to
+    // "soko" regardless of choice - this is how picking a different agent definition
+    // (updateAgentProfile's agentDefinitionId) swaps engines, matching finalizeVerifiedActivation's
+    // derivation for the explicit-activation path.
     const agentRuntimeAdapterId = usesPlatformDefaultAgent
       ? this.deps.platformDefaultRuntime.agentRuntimeAdapterId
-      : "soko";
+      : this.deps.resolveAgentCatalogEntry(input.profile.agentDefinitionId).runtimeAdapterId;
 
     const nativeResolution = this.deps.resolveNativeRuntimeBinding({
       businessId: input.businessId,
@@ -3110,7 +3108,7 @@ export class AgentRuntimeDomain {
       businessId: input.businessId,
       accountId: input.accountId,
       name: agentName,
-      provider: usesPlatformDefaultAgent ? "pi" : "soko-business-agent",
+      provider: agentRuntimeAdapterId === "pi" ? "pi" : "soko-business-agent",
       packageRef: null,
       version: "1",
       runtimeContractVersion: "1",

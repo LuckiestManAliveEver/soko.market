@@ -244,10 +244,9 @@ export function OfflineInstallWizard({
             {!dataOnly && (
               <p>
                 Downloads a small on-device assistant model (WebGPU required; about 1 GB of device
-                memory). The exact agent, harness and model version are pinned at install time and
-                will not change on reconnect. It answers from the prompt alone, with no catalogue,
-                order, customer or account data - unsupported devices fall back to business data
-                only.
+                memory). The exact agent and model version are pinned at install time and will not
+                change on reconnect. It answers from the prompt alone, with no catalogue, order,
+                customer or account data - unsupported devices fall back to business data only.
               </p>
             )}
             <div className="offline-wizard-actions">

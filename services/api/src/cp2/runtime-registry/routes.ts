@@ -23,7 +23,7 @@ import type { RuntimeRegistrySearchService } from "./search.js";
 import type { createRuntimeRegistryImportService } from "./import-service.js";
 
 const providerIds: readonly RuntimeRegistryProviderId[] = ["soko", "github", "huggingface"];
-const assetKinds: readonly RuntimeAssetKind[] = ["agent", "harness", "model"];
+const assetKinds: readonly RuntimeAssetKind[] = ["agent", "model"];
 
 export interface RuntimeRegistryRouteDeps {
   searchService: RuntimeRegistrySearchService;
@@ -235,9 +235,5 @@ function parseKind(value: unknown): RuntimeAssetKind {
   if (typeof value === "string" && (assetKinds as readonly string[]).includes(value)) {
     return value as RuntimeAssetKind;
   }
-  throw new Cp2Error(
-    400,
-    "runtime_registry_kind_invalid",
-    "kind must be one of agent, harness, model."
-  );
+  throw new Cp2Error(400, "runtime_registry_kind_invalid", "kind must be one of agent, model.");
 }

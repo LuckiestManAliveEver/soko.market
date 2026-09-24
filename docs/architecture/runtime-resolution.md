@@ -1,8 +1,8 @@
 # Runtime resolution
 
 The API's native runtime binding resolver (`services/api/src/cp2/domains/native-runtime/store.ts`,
-`NativeRuntimeBindingStore`) is the sole authoritative server-side path for "which harness + model +
-execution host handles this turn." It reads the persisted binding, agent, binding-model roles,
+`NativeRuntimeBindingStore`) is the sole authoritative server-side path for "which agent adapter +
+model + execution host handles this turn." It reads the persisted binding, agent, binding-model roles,
 installations, and hosts. Client routing may propose a previously authorized local completion; it
 cannot invent a model, host, assignment, or tool permission.
 
@@ -38,12 +38,14 @@ For a given `(businessId, agentId)`:
 
 `ensureDefaultRuntimeForTurn` (`agent-runtime/store.ts`) is the idempotent, lazy path that turns
 `platformDefaultRuntime` policy (`PLATFORM_DEFAULT_MODEL_ID=smollm2-360m`,
-`PLATFORM_DEFAULT_EXECUTION_TARGET=backend`, harness `Pi`) into a real, shop-scoped binding the first
-time a shop's agent needs one:
+`PLATFORM_DEFAULT_EXECUTION_TARGET=backend`, engine `Pi`) into a real, shop-scoped binding the first
+time a shop's agent needs one - for a business still on the default agent definition; any other
+agent definition's own `runtimeAdapterId` is resolved instead (see
+`ADR-collapse-harness-into-agent.md`):
 
 1. Call the canonical resolver. If it already has an available backend candidate, do nothing.
-2. Resolve the Pi harness adapter and confirm `platformDefaultRuntime.executionTarget === "backend"`.
-   Probe `agentAdapter.canRun(...)` for the harness itself.
+2. Resolve the agent's runtime adapter and confirm `platformDefaultRuntime.executionTarget ===
+   "backend"`. Probe `agentAdapter.canRun(...)` for the adapter itself.
 3. Walk preferred model ids (the shop's own AI-model preference, the platform default model,
    `defaultAiModelId`, then the rest of the enabled chat-capable catalog) and probe each one's
    `ModelRuntimeAdapter.canRun(...)` (a real `/v1/models/:id/probe` call against the backend
@@ -77,7 +79,7 @@ shared dependency behind that incident.
 The fix applies the same `withRuntimeDeadline` control-plane deadline (`cp2/runtime-deadline.ts`,
 5 seconds by default) already used by `getEffectiveRuntime`'s own readiness probe:
 
-- The harness probe (`agentAdapter.canRun`) is wrapped individually.
+- The agent adapter probe (`agentAdapter.canRun`) is wrapped individually.
 - Every remaining candidate model's `canRun` probe runs **concurrently** via `Promise.allSettled`
   under **one shared** deadline, not one deadline applied serially per candidate - with several
   catalog models to try, a per-candidate-only bound could still add up to minutes of total latency
@@ -95,7 +97,7 @@ for the regression coverage (a hung model host on both the chat and the settings
 ## Effective runtime API
 
 `GET /businesses/:businessId/runtime/effective` calls the same resolver and verifies both the
-selected harness and model adapter. It returns public resource identity, resolution source, and
+selected agent adapter and model adapter. It returns public resource identity, resolution source, and
 `READY`/`UNAVAILABLE`; it never returns host endpoints or credentials. The quick switcher and
 advanced settings readiness banner consume this response rather than deriving readiness from the
 model catalog in React.

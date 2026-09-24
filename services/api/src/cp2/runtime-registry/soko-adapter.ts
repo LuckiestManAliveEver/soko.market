@@ -1,8 +1,4 @@
-import type {
-  AgentDefinition,
-  AgentRuntimeAdapterDescriptor,
-  AiModelSummary
-} from "@soko/shared-types";
+import type { AgentDefinition, AiModelSummary } from "@soko/shared-types";
 import type {
   RuntimeRegistryResourceDetails,
   RuntimeRegistryResourceRef,
@@ -15,13 +11,12 @@ import { RuntimeRegistryResourceNotFoundError, type RuntimeRegistryAdapter } fro
  * Constructor-injected dependencies, following the AgentRuntimeDomainDeps DI pattern used in
  * services/api/src/cp2/domains/agent-runtime/domain-deps.ts: the adapter never reaches into
  * Cp2Store internals directly, it only receives the read functions it needs. A deployment wires
- * this to `store.listModelCatalog`, `store.listAgentCatalog`, `store.listAgentRuntimeAdapters`
- * (all already public methods on services/api/src/cp2/store.ts's Cp2Store).
+ * this to `store.listModelCatalog`, `store.listAgentCatalog` (both already public methods on
+ * services/api/src/cp2/store.ts's Cp2Store).
  */
 export interface SokoCatalogRegistryAdapterDeps {
   listModels: () => AiModelSummary[];
   listAgents: () => AgentDefinition[];
-  listHarnesses: () => AgentRuntimeAdapterDescriptor[];
 }
 
 /**
@@ -38,7 +33,7 @@ export function createSokoCatalogRegistryAdapter(
     displayName: "Soko catalog",
 
     async search(query: RuntimeRegistrySearchQuery): Promise<RuntimeRegistrySearchItem[]> {
-      const kinds = new Set(query.kinds ?? ["model", "agent", "harness"]);
+      const kinds = new Set(query.kinds ?? ["model", "agent"]);
       const needle = query.query.trim().toLowerCase();
       const items: RuntimeRegistrySearchItem[] = [];
 
@@ -58,12 +53,6 @@ export function createSokoCatalogRegistryAdapter(
           items.push(agentToItem(agent));
         }
       }
-      if (kinds.has("harness")) {
-        for (const harness of deps.listHarnesses()) {
-          if (!matches(needle, [harness.id, harness.displayName, harness.description])) continue;
-          items.push(harnessToItem(harness));
-        }
-      }
       return items;
     },
 
@@ -78,23 +67,13 @@ export function createSokoCatalogRegistryAdapter(
           providerMetadata: { ...model }
         };
       }
-      if (ref.kind === "agent") {
-        const agent = deps.listAgents().find((candidate) => candidate.id === ref.externalId);
-        if (agent === undefined) throw new RuntimeRegistryResourceNotFoundError(ref);
-        return {
-          ...agentToItem(agent),
-          readmeExcerpt: agent.description,
-          files: [],
-          providerMetadata: { ...agent }
-        };
-      }
-      const harness = deps.listHarnesses().find((candidate) => candidate.id === ref.externalId);
-      if (harness === undefined) throw new RuntimeRegistryResourceNotFoundError(ref);
+      const agent = deps.listAgents().find((candidate) => candidate.id === ref.externalId);
+      if (agent === undefined) throw new RuntimeRegistryResourceNotFoundError(ref);
       return {
-        ...harnessToItem(harness),
-        readmeExcerpt: harness.description,
+        ...agentToItem(agent),
+        readmeExcerpt: agent.description,
         files: [],
-        providerMetadata: { ...harness }
+        providerMetadata: { ...agent }
       };
     }
   };
@@ -134,27 +113,6 @@ function agentToItem(agent: AgentDefinition): RuntimeRegistrySearchItem {
     name: agent.id,
     displayName: agent.displayName,
     description: agent.description,
-    owner: null,
-    repositoryId: null,
-    revision: null,
-    stars: null,
-    downloads: null,
-    updatedAt: null,
-    license: null,
-    verified: true,
-    imported: true,
-    compatibility: { status: "compatible" }
-  };
-}
-
-function harnessToItem(harness: AgentRuntimeAdapterDescriptor): RuntimeRegistrySearchItem {
-  return {
-    provider: "soko",
-    kind: "harness",
-    externalId: harness.id,
-    name: harness.id,
-    displayName: harness.displayName,
-    description: harness.description,
     owner: null,
     repositoryId: null,
     revision: null,

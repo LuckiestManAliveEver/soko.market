@@ -155,9 +155,11 @@ export class NativeRuntimeBindingStore {
 
   activateVerifiedModel(input: NativeRuntimeActivationInput): NativeRuntimeBindingSummary {
     const timestamp = input.checkedAt;
-    // Precedence: an explicit request always wins; otherwise keep this shop's already-chosen
-    // harness in place (a model swap must not silently reset it); a shop with no prior activation
-    // starts from the platform default, not a hardcoded engine.
+    // Precedence: an explicit request always wins (this is how a caller synced to a business's
+    // current agent-definition choice - see agent-runtime/store.ts's finalizeVerifiedActivation -
+    // applies it); otherwise keep this shop's already-chosen engine in place (a model swap alone
+    // must not silently reset it); a shop with no prior activation starts from the platform
+    // default, not a hardcoded engine.
     const existingAgent = this.agents.get(input.agentId);
     const adapterId =
       input.agentRuntimeAdapterId ??
@@ -441,13 +443,6 @@ export class NativeRuntimeBindingStore {
         : null;
     if (executionTarget === null) return null;
     return { binding, model, role, executionTarget };
-  }
-
-  /** The harness currently configured for a native runtime agent record, if one has ever been
-   *  materialized (by activateVerifiedModel or ensureGlobalDefault) for this id. */
-  resolveAgentRuntimeAdapterId(agentId: string): string | undefined {
-    const agent = this.agents.get(agentId);
-    return agent === undefined ? undefined : runtimeAdapterIdForAgent(agent);
   }
 
   deactivateBusinessAgentBinding(

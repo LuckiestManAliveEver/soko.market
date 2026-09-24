@@ -1,14 +1,21 @@
 import { useEffect, useState } from "react";
 
 import type {
+  AgentDefinition,
   AgentModelActivationResult,
-  AgentRuntimeAdapterDescriptor,
   EffectiveRuntimeSummary
 } from "@soko/shared-types";
 
-import { getJson, postJson } from "./api-helpers";
+import { getJson, postJson, putJson } from "./api-helpers";
 import { getErrorMessage } from "./chat-message-plumbing";
-import type { ActiveBusiness, AgentSettings, AiModelSummary } from "./soko-application-shared";
+import { buildAgentProfileUpdate } from "./agent-profile-payload";
+import { agentSettingsFromBusinessProfile } from "./owner-app-bootstrap";
+import type {
+  ActiveBusiness,
+  AgentSettings,
+  AiModelSummary,
+  BusinessAgentProfileSummary
+} from "./soko-application-shared";
 
 export interface QuickRuntimeSwitcherProps {
   business: ActiveBusiness;
@@ -19,13 +26,19 @@ export interface QuickRuntimeSwitcherProps {
 
 /**
  * The common-case "pick one and go" surface for the two runtime dimensions that had no simple
- * selector at all: which harness (AgentRuntimeAdapter) and which backend-hosted model run this
- * shop's agent. Selecting either activates the change immediately through the same
- * POST /api/agents/:agentId/models/:modelId/activate endpoint AgentModelPanel's advanced flow
- * uses - this is a thinner front door onto it, not a second activation path. Models that require a
- * device download (offline/local/custom GGUF) intentionally stay out of this list; that download
- * step is a hardware reality no dropdown can skip, and AgentModelPanel's advanced section below
- * still handles it.
+ * selector at all: which built-in agent definition (which also fixes which engine runs it - see
+ * AgentDefinition.runtimeAdapterId) and which backend-hosted model run this shop's agent. Engine
+ * choice is no longer its own dimension: picking a different agent definition is how a shop swaps
+ * engines, the same way GitHub/HuggingFace-imported definitions are picked for personality - so
+ * this only lists builtin:* definitions, leaving discovery of imported ones to AgentModelPanel's
+ * advanced flow below. Selecting a model activates immediately through the same
+ * POST /api/agents/:agentId/models/:modelId/activate endpoint AgentModelPanel's advanced flow uses
+ * - this is a thinner front door onto it, not a second activation path. Selecting an agent updates
+ * the business's agent profile (PUT /businesses/:businessId/agent-profile) instead, since engine
+ * choice now travels with the whole agent definition, not a standalone activation parameter.
+ * Models that require a device download (offline/local/custom GGUF) intentionally stay out of this
+ * list; that download step is a hardware reality no dropdown can skip, and AgentModelPanel's
+ * advanced section below still handles it.
  */
 export function QuickRuntimeSwitcher({
   business,
@@ -34,8 +47,8 @@ export function QuickRuntimeSwitcher({
   onAgentChange
 }: QuickRuntimeSwitcherProps) {
   const canonicalAgentId = business.id;
-  const [harnessOptions, setHarnessOptions] = useState<AgentRuntimeAdapterDescriptor[]>([]);
-  const [selectedHarnessId, setSelectedHarnessId] = useState("");
+  const [agentOptions, setAgentOptions] = useState<AgentDefinition[]>([]);
+  const [selectedAgentDefinitionId, setSelectedAgentDefinitionId] = useState("");
   const [modelOptions, setModelOptions] = useState<AiModelSummary[]>([]);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -46,10 +59,8 @@ export function QuickRuntimeSwitcher({
     let cancelled = false;
     async function load() {
       try {
-        const [adaptersResponse, modelsResponse, effectiveRuntime] = await Promise.all([
-          getJson<{ adapters: AgentRuntimeAdapterDescriptor[] }>(
-            "/v1/platform/agent-runtime-adapters"
-          ),
+        const [catalogResponse, modelsResponse, effectiveRuntime] = await Promise.all([
+          getJson<{ agents: AgentDefinition[] }>("/v1/platform/agent-catalog"),
           getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
           getJson<EffectiveRuntimeSummary>(`/businesses/${business.id}/runtime/effective`)
         ]);
@@ -57,8 +68,8 @@ export function QuickRuntimeSwitcher({
         const backendModels = modelsResponse.models.filter(
           (model) => model.runtimeAvailability?.backend === "configured"
         );
-        setHarnessOptions(adaptersResponse.adapters);
-        setSelectedHarnessId(effectiveRuntime.harness.id);
+        setAgentOptions(catalogResponse.agents.filter((entry) => entry.id.startsWith("builtin:")));
+        setSelectedAgentDefinitionId(effectiveRuntime.agent.id);
         setModelOptions(backendModels);
         setSelectedModelId(
           effectiveRuntime.model.id ??
@@ -78,8 +89,7 @@ export function QuickRuntimeSwitcher({
     };
   }, [canonicalAgentId, business.id]);
 
-  async function activate(change: { modelId?: string; agentRuntimeAdapterId?: string }) {
-    const modelId = change.modelId ?? selectedModelId;
+  async function activateModel(modelId: string) {
     if (busy || modelId === "") return;
     setBusy(true);
     setMessage("Switching…");
@@ -90,27 +100,42 @@ export function QuickRuntimeSwitcher({
           shopId: business.id,
           executionTarget: "vercel",
           executionMode: "LOCAL_FIRST",
-          ...(change.agentRuntimeAdapterId === undefined
-            ? {}
-            : { agentRuntimeAdapterId: change.agentRuntimeAdapterId }),
           permissions: { allowInstalledApp: false, allowRemoteShopDevice: false },
           ...(modelId === "smollm2-360m" ? {} : { costResponsibility: "merchant" })
         }
       );
       setSelectedModelId(result.binding.modelId);
-      if (change.agentRuntimeAdapterId !== undefined) {
-        setSelectedHarnessId(change.agentRuntimeAdapterId);
-      }
       updateAgent({ model: result.binding.modelId });
       onAgentChange({ ...agent, model: result.binding.modelId });
-      const harnessLabel =
-        harnessOptions.find(
-          (option) => option.id === (change.agentRuntimeAdapterId ?? selectedHarnessId)
-        )?.displayName ??
-        change.agentRuntimeAdapterId ??
-        selectedHarnessId;
       const modelLabel = modelOptions.find((option) => option.id === modelId)?.label ?? modelId;
-      setMessage(`${harnessLabel} is now running ${modelLabel}.`);
+      setMessage(`Now running ${modelLabel}.`);
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function activateAgentDefinition(agentDefinitionId: string) {
+    if (busy || agentDefinitionId === "") return;
+    setBusy(true);
+    setMessage("Switching…");
+    try {
+      const saved = await putJson<BusinessAgentProfileSummary>(
+        `/businesses/${business.id}/agent-profile`,
+        buildAgentProfileUpdate({
+          ...agent,
+          agentDefinitionId: agentDefinitionId as AgentDefinition["id"]
+        })
+      );
+      const updated = agentSettingsFromBusinessProfile(saved, business);
+      setSelectedAgentDefinitionId(agentDefinitionId);
+      updateAgent(updated);
+      onAgentChange(updated);
+      const agentLabel =
+        agentOptions.find((option) => option.id === agentDefinitionId)?.displayName ??
+        agentDefinitionId;
+      setMessage(`Now running as ${agentLabel}.`);
     } catch (error) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -130,8 +155,8 @@ export function QuickRuntimeSwitcher({
     <div className="record-form quick-runtime-switcher">
       <div className="section-heading">
         <p className="eyebrow">Quick switch</p>
-        <h3>Harness and model</h3>
-        <p>Pick a registered harness and a hosted model. Changes apply immediately.</p>
+        <h3>Agent and model</h3>
+        <p>Pick an agent and a hosted model. Changes apply immediately.</p>
       </div>
       {message.length > 0 ? (
         <p className="shell-note" role="status" aria-live="polite">
@@ -140,13 +165,13 @@ export function QuickRuntimeSwitcher({
       ) : null}
       <div className="runtime-field-grid">
         <label>
-          Harness
+          Agent
           <select
-            value={selectedHarnessId}
-            disabled={busy || harnessOptions.length === 0}
-            onChange={(event) => void activate({ agentRuntimeAdapterId: event.target.value })}
+            value={selectedAgentDefinitionId}
+            disabled={busy || agentOptions.length === 0}
+            onChange={(event) => void activateAgentDefinition(event.target.value)}
           >
-            {harnessOptions.map((option) => (
+            {agentOptions.map((option) => (
               <option key={option.id} value={option.id} title={option.description}>
                 {option.displayName}
               </option>
@@ -158,7 +183,7 @@ export function QuickRuntimeSwitcher({
           <select
             value={selectedModelId}
             disabled={busy || modelOptions.length === 0}
-            onChange={(event) => void activate({ modelId: event.target.value })}
+            onChange={(event) => void activateModel(event.target.value)}
           >
             {modelOptions.length === 0 ? (
               <option value="">No executable backend model</option>

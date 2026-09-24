@@ -71,7 +71,6 @@ export async function resolveWebLLMRuntimeBinding(): Promise<RuntimeBinding> {
   return {
     agentId: WEBLLM_PINNED_MODEL.agentId,
     agentVersion: WEBLLM_PINNED_MODEL.agentVersion,
-    harnessVersion: WEBLLM_PINNED_MODEL.engineVersion,
     modelId: WEBLLM_PINNED_MODEL.modelId,
     modelVersion: WEBLLM_PINNED_MODEL.modelVersion,
     artifacts: [{ url: manifestUrl, sha256, bytes: buffer.byteLength }]

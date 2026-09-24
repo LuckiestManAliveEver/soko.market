@@ -352,7 +352,7 @@ in this pass.
 
 ## 6. Phase 4 — Runtime Pinning (Agent/Model)
 
-**Goal:** When a user goes offline, the exact agent + harness + model
+**Goal:** When a user goes offline, the exact agent + model
 artifact versions in use at that moment are pinned locally and do not change
 on reconnect unless the user explicitly swaps them.
 

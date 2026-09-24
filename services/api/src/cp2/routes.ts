@@ -51,6 +51,10 @@ import {
   parseLogisticsStatusBody,
   registerLogisticsRoutes
 } from "./domains/logistics/routes.js";
+import {
+  registerFulfillmentRoutes,
+  type FulfillmentManifestCreator
+} from "./domains/fulfillment/routes.js";
 import { registerNotificationsRoutes } from "./domains/notifications/routes.js";
 import { registerPasskeysRoutes } from "./domains/passkeys/routes.js";
 import { registerNetworkRoutes } from "./domains/network/routes.js";
@@ -129,6 +133,7 @@ export interface Cp2RouteOptions {
   runtimeRegistryImportStore?: RuntimeRegistryImportStore;
   ocrProcessor?: OcrExtractionProcessor;
   store?: Cp2Store;
+  fulfillmentManifestCreator?: FulfillmentManifestCreator;
   vapidPublicKey?: string;
   /** Origin the web PWA is actually served from - used only to build the universal `/s/:slug`
    *  redirect's absolute Location header (docs/architecture/soko-id-slug-system.md). Reuses the
@@ -314,8 +319,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   > = {
     soko: createSokoCatalogRegistryAdapter({
       listModels: () => store.listModelCatalog(),
-      listAgents: () => store.listAgentCatalog(),
-      listHarnesses: () => store.listAgentRuntimeAdapters()
+      listAgents: () => store.listAgentCatalog()
     }),
     github: createGitHubRegistryAdapter({
       modelCatalog: githubModelCatalog,
@@ -1906,6 +1910,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   registerSuppliersRoutes(app, store, binaryUploadPipeline, ocrProcessor);
 
   registerLogisticsRoutes(app, store);
+  if (options.fulfillmentManifestCreator !== undefined) {
+    registerFulfillmentRoutes(app, store, options.fulfillmentManifestCreator);
+  }
   registerCommercialRecordsRoutes(app, store);
 
   app.get(

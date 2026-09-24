@@ -66,6 +66,24 @@ for existing users, not a second turn router.
   commands, executable paths, device/host IDs, credentials, private endpoints and provider model
   IDs. A separate native record chooses the installed runtime adapter.
 
+## Business-facing engine choice (see ADR-collapse-harness-into-agent.md)
+
+Everything above this section still describes the native runtime graph's own mechanics
+accurately: `NativeRuntimeAgentSummary.configuration.runtimeAdapterId` still exists, the
+`AgentRuntimeAdapterRegistry` still resolves it, and `AgentRuntimeAdapter.canRun`/`execute` are
+unchanged. What changed is *how a business picks a value for it*. It is no longer an independent,
+directly client-settable activation input (there is no more `agentRuntimeAdapterId` field on
+`POST /api/agents/:agentId/models/:modelId/activate`, and no more `GET
+/v1/platform/agent-runtime-adapters` picker). Instead, `AgentDefinition` (`packages/shared-types`,
+the GitHub/HuggingFace-importable catalog behind `BusinessAgentProfile.agentDefinitionId`) carries
+its own `runtimeAdapterId`. A business swaps engines by picking a different agent definition
+(`PUT /businesses/:businessId/agent-profile`) - the same action that already changes personality
+and instructions - and the next activation or turn resolves `configuration.runtimeAdapterId` from
+that definition. The GitHub/HuggingFace *harness*-import pipeline (a separate, now-deleted
+`RuntimeAssetKind`) is retired entirely: only the two built-in adapters (`pi`, `soko`) exist, and
+new engines are added by a human wiring code into `AgentRuntimeAdapterRegistry.register()`, never
+by importing a search result.
+
 ## Adapter composition
 
 ```text

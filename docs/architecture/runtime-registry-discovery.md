@@ -5,9 +5,12 @@ describes the resulting shape.
 
 ## Why this exists
 
-Users need to find agents, harnesses, and models from three sources — Soko's own catalog, GitHub,
-and Hugging Face — without React ever talking to GitHub or Hugging Face directly, and without a
-search request downloading full model weights or cloning a repository merely to render results.
+Users need to find agents and models from three sources — Soko's own catalog, GitHub, and Hugging
+Face — without React ever talking to GitHub or Hugging Face directly, and without a search request
+downloading full model weights or cloning a repository merely to render results. Harness discovery
+(importing a third-party executable `AgentRuntimeAdapter`) was retired - see
+`ADR-collapse-harness-into-agent.md` - engine choice is now a declared property of an agent
+definition (`AgentDefinition.runtimeAdapterId`), never a separately imported/searched kind.
 
 ## Contracts
 
@@ -95,19 +98,9 @@ credentials, and executable references), and on success registered as a plain de
 downloading it; on selection, its checksum/license/revision are captured as provenance before any
 provisioning step, and provisioning never routes the artifact through the browser.
 
-**Harnesses**: discovery and compatibility are different states. A search result is marked
-`"compatible"` only when static inspection finds a well-formed Soko harness manifest at the
-repository root — never from a name/topic/README keyword match. Import proceeds through
-discover → inspect → validate → register, then stops at `PROVISIONING` with an explicit reason: this
-codebase has no isolated runtime (no `isolated-vm`/container-equivalent sandbox) to safely execute
-untrusted third-party code inside the API process, so a newly-discovered harness implementation is
-never auto-executed. Activating it still requires deploying it through the trusted, existing
-`AgentRuntimeAdapterRegistry.register()` code path. This is a recorded, deliberate boundary — see the
-ADR — not a bug to file.
-
 ## What Soko independently validates
 
 Provider metadata (stars, claimed license, README content) is discovery input, never authoritative
 runtime truth. Registration always re-validates structurally against Soko's own contracts
-(`PortableAgentManifest`, the harness manifest convention, model artifact compatibility) regardless
-of what the source repository/model card claims.
+(`PortableAgentManifest`, model artifact compatibility) regardless of what the source
+repository/model card claims.

@@ -1248,7 +1248,7 @@ async function installApiMocks(page: Page): Promise<void> {
       const modelId = activeModelBinding?.modelId ?? "openai-fast";
       const model = modelCatalog.find((candidate) => candidate.id === modelId);
       return json({
-        harness: { id: "soko-ai", name: "Soko AI" },
+        agent: { id: "builtin:shopkeeper", name: "Soko AI", runtimeAdapterId: "soko" },
         model: { id: modelId, name: model?.label ?? modelId },
         execution: { type: "backend", hostId: null, ready: true },
         binding: activeModelBinding !== null ? { id: activeModelBinding.id } : null,

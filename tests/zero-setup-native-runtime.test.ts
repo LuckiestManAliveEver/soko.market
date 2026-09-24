@@ -109,7 +109,7 @@ describe("zero-setup native runtime", () => {
       });
       expect(effectiveRuntime.statusCode).toBe(200);
       expect(effectiveRuntime.json()).toMatchObject({
-        harness: { id: "pi" },
+        agent: { id: "builtin:shopkeeper", runtimeAdapterId: "pi" },
         model: { id: primaryModelId },
         execution: { type: "backend", ready: true },
         source: "default",

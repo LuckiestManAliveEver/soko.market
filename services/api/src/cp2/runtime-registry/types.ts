@@ -11,9 +11,7 @@ import type {
  * One normalized, read-only view onto a runtime-asset source (Soko's own catalog, GitHub, Hugging
  * Face). `search` must stay metadata-only -- it must never download a model artifact or repository
  * source file merely to produce a result list. `inspect` may read a little more (a README excerpt, a
- * root file listing, a small manifest file) but must never fetch anything as executable code; see
- * runtime-registry/harness-manifest.ts for the hard boundary that governs harness inspection
- * specifically.
+ * root file listing, a small manifest file) but must never fetch anything as executable code.
  */
 export interface RuntimeRegistryAdapter {
   readonly id: RuntimeRegistryProviderId;

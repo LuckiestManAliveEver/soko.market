@@ -18,12 +18,8 @@ import {
   RuntimeRegistryAccessRequiredError,
   type RuntimeRegistryAdapter
 } from "../services/api/src/cp2/runtime-registry/types.js";
-import {
-  createRuntimeRegistryImportService,
-  harnessProvisioningBoundaryReason
-} from "../services/api/src/cp2/runtime-registry/import-service";
+import { createRuntimeRegistryImportService } from "../services/api/src/cp2/runtime-registry/import-service";
 import { createMemoryRuntimeRegistryImportStore } from "../services/api/src/cp2/runtime-registry/import-store";
-import { validateSokoHarnessManifest } from "../services/api/src/cp2/runtime-registry/harness-manifest";
 
 const publicContext: RuntimeRegistryContext = { accountId: "public", connected: false };
 
@@ -150,7 +146,7 @@ describe("runtime registry unified search fan-out", () => {
 });
 
 describe("Soko catalog registry adapter", () => {
-  it("normalizes Soko's own model/agent/harness catalog and marks every result already-imported", async () => {
+  it("normalizes Soko's own model/agent catalog and marks every result already-imported", async () => {
     const adapter = createSokoCatalogRegistryAdapter({
       listModels: () => [
         {
@@ -188,10 +184,10 @@ describe("Soko catalog registry adapter", () => {
           instructions: "Handle one task at a time.",
           knowledge: "Use saved records.",
           tools: [],
-          skillIds: []
+          skillIds: [],
+          runtimeAdapterId: "soko"
         }
-      ],
-      listHarnesses: () => [{ id: "pi", displayName: "Pi", description: "Hosted-first default." }]
+      ]
     });
 
     const result = await adapter.search({ query: "shopkeeper" }, publicContext);
@@ -204,13 +200,6 @@ describe("Soko catalog registry adapter", () => {
       verified: true,
       compatibility: { status: "compatible" }
     });
-
-    const details = await adapter.inspect(
-      { provider: "soko", kind: "harness", externalId: "pi" },
-      publicContext
-    );
-    expect(details.displayName).toBe("Pi");
-    expect(details.imported).toBe(true);
   });
 });
 
@@ -407,132 +396,6 @@ describe("model import never touches Postgres bytea artifact storage", () => {
       expect(url).not.toMatch(/\.gguf(\?|$)/);
     }
   });
-});
-
-describe("harness import safety boundary", () => {
-  const stubModelCatalog: GitHubModelCatalog = {
-    async searchModels() {
-      throw new Error("not used in this test");
-    }
-  };
-  const stubAgentCatalog: GitHubAgentCatalog = {
-    async searchAgents() {
-      throw new Error("not used in this test");
-    }
-  };
-
-  function buildHarnessFetcher(manifestResponse: () => Response) {
-    const calledUrls: string[] = [];
-    const fetcher = vi.fn(async (input: string | URL | Request): Promise<Response> => {
-      const url = String(input);
-      calledUrls.push(url);
-      if (url === "https://api.github.com/repos/example/harness-repo") {
-        return Response.json({
-          description: "An example harness",
-          default_branch: "main",
-          stargazers_count: 42,
-          pushed_at: "2026-01-01T00:00:00.000Z",
-          license: { spdx_id: "MIT" }
-        });
-      }
-      if (url === "https://api.github.com/repos/example/harness-repo/readme") {
-        return Response.json({
-          content: Buffer.from("# Example harness").toString("base64"),
-          encoding: "base64"
-        });
-      }
-      if (url === "https://api.github.com/repos/example/harness-repo/contents/") {
-        return Response.json([{ path: "index.js", size: 200, type: "file" }]);
-      }
-      if (url === "https://api.github.com/repos/example/harness-repo/contents/soko.harness.json") {
-        return manifestResponse();
-      }
-      return new Response(null, { status: 404 });
-    });
-    return { fetcher, calledUrls };
-  }
-
-  it("rejects a harness import when no valid soko.harness.json manifest exists, and never fetches source", async () => {
-    const { fetcher, calledUrls } = buildHarnessFetcher(() => new Response(null, { status: 404 }));
-    const adapter = createGitHubRegistryAdapter({
-      modelCatalog: stubModelCatalog,
-      agentCatalog: stubAgentCatalog,
-      fetcher: fetcher as typeof fetch
-    });
-    const importService = createRuntimeRegistryImportService({
-      store: createMemoryRuntimeRegistryImportStore(),
-      adapters: { github: adapter },
-      now: () => "2026-08-30T00:00:00.000Z"
-    });
-
-    const record = await importService.startImport({
-      accountId: "acct-1",
-      userId: "user-1",
-      ref: { provider: "github", kind: "harness", externalId: "example/harness-repo" }
-    });
-
-    expect(["INCOMPATIBLE", "VALIDATION_FAILED"]).toContain(record.state);
-    expect(record.registeredAssetId).toBeNull();
-    assertNoExecutableFetch(calledUrls);
-  });
-
-  it("registers a harness import with a valid manifest through REGISTERED, stops at PROVISIONING, and never reaches ACTIVE or fetches source", async () => {
-    const manifest = {
-      schemaVersion: "1",
-      adapterId: "example-harness",
-      displayName: "Example Harness",
-      entryPoint: "index.js",
-      permissions: { network: "none", filesystem: "none" }
-    };
-    expect(validateSokoHarnessManifest(manifest).valid).toBe(true);
-
-    const { fetcher, calledUrls } = buildHarnessFetcher(() =>
-      Response.json({
-        type: "file",
-        encoding: "base64",
-        content: Buffer.from(JSON.stringify(manifest)).toString("base64")
-      })
-    );
-    const adapter = createGitHubRegistryAdapter({
-      modelCatalog: stubModelCatalog,
-      agentCatalog: stubAgentCatalog,
-      fetcher: fetcher as typeof fetch
-    });
-    const importService = createRuntimeRegistryImportService({
-      store: createMemoryRuntimeRegistryImportStore(),
-      adapters: { github: adapter },
-      now: () => "2026-08-30T00:00:00.000Z"
-    });
-
-    const record = await importService.startImport({
-      accountId: "acct-1",
-      userId: "user-1",
-      ref: { provider: "github", kind: "harness", externalId: "example/harness-repo" }
-    });
-
-    expect(record.state).toBe("PROVISIONING");
-    expect(record.stateReason).toBe(harnessProvisioningBoundaryReason);
-    expect(record.registeredAssetId).toBe("github:example/harness-repo");
-    expect(record.state).not.toBe("ACTIVE");
-    expect(record.state).not.toBe("READY");
-    assertNoExecutableFetch(calledUrls);
-  });
-
-  function assertNoExecutableFetch(calledUrls: string[]): void {
-    for (const url of calledUrls) {
-      expect(url).not.toContain("codeload.github.com");
-      expect(url).not.toMatch(/\/(tarball|zipball)\//);
-      expect(url).not.toMatch(/\.(js|ts|py|sh)(\?|$)/);
-      // Every fetch must be a metadata/manifest-file endpoint: the repo itself, its README, its
-      // root directory listing, or the soko.harness.json manifest file - nothing else.
-      expect(
-        url === "https://api.github.com/repos/example/harness-repo" ||
-          url === "https://api.github.com/repos/example/harness-repo/readme" ||
-          url === "https://api.github.com/repos/example/harness-repo/contents/" ||
-          url === "https://api.github.com/repos/example/harness-repo/contents/soko.harness.json"
-      ).toBe(true);
-    }
-  }
 });
 
 describe("agent import", () => {

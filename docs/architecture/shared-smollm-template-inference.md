@@ -12,7 +12,7 @@ execution rules, evaluation evidence, vocabulary snapshot, and lineage.
 
 This preserves the existing agent/model binding system:
 
-- Native runtime bindings remain authoritative for the selected agent harness, model, artifact, and
+- Native runtime bindings remain authoritative for the selected agent adapter, model, artifact, and
   execution host.
 - `.soko` templates attach portable expertise to that runtime after authorization and tenant
   resolution.
@@ -102,7 +102,7 @@ Shared-template inference follows the existing order from
 [Inference runtime architecture](inference-runtime.md):
 
 1. Authenticate the caller and resolve business, account, conversation, and agent scope.
-2. Resolve the active native runtime binding: agent harness, model candidate, artifact, and
+2. Resolve the active native runtime binding: agent adapter, model candidate, artifact, and
    execution host.
 3. Resolve the promoted `.soko` template for the business, agent, and task.
 4. Check template requirements against the selected model and host.

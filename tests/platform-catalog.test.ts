@@ -24,7 +24,12 @@ describe("DB-hosted platform model/agent catalog", () => {
         "llama-cpp-configured"
       ].sort()
     );
-    expect(store.listAgentCatalog().map((agent) => agent.id)).toEqual(["builtin:shopkeeper"]);
+    expect(
+      store
+        .listAgentCatalog()
+        .map((agent) => agent.id)
+        .sort()
+    ).toEqual(["builtin:pi-assistant", "builtin:shopkeeper"].sort());
   });
 
   it("lets an operator disable the hosted profile without bypassing deployment readiness gates", () => {
@@ -189,7 +194,7 @@ describe("DB-hosted platform model/agent catalog", () => {
       });
       const agents = listed.json<{ agents: Array<{ id: string }> }>().agents;
       expect(agents.map((agent) => agent.id).sort()).toEqual(
-        ["builtin:receptionist", "builtin:shopkeeper"].sort()
+        ["builtin:pi-assistant", "builtin:receptionist", "builtin:shopkeeper"].sort()
       );
     } finally {
       await app.close();
@@ -347,6 +352,7 @@ function agentPayload(overrides: { id: string }) {
     instructions: "Greet the customer and route their request.",
     knowledge: "Use saved business records.",
     tools: ["Products"],
-    skillIds: []
+    skillIds: [],
+    runtimeAdapterId: "soko"
   };
 }

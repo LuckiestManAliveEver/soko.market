@@ -32,9 +32,7 @@ const maxReadmeFetchBytes = 200_000;
 
 /**
  * Wraps the existing, already-working huggingface-model-catalog.ts and huggingface-agent-catalog.ts
- * behind the RuntimeRegistryAdapter interface. Hugging Face Spaces are hosted-API agents, not
- * Node.js-loadable adapter code, so this provider never returns kind: "harness" results - GitHub is
- * the harness/adapter source (see github-adapter.ts).
+ * behind the RuntimeRegistryAdapter interface.
  */
 export function createHuggingFaceRegistryAdapter(
   options: HuggingFaceRegistryAdapterOptions
@@ -52,7 +50,7 @@ export function createHuggingFaceRegistryAdapter(
       context: RuntimeRegistryContext
     ): Promise<RuntimeRegistrySearchItem[]> {
       void context; // Reserved for a future per-account HF token; env-level token only today.
-      const kinds = new Set<RuntimeAssetKind>(query.kinds ?? ["model", "agent", "harness"]);
+      const kinds = new Set<RuntimeAssetKind>(query.kinds ?? ["model", "agent"]);
       const items: RuntimeRegistrySearchItem[] = [];
 
       if (kinds.has("model")) {

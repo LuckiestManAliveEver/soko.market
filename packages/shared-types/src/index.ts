@@ -2,6 +2,8 @@ export type RuntimeName = "api" | "sync" | "ai-runtime" | "web";
 
 export * from "./commerce-address.js";
 export * from "./computer-runtime.js";
+export * from "./fulfillment-weight.js";
+export * from "./corridor-fulfillment.js";
 export * from "./phone-number.js";
 export * from "./portable-agent.js";
 export * from "./runtime-handoff.js";
@@ -58,13 +60,6 @@ export const repositoryDefaultRuntimePolicy: PlatformDefaultRuntimePolicy = {
   modelId: "smollm2-360m",
   executionTarget: "vercel"
 };
-
-/** Catalog metadata for a registered AgentRuntimeAdapter, for shop-facing selection UI. */
-export interface AgentRuntimeAdapterDescriptor {
-  id: string;
-  displayName: string;
-  description: string;
-}
 
 export type InferenceRuntime =
   "browser-webgpu" | "browser-wasm" | "native-llama-cpp" | "owner-node";
@@ -234,6 +229,7 @@ export interface BusinessSummary {
   name: string;
   language: SupportedLanguage;
   sokoId: string;
+  timezone?: string | null;
 }
 
 /**
@@ -1326,6 +1322,7 @@ export interface ProductSummary {
   quantity: number;
   buyingPrice: number | null;
   sellingPrice: number | null;
+  unitWeightGrams?: string | null;
   /** Values for business-defined catalogue fields, keyed by ProductFieldDefinition.id. */
   fieldValues?: Record<string, string>;
   createdAt: string;
@@ -2172,6 +2169,9 @@ export interface InvoiceItemSummary {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  unitWeightGramsSnapshot?: string | null;
+  totalWeightGrams?: string | null;
+  weightStatus?: "resolved" | "unresolved";
 }
 
 export interface InvoiceTotals {
@@ -2198,7 +2198,10 @@ export interface InvoicePreview extends InvoiceTotals {
   businessId: string;
   customerId: string | null;
   customerName: string | null;
-  items: Omit<InvoiceItemSummary, "id" | "invoiceId">[];
+  items: Omit<
+    InvoiceItemSummary,
+    "id" | "invoiceId" | "unitWeightGramsSnapshot" | "totalWeightGrams" | "weightStatus"
+  >[];
 }
 
 export type PaymentMethod =
@@ -2254,6 +2257,51 @@ export interface LogisticsSummary {
   updatedAt: string;
   completedAt: string | null;
   cancelledAt: string | null;
+}
+
+export type FulfillmentLocationStatus = "RESOLVED" | "UNRESOLVED";
+
+export interface ShopDeliveryLocationSummary {
+  id: string;
+  businessId: string;
+  shopId: string;
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number | null;
+  capturedAt: string;
+  capturedBy: string;
+  locationStatus: FulfillmentLocationStatus;
+  supersededAt: string | null;
+}
+
+export interface VehicleSummary {
+  id: string;
+  businessId: string;
+  name: string;
+  registration: string | null;
+  capacityGrams: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type UnderThresholdFallback = "HOLD" | "MANUAL_REVIEW";
+export type OverflowStrategy = "NEXT_MANIFEST" | "REJECT";
+
+export interface DispatchPolicySummary {
+  id: string;
+  businessId: string;
+  targetLoadGrams: string;
+  minimumDispatchLoadGrams: string | null;
+  maxDiversionMeters: number;
+  cutoffLocalTime: string;
+  maxWaitHours: number;
+  fulfillmentLeadDays: number;
+  underThresholdFallback: UnderThresholdFallback;
+  overflowStrategy: OverflowStrategy;
+  active: boolean;
+  version: number;
+  createdAt: string;
 }
 
 export type ContactSource = "PHONEBOOK" | "EMAIL" | "SOCIAL" | "MANUAL" | "SOKO_ACCOUNT";
@@ -3982,6 +4030,10 @@ export interface AgentDefinition {
   knowledge: string;
   tools: string[];
   skillIds: RuntimeToolName[];
+  /** Which registered AgentRuntimeAdapter executes this agent's turns (e.g. "pi", "soko") - fixed
+   *  per definition, not independently swappable. Engine choice changes by picking a different
+   *  agent definition, not by editing this field on an existing one. */
+  runtimeAdapterId: string;
 }
 
 export interface OssAgentSummary {
@@ -4042,7 +4094,23 @@ export const defaultAgentDefinition: AgentDefinition = {
     "Logistics",
     "Workspace delivery"
   ],
-  skillIds: []
+  skillIds: [],
+  runtimeAdapterId: "soko"
+};
+
+/**
+ * Same built-in shopkeeper behavior as defaultAgentDefinition, running on the Pi engine instead of
+ * Soko's built-in one. Engine choice is a property of which agent definition is active (see
+ * AgentDefinition.runtimeAdapterId) - this is how a shop swaps engines: pick this definition
+ * instead of defaultAgentDefinition, rather than toggling an adapter field independently.
+ */
+export const piAgentDefinitionId: AgentDefinitionId = "builtin:pi-assistant";
+export const piAgentDefinition: AgentDefinition = {
+  ...defaultAgentDefinition,
+  id: piAgentDefinitionId,
+  displayName: "Shopkeeper (Pi engine)",
+  description: "Same shopkeeper behavior, running on the Pi agent-loop engine.",
+  runtimeAdapterId: "pi"
 };
 
 export function isAgentDefinitionId(value: unknown): value is AgentDefinitionId {
@@ -4488,7 +4556,7 @@ export interface AgentRuntimeReadiness {
 /** Backend-derived effective runtime used by chat and settings. It exposes resource identity and
  * readiness only; host endpoints and credentials never cross the API boundary. */
 export interface EffectiveRuntimeSummary {
-  harness: { id: string; name: string };
+  agent: { id: string; name: string; runtimeAdapterId: string };
   model: { id: string; name: string };
   execution: {
     type: ModelExecutionTarget;
