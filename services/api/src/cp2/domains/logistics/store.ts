@@ -96,6 +96,41 @@ export class LogisticsDomain {
       "logistics:write",
       now
     );
+    return this.createLogisticsAsActor({
+      businessId: input.businessId,
+      logistics: input.logistics,
+      actorId: session.user.id,
+      now
+    });
+  }
+
+  /** Trusted channel adapter entry point; creates the same canonical logistics record. */
+  createChannelDelivery(input: {
+    businessId: string;
+    invoiceId: string;
+    actorId: string;
+    now: Date;
+  }): LogisticsSummary {
+    return this.createLogisticsAsActor({
+      businessId: input.businessId,
+      logistics: {
+        invoiceId: input.invoiceId,
+        method: "delivery",
+        destination: null,
+        note: null
+      },
+      actorId: input.actorId,
+      now: input.now
+    });
+  }
+
+  private createLogisticsAsActor(input: {
+    businessId: string;
+    logistics: LogisticsInput;
+    actorId: string;
+    now: Date;
+  }): LogisticsSummary {
+    const now = input.now;
     assertValid(validateLogisticsInput(input.logistics));
     const normalized = normalizeLogisticsInput(input.logistics);
     const invoice = this.deps.requireInvoice(input.businessId, normalized.invoiceId);
@@ -127,7 +162,7 @@ export class LogisticsDomain {
       status: "pending",
       destination: normalized.destination,
       note: normalized.note,
-      actorId: session.user.id,
+      actorId: input.actorId,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       completedAt: null,
@@ -141,7 +176,7 @@ export class LogisticsDomain {
       logisticsCreatedEvent({
         id: randomUUID(),
         logistics,
-        actorId: session.user.id,
+        actorId: input.actorId,
         occurredAt: now.toISOString()
       })
     );

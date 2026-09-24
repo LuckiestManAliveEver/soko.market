@@ -214,6 +214,7 @@ export const RECYCLE_BIN_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
  * hold before new deletions are refused with `recycle_bin_full` and an admin has to empty it.
  */
 export const RECYCLE_BIN_CAPACITY_BYTES = 5 * 1024 * 1024;
+const systemChannelDelivery = Symbol("systemChannelDelivery");
 
 export interface MessagingDomainDeps {
   requireAuthorizedSession: (
@@ -261,6 +262,15 @@ export interface MessagingDomainDeps {
     sessionId: string | null,
     intents: OfflineOrderIntent[]
   ) => OfflineOrderIntentOutcome[];
+  createChannelOrder: (input: {
+    businessId: string;
+    customerId: string;
+    provider: ChannelProvider;
+    actorId: string;
+    items: Array<{ productId: string; quantity: number; name: string }>;
+    idempotencyKey: string;
+    now: Date;
+  }) => OfflineOrderIntentOutcome;
   ensureSokoSessionContext: (session: AuthSessionView, now: Date) => StoredSokoSessionContext;
   createRuntimeTurn: (input: {
     sessionId: string | null;
@@ -1988,7 +1998,11 @@ export class MessagingDomain {
     headers: Record<string, string | string[] | undefined>;
     payload: unknown;
     now?: Date;
-  }): { receipt: ProviderUpdateReceiptSummary; message: ConversationMessageSummary | null } {
+  }): {
+    receipt: ProviderUpdateReceiptSummary;
+    message: ConversationMessageSummary | null;
+    orderIntentOutcome: OfflineOrderIntentOutcome | null;
+  } {
     const now = input.now ?? new Date();
     let inbound;
     try {
@@ -2012,7 +2026,8 @@ export class MessagingDomain {
         message:
           existingReceipt.messageId === null
             ? null
-            : (this.conversationMessages.get(existingReceipt.messageId) ?? null)
+            : (this.conversationMessages.get(existingReceipt.messageId) ?? null),
+        orderIntentOutcome: null
       };
     }
 
@@ -2063,7 +2078,7 @@ export class MessagingDomain {
         "No customer is linked to this provider conversation."
       );
     }
-    return this.ingestProviderMessage({
+    const ingested = this.ingestProviderMessage({
       provider: input.provider,
       businessId: channel.businessId,
       externalConversationId: inbound.externalConversationId,
@@ -2072,6 +2087,84 @@ export class MessagingDomain {
       providerMessageId: inbound.externalMessageId,
       now
     });
+    const identity = [...this.platformIdentities.values()].find(
+      (candidate) =>
+        candidate.businessId === channel.businessId &&
+        candidate.provider === input.provider &&
+        candidate.externalUserId === inbound.externalUserId
+    );
+    const ownerMembership = [...this.deps.memberships.values()].find(
+      (membership) => membership.businessId === channel.businessId && membership.role === "owner"
+    );
+    const orderIntentOutcome =
+      inbound.linkToken !== null ||
+      input.provider !== "telegram" ||
+      identity?.customerId == null ||
+      ownerMembership === undefined
+        ? null
+        : this.reconcileInboundChannelOrder({
+            provider: input.provider,
+            businessId: channel.businessId,
+            customerId: identity.customerId,
+            actorId: ownerMembership.userId,
+            externalMessageId: inbound.externalMessageId,
+            text: inbound.text,
+            now
+          });
+    return { ...ingested, orderIntentOutcome };
+  }
+
+  private reconcileInboundChannelOrder(input: {
+    provider: ChannelProvider;
+    businessId: string;
+    customerId: string;
+    actorId: string;
+    externalMessageId: string;
+    text: string;
+    now: Date;
+  }): OfflineOrderIntentOutcome | null {
+    const parsed = parseOfflineOrderText(
+      input.text,
+      this.deps.productsForBusiness(input.businessId)
+    );
+    if (!parsed.looksLikeOrder) return null;
+    if (parsed.items.length === 0) {
+      this.sendChannelMessage({
+        sessionId: null,
+        businessId: input.businessId,
+        customerId: input.customerId,
+        provider: input.provider,
+        text: offlineOrderClarificationMessage(parsed.problems),
+        idempotencyKey: `${input.provider}-order:${input.externalMessageId}:clarify`,
+        now: input.now,
+        [systemChannelDelivery]: true
+      }).catch(() => undefined);
+      return null;
+    }
+    try {
+      const outcome = this.deps.createChannelOrder({
+        businessId: input.businessId,
+        customerId: input.customerId,
+        provider: input.provider,
+        actorId: input.actorId,
+        items: parsed.items,
+        idempotencyKey: `${input.provider}-order:${input.externalMessageId}`,
+        now: input.now
+      });
+      this.sendChannelMessage({
+        sessionId: null,
+        businessId: input.businessId,
+        customerId: input.customerId,
+        provider: input.provider,
+        text: offlineOrderOutcomeMessage(outcome),
+        idempotencyKey: `${input.provider}-order:${input.externalMessageId}:outcome`,
+        now: input.now,
+        [systemChannelDelivery]: true
+      }).catch(() => undefined);
+      return outcome;
+    } catch {
+      return null;
+    }
   }
 
   async sendChannelMessage(input: {
@@ -2088,14 +2181,18 @@ export class MessagingDomain {
     text: string;
     idempotencyKey: string;
     now?: Date;
+    [systemChannelDelivery]?: true;
   }): Promise<ChannelMessageSendResult> {
     const now = input.now ?? new Date();
-    const auth = this.deps.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "customer:write",
-      now
-    );
+    const auth =
+      input[systemChannelDelivery] === true
+        ? this.systemBusinessActor(input.businessId)
+        : this.deps.requireAuthorizedSession(
+            input.sessionId,
+            input.businessId,
+            "customer:write",
+            now
+          );
     const text = normalizeRequiredBoundedText(input.text, "message", 4000);
     const idempotencyKey = normalizeRequiredBoundedText(
       input.idempotencyKey,
@@ -2255,6 +2352,64 @@ export class MessagingDomain {
       );
       throw normalized;
     }
+  }
+
+  async deliverFulfillmentNotification(input: {
+    id: string;
+    businessId: string;
+    eventType: string;
+    payload: Record<string, unknown>;
+    occurredAt: string;
+  }): Promise<void> {
+    const invoiceIds = Array.isArray(input.payload.invoiceIds)
+      ? input.payload.invoiceIds.filter((value): value is string => typeof value === "string")
+      : typeof input.payload.invoiceId === "string"
+        ? [input.payload.invoiceId]
+        : [];
+    const text =
+      input.eventType === "manifest.created"
+        ? "Your delivery has been scheduled."
+        : input.eventType === "delivery.completed"
+          ? "Your order has been delivered."
+          : null;
+    if (text === null) return;
+    for (const invoiceId of invoiceIds) {
+      let invoice: InvoiceSummary;
+      try {
+        invoice = this.deps.requireInvoice(input.businessId, invoiceId);
+      } catch (error) {
+        if (error instanceof Cp2Error && error.statusCode === 404) continue;
+        throw error;
+      }
+      if (invoice.customerId === null) continue;
+      const endpoints = this.channelEndpoints({
+        businessId: input.businessId,
+        customerId: invoice.customerId,
+        conversationId: null
+      });
+      if (endpoints.every((endpoint) => endpoint.provider === "soko")) continue;
+      await this.sendChannelMessage({
+        sessionId: null,
+        businessId: input.businessId,
+        customerId: invoice.customerId,
+        text,
+        idempotencyKey: `fulfillment:${input.id}:${invoiceId}`,
+        now: new Date(input.occurredAt),
+        [systemChannelDelivery]: true
+      });
+    }
+  }
+
+  private systemBusinessActor(businessId: string): AuthenticatedActorView {
+    const membership = [...this.deps.memberships.values()].find(
+      (candidate) => candidate.businessId === businessId && candidate.role === "owner"
+    );
+    const user = membership === undefined ? undefined : this.deps.users.get(membership.userId);
+    const account = user === undefined ? undefined : this.deps.accounts.get(user.accountId);
+    if (user === undefined || account === undefined) {
+      throw new Cp2Error(409, "business_owner_missing", "The business owner is unavailable.");
+    }
+    return { user, account };
   }
 
   ingestProviderMessage(input: {
