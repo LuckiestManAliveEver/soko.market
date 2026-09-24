@@ -3190,6 +3190,11 @@ export class Cp2Store {
   ): ReturnType<ExternalConnectionsDomain["disconnect"]> {
     return this.externalConnectionsDomain.disconnect(...args);
   }
+  authorizeExternalConnectionInference(
+    ...args: Parameters<ExternalConnectionsDomain["authorizeInference"]>
+  ): ReturnType<ExternalConnectionsDomain["authorizeInference"]> {
+    return this.externalConnectionsDomain.authorizeInference(...args);
+  }
   /**
    * Internal-only accessor for server-side registry adapters (not a route). Never call this from
    * a route handler directly - go through connectExternalConnection/disconnectExternalConnection/
@@ -3199,6 +3204,17 @@ export class Cp2Store {
     ...args: Parameters<ExternalConnectionsDomain["resolveToken"]>
   ): ReturnType<ExternalConnectionsDomain["resolveToken"]> {
     return this.externalConnectionsDomain.resolveToken(...args);
+  }
+  /**
+   * Internal-only, inference-billing counterpart to resolveExternalConnectionToken - never call
+   * from a route handler. Returns a usable token only when the account explicitly authorized this
+   * connection for inference billing (authorizeExternalConnectionInference), never merely because
+   * a connection exists for discovery.
+   */
+  resolveExternalConnectionInferenceToken(
+    ...args: Parameters<ExternalConnectionsDomain["resolveInferenceToken"]>
+  ): ReturnType<ExternalConnectionsDomain["resolveInferenceToken"]> {
+    return this.externalConnectionsDomain.resolveInferenceToken(...args);
   }
 
   assertMcpShopAccess(principal: McpPrincipal, shopId: string, now = new Date()): void {

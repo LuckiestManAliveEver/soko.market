@@ -169,6 +169,22 @@ function parseChunk(value: string): {
 
 async function huggingFaceFailure(response: Response): Promise<InferenceServiceError> {
   const body = await response.text().catch(() => "");
+  // HTTP 402 Payment Required is the standard signal a provider uses for "the account's spending
+  // allowance for this call is exhausted" - distinct from a transient failure, so it must never be
+  // retried and must be recognizable to the free-tier budget latch in vercel-handler.ts
+  // (HF_FREE_TIER_ONLY). If Hugging Face's actual wire behavior for this case turns out to differ
+  // once observed against a real exhausted account, this classification should be revisited rather
+  // than assumed correct indefinitely - see docs/architecture/huggingface-inference.md's billing
+  // section.
+  if (response.status === 402) {
+    return new InferenceServiceError(
+      "INFERENCE_BUDGET_EXHAUSTED",
+      "Hugging Face reported the inference budget for this account is exhausted.",
+      false,
+      402,
+      { cause: body }
+    );
+  }
   const retryable = response.status === 429 || response.status >= 500;
   const code =
     response.status === 401 || response.status === 403

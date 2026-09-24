@@ -77,6 +77,38 @@ export function computeModelAvailability(modelId: string, storedAvailable: boole
 
 export const aiModelRegistry: AiModelSummary[] = [
   {
+    id: "qwen3-4b",
+    label: "Qwen3-4B",
+    provider: "huggingface",
+    description:
+      "Hosted Qwen3 4B reasoning/chat model, served remotely through Hugging Face Inference " +
+      "Providers. Merchant-funded: activating it accepts per-token inference costs.",
+    capabilities: ["chat", "reasoning", "multilingual"],
+    // Catalog presence, not a promise of live capacity - listAiModels() in
+    // services/api/src/cp2/domains/agent-runtime/store.ts computes real availability per request
+    // from whether a booted adapter actually answers for this id (requires ai-runtime's HF_TOKEN +
+    // HF_MODEL_MAP to include it). This flag only says "this id may be requested", matching every
+    // other "hosted" entry in this table (e.g. the default smollm2-360m below).
+    available: true,
+    source: "hosted",
+    format: "remote",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/Qwen/Qwen3-4B/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/Qwen/Qwen3-4B",
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: true,
+    canonicalModelId: "Qwen/Qwen3-4B",
+    // Not verified against the live featherless-ai-routed endpoint as of this registration (see
+    // docs/architecture/huggingface-inference.md) - do not flip these to true without confirming
+    // the exact provider actually honors `tools`/`response_format` for this model first.
+    supportsToolCalling: false,
+    supportsStructuredOutput: false,
+    contextWindow: 32_768
+  },
+  {
     id: "smollm2-360m-android",
     label: "SmolLM2 360M (Android saver)",
     provider: "local",

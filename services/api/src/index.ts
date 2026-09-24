@@ -1,4 +1,8 @@
-import { runtimeModels, type RuntimeModelProviderName } from "@soko/shared-types";
+import {
+  runtimeModels,
+  type RuntimeModelDefinition,
+  type RuntimeModelProviderName
+} from "@soko/shared-types";
 import { createMetrics, type Metrics } from "@soko/observability";
 import { Pool } from "pg";
 import { buildApi } from "./app.js";
@@ -136,10 +140,16 @@ if (config.vercelInferenceUrl !== "") {
       onEvent: onResourceControlEvent
     })
   );
-  for (const model of Object.values(runtimeModels).filter((candidate) => candidate.enabled)) {
+  const registeredRuntimeModels = Object.values(runtimeModels) as RuntimeModelDefinition[];
+  for (const model of registeredRuntimeModels.filter((candidate) => candidate.enabled)) {
     const adapter = instrumentModelAdapter(
       boundModelRuntimeAdapter(
-        createVercelModelAdapter({ modelId: model.id, artifactStore, client }),
+        createVercelModelAdapter({
+          modelId: model.id,
+          artifactStore,
+          client,
+          requiresArtifact: model.requiresArtifact ?? true
+        }),
         {
           bulkhead: inferenceBulkhead,
           breaker: inferenceBreaker

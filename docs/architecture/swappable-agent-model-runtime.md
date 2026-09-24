@@ -56,8 +56,11 @@ for existing users, not a second turn router.
   `generate`. Backend providers remain behind this boundary.
 - **Provider**: engine/vendor that fulfills inference, such as Ollama. It is model metadata and an
   adapter implementation detail, never an execution target.
-- **Execution target**: provider-neutral location class: `backend`, `browser-local`,
-  `installed-app`, or `remote-shop-device`.
+- **Execution target**: provider-neutral location class: `vercel`, `backend`, or
+  `remote-shop-device` (packages/shared-types `ModelExecutionTarget`). The retired `browser-local`
+  and `installed-app` targets meant "run privately on whichever device/browser happens to be open
+  right now" and no longer exist - a client device never needs a private model copy for normal
+  agent chat.
 - **Execution host**: a concrete authorized target instance. It carries scope, health and a
   credential reference, but never a credential value.
 - **Runtime binding**: stable composition of one agent slot with ordered model/host roles and

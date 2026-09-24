@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 
-import type {
-  AgentDefinition,
-  AgentModelActivationResult,
-  EffectiveRuntimeSummary
+import {
+  platformSharedModelId,
+  type AgentDefinition,
+  type AgentModelActivationResult,
+  type EffectiveRuntimeSummary
 } from "@soko/shared-types";
 
 import { getJson, postJson, putJson } from "./api-helpers";
@@ -54,6 +55,14 @@ export function QuickRuntimeSwitcher({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  // Set only while a merchant-funded model switch is awaiting explicit confirmation - the request
+  // to actually activate it never fires until the merchant confirms, so a merchant can never be
+  // switched onto a billable model by a single accidental selection. The platform-included default
+  // (smollm2-360m) skips this entirely and activates immediately, matching its free/no-charge cost
+  // responsibility.
+  const [pendingCostConfirmationModelId, setPendingCostConfirmationModelId] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +98,27 @@ export function QuickRuntimeSwitcher({
     };
   }, [canonicalAgentId, business.id]);
 
+  /**
+   * The single entry point the <select> calls. A merchant-funded model (anything but the
+   * platform-included smollm2-360m default) never activates from this call alone - it only opens
+   * the inline confirmation below, and reverts the dropdown to whatever is actually active so nothing
+   * appears switched until the merchant explicitly confirms. Returning to the platform default
+   * always activates immediately, since it can never incur a charge.
+   */
+  function requestModelChange(modelId: string) {
+    if (busy || modelId === "" || modelId === selectedModelId) return;
+    const isMerchantFunded = modelId !== platformSharedModelId;
+    if (!isMerchantFunded) {
+      void activateModel(modelId);
+      return;
+    }
+    setPendingCostConfirmationModelId(modelId);
+  }
+
+  function cancelCostConfirmation() {
+    setPendingCostConfirmationModelId(null);
+  }
+
   async function activateModel(modelId: string) {
     if (busy || modelId === "") return;
     setBusy(true);
@@ -101,15 +131,19 @@ export function QuickRuntimeSwitcher({
           executionTarget: "vercel",
           executionMode: "LOCAL_FIRST",
           permissions: { allowInstalledApp: false, allowRemoteShopDevice: false },
-          ...(modelId === "smollm2-360m" ? {} : { costResponsibility: "merchant" })
+          ...(modelId === platformSharedModelId ? {} : { costResponsibility: "merchant" })
         }
       );
       setSelectedModelId(result.binding.modelId);
+      setPendingCostConfirmationModelId(null);
       updateAgent({ model: result.binding.modelId });
       onAgentChange({ ...agent, model: result.binding.modelId });
       const modelLabel = modelOptions.find((option) => option.id === modelId)?.label ?? modelId;
-      setMessage(`Now running ${modelLabel}.`);
+      setMessage(`Model changed to ${modelLabel}.`);
     } catch (error) {
+      // Failed switching preserves the previous binding - selectedModelId is only ever updated
+      // above, on confirmed success, so the <select> already reflects the still-active model.
+      setPendingCostConfirmationModelId(null);
       setMessage(getErrorMessage(error));
     } finally {
       setBusy(false);
@@ -156,7 +190,10 @@ export function QuickRuntimeSwitcher({
       <div className="section-heading">
         <p className="eyebrow">Quick switch</p>
         <h3>Agent and model</h3>
-        <p>Pick an agent and a hosted model. Changes apply immediately.</p>
+        <p>
+          Pick an agent and a hosted model. The platform default applies immediately; a
+          merchant-funded model asks you to confirm first.
+        </p>
       </div>
       {message.length > 0 ? (
         <p className="shell-note" role="status" aria-live="polite">
@@ -183,19 +220,62 @@ export function QuickRuntimeSwitcher({
           <select
             value={selectedModelId}
             disabled={busy || modelOptions.length === 0}
-            onChange={(event) => void activateModel(event.target.value)}
+            onChange={(event) => requestModelChange(event.target.value)}
           >
             {modelOptions.length === 0 ? (
               <option value="">No executable backend model</option>
             ) : null}
             {modelOptions.map((option) => (
-              <option key={option.id} value={option.id}>
+              <option key={option.id} value={option.id} title={modelOptionTitle(option)}>
                 {option.label}
+                {option.id === platformSharedModelId ? " (platform default)" : ""}
               </option>
             ))}
           </select>
         </label>
       </div>
+      {(() => {
+        const activeModel = modelOptions.find((option) => option.id === selectedModelId);
+        return activeModel === undefined ? null : (
+          <p className="shell-note quick-runtime-model-detail">
+            Provider: {activeModel.provider}. Billing:{" "}
+            {activeModel.id === platformSharedModelId
+              ? "included with the platform, no extra charge."
+              : "merchant-funded - your business is billed for usage."}
+          </p>
+        );
+      })()}
+      {pendingCostConfirmationModelId !== null ? (
+        <div className="shell-note quick-runtime-cost-confirmation" role="alertdialog">
+          <p>
+            {modelOptions.find((option) => option.id === pendingCostConfirmationModelId)?.label ??
+              pendingCostConfirmationModelId}{" "}
+            is merchant-funded through{" "}
+            {modelOptions.find((option) => option.id === pendingCostConfirmationModelId)
+              ?.provider ?? "its provider"}
+            . Your business will be billed for its inference usage instead of the platform-included
+            default. Switch anyway?
+          </p>
+          <div className="quick-runtime-cost-confirmation-actions">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void activateModel(pendingCostConfirmationModelId)}
+            >
+              Confirm switch
+            </button>
+            <button type="button" className="secondary" disabled={busy} onClick={cancelCostConfirmation}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function modelOptionTitle(option: AiModelSummary): string {
+  const billing =
+    option.id === platformSharedModelId ? "platform-included" : "merchant-funded (usage billed to you)";
+  return `${option.provider} · ${billing}`;
 }

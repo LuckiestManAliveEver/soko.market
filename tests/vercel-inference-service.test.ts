@@ -13,6 +13,7 @@ import {
   createVercelInferenceHandler,
   createVercelReadyHandler,
   readVercelInferenceConfig,
+  resolveInferenceEngine,
   type VercelInferenceConfig
 } from "../services/ai-runtime/src/vercel-handler";
 import { readEnvironment } from "../services/api/src/config";
@@ -29,6 +30,7 @@ function baseConfig(overrides: Partial<VercelInferenceConfig> = {}): VercelInfer
     maximumOutputTokens: 512,
     cacheEntries: 1,
     huggingFace: null,
+    huggingFaceFreeTierOnly: false,
     ...overrides
   };
 }
@@ -277,6 +279,225 @@ describe("Vercel inference request handler", () => {
     expect(requestedModels).toEqual(["HuggingFaceTB/SmolLM2-1.7B-Instruct", "openai/gpt-oss-20b"]);
   });
 
+  it("hybrid mode: routes a mapped model id to Hugging Face while the default llama-cpp provider still serves everything else in the same deployment", async () => {
+    const downloadArtifact = vi.fn(async () => ({ path: "/tmp/model.gguf", downloadMs: 5 }));
+    const loadRuntime = vi.fn(async () => ({
+      dispose: vi.fn(async () => undefined),
+      generate: vi.fn(async ({ onText }: { onText: (text: string) => void }) => {
+        onText("gguf-reply");
+        return { text: "gguf-reply", finishReason: "stop", inputTokens: 1, outputTokens: 1 };
+      })
+    }));
+    const hfRequest = vi.fn(async () => new Response(
+      'data: {"choices":[{"delta":{"content":"hf-reply"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+      { status: 200 }
+    )) as unknown as typeof fetch;
+
+    // Default provider is llama-cpp (the deployment-wide default is unchanged), but HF_MODEL_MAP
+    // is also configured - this is the hybrid case this feature adds: both engines live in the
+    // same deployment, chosen per model id, with no redeploy needed to move a model between them.
+    const config = baseConfig({
+      provider: "llama-cpp",
+      huggingFace: {
+        token: "hf_test_token",
+        defaultModelId: null,
+        models: new Map([["qwen3-4b", "Qwen/Qwen3-4B"]]),
+        baseUrl: "https://router.huggingface.co/v1/"
+      }
+    });
+    const handler = createVercelInferenceHandler(config, {
+      downloadArtifact,
+      loadRuntime: loadRuntime as never,
+      request: hfRequest
+    });
+
+    const gguf = await readNdjson(await handler(post(requestBody())));
+    expect((gguf.at(-1) as Record<string, unknown>).text).toBe("gguf-reply");
+    expect(downloadArtifact).toHaveBeenCalledTimes(1);
+
+    const hf = await readNdjson(
+      await handler(
+        post(
+          requestBody({
+            model: { id: "qwen3-4b", runtimeContractVersion: "1" },
+            artifact: undefined
+          })
+        )
+      )
+    );
+    expect((hf.at(-1) as Record<string, unknown>).text).toBe("hf-reply");
+    expect(hfRequest).toHaveBeenCalledTimes(1);
+    // The GGUF path was never touched by the HF-routed request.
+    expect(downloadArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it("hybrid mode: rejects an HF-routed request with no artifact host allowlist configured, since the llama-cpp path is still the default for unmapped models", () => {
+    expect(() =>
+      readVercelInferenceConfig({
+        SOKO_INFERENCE_SERVICE_TOKEN: token,
+        MODEL_ARTIFACT_ALLOWED_HOSTS: "",
+        HF_TOKEN: "hf_test_token",
+        HF_MODEL_MAP: '{"qwen3-4b":"Qwen/Qwen3-4B"}'
+      })
+    ).toThrow(/MODEL_ARTIFACT_ALLOWED_HOSTS/u);
+  });
+
+  it("forwards a business's own authorized credential to Hugging Face instead of the platform token", async () => {
+    const authorizationHeaders: string[] = [];
+    const handler = createVercelInferenceHandler(
+      baseConfig({
+        provider: "huggingface",
+        artifactAllowedHosts: new Set(),
+        huggingFace: {
+          token: "platform-token",
+          defaultModelId: null,
+          models: new Map([["smollm2-360m", "Qwen/Qwen3-4B"]]),
+          baseUrl: "https://router.huggingface.co/v1/"
+        }
+      }),
+      {
+        request: vi.fn(async (_url, init) => {
+          authorizationHeaders.push(String((init?.headers as Record<string, string>).authorization));
+          return new Response(
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+            { status: 200 }
+          );
+        }) as unknown as typeof fetch
+      }
+    );
+
+    await readNdjson(
+      await handler(
+        post(requestBody({ providerCredential: { token: "business-owned-token" } }))
+      )
+    );
+
+    expect(authorizationHeaders).toEqual(["Bearer business-owned-token"]);
+  });
+
+  it("uses the platform token when no business-owned credential is present on the request", async () => {
+    const authorizationHeaders: string[] = [];
+    const handler = createVercelInferenceHandler(
+      baseConfig({
+        provider: "huggingface",
+        artifactAllowedHosts: new Set(),
+        huggingFace: {
+          token: "platform-token",
+          defaultModelId: null,
+          models: new Map([["smollm2-360m", "Qwen/Qwen3-4B"]]),
+          baseUrl: "https://router.huggingface.co/v1/"
+        }
+      }),
+      {
+        request: vi.fn(async (_url, init) => {
+          authorizationHeaders.push(String((init?.headers as Record<string, string>).authorization));
+          return new Response(
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+            { status: 200 }
+          );
+        }) as unknown as typeof fetch
+      }
+    );
+
+    await readNdjson(await handler(post(requestBody())));
+
+    expect(authorizationHeaders).toEqual(["Bearer platform-token"]);
+  });
+
+  it("classifies a 402 from Hugging Face as a non-retryable budget-exhaustion error, not a generic failure", async () => {
+    const handler = createVercelInferenceHandler(
+      baseConfig({
+        provider: "huggingface",
+        artifactAllowedHosts: new Set(),
+        huggingFace: {
+          token: "hf_test_token",
+          defaultModelId: null,
+          models: new Map([["smollm2-360m", "Qwen/Qwen3-4B"]]),
+          baseUrl: "https://router.huggingface.co/v1/"
+        }
+      }),
+      {
+        request: vi.fn(
+          async () => new Response("budget exhausted", { status: 402 })
+        ) as unknown as typeof fetch
+      }
+    );
+
+    const events = await readNdjson(await handler(post(requestBody())));
+    const errorEvent = events.find((event) => event.type === "error");
+    expect(errorEvent).toMatchObject({
+      type: "error",
+      code: "INFERENCE_BUDGET_EXHAUSTED",
+      retryable: false
+    });
+  });
+
+  it("in strict free-tier mode, refuses further Hugging Face requests after one confirmed budget-exhaustion response instead of continuing to spend", async () => {
+    let calls = 0;
+    const handler = createVercelInferenceHandler(
+      baseConfig({
+        provider: "huggingface",
+        artifactAllowedHosts: new Set(),
+        huggingFaceFreeTierOnly: true,
+        huggingFace: {
+          token: "hf_test_token",
+          defaultModelId: null,
+          models: new Map([["smollm2-360m", "Qwen/Qwen3-4B"]]),
+          baseUrl: "https://router.huggingface.co/v1/"
+        }
+      }),
+      {
+        request: vi.fn(async () => {
+          calls += 1;
+          return new Response("budget exhausted", { status: 402 });
+        }) as unknown as typeof fetch
+      }
+    );
+
+    const first = await readNdjson(
+      await handler(post(requestBody({ requestId: "11111111-1111-1111-1111-111111111111" })))
+    );
+    expect(first.find((event) => event.type === "error")).toMatchObject({
+      code: "INFERENCE_BUDGET_EXHAUSTED"
+    });
+    expect(calls).toBe(1);
+
+    // The second request must fail fast on the application-side latch, without calling Hugging
+    // Face again - "protection against repeated requests after budget exhaustion" from the brief.
+    const second = await handler(
+      post(requestBody({ requestId: "22222222-2222-2222-2222-222222222222" }))
+    );
+    expect(second.status).toBe(402);
+    expect(calls).toBe(1);
+  });
+
+  it("without HF_FREE_TIER_ONLY, a budget-exhaustion response does not block subsequent requests", async () => {
+    let calls = 0;
+    const handler = createVercelInferenceHandler(
+      baseConfig({
+        provider: "huggingface",
+        artifactAllowedHosts: new Set(),
+        huggingFaceFreeTierOnly: false,
+        huggingFace: {
+          token: "hf_test_token",
+          defaultModelId: null,
+          models: new Map([["smollm2-360m", "Qwen/Qwen3-4B"]]),
+          baseUrl: "https://router.huggingface.co/v1/"
+        }
+      }),
+      {
+        request: vi.fn(async () => {
+          calls += 1;
+          return new Response("budget exhausted", { status: 402 });
+        }) as unknown as typeof fetch
+      }
+    );
+
+    await handler(post(requestBody({ requestId: "11111111-1111-1111-1111-111111111111" })));
+    await handler(post(requestBody({ requestId: "22222222-2222-2222-2222-222222222222" })));
+    expect(calls).toBe(2);
+  });
+
   it("reuses a warm runtime from the cache on a second request for the same model", async () => {
     const loadRuntime = vi.fn(async () => ({
       dispose: vi.fn(async () => undefined),
@@ -400,6 +621,79 @@ describe("Vercel inference request handler", () => {
   });
 });
 
+describe("resolveInferenceEngine", () => {
+  it("routes a model id present in HF_MODEL_MAP to Hugging Face regardless of the default provider", () => {
+    const resolution = resolveInferenceEngine(
+      {
+        provider: "llama-cpp",
+        huggingFace: {
+          token: "t",
+          defaultModelId: null,
+          models: new Map([["qwen3-4b", "Qwen/Qwen3-4B"]]),
+          baseUrl: "https://router.huggingface.co/v1/"
+        }
+      },
+      "qwen3-4b"
+    );
+    expect(resolution).toEqual({ engine: "huggingface", huggingFaceModelId: "Qwen/Qwen3-4B" });
+  });
+
+  it("falls through to llama-cpp for an unmapped model id when the default provider is llama-cpp", () => {
+    const resolution = resolveInferenceEngine(
+      {
+        provider: "llama-cpp",
+        huggingFace: {
+          token: "t",
+          defaultModelId: null,
+          models: new Map([["qwen3-4b", "Qwen/Qwen3-4B"]]),
+          baseUrl: "https://router.huggingface.co/v1/"
+        }
+      },
+      "smollm2-360m"
+    );
+    expect(resolution).toEqual({ engine: "llama-cpp" });
+  });
+
+  it("uses HF_MODEL_ID as the exclusive-mode fallback only when provider is huggingface", () => {
+    const config = {
+      provider: "huggingface" as const,
+      huggingFace: {
+        token: "t",
+        defaultModelId: "openai/gpt-oss-20b",
+        models: new Map<string, string>(),
+        baseUrl: "https://router.huggingface.co/v1/"
+      }
+    };
+    expect(resolveInferenceEngine(config, "anything")).toEqual({
+      engine: "huggingface",
+      huggingFaceModelId: "openai/gpt-oss-20b"
+    });
+  });
+
+  it("throws MODEL_NOT_FOUND when provider is the exclusive huggingface mode with no map or fallback match", () => {
+    expect(() =>
+      resolveInferenceEngine(
+        {
+          provider: "huggingface",
+          huggingFace: {
+            token: "t",
+            defaultModelId: null,
+            models: new Map([["other-model", "org/other"]]),
+            baseUrl: "https://router.huggingface.co/v1/"
+          }
+        },
+        "unmapped-model"
+      )
+    ).toThrow(/No Hugging Face model is configured/u);
+  });
+
+  it("returns llama-cpp when Hugging Face is not configured at all", () => {
+    expect(resolveInferenceEngine({ provider: "llama-cpp", huggingFace: null }, "any-model")).toEqual(
+      { engine: "llama-cpp" }
+    );
+  });
+});
+
 describe("Vercel inference health handler", () => {
   it("reports bare liveness without requiring authentication or configuration", () => {
     const handler = createVercelHealthHandler();
@@ -499,6 +793,36 @@ describe("readVercelInferenceConfig", () => {
       ])
     );
     expect(config.huggingFace?.baseUrl).toBe("https://router.huggingface.co/v1/");
+  });
+
+  it("builds hybrid Hugging Face config under the default llama-cpp provider when HF_TOKEN is set", () => {
+    const config = readVercelInferenceConfig({
+      SOKO_INFERENCE_SERVICE_TOKEN: token,
+      MODEL_ARTIFACT_ALLOWED_HOSTS: "models.example.neon.tech",
+      HF_TOKEN: "hf_test_token",
+      HF_MODEL_MAP: '{"qwen3-4b":"Qwen/Qwen3-4B"}'
+    });
+    expect(config.provider).toBe("llama-cpp");
+    expect(config.huggingFace).not.toBeNull();
+    expect(config.huggingFace?.models.get("qwen3-4b")).toBe("Qwen/Qwen3-4B");
+    // Unmapped ids must still require the artifact allowlist - the llama-cpp path is unaffected.
+    expect(config.artifactAllowedHosts.size).toBe(1);
+  });
+
+  it("HF_FREE_TIER_ONLY defaults to false and is only true when explicitly set", () => {
+    expect(
+      readVercelInferenceConfig({
+        SOKO_INFERENCE_SERVICE_TOKEN: token,
+        MODEL_ARTIFACT_ALLOWED_HOSTS: "models.example.neon.tech"
+      }).huggingFaceFreeTierOnly
+    ).toBe(false);
+    expect(
+      readVercelInferenceConfig({
+        SOKO_INFERENCE_SERVICE_TOKEN: token,
+        MODEL_ARTIFACT_ALLOWED_HOSTS: "models.example.neon.tech",
+        HF_FREE_TIER_ONLY: "true"
+      }).huggingFaceFreeTierOnly
+    ).toBe(true);
   });
 
   it("applies documented defaults", () => {

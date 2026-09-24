@@ -13,6 +13,15 @@ import { InferenceServiceError } from "./service-error.js";
 
 export interface VercelInferenceConfig {
   serviceToken: string;
+  /**
+   * The default engine for any model id that Hugging Face routing (below) does not claim. Kept as
+   * a top-level field (not folded into `huggingFace`) for backward compatibility with the
+   * pre-hybrid deployment-wide switch: setting `INFERENCE_PROVIDER=huggingface` still means "route
+   * everything through Hugging Face, falling back to HF_MODEL_ID for unmapped ids" exactly as
+   * before. `HF_MODEL_MAP` now works standalone under the *default* `llama-cpp` provider too: any
+   * model id present in it is routed to Hugging Face for that one request while every other id
+   * keeps using the local GGUF/llama.cpp path in the same deployment - see resolveInferenceEngine.
+   */
   provider: "llama-cpp" | "huggingface";
   artifactAllowedHosts: ReadonlySet<string>;
   maximumArtifactBytes: number;
@@ -25,6 +34,51 @@ export interface VercelInferenceConfig {
         models: ReadonlyMap<string, string>;
       })
     | null;
+  /**
+   * When true, a confirmed Hugging Face budget-exhaustion response (HTTP 402) permanently disables
+   * further Hugging Face requests for the lifetime of this process instead of continuing to spend.
+   * This is an application-side backstop only - it does not talk to Hugging Face's billing API and
+   * cannot enforce a dollar limit there, does not coordinate across concurrent serverless
+   * instances, and resets on cold start. The administrator must additionally configure a real
+   * spending limit in the Hugging Face billing dashboard; see docs/architecture/huggingface-inference.md.
+   */
+  huggingFaceFreeTierOnly: boolean;
+}
+
+/** `resolveInferenceEngine`'s per-request routing decision. See VercelInferenceConfig.provider. */
+export type InferenceEngineResolution =
+  | { engine: "llama-cpp" }
+  | { engine: "huggingface"; huggingFaceModelId: string };
+
+/**
+ * Decides, per request, which engine actually serves a given Soko model id - the concurrency this
+ * module adds over the pre-hybrid design, where the whole deployment was hard-wired to exactly one
+ * engine. A model id present in HF_MODEL_MAP always routes to Hugging Face regardless of
+ * `config.provider`. When `config.provider === "huggingface"` (the legacy exclusive mode), an
+ * unmapped id still falls back to HF_MODEL_ID if one is configured, preserving that mode's original
+ * behavior exactly. Otherwise (the default `llama-cpp` provider with an unmapped id) the request
+ * proceeds down the GGUF/llama.cpp path, unchanged from before Hugging Face routing existed at all.
+ */
+export function resolveInferenceEngine(
+  config: Pick<VercelInferenceConfig, "provider" | "huggingFace">,
+  modelId: string
+): InferenceEngineResolution {
+  if (config.huggingFace !== null) {
+    const mapped = config.huggingFace.models.get(modelId);
+    if (mapped !== undefined) return { engine: "huggingface", huggingFaceModelId: mapped };
+    if (config.provider === "huggingface" && config.huggingFace.defaultModelId !== null) {
+      return { engine: "huggingface", huggingFaceModelId: config.huggingFace.defaultModelId };
+    }
+    if (config.provider === "huggingface") {
+      throw new InferenceServiceError(
+        "MODEL_NOT_FOUND",
+        `No Hugging Face model is configured for ${modelId}.`,
+        false,
+        422
+      );
+    }
+  }
+  return { engine: "llama-cpp" };
 }
 
 export interface VercelInferenceDependencies {
@@ -51,6 +105,11 @@ export function readVercelInferenceConfig(
   if (provider === "llama-cpp" && hosts.length === 0) {
     throw new Error("MODEL_ARTIFACT_ALLOWED_HOSTS must contain at least one hostname.");
   }
+  // Hugging Face config is built whenever HF_TOKEN is set, not only when it is the sole/exclusive
+  // provider - this is what makes hybrid concurrent routing possible under the default `llama-cpp`
+  // provider (see resolveInferenceEngine). Deployments that never set HF_TOKEN see byte-for-byte
+  // the same config shape as before this change (huggingFace: null).
+  const huggingFaceTokenConfigured = (environment.HF_TOKEN?.trim() ?? "") !== "";
   return {
     serviceToken,
     provider,
@@ -60,7 +119,7 @@ export function readVercelInferenceConfig(
     maximumOutputTokens: positiveInteger(environment.INFERENCE_MAX_OUTPUT_TOKENS, 512),
     cacheEntries: positiveInteger(environment.INFERENCE_RUNTIME_CACHE_ENTRIES, 1),
     huggingFace:
-      provider === "huggingface"
+      provider === "huggingface" || huggingFaceTokenConfigured
         ? {
             token: requiredSecret(environment.HF_TOKEN, "HF_TOKEN"),
             defaultModelId: optionalText(environment.HF_MODEL_ID),
@@ -70,7 +129,8 @@ export function readVercelInferenceConfig(
               "https://router.huggingface.co/v1/"
             )
           }
-        : null
+        : null,
+    huggingFaceFreeTierOnly: booleanFlag(environment.HF_FREE_TIER_ONLY)
   };
 }
 
@@ -83,6 +143,12 @@ export function createVercelInferenceHandler(
   const loadRuntime = dependencies.loadRuntime ?? loadLlamaRuntime;
   const generateHf = dependencies.generateWithHuggingFace ?? generateWithHuggingFace;
   const now = dependencies.now ?? Date.now;
+  // Process-lifetime latch for HF_FREE_TIER_ONLY (see VercelInferenceConfig.huggingFaceFreeTierOnly).
+  // Deliberately outside the per-request closure below so it persists across requests handled by
+  // this same warm serverless instance, and deliberately not reset by anything short of a redeploy
+  // or cold start - "stop when spending cannot be bounded reliably" means stop, not back off and
+  // retry the paid path again on the next message.
+  let huggingFaceBudgetExhausted = false;
 
   return async (request) => {
     if (request.method !== "POST")
@@ -101,13 +167,21 @@ export function createVercelInferenceHandler(
       return errorResponse(413, "INVALID_INFERENCE_REQUEST", "Request body is too large.", false);
     }
     let input: InferenceExecutionRequest;
-    let huggingFaceModelId: string | null = null;
+    let routing: InferenceEngineResolution;
     try {
-      input = parseRequest(await request.json(), config);
-      huggingFaceModelId =
-        config.provider === "huggingface"
-          ? resolveHuggingFaceModel(config.huggingFace!, input.model.id)
-          : null;
+      const parsed = parseRequest(await request.json(), config);
+      input = parsed.request;
+      routing = parsed.routing;
+      if (routing.engine === "huggingface" && config.huggingFaceFreeTierOnly && huggingFaceBudgetExhausted) {
+        throw new InferenceServiceError(
+          "INFERENCE_BUDGET_EXHAUSTED",
+          "Hugging Face free-tier inference credit was already exhausted this session; refusing " +
+            "further requests instead of spending beyond it. An administrator must raise the " +
+            "budget or disable HF_FREE_TIER_ONLY to resume.",
+          false,
+          402
+        );
+      }
     } catch (error) {
       return serviceErrorResponse(error);
     }
@@ -123,14 +197,14 @@ export function createVercelInferenceHandler(
             emit({ type: "status", state: "INITIALIZING" });
             const loadStartedAt = now();
             const acquired =
-              config.provider === "huggingface"
+              routing.engine === "huggingface"
                 ? null
                 : await cache.acquire(
-                    `${input.model.id}:${input.artifact.sha256 ?? input.artifact.id}`,
+                    `${input.model.id}:${input.artifact!.sha256 ?? input.artifact!.id}`,
                     async () => {
                       emit({ type: "status", state: "MODEL_LOADING" });
                       const downloaded = await downloadArtifact({
-                        artifact: input.artifact,
+                        artifact: input.artifact!,
                         allowedHosts: config.artifactAllowedHosts,
                         maximumBytes: config.maximumArtifactBytes,
                         ...(dependencies.request === undefined
@@ -141,7 +215,7 @@ export function createVercelInferenceHandler(
                       return loadRuntime(downloaded.path);
                     }
                   );
-            const modelLoadMs = config.provider === "huggingface" ? 0 : now() - loadStartedAt;
+            const modelLoadMs = routing.engine === "huggingface" ? 0 : now() - loadStartedAt;
             emit({ type: "status", state: "READY", cacheHit: acquired?.cacheHit ?? false });
             const inferenceStartedAt = now();
             const onText = (text: string) => {
@@ -149,9 +223,16 @@ export function createVercelInferenceHandler(
               emit({ type: "delta", text });
             };
             const result =
-              config.provider === "huggingface"
+              routing.engine === "huggingface"
                 ? await generateHf(
-                    { ...config.huggingFace!, modelId: huggingFaceModelId! },
+                    {
+                      ...config.huggingFace!,
+                      modelId: routing.huggingFaceModelId,
+                      // A business's own authorized credential (input.providerCredential) takes
+                      // priority over the platform's configured HF_TOKEN for this one request -
+                      // never the reverse, and never a silent fallback between the two (Part G/H).
+                      token: input.providerCredential?.token ?? config.huggingFace!.token
+                    },
                     {
                       prompt: input.prompt,
                       maximumTokens: input.generation.maxTokens,
@@ -161,7 +242,16 @@ export function createVercelInferenceHandler(
                       onText
                     },
                     dependencies.request
-                  )
+                  ).catch((error: unknown) => {
+                    if (
+                      config.huggingFaceFreeTierOnly &&
+                      error instanceof InferenceServiceError &&
+                      error.code === "INFERENCE_BUDGET_EXHAUSTED"
+                    ) {
+                      huggingFaceBudgetExhausted = true;
+                    }
+                    throw error;
+                  })
                 : await acquired!.runtime.generate({
                     prompt: input.prompt,
                     maximumTokens: input.generation.maxTokens,
@@ -197,7 +287,9 @@ export function createVercelInferenceHandler(
                 runtimeBindingId: input.runtimeBindingId,
                 agentId: input.agent.id,
                 modelId: input.model.id,
-                artifactId: input.artifact.id,
+                provider: routing.engine,
+                usedOwnCredential: input.providerCredential !== undefined,
+                artifactId: input.artifact?.id ?? null,
                 executionHostId: input.executionHostId,
                 ...metrics
               })
@@ -280,11 +372,19 @@ export function createVercelReadyHandler(
         service: "soko-ai-runtime",
         configured: true,
         capabilities: {
-          formats: config.provider === "huggingface" ? ["huggingface-chat-completions"] : ["gguf"],
+          formats: [
+            ...(config.provider === "huggingface" ? [] : ["gguf"]),
+            ...(config.huggingFace === null ? [] : ["huggingface-chat-completions"])
+          ],
           streaming: true,
           harnesses: ["pi"]
         },
         provider: config.provider,
+        // True once any model id is concurrently routable to Hugging Face in this deployment,
+        // whether that's the legacy exclusive `INFERENCE_PROVIDER=huggingface` mode or the hybrid
+        // `llama-cpp` + HF_MODEL_MAP mode this module added - see resolveInferenceEngine.
+        huggingFaceConfigured: config.huggingFace !== null,
+        huggingFaceFreeTierOnly: config.huggingFaceFreeTierOnly,
         huggingFaceModel: config.huggingFace?.defaultModelId ?? null,
         huggingFaceModels:
           config.huggingFace === null ? null : Object.fromEntries(config.huggingFace.models),
@@ -297,19 +397,17 @@ export function createVercelReadyHandler(
   };
 }
 
-function parseRequest(value: unknown, config: VercelInferenceConfig): InferenceExecutionRequest {
+function parseRequest(
+  value: unknown,
+  config: VercelInferenceConfig
+): { request: InferenceExecutionRequest; routing: InferenceEngineResolution } {
   if (!record(value)) throw invalid("Request body must be an object.");
   const requestId = identifier(value.requestId, "requestId");
   const conversationId = identifier(value.conversationId, "conversationId");
   const runtimeBindingId = identifier(value.runtimeBindingId, "runtimeBindingId");
   const executionHostId = identifier(value.executionHostId, "executionHostId");
-  if (
-    !record(value.agent) ||
-    !record(value.model) ||
-    !record(value.artifact) ||
-    !record(value.generation)
-  ) {
-    throw invalid("agent, model, artifact and generation are required.");
+  if (!record(value.agent) || !record(value.model) || !record(value.generation)) {
+    throw invalid("agent, model and generation are required.");
   }
   const agentId = identifier(value.agent.id, "agent.id");
   const adapterId = identifier(value.agent.adapterId, "agent.adapterId");
@@ -322,12 +420,20 @@ function parseRequest(value: unknown, config: VercelInferenceConfig): InferenceE
     );
   }
   const modelId = identifier(value.model.id, "model.id");
+  const routing = resolveInferenceEngine(config, modelId);
   const prompt = typeof value.prompt === "string" ? value.prompt.trim() : "";
   if (prompt === "" || prompt.length > config.maximumInputCharacters) {
     throw invalid("prompt is empty or too large.");
   }
-  const artifact = parseArtifact(value.artifact);
-  if (artifact.modelId !== modelId) throw invalid("artifact.modelId must match model.id.");
+  // Only the llama.cpp path needs a GGUF artifact to download; a Hugging Face-routed request has
+  // nothing to fetch, so requiring one here would fail every hosted model that never had one to
+  // begin with (see RuntimeModelDefinition.requiresArtifact).
+  let artifact: ResolvedModelArtifact | undefined;
+  if (routing.engine === "llama-cpp") {
+    if (!record(value.artifact)) throw invalid("artifact is required for this model.");
+    artifact = parseArtifact(value.artifact);
+    if (artifact.modelId !== modelId) throw invalid("artifact.modelId must match model.id.");
+  }
   const maxTokens = positiveIntegerValue(value.generation.maxTokens, "generation.maxTokens");
   if (maxTokens > config.maximumOutputTokens) throw invalid("generation.maxTokens is too large.");
   const temperature = value.generation.temperature;
@@ -342,23 +448,36 @@ function parseRequest(value: unknown, config: VercelInferenceConfig): InferenceE
   if (value.generation.jsonOutput !== true && value.generation.jsonOutput !== false) {
     throw invalid("generation.jsonOutput must be boolean.");
   }
+  const providerCredential = parseProviderCredential(value.providerCredential);
   return {
-    requestId,
-    conversationId,
-    runtimeBindingId,
-    executionHostId,
-    agent: { id: agentId, adapterId },
-    model: {
-      id: modelId,
-      runtimeContractVersion: identifier(
-        value.model.runtimeContractVersion,
-        "model.runtimeContractVersion"
-      )
+    request: {
+      requestId,
+      conversationId,
+      runtimeBindingId,
+      executionHostId,
+      agent: { id: agentId, adapterId },
+      model: {
+        id: modelId,
+        runtimeContractVersion: identifier(
+          value.model.runtimeContractVersion,
+          "model.runtimeContractVersion"
+        )
+      },
+      ...(artifact === undefined ? {} : { artifact }),
+      prompt,
+      generation: { maxTokens, temperature, jsonOutput: value.generation.jsonOutput },
+      ...(providerCredential === undefined ? {} : { providerCredential })
     },
-    artifact,
-    prompt,
-    generation: { maxTokens, temperature, jsonOutput: value.generation.jsonOutput }
+    routing
   };
+}
+
+function parseProviderCredential(value: unknown): { token: string } | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!record(value) || typeof value.token !== "string" || value.token.trim() === "") {
+    throw invalid("providerCredential.token must be a non-empty string when provided.");
+  }
+  return { token: value.token };
 }
 
 function parseArtifact(value: Record<string, unknown>): ResolvedModelArtifact {
@@ -467,6 +586,10 @@ function providerValue(value: string | undefined): VercelInferenceConfig["provid
   throw new Error("INFERENCE_PROVIDER must be either llama-cpp or huggingface.");
 }
 
+function booleanFlag(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === "true";
+}
+
 function requiredSecret(value: string | undefined, name: string): string {
   const text = requiredText(value, name);
   if (text.length < 8) throw new Error(`${name} must be configured.`);
@@ -518,20 +641,6 @@ function huggingFaceModelMap(
     models.set(sokoModelId, huggingFaceModelId.trim());
   }
   return models;
-}
-
-function resolveHuggingFaceModel(
-  config: NonNullable<VercelInferenceConfig["huggingFace"]>,
-  requestedModelId: string
-): string {
-  const modelId = config.models.get(requestedModelId) ?? config.defaultModelId;
-  if (modelId !== null) return modelId;
-  throw new InferenceServiceError(
-    "MODEL_NOT_FOUND",
-    `No Hugging Face model is configured for ${requestedModelId}.`,
-    false,
-    422
-  );
 }
 
 function optionalUrl(value: string | undefined, fallback: string): string {

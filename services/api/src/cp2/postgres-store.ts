@@ -2301,6 +2301,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     status: "connected" | "expired" | "revoked" | "error";
     scopes: string[];
     encrypted_token: string | null;
+    inference_authorized: boolean;
     created_at: Date;
     updated_at: Date;
   }>(
@@ -2308,7 +2309,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     "load external registry connections",
     `
       select id, account_id, provider, external_account_id, external_username, status, scopes,
-             encrypted_token, created_at, updated_at
+             encrypted_token, inference_authorized, created_at, updated_at
       from cp2_external_registry_connections
       order by account_id, created_at, id
     `
@@ -2321,6 +2322,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     externalUsername: row.external_username,
     status: row.status,
     scopes: row.scopes,
+    inferenceAuthorized: row.inference_authorized,
     encryptedToken: row.encrypted_token,
     createdAt: timestampToIso(row.created_at),
     updatedAt: timestampToIso(row.updated_at)
@@ -3326,15 +3328,16 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
       `
         insert into cp2_external_registry_connections (
           id, account_id, provider, external_account_id, external_username, status, scopes,
-          encrypted_token, created_at, updated_at
+          encrypted_token, inference_authorized, created_at, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10)
+        values ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11)
         on conflict (id) do update set
           external_account_id = excluded.external_account_id,
           external_username = excluded.external_username,
           status = excluded.status,
           scopes = excluded.scopes,
           encrypted_token = excluded.encrypted_token,
+          inference_authorized = excluded.inference_authorized,
           updated_at = excluded.updated_at
       `,
       [
@@ -3346,6 +3349,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         connection.status,
         connection.scopes,
         connection.encryptedToken,
+        connection.inferenceAuthorized,
         connection.createdAt,
         connection.updatedAt
       ]
