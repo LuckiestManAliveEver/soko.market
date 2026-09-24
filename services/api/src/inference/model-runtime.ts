@@ -30,6 +30,12 @@ export interface ModelRuntimeContext {
   executionHostId?: string;
   runtimeContractVersion?: string;
   signal?: AbortSignal;
+  /**
+   * Set only when the business has explicitly authorized spending its own connected provider
+   * credential on this call (see ExternalConnectionsDomain.resolveInferenceToken). Never resolved
+   * inside this file - callers that want user-connected billing must resolve and pass it in.
+   */
+  providerCredential?: { token: string } | null;
 }
 
 export interface ModelRuntimeAvailability {
@@ -206,9 +212,20 @@ export function createVercelModelAdapter(input: {
   modelId: string;
   artifactStore: ModelArtifactStore;
   client: VercelInferenceClient;
+  /**
+   * False for models with no GGUF artifact to verify (e.g. Hugging Face-routed models) - see
+   * RuntimeModelDefinition.requiresArtifact. Defaults to true so every adapter registered before
+   * this option existed keeps verifying an artifact exactly as before.
+   */
+  requiresArtifact?: boolean;
 }): ModelRuntimeAdapter {
+  const requiresArtifact = input.requiresArtifact ?? true;
+  // "llama.cpp" only accurately describes artifact-backed models; a model routed through a remote
+  // chat-completions provider (Hugging Face today) never touches llama.cpp at all, so mislabeling
+  // it would corrupt provider attribution in usage accounting and health reporting.
+  const provider = requiresArtifact ? "llama.cpp" : "remote-chat-completions";
   return {
-    provider: "llama.cpp",
+    provider,
     executionTarget: "vercel",
     async canRun(context) {
       if (context.modelId !== input.modelId) {
@@ -219,14 +236,16 @@ export function createVercelModelAdapter(input: {
         };
       }
       try {
-        const artifact = await input.artifactStore.resolveArtifact(context.modelId);
-        const verification = await input.artifactStore.verifyArtifact(artifact, context.signal);
-        if (!verification.ok) {
-          return {
-            available: false,
-            errorCode: verification.errorCode,
-            message: "The model artifact is unavailable."
-          };
+        if (requiresArtifact) {
+          const artifact = await input.artifactStore.resolveArtifact(context.modelId);
+          const verification = await input.artifactStore.verifyArtifact(artifact, context.signal);
+          if (!verification.ok) {
+            return {
+              available: false,
+              errorCode: verification.errorCode,
+              message: "The model artifact is unavailable."
+            };
+          }
         }
         await input.client.health(context.signal);
         return { available: true, errorCode: null, message: null };
@@ -250,8 +269,11 @@ export function createVercelModelAdapter(input: {
     },
     async generate({ context, prompt }) {
       const startedAt = Date.now();
-      const artifact = await input.artifactStore.resolveArtifact(context.modelId);
-      const resolvedArtifact = await input.artifactStore.createDownloadUrl(artifact);
+      const resolvedArtifact = requiresArtifact
+        ? await input.artifactStore.createDownloadUrl(
+            await input.artifactStore.resolveArtifact(context.modelId)
+          )
+        : undefined;
       const requestId = randomUUID();
       const result = await input.client.infer(
         {
@@ -264,9 +286,12 @@ export function createVercelModelAdapter(input: {
             id: context.modelId,
             runtimeContractVersion: context.runtimeContractVersion ?? "1"
           },
-          artifact: resolvedArtifact,
+          ...(resolvedArtifact === undefined ? {} : { artifact: resolvedArtifact }),
           prompt: buildInferencePrompt(prompt),
-          generation: { maxTokens: 256, temperature: 0.2, jsonOutput: true }
+          generation: { maxTokens: 256, temperature: 0.2, jsonOutput: true },
+          ...(context.providerCredential === undefined
+            ? {}
+            : { providerCredential: context.providerCredential })
         },
         { ...(context.signal === undefined ? {} : { signal: context.signal }) }
       );
@@ -280,7 +305,7 @@ export function createVercelModelAdapter(input: {
       return {
         text,
         modelId: context.modelId,
-        provider: "llama.cpp",
+        provider,
         executionTarget: "vercel",
         ...(result.usage.inputTokens === null ? {} : { promptTokens: result.usage.inputTokens }),
         ...(result.usage.outputTokens === null

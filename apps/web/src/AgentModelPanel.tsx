@@ -104,6 +104,12 @@ export function AgentModelPanel({
     >
   >({});
   const [activatingModelId, setActivatingModelId] = useState<string | null>(null);
+  // Set only while a merchant-funded activation (any model but smollm2-360m) awaits explicit
+  // confirmation - activateServerBackendModel is never called until the merchant confirms, so a
+  // single click can never switch this agent onto a billable model without that confirmation.
+  const [pendingCostConfirmationModelId, setPendingCostConfirmationModelId] = useState<
+    string | null
+  >(null);
   const [testingBackendModelId, setTestingBackendModelId] = useState<string | null>(null);
   const [failedActivationModelId, setFailedActivationModelId] = useState<string | null>(null);
   const [modelActivationState, setModelActivationState] = useState<ModelActivationState>("idle");
@@ -377,11 +383,20 @@ export function AgentModelPanel({
     }
   }
 
+  function requestActivateServerBackendModel(model: AiModelSummary) {
+    if (model.id !== "smollm2-360m") {
+      setPendingCostConfirmationModelId(model.id);
+      return;
+    }
+    void activateServerBackendModel(model);
+  }
+
   async function activateServerBackendModel(model: AiModelSummary) {
     if (modelRuntimeBusyRef.current || !navigator.onLine) {
       setProfileMessage("Connect to the internet to activate the backend model.");
       return;
     }
+    setPendingCostConfirmationModelId(null);
     modelRuntimeBusyRef.current = true;
     setModelRuntimeBusy(true);
     setActivatingModelId(model.id);
@@ -702,6 +717,31 @@ export function AgentModelPanel({
                               again or pick a different model.
                             </small>
                           ) : null}
+                          {pendingCostConfirmationModelId === model.id ? (
+                            <div className="shell-note" role="alertdialog">
+                              <small>
+                                {model.label} is merchant-funded through {model.provider}. Your
+                                business will be billed for its inference usage. Switch anyway?
+                              </small>
+                              <div className="ai-model-card-actions">
+                                <button
+                                  type="button"
+                                  disabled={modelRuntimeBusy}
+                                  onClick={() => void activateServerBackendModel(model)}
+                                >
+                                  Confirm switch
+                                </button>
+                                <button
+                                  type="button"
+                                  className="secondary"
+                                  disabled={modelRuntimeBusy}
+                                  onClick={() => setPendingCostConfirmationModelId(null)}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                         <div className="ai-model-card-actions">
                           <button
@@ -717,9 +757,9 @@ export function AgentModelPanel({
                             aria-pressed={activeForAgent}
                             disabled={modelRuntimeBusy}
                             onClick={() =>
-                              void (activeForAgent
-                                ? removeServerBackendModelFromAgent(model)
-                                : activateServerBackendModel(model))
+                              activeForAgent
+                                ? void removeServerBackendModelFromAgent(model)
+                                : requestActivateServerBackendModel(model)
                             }
                           >
                             {activeForAgent

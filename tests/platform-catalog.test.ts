@@ -20,6 +20,7 @@ describe("DB-hosted platform model/agent catalog", () => {
         "tinyllama-1.1b-chat-q4-k-m-android",
         "qwen2.5-0.5b-android",
         "qwen2.5-1.5b-android",
+        "qwen3-4b",
         "sokoclaw-local",
         "llama-cpp-configured"
       ].sort()

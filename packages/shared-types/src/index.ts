@@ -998,6 +998,20 @@ export interface AiModelSummary {
    * or a native bridge model chosen by an installed app that the server cannot introspect.
    */
   contextWindow: number | null;
+  /**
+   * The provider's own model identifier (e.g. a Hugging Face Hub repo id), kept separate from
+   * `id` (Soko's internal registry id used for relationships/bindings). `null` when the model has
+   * no external provider-specific id (the deterministic fallback, a device-bridge model).
+   */
+  canonicalModelId?: string | null;
+  /**
+   * Verified, not assumed: only true when this exact model+provider combination has been confirmed
+   * to accept an OpenAI-style `tools` parameter. Never inferred from the base model architecture
+   * alone, since a hosted hosting backend can support a model without exposing tool calling for it.
+   */
+  supportsToolCalling?: boolean;
+  /** Verified support for a constrained/structured (e.g. `response_format: json_object`) response. */
+  supportsStructuredOutput?: boolean;
 }
 
 export interface ActiveAiModelSummary {
@@ -1072,9 +1086,32 @@ export interface RuntimeModelDefinition {
   providerModelId: string;
   contextWindow: number;
   enabled: boolean;
+  /**
+   * Whether this model needs a downloaded/verified GGUF artifact (the llama.cpp path) before it
+   * can run. Defaults to true when absent, matching every model registered before this field
+   * existed. False for models served remotely through a hosted chat-completions API (e.g. Hugging
+   * Face Inference Providers) with no artifact to download - createVercelModelAdapter
+   * (services/api/src/inference/model-runtime.ts) uses this to skip artifact resolution entirely
+   * for such models instead of failing them for lacking one.
+   */
+  requiresArtifact?: boolean;
 }
 
 export const runtimeModels = {
+  "qwen3-4b": {
+    id: "qwen3-4b",
+    displayName: "Qwen3-4B",
+    provider: "huggingface",
+    // The Hugging Face Hub repository id, distinct from Soko's internal registry id above -
+    // this is what gets sent as `model` in the chat/completions request, never the internal id.
+    providerModelId: "Qwen/Qwen3-4B",
+    // Qwen3's published native context length (see the model card at
+    // https://huggingface.co/Qwen/Qwen3-4B); YaRN extension to 131,072 is not enabled here since
+    // it is not something every Inference Providers backend honors uniformly.
+    contextWindow: 32_768,
+    enabled: true,
+    requiresArtifact: false
+  },
   "qwen2.5-0.5b-android": {
     id: "qwen2.5-0.5b-android",
     displayName: "Qwen2.5 0.5B",
@@ -3686,9 +3723,11 @@ export interface RuntimeModelConversationMessage {
 
 /**
  * Provider-neutral inference failure categories. Every inference-capable surface in this
- * repository - server model adapters (services/api/src/inference/model-runtime.ts) and the OpenAI
- * provider (services/api/src/inference/openai-provider.ts) - throws or returns its own specific
- * error code (e.g. "MODEL_PROVIDER_TIMEOUT", "CLOUD_TIMEOUT", "INFERENCE_TIMEOUT"). Those specific
+ * repository - server model adapters (services/api/src/inference/model-runtime.ts) routing to
+ * either the llama.cpp or Hugging Face backend behind services/ai-runtime - throws or returns its
+ * own specific error code (e.g. "MODEL_PROVIDER_TIMEOUT", "CLOUD_TIMEOUT", "INFERENCE_TIMEOUT").
+ * (There is no OpenAI or other cloud-LLM-API provider in this repository; one existed historically
+ * and was removed by migration 068_remove_cloud_fallback.sql.) Those specific
  * codes stay exactly as they are: this type and normalizeInferenceErrorCode() only add a shared,
  * coarser category on top, so telemetry and user-facing messaging can reason about "a timeout
  * happened" the same way regardless of which surface produced it, without either changing what it
@@ -3731,7 +3770,7 @@ export interface RuntimeInferenceError {
 }
 
 const inferenceErrorCategoryByCode: Record<string, RuntimeInferenceErrorCategory> = {
-  // services/api/src/inference/model-runtime.ts and cloud-fallback.ts
+  // services/api/src/inference/model-runtime.ts (llama.cpp and Hugging Face backends alike)
   MODEL_PROVIDER_TIMEOUT: "TIMEOUT",
   INFERENCE_TIMEOUT: "TIMEOUT",
   CLOUD_TIMEOUT: "TIMEOUT",
@@ -4619,9 +4658,25 @@ export interface InferenceExecutionRequest {
   executionHostId: string;
   agent: { id: string; adapterId: string };
   model: { id: string; runtimeContractVersion: string };
-  artifact: ResolvedModelArtifact;
+  /**
+   * Required for artifact-backed (llama.cpp/GGUF) models; omitted for models routed to a remote
+   * chat-completions provider (e.g. Hugging Face) that has nothing to download - see
+   * RuntimeModelDefinition.requiresArtifact and services/ai-runtime/src/vercel-handler.ts.
+   */
+  artifact?: ResolvedModelArtifact;
   prompt: string;
   generation: { maxTokens: number; temperature: number; jsonOutput: boolean };
+  /**
+   * Server-to-server only - this request never crosses a browser boundary (it travels from
+   * services/api to services/ai-runtime over the shared SOKO_INFERENCE_SERVICE_TOKEN bearer, both
+   * internal). When present, the business has explicitly authorized (POST
+   * /v1/external-connections/:id/inference-authorization) using their own connected provider
+   * credential for this call instead of the platform's; ai-runtime substitutes it for its own
+   * configured token for this one request only. Never logged, never echoed back in any response
+   * or error, and never derived from anything client-supplied - services/api resolves it
+   * server-side via ExternalConnectionsDomain.resolveInferenceToken before this request is built.
+   */
+  providerCredential?: { token: string } | null;
 }
 
 export type InferenceExecutionEvent =

@@ -827,6 +827,10 @@ test("activating a backend model preserves the previous model when activation fa
     .locator(".ai-model-card")
     .filter({ hasText: "Second Backend Model" });
   await secondModelCard.getByRole("button", { name: "Use with agent" }).click();
+  // This model isn't the platform-included default, so it's merchant-funded - the activation
+  // request doesn't fire until this confirmation is accepted (see AgentModelPanel.tsx's
+  // requestActivateServerBackendModel).
+  await secondModelCard.getByRole("button", { name: "Confirm switch" }).click();
 
   await expect(secondModelCard.getByRole("status")).toHaveText(
     "Activation failed. The previous working model remains active - try again or pick a different model."
@@ -886,6 +890,10 @@ test("a second backend-configured model does not clip the model library at 280px
     .locator(".ai-model-card")
     .filter({ hasText: "Second Backend Model" });
   await secondModelCard.getByRole("button", { name: "Use with agent" }).click();
+  // This model isn't the platform-included default, so it's merchant-funded - the activation
+  // request doesn't fire until this confirmation is accepted (see AgentModelPanel.tsx's
+  // requestActivateServerBackendModel).
+  await secondModelCard.getByRole("button", { name: "Confirm switch" }).click();
   await expect(secondModelCard.getByRole("status")).toHaveText(
     "Activation failed. The previous working model remains active - try again or pick a different model."
   );

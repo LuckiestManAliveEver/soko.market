@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { QuickRuntimeSwitcher } from "../apps/web/src/QuickRuntimeSwitcher";
+import { clearApiRequestCache } from "../apps/web/src/api-request-cache";
 import type { ActiveBusiness, AgentSettings } from "../apps/web/src/soko-application-shared";
 
 describe("quick runtime switcher", () => {
@@ -17,6 +18,10 @@ describe("quick runtime switcher", () => {
     ).IS_REACT_ACT_ENVIRONMENT = true;
     host = document.createElement("div");
     document.body.append(host);
+    // /v1/ai-models and /v1/platform/agent-catalog are shop-independent paths cached in a
+    // module-level Map (api-request-cache.ts) that otherwise persists across tests in this file,
+    // serving an earlier test's stubbed model list to a later test that stubbed a different one.
+    clearApiRequestCache();
   });
 
   afterEach(() => {
@@ -42,6 +47,16 @@ describe("quick runtime switcher", () => {
     return new Response(JSON.stringify(body), {
       status,
       headers: { "content-type": "application/json" }
+    });
+  }
+
+  // fetch's first argument may be an absolute URL (with an app-configured origin) rather than the
+  // bare path, so callers must check for the path as a suffix/substring, not exact equality.
+  function calledWithPath(fetchMock: ReturnType<typeof vi.fn>, path: string): boolean {
+    return fetchMock.mock.calls.some((call) => {
+      const input = call[0] as string | URL | Request;
+      const url = typeof input === "string" ? input : input.toString();
+      return new URL(url, "http://localhost").pathname === path;
     });
   }
 
@@ -261,5 +276,211 @@ describe("quick runtime switcher", () => {
       expect.objectContaining({ agentDefinitionId: "builtin:pi-assistant" })
     );
     expect(host.textContent).toContain("Shopkeeper (Pi engine)");
+  });
+
+  // Each caller must pass its own unique shop id: apps/web/src/api-request-cache.ts caches GET
+  // responses in a module-level Map keyed by path, which persists across tests in this same file -
+  // reusing a shop id across tests would silently serve a previous test's cached runtime/effective
+  // or ai-models response instead of calling the stubbed fetch again.
+  function merchantFundedModelsFixture(shopId: string) {
+    return {
+      "/v1/platform/agent-catalog": () =>
+        jsonResponse({
+          agents: [{ id: "builtin:shopkeeper", displayName: "Shopkeeper", description: "" }]
+        }),
+      [`/businesses/${shopId}/runtime/effective`]: () =>
+        jsonResponse({
+          agent: { id: "builtin:shopkeeper", name: "Shopkeeper", runtimeAdapterId: "soko" },
+          model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
+          execution: { type: "backend", hostId: "host-1", ready: true },
+          binding: { id: "binding-1" },
+          source: "default",
+          status: "READY",
+          ready: true
+        }),
+      "/v1/ai-models": () =>
+        jsonResponse({
+          models: [
+            {
+              id: "smollm2-360m",
+              label: "SmolLM2 360M Instruct Q4_0",
+              provider: "local",
+              description: "",
+              capabilities: [],
+              available: true,
+              source: "hosted",
+              format: "remote",
+              license: null,
+              licenseUrl: null,
+              modelCardUrl: null,
+              downloadUrl: null,
+              fileName: null,
+              fileSizeBytes: null,
+              minimumMemoryGb: null,
+              recommended: true,
+              runtimeAvailability: { backend: "configured" }
+            },
+            {
+              id: "qwen3-4b",
+              label: "Qwen3-4B",
+              provider: "huggingface",
+              description: "",
+              capabilities: ["chat", "reasoning"],
+              available: true,
+              source: "hosted",
+              format: "remote",
+              license: "Apache-2.0",
+              licenseUrl: null,
+              modelCardUrl: null,
+              downloadUrl: null,
+              fileName: null,
+              fileSizeBytes: null,
+              minimumMemoryGb: null,
+              recommended: true,
+              runtimeAvailability: { backend: "configured" }
+            }
+          ]
+        })
+    };
+  }
+
+  it("asks for confirmation before switching to a merchant-funded model, and does not call activate until confirmed", async () => {
+    const shopId = "agent-shop-confirm";
+    const fetchMock = stubFetch({
+      ...merchantFundedModelsFixture(shopId),
+      [`/api/agents/${shopId}/models/qwen3-4b/activate`]: () =>
+        jsonResponse({
+          status: "active",
+          binding: { id: "binding-1", agentId: shopId, modelId: "qwen3-4b" },
+          healthCheck: { latencyMs: 5 }
+        })
+    });
+    const updateAgent = vi.fn();
+    await act(async () => {
+      root = createRoot(host);
+      root.render(
+        <QuickRuntimeSwitcher
+          business={business(shopId)}
+          agent={agent()}
+          updateAgent={updateAgent}
+          onAgentChange={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const modelSelect = host.querySelectorAll<HTMLSelectElement>("select")[1] as HTMLSelectElement;
+    await act(async () => {
+      modelSelect.value = "qwen3-4b";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+    // No activation request fired yet, and the dropdown still reflects the active model.
+    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/qwen3-4b/activate`)).toBe(false);
+    expect(modelSelect.value).toBe("smollm2-360m");
+    expect(host.textContent).toContain("merchant-funded");
+    expect(updateAgent).not.toHaveBeenCalled();
+
+    const confirmButton = [...host.querySelectorAll("button")].find(
+      (button) => button.textContent === "Confirm switch"
+    ) as HTMLButtonElement;
+    await act(async () => {
+      confirmButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/qwen3-4b/activate`)).toBe(true);
+    expect(updateAgent).toHaveBeenCalledWith(expect.objectContaining({ model: "qwen3-4b" }));
+  });
+
+  it("cancelling the confirmation leaves the previous model active and never calls activate", async () => {
+    const shopId = "agent-shop-cancel";
+    const fetchMock = stubFetch(merchantFundedModelsFixture(shopId));
+    await act(async () => {
+      root = createRoot(host);
+      root.render(
+        <QuickRuntimeSwitcher
+          business={business(shopId)}
+          agent={agent()}
+          updateAgent={vi.fn()}
+          onAgentChange={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const modelSelect = host.querySelectorAll<HTMLSelectElement>("select")[1] as HTMLSelectElement;
+    await act(async () => {
+      modelSelect.value = "qwen3-4b";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const cancelButton = [...host.querySelectorAll("button")].find(
+      (button) => button.textContent === "Cancel"
+    ) as HTMLButtonElement;
+    await act(async () => {
+      cancelButton.click();
+      await Promise.resolve();
+    });
+
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(modelSelect.value).toBe("smollm2-360m");
+    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/qwen3-4b/activate`)).toBe(false);
+  });
+
+  it("switching back to the platform default never asks for confirmation", async () => {
+    const shopId = "agent-shop-default-return";
+    const fetchMock = stubFetch({
+      ...merchantFundedModelsFixture(shopId),
+      [`/businesses/${shopId}/runtime/effective`]: () =>
+        jsonResponse({
+          agent: { id: "builtin:shopkeeper", name: "Shopkeeper", runtimeAdapterId: "soko" },
+          model: { id: "qwen3-4b", name: "Qwen3-4B" },
+          execution: { type: "backend", hostId: "host-1", ready: true },
+          binding: { id: "binding-1" },
+          source: "default",
+          status: "READY",
+          ready: true
+        }),
+      [`/api/agents/${shopId}/models/smollm2-360m/activate`]: () =>
+        jsonResponse({
+          status: "active",
+          binding: { id: "binding-1", agentId: shopId, modelId: "smollm2-360m" },
+          healthCheck: { latencyMs: 5 }
+        })
+    });
+    await act(async () => {
+      root = createRoot(host);
+      root.render(
+        <QuickRuntimeSwitcher
+          business={business(shopId)}
+          agent={agent()}
+          updateAgent={vi.fn()}
+          onAgentChange={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const modelSelect = host.querySelectorAll<HTMLSelectElement>("select")[1] as HTMLSelectElement;
+    await act(async () => {
+      modelSelect.value = "smollm2-360m";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/smollm2-360m/activate`)).toBe(
+      true
+    );
   });
 });
