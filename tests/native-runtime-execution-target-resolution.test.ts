@@ -277,6 +277,132 @@ describe("resolveNativeRuntimeModelProvider - adapter wiring around the resolved
   });
 });
 
+describe("resolveNativeRuntimeModelProvider - own-account credential resolution (BYO Hugging Face billing)", () => {
+  const shopRuntime = { agentId, shopId } as unknown as ShopAgentRuntime;
+
+  function resolutionWithBillingMode(
+    billingMode: string | undefined,
+    provider = "huggingface"
+  ): ResolvedNativeRuntimeBinding {
+    const base = nativeResolution({ configuredTarget: "backend", hostType: "backend" });
+    // selectUnattemptedNativeResolution (inside resolveNativeRuntimeModelProvider) re-derives
+    // `selected` from `primary`/`fallbacks`, not from a pre-set `.selected` field - the provider
+    // override must land on `primary.model`, or it gets discarded before the function ever sees it.
+    const primaryWithProvider = {
+      ...base.primary,
+      model: { ...base.primary.model, provider }
+    };
+    return {
+      ...base,
+      binding: {
+        ...base.binding,
+        configuration: billingMode === undefined ? {} : { billingMode }
+      },
+      primary: primaryWithProvider,
+      selected: primaryWithProvider
+    };
+  }
+
+  it("forwards a resolved own-account credential into the adapter context when billingMode is own-account", async () => {
+    const capturedContexts: unknown[] = [];
+    const requireAdapter = vi.fn(() => ({
+      ...fakeAdapter("backend"),
+      generate: async (input: { context: unknown }) => {
+        capturedContexts.push(input.context);
+        return {
+          text: "{}",
+          modelId,
+          provider: "test",
+          executionTarget: "backend" as const,
+          latencyMs: 1
+        };
+      }
+    }));
+    const resolveInferenceCredential = vi.fn(() => ({ token: "hf_business_own_token" }));
+    const result = resolveNativeRuntimeModelProvider({
+      shopRuntime,
+      requestedModelId: modelId,
+      nativeResolution: resolutionWithBillingMode("own-account"),
+      requireAdapter,
+      adapterResolverConfigured: true,
+      accountId: "account-1",
+      resolveInferenceCredential
+    });
+
+    expect(resolveInferenceCredential).toHaveBeenCalledWith("account-1", "huggingface");
+    await result.provider?.complete({
+      message: "hi",
+      allowedTools: [],
+      schemaVersion: "cp11-runtime-model-v1"
+    });
+    expect(capturedContexts).toEqual([
+      expect.objectContaining({ providerCredential: { token: "hf_business_own_token" } })
+    ]);
+  });
+
+  it("never resolves a credential when billingMode is absent (the default, platform-billed path)", () => {
+    const resolveInferenceCredential = vi.fn(() => ({ token: "should-never-be-used" }));
+    resolveNativeRuntimeModelProvider({
+      shopRuntime,
+      requestedModelId: modelId,
+      nativeResolution: resolutionWithBillingMode(undefined),
+      requireAdapter: () => fakeAdapter("backend"),
+      adapterResolverConfigured: true,
+      accountId: "account-1",
+      resolveInferenceCredential
+    });
+    expect(resolveInferenceCredential).not.toHaveBeenCalled();
+  });
+
+  it("never resolves a credential when billingMode is own-account but no accountId/resolver was supplied", () => {
+    // Every existing caller that omits these two options keeps behaving exactly as before this
+    // feature existed - this is the regression test for that backward-compatibility guarantee.
+    const requireAdapter = vi.fn(() => fakeAdapter("backend"));
+    const result = resolveNativeRuntimeModelProvider({
+      shopRuntime,
+      requestedModelId: modelId,
+      nativeResolution: resolutionWithBillingMode("own-account"),
+      requireAdapter,
+      adapterResolverConfigured: true
+    });
+    expect(result.provider).toBeDefined();
+  });
+
+  it("degrades to no credential (platform billing) when own-account is set but the account has no usable connection", async () => {
+    const resolveInferenceCredential = vi.fn(() => null);
+    const capturedContexts: unknown[] = [];
+    const requireAdapter = vi.fn(() => ({
+      ...fakeAdapter("backend"),
+      generate: async (input: { context: unknown }) => {
+        capturedContexts.push(input.context);
+        return {
+          text: "{}",
+          modelId,
+          provider: "test",
+          executionTarget: "backend" as const,
+          latencyMs: 1
+        };
+      }
+    }));
+    const result = resolveNativeRuntimeModelProvider({
+      shopRuntime,
+      requestedModelId: modelId,
+      nativeResolution: resolutionWithBillingMode("own-account"),
+      requireAdapter,
+      adapterResolverConfigured: true,
+      accountId: "account-1",
+      resolveInferenceCredential
+    });
+    expect(resolveInferenceCredential).toHaveBeenCalled();
+    await result.provider?.complete({
+      message: "hi",
+      allowedTools: [],
+      schemaVersion: "cp11-runtime-model-v1"
+    });
+    expect(capturedContexts[0]).not.toHaveProperty("providerCredential");
+  });
+});
+
 describe("zero-setup hosted-first runtime provisioning", () => {
   it("provisions a verified generic backend binding for first chat without manual activation", async () => {
     const backendGenerate = vi.fn(async () => ({

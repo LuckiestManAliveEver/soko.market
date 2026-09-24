@@ -216,7 +216,15 @@ export class NativeRuntimeBindingStore {
       name: `${input.agentName} runtime`,
       status: "active",
       isDefault: false,
-      configuration: { source: "model-activation" },
+      // A model activation/re-verification must never silently reset an explicit, separately-set
+      // preference on this binding (e.g. billingMode from setBindingBillingMode below) - only
+      // setBindingBillingMode itself changes it.
+      configuration: {
+        source: "model-activation",
+        ...(matching?.configuration.billingMode === undefined
+          ? {}
+          : { billingMode: matching.configuration.billingMode })
+      },
       runtimeContractVersion: nativeRuntimeContractVersion,
       createdAt: matching?.createdAt ?? timestamp,
       updatedAt: timestamp,
@@ -443,6 +451,40 @@ export class NativeRuntimeBindingStore {
         : null;
     if (executionTarget === null) return null;
     return { binding, model, role, executionTarget };
+  }
+
+  /**
+   * The only write path for a binding's billing-mode preference (see
+   * native-runtime-routing.ts's resolveOwnAccountCredential, which reads it). Deliberately separate
+   * from model activation - activateVerifiedModel above preserves whatever is already here across a
+   * routine re-activation/re-verification instead of ever setting it itself, so this is the one
+   * place "own-account" can be turned on, matching the same explicit-authorization principle as
+   * ExternalRegistryConnection.inferenceAuthorized.
+   */
+  setBindingBillingMode(input: {
+    businessId: string;
+    accountId: string;
+    agentId: string;
+    billingMode: "platform" | "own-account";
+    updatedBy: string;
+    now?: Date;
+  }): NativeRuntimeBindingSummary {
+    const binding = this.bindingForBusinessAgent(input.businessId, input.agentId, input.accountId);
+    if (binding === null) {
+      throw new Cp2Error(
+        404,
+        "NATIVE_RUNTIME_BINDING_NOT_FOUND",
+        "No active runtime binding exists for this agent yet - activate a model first."
+      );
+    }
+    const updated: NativeRuntimeBindingSummary = {
+      ...binding,
+      configuration: { ...binding.configuration, billingMode: input.billingMode },
+      updatedAt: (input.now ?? new Date()).toISOString(),
+      updatedBy: input.updatedBy
+    };
+    this.bindings.set(binding.id, updated);
+    return { ...updated };
   }
 
   deactivateBusinessAgentBinding(

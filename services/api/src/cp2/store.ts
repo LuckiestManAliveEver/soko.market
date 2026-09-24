@@ -1521,6 +1521,7 @@ export class Cp2Store {
         }
         return bindingId;
       },
+      setBindingBillingMode: (input) => this.nativeRuntimeBindings.setBindingBillingMode(input),
       ...(this.options.modelRuntimeAdapterResolver === undefined
         ? {}
         : { modelRuntimeAdapterResolver: this.options.modelRuntimeAdapterResolver }),
@@ -1532,7 +1533,15 @@ export class Cp2Store {
         : { runtimeModelProviderResolver: this.options.runtimeModelProviderResolver }),
       ...(this.options.runtimeModelProvider === undefined
         ? {}
-        : { runtimeModelProvider: this.options.runtimeModelProvider })
+        : { runtimeModelProvider: this.options.runtimeModelProvider }),
+      // Cross-domain wiring, not an externally-injectable option - every deployment gets this for
+      // free once ExternalConnectionsDomain exists, matching resolveExternalConnectionInferenceToken's
+      // own "internal-only" contract.
+      resolveInferenceCredential: (accountId, provider) => {
+        if (provider !== "github" && provider !== "huggingface") return null;
+        const token = this.externalConnectionsDomain.resolveInferenceToken(accountId, provider);
+        return token === null ? null : { token };
+      }
     });
     this.runtimeHandoffDomain = new RuntimeHandoffDomain({
       requireHandoffOwner: (businessId, userId) => {
@@ -3989,6 +3998,11 @@ export class Cp2Store {
     ...args: Parameters<AgentRuntimeDomain["removeAgentModelBinding"]>
   ): ReturnType<AgentRuntimeDomain["removeAgentModelBinding"]> {
     return this.agentRuntimeDomain.removeAgentModelBinding(...args);
+  }
+  setAgentModelBillingMode(
+    ...args: Parameters<AgentRuntimeDomain["setAgentModelBillingMode"]>
+  ): ReturnType<AgentRuntimeDomain["setAgentModelBillingMode"]> {
+    return this.agentRuntimeDomain.setAgentModelBillingMode(...args);
   }
   testAgentModel(
     ...args: Parameters<AgentRuntimeDomain["testAgentModel"]>

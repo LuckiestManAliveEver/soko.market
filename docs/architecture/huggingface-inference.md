@@ -133,10 +133,36 @@ Three distinct credentials, never conflated:
      inference call must use — returns a token only when `inferenceAuthorized` is true, `null`
      otherwise. `resolveToken()` (the pre-existing discovery read path) is unaffected and must never
      be used to source a credential for a billed model call.
-   - The wire contract for actually using it end to end exists and is unit-tested
-     (`InferenceExecutionRequest.providerCredential`, honored by `vercel-handler.ts`'s Hugging Face
-     branch, which prefers it over the platform's `HF_TOKEN` when present) — see §8 for what is and
-     is not wired into the live per-turn call path yet.
+   - **A business opts a specific agent binding into own-account billing with
+     `POST /api/agents/:agentId/model-binding/billing-mode`** (body `{shopId, billingMode: "platform"
+     | "own-account"}`). Setting `"own-account"` is rejected with `409
+     INFERENCE_CREDENTIAL_NOT_AUTHORIZED` unless the account already has a usable, inference-
+     authorized connection for the active model's provider — the endpoint never accepts the
+     preference "on trust" and leaves it to fail silently later. The preference is stored on the
+     **native runtime binding** (`NativeRuntimeBindingSummary.configuration.billingMode`), not on the
+     model row: `cp2_native_runtime_models` is a single shared catalog entry reused by every business
+     that activates a given model id, so storing a billing preference there would leak one business's
+     choice onto every other business using the same model. The binding, by contrast, is genuinely
+     scoped to one (business, account, agent) triple. A routine model re-verification/re-activation
+     preserves whatever billing mode is already set (`NativeRuntimeBindingStore.activateVerifiedModel`)
+     — only the billing-mode endpoint itself changes it.
+   - **This is wired all the way into a live chat turn**, not just the wire format:
+     `AgentRuntimeStore.createRuntimeModelRoute` already threads the calling `accountId` through to
+     `resolveRuntimeModelProvider` → `resolveNativeRuntimeModelProvider`
+     (`native-runtime-routing.ts`), whose `resolveOwnAccountCredential` helper reads the resolved
+     binding's `configuration.billingMode`, and — only when it is exactly `"own-account"` — calls the
+     injected `resolveInferenceCredential` (wired from `Cp2Store` to
+     `ExternalConnectionsDomain.resolveInferenceToken`) and attaches the result to the
+     `ModelRuntimeContext` passed to `runtimeProviderFromAdapter`. The credential lookup is
+     synchronous (`decryptOAuthToken` is plain AES-GCM, no I/O), so this required no change to the
+     resolver's deliberately pure, synchronous design — every existing caller that omits `accountId`/
+     `resolveInferenceCredential` keeps its exact prior behavior. If the account's own credential
+     becomes unresolvable after being set (revoked, connection removed), the turn silently continues
+     under the platform credential rather than failing the turn — this degrades billing attribution
+     rather than availability, and is a known, accepted tradeoff, not an oversight.
+   - Covered by `tests/native-runtime-execution-target-resolution.test.ts` (unit: the resolver logic
+     in isolation) and `tests/agent-model-billing-mode.test.ts` (integration: the full connect →
+     authorize → set-billing-mode → persists-across-reactivation flow via real HTTP routes).
 
 Every credential path shares the same guarantees: HTTPS transit, server-side validation before
 persistence (one real API call against the provider), encryption at rest
@@ -191,20 +217,19 @@ provider-specific before this change and remain so.
   `resolveInferenceToken`'s scope-gated read.
 - The merchant-funded-model cost-confirmation gate in both `QuickRuntimeSwitcher.tsx` and
   `AgentModelPanel.tsx` (a pre-existing gap in both surfaces — cost responsibility was being sent to
-  the activation endpoint without ever asking the merchant first).
+  the activation endpoint without ever asking the merchant first), each with its own dedicated test
+  file (`tests/quick-runtime-switcher.test.tsx`, `tests/agent-model-panel.test.tsx`).
+- **BYO-credential resolution wired into the live per-turn chat call.** Resolving whether it is
+  synchronous turned out to remove the obstacle an earlier pass of this doc named: decrypting a
+  stored token is plain AES-GCM with no I/O, so `resolveNativeRuntimeModelProvider` stays exactly as
+  pure and synchronous as before while still resolving a real credential per turn. See §6 for the
+  full mechanism and `POST /api/agents/:agentId/model-binding/billing-mode` for the write path.
 
-**Designed and mechanism-tested, not yet wired into the live per-turn chat call:**
-- Actually resolving a business's authorized `providerCredential` and injecting it into
-  `ModelRuntimeContext` during a real chat turn. The natural injection point is
-  `resolveNativeRuntimeModelProvider()` / `runtimeProviderFromAdapter()`
-  (`services/api/src/cp2/domains/agent-runtime/native-runtime-routing.ts:152`), which is currently a
-  deliberately pure, synchronous precedence resolver with an extensive existing test suite relying on
-  that purity. Adding an async, account-scoped credential lookup inside it is a real architectural
-  change to a load-bearing function and was not made blind in this session — it needs its own
-  reviewed change, including deciding where a business's chosen "use my own Hugging Face account"
-  billing-mode preference is persisted (a candidate: `NativeRuntimeModelSummary.configuration`, the
-  existing free-form per-model configuration field on the native runtime binding graph).
+**Out of scope, not built:**
 - Task-type-based automatic model routing (§9 of the audit) — genuinely new capability, not required
-  by the task brief's explicit precedence hierarchy, and not built.
+  by the task brief's explicit precedence hierarchy.
+- A frontend UI control for choosing "own-account" billing mode (the API endpoint exists and is
+  fully tested; `QuickRuntimeSwitcher.tsx`/`AgentModelPanel.tsx` do not yet expose it).
+- Distributing `HF_FREE_TIER_ONLY`'s latch across serverless instances (still per-process, see §7).
 
 Nothing in this list was reported as done in the final report unless it is in the first category.

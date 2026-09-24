@@ -1,7 +1,40 @@
 # Implementation report: Hugging Face inference and dynamic model switching
 
 Date: 2026-09-24. Companion docs: `docs/architecture/huggingface-model-switching-audit.md` (what
-existed before this work), `docs/architecture/huggingface-inference.md` (how the result works).
+existed before this work), `docs/architecture/huggingface-inference.md` (how the result works),
+`docs/architecture/task-based-model-routing-proposal.md` (the one follow-up item scoped but not built).
+
+## 0. Follow-up round: closing the three named gaps
+
+The first pass of this feature (commit `1786fd6`) reported `DONE_WITH_CONCERNS` with three named
+gaps. Asked explicitly to act on all three, this round:
+
+1. **Wired the BYO Hugging Face credential into a live chat turn** (previously "plumbing built,
+   not connected"). `AgentRuntimeStore.createRuntimeModelRoute` already threaded the calling
+   `accountId` all the way to `resolveRuntimeModelProvider`; the missing piece was
+   `resolveNativeRuntimeModelProvider` (`native-runtime-routing.ts`) actually consulting it. Fixed by
+   adding `resolveOwnAccountCredential`, which reads a billing-mode preference off the **native
+   runtime binding** (not the model row — see §4/the architecture doc for why the model row is the
+   wrong place, a real design error caught and corrected during this round) and calls a synchronous
+   injected credential resolver (`ExternalConnectionsDomain.resolveInferenceToken` is plain AES-GCM
+   decryption, no I/O — the resolver's deliberate purity needed no compromise). Added the missing
+   write path, `POST /api/agents/:agentId/model-binding/billing-mode`, which refuses to accept
+   `"own-account"` on trust and requires a real, already-authorized connection first. Full unit +
+   integration test coverage; see §11.
+2. **Added the dedicated `AgentModelPanel.tsx` test file** that was named as missing. Covers confirm,
+   cancel, and default-skips-confirmation, mirroring `QuickRuntimeSwitcher.tsx`'s coverage.
+3. **Scoped (not built) task-based automatic model routing** in
+   `docs/architecture/task-based-model-routing-proposal.md`, per the explicit "scope, don't build"
+   instruction — it names a concrete recommended design, three open questions that need Julien's
+   answer before building (route-key space, per-business vs. platform-default routes, cost-acceptance
+   interaction), and an effort estimate. Not implemented, and the doc says so plainly.
+
+A genuine bug was found and fixed while doing (1): the first pass's own architecture doc had proposed
+storing the billing-mode preference on `NativeRuntimeModelSummary.configuration` — but that row is a
+single shared catalog entry per model id, reused by every business that activates that model. Setting
+it there would have leaked one business's "bill my own account" choice onto every other business using
+the same model the moment more than one did. Caught before any code shipped it; the preference lives
+on the binding instead, which is genuinely scoped to one (business, account, agent) triple.
 
 ## 1. Repository components reused (not rebuilt)
 
@@ -161,14 +194,28 @@ code and changes no handoff behavior.
 
 ## 11. Tests executed and their actual results
 
-Full monorepo suite (`npx vitest run`), after all changes:
+Full monorepo suite (`npx vitest run`), after the follow-up round:
 
 ```
-Test Files  297 passed | 8 skipped (305)
-     Tests  1646 passed | 95 skipped (1741)
+Test Files  299 passed | 8 skipped (307)
+     Tests  1653 passed | 95 skipped (1748)
 ```
 
 Zero failures. Full monorepo typecheck (`pnpm typecheck`, every package and service): clean.
+
+Follow-up round added:
+- `tests/agent-model-panel.test.tsx` — new file, 3 tests: confirm/cancel/default-skips-confirmation
+  for `AgentModelPanel.tsx`'s activation flow, closing the gap named below in the first pass.
+- `tests/native-runtime-execution-target-resolution.test.ts` — 4 new tests: forwards a resolved
+  own-account credential into the adapter context, never resolves one when `billingMode` is absent,
+  never resolves one when the caller omits `accountId`/`resolveInferenceCredential` (backward
+  compatibility for every existing caller), degrades to the platform credential (never fails the
+  turn) when `billingMode` is `"own-account"` but the account has no usable connection.
+- `tests/agent-model-billing-mode.test.ts` — new file, 5 tests: rejects `"own-account"` with no
+  authorized connection (409), accepts it once connected+authorized and **the preference survives a
+  model re-activation** (the regression test for the shared-model-row bug caught in §0), reverting to
+  `"platform"` always succeeds, rejects when no model was ever activated (409), rejects an invalid
+  `billingMode` value (400), rejects unauthenticated requests (401).
 
 New/changed test coverage added by this work:
 - `services/api/src/inference/model-runtime.test.ts` — 6 new tests: `requiresArtifact: false` skips
@@ -195,15 +242,6 @@ New/changed test coverage added by this work:
 - `tests/platform-catalog.test.ts` — updated the exact-match bootstrap-catalog id list to include
   `qwen3-4b`.
 
-**Not covered by a new dedicated test file**: the cost-confirmation gate added to
-`AgentModelPanel.tsx`. That component has no existing dedicated test file to extend (verified by
-search), and building one from scratch for this session's remaining scope risked either a rushed,
-low-fidelity harness or displacing time from the fully-tested `QuickRuntimeSwitcher.tsx` path. The
-change was verified by full monorepo typecheck and by the two existing tests that exercise
-`AgentModelPanel` indirectly (`tests/frontend-navigation-performance.test.ts`,
-`tests/frontend-user-guidance.test.ts`), both passing. Named here as an honest gap, not silently
-skipped.
-
 **Not run**: a real, billable Hugging Face API round trip (see §5) — correctly out of scope without
 explicit authorization and a real token.
 
@@ -219,25 +257,34 @@ None, by design and by verification:
   field (`inferenceAuthorized`, `canonicalModelId`, `supportsToolCalling`, `supportsStructuredOutput`)
   is additive.
 - A completely unrelated, uncommitted, in-progress fulfillment-dispatch change was present in this
-  working tree for part of this session (not made by this work) — it was left untouched throughout,
-  confirmed via `git stash`/`git stash pop` isolation during test debugging, and is excluded from this
-  work's commit.
+  shared working tree for both rounds of this session (not made by this work). It was never edited,
+  but the second round surfaced two concrete risks of a shared checkout worth recording: (a) another
+  process switched the working tree's checked-out branch mid-session (visible in `git reflog`), which
+  transiently made this session's own committed changes appear to have vanished from disk until
+  switching back — nothing was actually lost, but real debugging time went into confirming that; (b)
+  that same branch churn left `packages/shared-types/dist` built from a different branch's source,
+  producing spurious `@soko/shared-types` typecheck failures in unrelated files
+  (`fulfillment/dispatch.ts`) until `pnpm --filter @soko/shared-types build` was re-run. Both are
+  reported here as operational findings about this environment, not defects in the shipped feature.
 
 ## 13. Outstanding limitations
 
-1. Live per-turn wiring of a business's own authorized Hugging Face credential is not connected to
-   the real chat-turn call path yet (§8 of `huggingface-inference.md`) — the mechanism and its wire
-   format are built and tested, but `resolveNativeRuntimeModelProvider()`
-   (`native-runtime-routing.ts:152`) still needs a reviewed change to actually fetch and inject it,
-   plus a decision on where the business's "use my own account" preference is persisted.
-2. `HF_FREE_TIER_ONLY`'s latch is per-process, not distributed — stated as a limitation in both the
+1. `HF_FREE_TIER_ONLY`'s latch is per-process, not distributed — stated as a limitation in both the
    code and the architecture doc, not just here.
-3. `supportsToolCalling`/`supportsStructuredOutput` on the Qwen3-4B catalog entry are conservatively
+2. `supportsToolCalling`/`supportsStructuredOutput` on the Qwen3-4B catalog entry are conservatively
    `false` because the featherless-ai-routed endpoint's actual behavior for `tools`/`response_format`
    was not verified against a live token in this session — flip them only after that verification.
-4. Task-type-based automatic model routing was scoped out (§9 of the audit) — genuinely new
-   capability, not required by the explicit precedence hierarchy in the task brief.
-5. `AgentModelPanel.tsx`'s new confirmation gate has no dedicated new test (§11).
+3. Task-based automatic model routing is scoped, not built — see
+   `docs/architecture/task-based-model-routing-proposal.md` for the recommended design and the three
+   open questions that need an answer before building it.
+4. The BYO-credential billing mode has a backend API
+   (`POST /api/agents/:agentId/model-binding/billing-mode`) but no frontend control yet in
+   `QuickRuntimeSwitcher.tsx`/`AgentModelPanel.tsx` — a business can only set it via a direct API call
+   today, not through the chat UI.
+5. If an account's own-account credential becomes unresolvable after being authorized (the connection
+   is later revoked or removed), a turn silently continues under the platform credential rather than
+   failing — an accepted tradeoff for availability, not an oversight, but worth surfacing to a
+   business somewhere (e.g. a "billing fell back to platform" notice) in a future pass.
 6. `soko_session_contexts.active_model_id` vs. the native-runtime-binding's own model selection as two
    possibly-overlapping sources of truth (flagged in the audit) was not reconciled — out of scope for
    this feature, named as a separate follow-up.
@@ -267,8 +314,12 @@ variables are needed there, and no client bundle ever receives a credential.
 ## Completion status
 
 **DONE_WITH_CONCERNS.** The concurrent-provider architecture, Qwen3-4B registration with verified live
-availability, dynamic switching with a now-real cost-confirmation gate, credential-scope separation,
-and free-tier safeguards are implemented, tested (1646 passing, 0 failing, full typecheck clean), and
-documented. The concerns are exactly the six items in §13 — most significantly, item 1: a business's
-own connected Hugging Face credential is not yet actually used by a live chat turn, only by the tested
-plumbing beneath it. Nothing in this report claims that gap is closed.
+availability, dynamic switching with a real cost-confirmation gate on both UI surfaces (each with its
+own test file), credential-scope separation, free-tier safeguards, and now the live per-turn
+BYO-credential wiring are implemented, tested (1653 passing, 0 failing, full typecheck clean), and
+documented. Task-based automatic routing was explicitly scoped rather than built, per instruction. The
+concerns are exactly the six items in §13 — none of them block correct operation of what shipped; each
+is a named, bounded follow-up (a frontend control, a distributed rate-limit latch, an unverified
+capability flag, a scoped-not-built feature, an accepted degrade-to-platform tradeoff, and a
+pre-existing dual-source-of-truth this feature did not create). Nothing in this report claims any of
+them is closed.
