@@ -701,16 +701,21 @@ export function createPostgresFulfillmentService(input: {
       deps.requireCustomer(actor.businessId, actor.customerId);
       const location = normalizeLocation(actor.location);
       assertValid(validateCoordinates(location));
-      const now = actor.now ?? new Date();
+      const requestNow = actor.now ?? new Date();
       return transaction(async (client) => {
         await idempotent(
           client,
           actor,
           "fulfillment.captureShopLocation",
           { customerId: actor.customerId, ...location },
-          now,
+          requestNow,
           async () => {
             await lockShopLocation(client, actor.businessId, actor.customerId);
+            const capturedAt =
+              actor.now ??
+              (await client.query<{ captured_at: Date }>("select clock_timestamp() as captured_at"))
+                .rows[0]?.captured_at;
+            if (capturedAt === undefined) throw new Error("Database clock was unavailable.");
             const current = await client.query<{ id: string }>(
               `
                 select id from fulfillment_shop_locations
@@ -722,7 +727,7 @@ export function createPostgresFulfillmentService(input: {
             if (previousId !== null) {
               await client.query(
                 "update fulfillment_shop_locations set superseded_at = $2 where id = $1",
-                [previousId, now]
+                [previousId, capturedAt]
               );
             }
             const id = randomUUID();
@@ -740,7 +745,7 @@ export function createPostgresFulfillmentService(input: {
                 location.latitude,
                 location.longitude,
                 location.accuracyMeters,
-                now,
+                capturedAt,
                 userId
               ]
             );
