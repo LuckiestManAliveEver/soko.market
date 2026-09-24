@@ -219,7 +219,10 @@ const lineBudgets = new Map([
   ["apps/web/src/StackedModule.tsx", 180],
   ["apps/web/src/hooks/useChatComposerState.ts", 160],
   ["apps/web/src/hooks/useChatRuntimeState.ts", 1800],
-  ["services/api/src/cp2/domains/agent-runtime/store.ts", 3700],
+  // Bumped for setAgentModelBillingMode (BYO Hugging Face credential billing mode) - cohesive with
+  // the rest of the agent-model-binding activation logic already in this file, not worth splitting
+  // out on its own.
+  ["services/api/src/cp2/domains/agent-runtime/store.ts", 3800],
   ["services/api/src/cp2/domains/agent-runtime/domain-deps.ts", 325],
   ["services/api/src/cp2/domains/agent-runtime/runtime-context.ts", 300],
   ["services/api/src/cp2/domains/agent-runtime/runtime-model-routing.ts", 550],

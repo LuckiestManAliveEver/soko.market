@@ -288,10 +288,13 @@ describe("Vercel inference request handler", () => {
         return { text: "gguf-reply", finishReason: "stop", inputTokens: 1, outputTokens: 1 };
       })
     }));
-    const hfRequest = vi.fn(async () => new Response(
-      'data: {"choices":[{"delta":{"content":"hf-reply"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
-      { status: 200 }
-    )) as unknown as typeof fetch;
+    const hfRequest = vi.fn(
+      async () =>
+        new Response(
+          'data: {"choices":[{"delta":{"content":"hf-reply"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+          { status: 200 }
+        )
+    ) as unknown as typeof fetch;
 
     // Default provider is llama-cpp (the deployment-wide default is unchanged), but HF_MODEL_MAP
     // is also configured - this is the hybrid case this feature adds: both engines live in the
@@ -357,7 +360,9 @@ describe("Vercel inference request handler", () => {
       }),
       {
         request: vi.fn(async (_url, init) => {
-          authorizationHeaders.push(String((init?.headers as Record<string, string>).authorization));
+          authorizationHeaders.push(
+            String((init?.headers as Record<string, string>).authorization)
+          );
           return new Response(
             'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
             { status: 200 }
@@ -367,9 +372,7 @@ describe("Vercel inference request handler", () => {
     );
 
     await readNdjson(
-      await handler(
-        post(requestBody({ providerCredential: { token: "business-owned-token" } }))
-      )
+      await handler(post(requestBody({ providerCredential: { token: "business-owned-token" } })))
     );
 
     expect(authorizationHeaders).toEqual(["Bearer business-owned-token"]);
@@ -390,7 +393,9 @@ describe("Vercel inference request handler", () => {
       }),
       {
         request: vi.fn(async (_url, init) => {
-          authorizationHeaders.push(String((init?.headers as Record<string, string>).authorization));
+          authorizationHeaders.push(
+            String((init?.headers as Record<string, string>).authorization)
+          );
           return new Response(
             'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
             { status: 200 }
@@ -688,9 +693,9 @@ describe("resolveInferenceEngine", () => {
   });
 
   it("returns llama-cpp when Hugging Face is not configured at all", () => {
-    expect(resolveInferenceEngine({ provider: "llama-cpp", huggingFace: null }, "any-model")).toEqual(
-      { engine: "llama-cpp" }
-    );
+    expect(
+      resolveInferenceEngine({ provider: "llama-cpp", huggingFace: null }, "any-model")
+    ).toEqual({ engine: "llama-cpp" });
   });
 });
 

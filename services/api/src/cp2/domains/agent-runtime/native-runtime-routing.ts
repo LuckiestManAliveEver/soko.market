@@ -199,7 +199,10 @@ export function resolveNativeRuntimeModelProvider(input: {
  * platform default rather than blocking the chat.
  */
 function resolveOwnAccountCredential(
-  input: Pick<Parameters<typeof resolveNativeRuntimeModelProvider>[0], "accountId" | "resolveInferenceCredential">,
+  input: Pick<
+    Parameters<typeof resolveNativeRuntimeModelProvider>[0],
+    "accountId" | "resolveInferenceCredential"
+  >,
   nativeResolution: ResolvedNativeRuntimeBinding | null
 ): { token: string } | undefined {
   if (input.accountId === undefined || input.resolveInferenceCredential === undefined) {

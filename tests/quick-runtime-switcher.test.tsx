@@ -479,6 +479,8 @@ describe("quick runtime switcher", () => {
     });
 
     expect(host.querySelector('[role="alertdialog"]')).toBeNull();
-    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/smollm2-360m/activate`)).toBe(true);
+    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/smollm2-360m/activate`)).toBe(
+      true
+    );
   });
 });

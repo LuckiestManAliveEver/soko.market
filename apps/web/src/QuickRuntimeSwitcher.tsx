@@ -264,7 +264,12 @@ export function QuickRuntimeSwitcher({
             >
               Confirm switch
             </button>
-            <button type="button" className="secondary" disabled={busy} onClick={cancelCostConfirmation}>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={cancelCostConfirmation}
+            >
               Cancel
             </button>
           </div>
@@ -276,6 +281,8 @@ export function QuickRuntimeSwitcher({
 
 function modelOptionTitle(option: AiModelSummary): string {
   const billing =
-    option.id === platformSharedModelId ? "platform-included" : "merchant-funded (usage billed to you)";
+    option.id === platformSharedModelId
+      ? "platform-included"
+      : "merchant-funded (usage billed to you)";
   return `${option.provider} · ${billing}`;
 }

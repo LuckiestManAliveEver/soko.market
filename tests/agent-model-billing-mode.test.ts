@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentModelActivationResult, NativeRuntimeBindingSummary } from "../packages/shared-types/src";
+import type {
+  AgentModelActivationResult,
+  NativeRuntimeBindingSummary
+} from "../packages/shared-types/src";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 import type { ModelRuntimeAdapter } from "../services/api/src/inference/model-runtime";
@@ -22,7 +25,11 @@ describe("agent model billing mode (BYO Hugging Face inference credential)", () 
       const url = String(input);
       if (url === "https://huggingface.co/api/whoami-v2") {
         return new Response(
-          JSON.stringify({ id: "hf-user-1", name: "hf-owner", auth: { accessToken: { role: "write" } } }),
+          JSON.stringify({
+            id: "hf-user-1",
+            name: "hf-owner",
+            auth: { accessToken: { role: "write" } }
+          }),
           { status: 200 }
         );
       }

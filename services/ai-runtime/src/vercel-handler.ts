@@ -47,8 +47,7 @@ export interface VercelInferenceConfig {
 
 /** `resolveInferenceEngine`'s per-request routing decision. See VercelInferenceConfig.provider. */
 export type InferenceEngineResolution =
-  | { engine: "llama-cpp" }
-  | { engine: "huggingface"; huggingFaceModelId: string };
+  { engine: "llama-cpp" } | { engine: "huggingface"; huggingFaceModelId: string };
 
 /**
  * Decides, per request, which engine actually serves a given Soko model id - the concurrency this
@@ -172,7 +171,11 @@ export function createVercelInferenceHandler(
       const parsed = parseRequest(await request.json(), config);
       input = parsed.request;
       routing = parsed.routing;
-      if (routing.engine === "huggingface" && config.huggingFaceFreeTierOnly && huggingFaceBudgetExhausted) {
+      if (
+        routing.engine === "huggingface" &&
+        config.huggingFaceFreeTierOnly &&
+        huggingFaceBudgetExhausted
+      ) {
         throw new InferenceServiceError(
           "INFERENCE_BUDGET_EXHAUSTED",
           "Hugging Face free-tier inference credit was already exhausted this session; refusing " +

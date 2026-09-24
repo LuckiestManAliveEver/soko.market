@@ -46,7 +46,7 @@ behavior) for every model registered before this field existed.
 ## 3. Making Hugging Face concurrent instead of exclusive
 
 Before this change, `services/ai-runtime`'s `INFERENCE_PROVIDER` env var picked exactly one engine
-for the *entire deployment*: `llama-cpp` (download-and-run a GGUF artifact) or `huggingface` (route
+for the _entire deployment_: `llama-cpp` (download-and-run a GGUF artifact) or `huggingface` (route
 every request to a Hub model via `HF_MODEL_MAP`, ignoring the artifact). A deployment could never
 serve both at once, and switching meant a redeploy.
 
@@ -120,7 +120,7 @@ Three distinct credentials, never conflated:
    token, stored via the pre-existing `ExternalConnectionsDomain`
    (`cp2_external_registry_connections`, encrypted with the same primitive as social-login OAuth
    tokens). This repository's credential storage already supported connecting an HF account for
-   discovery; this feature adds one column and one endpoint so that connection can *also*, with a
+   discovery; this feature adds one column and one endpoint so that connection can _also_, with a
    separate explicit step, be authorized for inference billing:
 
    - `inference_authorized boolean not null default false` (migration `097`). Connecting an account
@@ -135,8 +135,8 @@ Three distinct credentials, never conflated:
      be used to source a credential for a billed model call.
    - **A business opts a specific agent binding into own-account billing with
      `POST /api/agents/:agentId/model-binding/billing-mode`** (body `{shopId, billingMode: "platform"
-     | "own-account"}`). Setting `"own-account"` is rejected with `409
-     INFERENCE_CREDENTIAL_NOT_AUTHORIZED` unless the account already has a usable, inference-
+| "own-account"}`). Setting `"own-account"` is rejected with `409
+INFERENCE_CREDENTIAL_NOT_AUTHORIZED` unless the account already has a usable, inference-
      authorized connection for the active model's provider — the endpoint never accepts the
      preference "on trust" and leaves it to fail silently later. The preference is stored on the
      **native runtime binding** (`NativeRuntimeBindingSummary.configuration.billingMode`), not on the
@@ -207,6 +207,7 @@ provider-specific before this change and remain so.
 ## 8. What is implemented vs. designed-only
 
 **Implemented, tested, and wired into the live request path:**
+
 - Concurrent per-model Hugging Face/llama.cpp routing in the same deployment.
 - Qwen3-4B registered, catalog-visible, activatable through the existing atomic binding-activation
   endpoint.
@@ -226,6 +227,7 @@ provider-specific before this change and remain so.
   full mechanism and `POST /api/agents/:agentId/model-binding/billing-mode` for the write path.
 
 **Out of scope, not built:**
+
 - Task-type-based automatic model routing (§9 of the audit) — genuinely new capability, not required
   by the task brief's explicit precedence hierarchy.
 - A frontend UI control for choosing "own-account" billing mode (the API endpoint exists and is

@@ -62,7 +62,7 @@ option that this existing resolver/activation path can point at.
 ## 4. Runtime instances / execution hosts — reusable, one enum change
 
 `NativeExecutionHostSummary` (`packages/shared-types/src/index.ts:4640-4654`) already models a
-credential *reference* only — `063_native_runtime_bindings.sql:40-44` has a DB `CHECK` constraint that
+credential _reference_ only — `063_native_runtime_bindings.sql:40-44` has a DB `CHECK` constraint that
 rejects endpoints with embedded credentials, so raw secrets structurally cannot land in this table.
 
 `ModelExecutionTarget` (`packages/shared-types/src/index.ts:1053-1059`) is `"vercel" | "backend" |
@@ -84,7 +84,7 @@ export interface ModelRuntimeAdapter {
   readonly executionTarget: ModelExecutionTarget;
   canRun(context): Promise<ModelRuntimeAvailability>;
   healthCheck(context): Promise<ModelRuntimeHealthResult>;
-  generate(input: {context, prompt}): Promise<ModelRuntimeGenerationResult>;
+  generate(input: { context; prompt }): Promise<ModelRuntimeGenerationResult>;
 }
 ```
 
@@ -152,17 +152,17 @@ function picks it up automatically; no new plumbing.
 `resolveAgentContext()` (`services/api/src/cp2/agent-business-runtime.ts:380-483`) does the actual
 greedy context packing against that budget. Unaffected.
 
-## 9. Task classification & model routing — task classification exists; automatic *model* routing does not
+## 9. Task classification & model routing — task classification exists; automatic _model_ routing does not
 
 `RuntimeParserIntent` drives context-recipe/evidence selection (`docs/architecture/context-recipes.md`)
 but is never consulted to pick a model. `runtime-model-routing.ts`
 (`services/api/src/cp2/domains/agent-runtime/runtime-model-routing.ts`) only does primary→fallback
-*failover* on availability failure, not task-type-based selection.
+_failover_ on availability failure, not task-type-based selection.
 
 **Out of scope for this change.** Automatic "use a bigger model for hard tasks" routing is a genuinely
 new capability, not a reuse-and-extend of something that exists, and the task brief's Part D precedence
 hierarchy (task override > conversation override > user preference > platform default) does not require
-it — it requires that an *explicit* task-level override be honored, which the existing binding/override
+it — it requires that an _explicit_ task-level override be honored, which the existing binding/override
 mechanism already supports. Logged as a named follow-up, not built here.
 
 ## 10. Tool permissions & authorization — exists, model-agnostic by construction, unaffected
@@ -170,7 +170,7 @@ mechanism already supports. Logged as a named follow-up, not built here.
 Single governed path: `runtimeToolRegistry` (`packages/tool-core/src/index.ts`) →
 `Cp2Store.createRuntimeTurn`/`executeRuntimeAction` (`services/api/src/cp2/store.ts`). Every tool
 carries `risk`, `requiresConfirmation`, `readOnly`, `requiredPermission`. A model — whichever provider
-produced it — can only *propose* a tool call as structured text; the same authorization/confirmation
+produced it — can only _propose_ a tool call as structured text; the same authorization/confirmation
 gate applies regardless of provider. This feature does not touch this path, by design: it must not,
 since a swapped model must not get different tool authority than the one it replaced.
 
@@ -185,7 +185,7 @@ runtime binding graph), `065`/`075`/`076` (retire old Fabric + `agent_model_bind
 **No existing migration creates anything Hugging-Face-inference-specific** — today's HF wiring is
 entirely env-var-based on the `services/ai-runtime` side, with zero Postgres representation. This audit
 finds no reason to add one: the model catalog is code (`runtimeModels`/`aiModelRegistry`), not a table,
-and extending it does not require a migration. See Part A for the one new column this change *does*
+and extending it does not require a migration. See Part A for the one new column this change _does_
 add (to `cp2_external_registry_connections`, for real reasons, not cosmetic ones).
 
 ## 12. Backend inference env vars
@@ -193,7 +193,7 @@ add (to `cp2_external_registry_connections`, for real reasons, not cosmetic ones
 Two services, two separate `HF_TOKEN`s with different purposes — a real naming collision worth
 flagging:
 
-- `services/api/.env.example`: `HF_TOKEN` is **optional**, used only for authenticated Hub *discovery*
+- `services/api/.env.example`: `HF_TOKEN` is **optional**, used only for authenticated Hub _discovery_
   (raising rate limits / accessing gated repos when searching for importable models/agents). Not used
   for inference.
 - `services/ai-runtime/.env.example`: `HF_TOKEN` is **required when `INFERENCE_PROVIDER=huggingface`**
@@ -234,7 +234,7 @@ panel. `ConnectedSourcesPanel.tsx` is the existing GitHub/HF personal-access-tok
 1. **Live inference provider** (`services/ai-runtime/src/huggingface-runtime.ts` +
    `vercel-handler.ts`) — real, tested, but an exclusive deployment mode (Part 5 above).
 2. **Discovery/import adapter** (`services/api/src/cp2/huggingface-model-catalog.ts`,
-   `huggingface-agent-catalog.ts`, `runtime-registry/huggingface-adapter.ts`) — finds *which* HF
+   `huggingface-agent-catalog.ts`, `runtime-registry/huggingface-adapter.ts`) — finds _which_ HF
    models/agents exist via the HF Hub search API; does not run them.
 3. **User-connected-account credential** (`POST /v1/external-connections/huggingface`, Part 16) —
    validated, encrypted, but **not read by the inference path at all** before this change.
@@ -243,12 +243,12 @@ panel. `ConnectedSourcesPanel.tsx` is the existing GitHub/HF personal-access-tok
 https://huggingface.co/api/models/{id}?expand=inferenceProviderMapping`, no HF token required for this
 public endpoint):
 
-| Model | `inferenceProviderMapping` | Verdict |
-| --- | --- | --- |
-| `Qwen/Qwen3-4B` | `{"featherless-ai": {"status": "live", "task": "conversational"}}` | **Live** via HF Inference Providers, routed to the `featherless-ai` backend. |
-| `Qwen/Qwen3-4B-Instruct-2507` | live via `nscale` and `featherless-ai` | Live (not the requested exact ID; not registered). |
-| `HuggingFaceTB/SmolLM3-3B` | `{}` (empty) | **Not available** through hosted Inference Providers — repository exists, no serving backend is live for it. |
-| `HuggingFaceTB/SmolLM2-1.7B-Instruct` | `{}` (empty) | **Not available** through hosted Inference Providers, despite being the model `HF_MODEL_MAP`'s own example maps `smollm2-360m` to. |
+| Model                                 | `inferenceProviderMapping`                                         | Verdict                                                                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `Qwen/Qwen3-4B`                       | `{"featherless-ai": {"status": "live", "task": "conversational"}}` | **Live** via HF Inference Providers, routed to the `featherless-ai` backend.                                                       |
+| `Qwen/Qwen3-4B-Instruct-2507`         | live via `nscale` and `featherless-ai`                             | Live (not the requested exact ID; not registered).                                                                                 |
+| `HuggingFaceTB/SmolLM3-3B`            | `{}` (empty)                                                       | **Not available** through hosted Inference Providers — repository exists, no serving backend is live for it.                       |
+| `HuggingFaceTB/SmolLM2-1.7B-Instruct` | `{}` (empty)                                                       | **Not available** through hosted Inference Providers, despite being the model `HF_MODEL_MAP`'s own example maps `smollm2-360m` to. |
 
 This confirms the task brief's own warning in the letter: a model repository existing on the Hub is
 not evidence it is servable. Two of the three candidate models named in the task brief (SmolLM3-3B,
@@ -265,7 +265,7 @@ call (`huggingface.co/api/whoami-v2`) **before** persisting; tokens are encrypte
 social-login OAuth); `disconnect()` clears (not flags) the encrypted column; `resolveToken()` is
 internal-only, never exported from routes, returns `null` on any failure. This is exactly the right
 primitive for user-owned inference credentials — see Part G/H for the one addition (a `scope` column)
-this change made to let a Hugging Face connection be used for *inference* billing, not just discovery,
+this change made to let a Hugging Face connection be used for _inference_ billing, not just discovery,
 without conflating the two.
 
 ## Known doc drift found during this audit (not part of this feature, flagged for a separate cleanup)
@@ -276,7 +276,7 @@ without conflating the two.
 - `packages/shared-types/src/index.ts:3688-3692`, `docs/runtime/vercel-inference-audit.md`,
   `docs/architecture/client-first-inference.md`, `docs/architecture/governed-tool-runtime.md`, and
   `docs/architecture/provider-neutral-runtime.md` all still cite `services/api/src/inference/
-  openai-provider.ts` and `cloud-fallback.ts` as if live. Both files were deleted by migration
+openai-provider.ts` and `cloud-fallback.ts` as if live. Both files were deleted by migration
   `068_remove_cloud_fallback.sql`. There is no cloud LLM-API provider in this codebase today.
 - No drift found in `QuickRuntimeSwitcher.tsx`'s model filter — initially suspected, but it is
   intentional and documented (see Part 14).
@@ -285,7 +285,7 @@ without conflating the two.
 
 `CLAUDE.md`'s "LLM access" section says: "When the software we build needs to call an LLM, do NOT use
 an LLM API (Anthropic API, OpenAI API, any hosted inference endpoint) unless Julien explicitly
-instructs it." This audit reads that as governing *tooling Claude Code builds for itself* (evals,
+instructs it." This audit reads that as governing _tooling Claude Code builds for itself_ (evals,
 internal agents), not Soko-the-product's own inference architecture, which has called hosted HF
 inference in production since before this task began (`render.yaml`, `services/ai-runtime`). The task
 instructions that produced this audit are themselves an explicit, detailed instruction to extend that

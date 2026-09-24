@@ -61,6 +61,7 @@ on the binding instead, which is genuinely scoped to one (business, account, age
 ## 2. Files created or modified
 
 **New:**
+
 - `docs/architecture/huggingface-model-switching-audit.md`
 - `docs/architecture/huggingface-inference.md`
 - `docs/implementation/huggingface-model-switching-report.md` (this file)
@@ -68,6 +69,7 @@ on the binding instead, which is genuinely scoped to one (business, account, age
   `infra/db/rollbacks/097_external_connection_inference_authorization.down.sql`
 
 **Modified:**
+
 - `packages/shared-types/src/index.ts` — `RuntimeModelDefinition.requiresArtifact`, `qwen3-4b` entry
   in `runtimeModels`, `AiModelSummary.canonicalModelId`/`supportsToolCalling`/`supportsStructuredOutput`,
   `InferenceExecutionRequest.artifact` made optional + `providerCredential` added, `ModelRuntimeContext`
@@ -124,11 +126,11 @@ verification.
 https://huggingface.co/api/models/{id}?expand=inferenceProviderMapping`, 2026-09-24, no token
 required for this public read):
 
-| Model | Result |
-| --- | --- |
-| `Qwen/Qwen3-4B` | **Live** — `inferenceProviderMapping: {"featherless-ai": {"status": "live", "task": "conversational"}}`. |
-| `HuggingFaceTB/SmolLM3-3B` | Not live — empty mapping. |
-| `HuggingFaceTB/SmolLM2-1.7B-Instruct` | Not live — empty mapping, despite being `.env.example`'s own pre-existing `HF_MODEL_MAP` example value. |
+| Model                                 | Result                                                                                                   |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `Qwen/Qwen3-4B`                       | **Live** — `inferenceProviderMapping: {"featherless-ai": {"status": "live", "task": "conversational"}}`. |
+| `HuggingFaceTB/SmolLM3-3B`            | Not live — empty mapping.                                                                                |
+| `HuggingFaceTB/SmolLM2-1.7B-Instruct` | Not live — empty mapping, despite being `.env.example`'s own pre-existing `HF_MODEL_MAP` example value.  |
 
 **Not independently verified in this session**: an actual authenticated chat-completions round trip
 against `router.huggingface.co` with a real `HF_TOKEN` — no token was available in this environment,
@@ -186,7 +188,7 @@ code and changes no handoff behavior.
   `inferenceAuthorized` flag before returning a usable token — connecting an account for discovery
   never implicitly grants inference-billing use of that same token.
 - Account isolation: every `ExternalConnectionsDomain` method checks `record.accountId ===
-  session.account.id`; verified by a new test asserting a 404 (not a silent no-op) when one account
+session.account.id`; verified by a new test asserting a 404 (not a silent no-op) when one account
   tries to authorize another account's connection for inference.
 - `providerCredential` in the wire contract is resolved server-side only and never accepted from an
   untrusted client input — it flows from `services/api`'s own resolution of the business's
@@ -204,6 +206,7 @@ Test Files  299 passed | 8 skipped (307)
 Zero failures. Full monorepo typecheck (`pnpm typecheck`, every package and service): clean.
 
 Follow-up round added:
+
 - `tests/agent-model-panel.test.tsx` — new file, 3 tests: confirm/cancel/default-skips-confirmation
   for `AgentModelPanel.tsx`'s activation flow, closing the gap named below in the first pass.
 - `tests/native-runtime-execution-target-resolution.test.ts` — 4 new tests: forwards a resolved
@@ -218,6 +221,7 @@ Follow-up round added:
   `billingMode` value (400), rejects unauthenticated requests (401).
 
 New/changed test coverage added by this work:
+
 - `services/api/src/inference/model-runtime.test.ts` — 6 new tests: `requiresArtifact: false` skips
   all artifact I/O, provider identity distinct from `"llama.cpp"`, wire request omits `artifact`,
   `providerCredential` forwarded when present / omitted when absent, and a regression test proving
@@ -233,7 +237,7 @@ New/changed test coverage added by this work:
   funded switch (and no request fires before confirming), cancellation leaves the prior model active
   with zero calls, returning to the platform default never asks for confirmation. **A genuine,
   pre-existing test-isolation bug was found and fixed while writing these**: `apps/web/src/
-  api-request-cache.ts` caches `GET` responses in a module-level `Map` that persists across tests in
+api-request-cache.ts` caches `GET` responses in a module-level `Map` that persists across tests in
   the same file; shop-independent paths (`/v1/ai-models`, `/v1/platform/agent-catalog`) were being
   served from an earlier test's stubbed response. Fixed by calling the existing
   `clearApiRequestCache()` export in `beforeEach`. This is a latent gap in the pre-existing two tests
@@ -248,6 +252,7 @@ explicit authorization and a real token.
 ## 12. Existing functionality affected
 
 None, by design and by verification:
+
 - The existing exclusive `INFERENCE_PROVIDER=huggingface` mode's tests pass unmodified — its behavior
   is byte-for-byte preserved.
 - The existing artifact-backed llama.cpp path's tests pass unmodified.

@@ -3,7 +3,7 @@
 Status: **design only, not built.** Requested as one of three follow-ups after the Hugging Face
 inference feature shipped (see `docs/implementation/huggingface-model-switching-report.md`). This is
 scoped here, not implemented, because it is genuinely new capability the original task brief did not
-require (its resolution hierarchy asks for a *manual* task-level override, not automatic routing by
+require (its resolution hierarchy asks for a _manual_ task-level override, not automatic routing by
 message content — see "Two related but distinct features" below), and because there are two
 materially different ways to build it with a real, non-cosmetic tradeoff between them. Per this
 repo's Confusion Protocol, that calls for a decision, not a unilateral pick.
@@ -30,7 +30,7 @@ repo's Confusion Protocol, that calls for a decision, not a unilateral pick.
 
 The existing native runtime binding graph (`cp2_native_runtime_bindings`,
 `cp2_native_runtime_binding_models`) already models "one binding → several models" as ordered roles,
-but the *only* kind of role today is `primary` or `fallback`, and the *only* reason to move down that
+but the _only_ kind of role today is `primary` or `fallback`, and the _only_ reason to move down that
 list is an **availability failure** at request time (`runtime-model-routing.ts`'s fallback path,
 triggered by a real health/generation failure). Layering "pick a different model because of what the
 message is about" onto that same mechanism means answering, concretely:
@@ -79,6 +79,7 @@ context completely unaffected — the same backward-compatibility shape this ses
 change used (new optional inputs, no-op when omitted).
 
 New endpoints, matching Part J's own naming and this repo's existing REST conventions:
+
 - `PUT /api/agents/:agentId/task-routes/:routeKey` `{modelId}` — set or replace a route (an owner-
   level write, likely `membership:manage` like every other binding mutation).
 - `DELETE /api/agents/:agentId/task-routes/:routeKey` — remove one.
@@ -87,7 +88,7 @@ New endpoints, matching Part J's own naming and this repo's existing REST conven
 ## Open questions to resolve before building (ask, don't guess)
 
 1. **Route key space**: `RuntimeParserIntent` values (a closed, already-classified set) or free-form
-   model *capability* strings (e.g. "reasoning", matching `AiModelSummary.capabilities`)? The former
+   model _capability_ strings (e.g. "reasoning", matching `AiModelSummary.capabilities`)? The former
    is precise but requires a route per intent; the latter is coarser but composes with "any model
    that declares this capability," which may be what's actually wanted ("route reasoning-heavy work
    to whichever capable model is active" rather than "route intent X to model Y specifically").
