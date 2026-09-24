@@ -7,6 +7,11 @@ export interface PortableAgentToolRequirement {
 
 export interface PortableAgentManifest {
   schemaVersion: "1";
+  /** Which registered AgentRuntimeAdapter this agent runs on (e.g. "pi", "soko"). Absent defaults
+   *  to "soko" at import time - this only ever selects among adapters Soko already ships and
+   *  trusts, it never supplies adapter code, so it carries none of the harness-import security
+   *  boundary that third-party executable adapters would. */
+  runtimeAdapterId?: string;
   agent: {
     id: AgentDefinitionId;
     name: string;
@@ -116,6 +121,7 @@ export function portableAgentManifestFromOssAgent(agent: OssAgentSummary): Porta
   };
 }
 
+const runtimeAdapterIdPattern = /^[a-z0-9][a-z0-9._-]{0,79}$/u;
 const executionTargets = new Set<ModelExecutionTarget>(["backend", "remote-shop-device"]);
 const memoryScopes = new Set(["conversation", "user", "shop", "agent"]);
 const toolApprovalModes = new Set(["always", "writes", "never"]);
@@ -147,6 +153,13 @@ export function validatePortableAgentManifest(value: unknown): PortableAgentMani
   rejectProhibitedKeys(root, "$", issues, 0);
 
   if (root.schemaVersion !== "1") issue(issues, "$.schemaVersion", 'must equal "1"');
+  if (
+    root.runtimeAdapterId !== undefined &&
+    (typeof root.runtimeAdapterId !== "string" ||
+      !runtimeAdapterIdPattern.test(root.runtimeAdapterId))
+  ) {
+    issue(issues, "$.runtimeAdapterId", "must be a lowercase registered adapter identifier");
+  }
   const agent = readRecord(root.agent, "$.agent", issues);
   if (agent !== null) {
     if (!isPortableAgentDefinitionId(agent.id)) issue(issues, "$.agent.id", "is invalid");

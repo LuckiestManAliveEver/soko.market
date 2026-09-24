@@ -387,8 +387,28 @@ export function parseAgentCatalogEntry(value: unknown, expectedId: string): Agen
     instructions: parseString(record.instructions, "instructions"),
     knowledge: parseString(record.knowledge, "knowledge"),
     tools: parseStringArray(record.tools, "tools", 40),
-    skillIds: skillIds as RuntimeToolName[]
+    skillIds: skillIds as RuntimeToolName[],
+    runtimeAdapterId: parseAgentDefinitionRuntimeAdapterId(record.runtimeAdapterId)
   };
+}
+
+function parseAgentDefinitionRuntimeAdapterId(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Cp2Error(
+      400,
+      "agent_catalog_entry_invalid",
+      "Agent runtimeAdapterId must be a non-empty string."
+    );
+  }
+  try {
+    return normalizeAdapterId(value);
+  } catch {
+    throw new Cp2Error(
+      400,
+      "agent_catalog_entry_invalid",
+      "Agent runtimeAdapterId is not a valid adapter id."
+    );
+  }
 }
 
 export function parseStructuredArray<T>(value: unknown, name: string, maximumItems: number): T[] {
@@ -556,28 +576,6 @@ export function parseModelExecutionTarget(value: unknown): ModelExecutionTarget 
     return value;
   }
   throw new Cp2Error(400, "execution_target_invalid", "Execution target is invalid.");
-}
-
-/** Absent leaves the shop's current harness (or the platform default) unchanged; present selects
- *  a specific registered AgentRuntimeAdapter. */
-export function parseAgentRuntimeAdapterId(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new Cp2Error(
-      400,
-      "agent_runtime_adapter_id_invalid",
-      "agentRuntimeAdapterId must be a non-empty string."
-    );
-  }
-  try {
-    return normalizeAdapterId(value);
-  } catch {
-    throw new Cp2Error(
-      400,
-      "agent_runtime_adapter_id_invalid",
-      "agentRuntimeAdapterId is not a valid adapter id."
-    );
-  }
 }
 
 export function parseAgentModelBindingPermissions(value: unknown): AgentModelBindingPermissions {

@@ -1,6 +1,5 @@
 import type { OssAgentSummary, RuntimeAssetKind } from "@soko/shared-types";
 import type {
-  RuntimeRegistryCompatibilityStatus,
   RuntimeRegistryContext,
   RuntimeRegistryResourceDetails,
   RuntimeRegistryResourceFile,
@@ -11,7 +10,6 @@ import type {
 import type { GitHubModelCatalog, GitHubAiModelSummary } from "../github-model-catalog.js";
 import type { GitHubAgentCatalog } from "../github-agent-catalog.js";
 import { RuntimeRegistryResourceNotFoundError, type RuntimeRegistryAdapter } from "./types.js";
-import { validateSokoHarnessManifest, type SokoHarnessManifest } from "./harness-manifest.js";
 
 export interface GitHubRegistryAdapterOptions {
   modelCatalog: GitHubModelCatalog;
@@ -19,20 +17,16 @@ export interface GitHubRegistryAdapterOptions {
   fetcher?: typeof fetch;
   token?: string;
   requestTimeoutMs?: number;
-  /** Bounds how many candidate repos get a per-repo `soko.harness.json` inspection fetch per
-   *  search call - the same cost-control existing catalogs already apply to release/blob lookups. */
-  maxHarnessInspections?: number;
 }
 
 const defaultRequestTimeoutMs = 8_000;
-const defaultMaxHarnessInspections = 6;
 const readmeExcerptMaxChars = 2_000;
 
 /**
  * Wraps the existing, already-working github-model-catalog.ts and github-agent-catalog.ts behind
  * the RuntimeRegistryAdapter interface. Neither existing catalog's own GitHub API calls are
  * reimplemented here; this only normalizes their results and adds the two capabilities they don't
- * have: harness-manifest static inspection (search) and resource detail lookup (inspect).
+ * have: search and resource detail lookup (inspect).
  */
 export function createGitHubRegistryAdapter(
   options: GitHubRegistryAdapterOptions
@@ -40,10 +34,6 @@ export function createGitHubRegistryAdapter(
   const fetcher = options.fetcher ?? fetch;
   const token = options.token;
   const requestTimeoutMs = Math.max(1_000, options.requestTimeoutMs ?? defaultRequestTimeoutMs);
-  const maxHarnessInspections = Math.max(
-    1,
-    Math.min(12, options.maxHarnessInspections ?? defaultMaxHarnessInspections)
-  );
 
   return {
     id: "github",
@@ -54,7 +44,7 @@ export function createGitHubRegistryAdapter(
       context: RuntimeRegistryContext
     ): Promise<RuntimeRegistrySearchItem[]> {
       void context; // Reserved for a future per-account GitHub token; env-level token only today.
-      const kinds = new Set<RuntimeAssetKind>(query.kinds ?? ["model", "agent", "harness"]);
+      const kinds = new Set<RuntimeAssetKind>(query.kinds ?? ["model", "agent"]);
       const items: RuntimeRegistrySearchItem[] = [];
 
       if (kinds.has("model")) {
@@ -65,20 +55,9 @@ export function createGitHubRegistryAdapter(
         }
       }
 
-      if (kinds.has("agent") || kinds.has("harness")) {
+      if (kinds.has("agent")) {
         const result = await options.agentCatalog.searchAgents(query.query);
-        if (kinds.has("agent")) {
-          items.push(...result.agents.map(githubAgentToItem));
-        }
-        if (kinds.has("harness")) {
-          const candidates = result.agents.slice(0, maxHarnessInspections);
-          const harnessItems = await Promise.all(
-            candidates.map((agent) =>
-              inspectHarnessCandidate(agent, { fetcher, token, requestTimeoutMs })
-            )
-          );
-          items.push(...harnessItems);
-        }
+        items.push(...result.agents.map(githubAgentToItem));
       }
 
       return items;
@@ -159,119 +138,6 @@ function githubAgentToItem(agent: OssAgentSummary): RuntimeRegistrySearchItem {
   };
 }
 
-async function inspectHarnessCandidate(
-  agent: OssAgentSummary,
-  deps: { fetcher: typeof fetch; token: string | undefined; requestTimeoutMs: number }
-): Promise<RuntimeRegistrySearchItem> {
-  const inspection = await fetchHarnessManifest(agent.sourceId, deps);
-  return {
-    provider: "github",
-    kind: "harness",
-    externalId: agent.sourceId,
-    name: agent.sourceId,
-    displayName: agent.label,
-    description: agent.description,
-    owner: agent.sourceId.split("/")[0] ?? null,
-    repositoryId: agent.sourceId,
-    revision: null,
-    stars: agent.popularity,
-    downloads: null,
-    updatedAt: agent.updatedAt,
-    license: agent.license,
-    verified: agent.licenseVerified,
-    imported: false,
-    compatibility: {
-      status: inspection.status,
-      ...(inspection.reason ? { reason: inspection.reason } : {})
-    }
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Harness manifest static inspection (the security-sensitive boundary)
-// ---------------------------------------------------------------------------
-
-interface HarnessInspectionResult {
-  status: RuntimeRegistryCompatibilityStatus;
-  reason?: string;
-  manifest?: SokoHarnessManifest;
-}
-
-/**
- * Fetches ONLY the small `soko.harness.json` text file via GitHub's contents (metadata) API - never
- * a tarball, a repository clone, or any `.js`/`.ts` source file - and validates it statically. This
- * is the entire "harness discovery" security boundary: a result only ever earns
- * compatibility.status "compatible" here, never from a name/topic/README keyword match.
- */
-async function fetchHarnessManifest(
-  fullName: string,
-  deps: { fetcher: typeof fetch; token: string | undefined; requestTimeoutMs: number }
-): Promise<HarnessInspectionResult> {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fullName)) {
-    return { status: "unknown", reason: "Repository identifier is not a valid owner/repo pair." };
-  }
-  const url = `https://api.github.com/repos/${fullName}/contents/soko.harness.json`;
-  try {
-    const response = await deps.fetcher(url, {
-      headers: githubHeaders(deps.token),
-      signal: AbortSignal.timeout(deps.requestTimeoutMs)
-    });
-    if (response.status === 404) {
-      return {
-        status: "unknown",
-        reason: "No soko.harness.json manifest was found at the repository root."
-      };
-    }
-    if (!response.ok) {
-      return {
-        status: "inspection_required",
-        reason: `GitHub contents API returned ${response.status}.`
-      };
-    }
-    const body = (await response.json()) as {
-      content?: string;
-      encoding?: string;
-      type?: string;
-      size?: number;
-    };
-    if (
-      body.type !== "file" ||
-      typeof body.content !== "string" ||
-      body.encoding !== "base64" ||
-      (typeof body.size === "number" && body.size > 200_000)
-    ) {
-      return {
-        status: "inspection_required",
-        reason: "soko.harness.json was not a readable file."
-      };
-    }
-    let decoded: string;
-    try {
-      decoded = Buffer.from(body.content, "base64").toString("utf8");
-    } catch {
-      return { status: "incompatible", reason: "soko.harness.json could not be decoded." };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(decoded);
-    } catch {
-      return { status: "incompatible", reason: "soko.harness.json is not valid JSON." };
-    }
-    const validation = validateSokoHarnessManifest(parsed);
-    if (!validation.valid) {
-      return {
-        status: "incompatible",
-        reason: `soko.harness.json failed validation: ${validation.issues
-          .map((issue) => `${issue.path} ${issue.message}`)
-          .join("; ")}`
-      };
-    }
-    return { status: "compatible", manifest: validation.manifest };
-  } catch {
-    return { status: "inspection_required", reason: "The manifest file could not be reached." };
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Resource inspection (metadata + README excerpt + root file listing only)
 // ---------------------------------------------------------------------------
@@ -329,29 +195,21 @@ async function inspectGitHubRepository(
   }
   const repository = await fetchRepository(fullName, deps);
   if (repository === null) throw new RuntimeRegistryResourceNotFoundError(ref);
-  const [readmeExcerpt, files, harnessInspection, sokoAgentManifest] = await Promise.all([
+  const [readmeExcerpt, files, sokoAgentManifest] = await Promise.all([
     fetchReadmeExcerpt(fullName, deps),
     fetchRootFileListing(fullName, deps),
-    ref.kind === "harness"
-      ? fetchHarnessManifest(fullName, deps)
-      : Promise.resolve<HarnessInspectionResult>({ status: "unknown" }),
     ref.kind === "agent"
       ? fetchRepositoryFile(fullName, "soko.agent.json", deps)
       : Promise.resolve(null)
   ]);
   const license = (repository.license as { spdx_id?: string | null } | null)?.spdx_id ?? null;
   const compatibility =
-    ref.kind === "harness"
-      ? {
-          status: harnessInspection.status,
-          ...(harnessInspection.reason ? { reason: harnessInspection.reason } : {})
-        }
-      : license !== null
-        ? { status: "compatible" as const }
-        : {
-            status: "inspection_required" as const,
-            reason: "License needs confirmation before import."
-          };
+    license !== null
+      ? { status: "compatible" as const }
+      : {
+          status: "inspection_required" as const,
+          reason: "License needs confirmation before import."
+        };
 
   return {
     provider: "github",
@@ -418,8 +276,8 @@ async function findReleaseAsset(
 }
 
 /** Fetches ONE small root-level JSON manifest file via GitHub's contents (metadata) API and
- *  returns its parsed body, or null if it doesn't exist / isn't readable / isn't valid JSON. Same
- *  boundary as fetchHarnessManifest: a text/metadata endpoint only, never a clone or source fetch. */
+ *  returns its parsed body, or null if it doesn't exist / isn't readable / isn't valid JSON. A
+ *  text/metadata endpoint only, never a clone or source fetch. */
 async function fetchRepositoryFile(
   fullName: string,
   path: string,

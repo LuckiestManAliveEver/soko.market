@@ -39,7 +39,7 @@ const effectiveRuntime = await getJson(
 );
 assert(
   effectiveRuntime.response.ok &&
-    effectiveRuntime.body?.harness?.id === "pi" &&
+    effectiveRuntime.body?.agent?.runtimeAdapterId === "pi" &&
     effectiveRuntime.body?.model?.id === modelId &&
     effectiveRuntime.body?.execution?.type === "vercel" &&
     typeof effectiveRuntime.body?.execution?.hostId === "string" &&

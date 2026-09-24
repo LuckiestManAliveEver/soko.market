@@ -55,7 +55,6 @@ async function install(
 const binding: RuntimeBinding = {
   agentId: "agent-v1",
   agentVersion: "1.0",
-  harnessVersion: "1.0",
   modelId: "model",
   modelVersion: "sha256:model-1",
   artifacts: [{ url: "https://example.test/model", sha256: "a".repeat(64), bytes: 10 }]

@@ -63,13 +63,6 @@ export const repositoryDefaultRuntimePolicy: PlatformDefaultRuntimePolicy = {
   executionTarget: "vercel"
 };
 
-/** Catalog metadata for a registered AgentRuntimeAdapter, for shop-facing selection UI. */
-export interface AgentRuntimeAdapterDescriptor {
-  id: string;
-  displayName: string;
-  description: string;
-}
-
 export type InferenceRuntime =
   "browser-webgpu" | "browser-wasm" | "native-llama-cpp" | "owner-node";
 
@@ -2219,7 +2212,10 @@ export interface InvoicePreview extends InvoiceTotals {
   businessId: string;
   customerId: string | null;
   customerName: string | null;
-  items: Omit<InvoiceItemSummary, "id" | "invoiceId">[];
+  items: Omit<
+    InvoiceItemSummary,
+    "id" | "invoiceId" | "unitWeightGramsSnapshot" | "totalWeightGrams" | "weightStatus"
+  >[];
 }
 
 export type PaymentMethod =
@@ -4003,6 +3999,10 @@ export interface AgentDefinition {
   knowledge: string;
   tools: string[];
   skillIds: RuntimeToolName[];
+  /** Which registered AgentRuntimeAdapter executes this agent's turns (e.g. "pi", "soko") - fixed
+   *  per definition, not independently swappable. Engine choice changes by picking a different
+   *  agent definition, not by editing this field on an existing one. */
+  runtimeAdapterId: string;
 }
 
 export interface OssAgentSummary {
@@ -4063,7 +4063,23 @@ export const defaultAgentDefinition: AgentDefinition = {
     "Logistics",
     "Workspace delivery"
   ],
-  skillIds: []
+  skillIds: [],
+  runtimeAdapterId: "soko"
+};
+
+/**
+ * Same built-in shopkeeper behavior as defaultAgentDefinition, running on the Pi engine instead of
+ * Soko's built-in one. Engine choice is a property of which agent definition is active (see
+ * AgentDefinition.runtimeAdapterId) - this is how a shop swaps engines: pick this definition
+ * instead of defaultAgentDefinition, rather than toggling an adapter field independently.
+ */
+export const piAgentDefinitionId: AgentDefinitionId = "builtin:pi-assistant";
+export const piAgentDefinition: AgentDefinition = {
+  ...defaultAgentDefinition,
+  id: piAgentDefinitionId,
+  displayName: "Shopkeeper (Pi engine)",
+  description: "Same shopkeeper behavior, running on the Pi agent-loop engine.",
+  runtimeAdapterId: "pi"
 };
 
 export function isAgentDefinitionId(value: unknown): value is AgentDefinitionId {
@@ -4509,7 +4525,7 @@ export interface AgentRuntimeReadiness {
 /** Backend-derived effective runtime used by chat and settings. It exposes resource identity and
  * readiness only; host endpoints and credentials never cross the API boundary. */
 export interface EffectiveRuntimeSummary {
-  harness: { id: string; name: string };
+  agent: { id: string; name: string; runtimeAdapterId: string };
   model: { id: string; name: string };
   execution: {
     type: ModelExecutionTarget;

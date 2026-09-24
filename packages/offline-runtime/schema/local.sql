@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS device_runtime_pins (
   scope_key TEXT PRIMARY KEY REFERENCES runtime_scopes(scope_key) ON DELETE CASCADE,
   local_id TEXT NOT NULL, cloud_id TEXT, store_id TEXT NOT NULL, device_id TEXT NOT NULL,
   updated_at_local TEXT NOT NULL, synced_at TEXT, dirty INTEGER NOT NULL DEFAULT 0 CHECK(dirty IN (0,1)),
-  agent_id TEXT NOT NULL, agent_version TEXT NOT NULL, harness_version TEXT NOT NULL,
+  agent_id TEXT NOT NULL, agent_version TEXT NOT NULL,
   model_id TEXT NOT NULL, model_version TEXT NOT NULL,
   explicit_swap INTEGER NOT NULL DEFAULT 0 CHECK(explicit_swap IN (0,1)),
   active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1))

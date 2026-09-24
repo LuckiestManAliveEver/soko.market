@@ -63,7 +63,7 @@ export interface AgentModelPanelProps {
 }
 
 /**
- * The advanced counterpart to QuickRuntimeSwitcher.tsx's simple "pick a harness + hosted model"
+ * The advanced counterpart to QuickRuntimeSwitcher.tsx's simple "pick an agent + hosted model"
  * dropdown: this panel shows the full backend model binding (with a real test/activate/remove
  * round trip against /api/agents/:agentId/models/:modelId/{test,activate} and
  * /api/agents/:agentId/model-binding), plus GitHub and Hugging Face model discovery. Every model

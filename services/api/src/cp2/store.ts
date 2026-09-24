@@ -57,6 +57,8 @@ import { runtimeToolRegistry } from "@soko/tool-core";
 import {
   defaultAgentDefinition,
   defaultAgentDefinitionId,
+  piAgentDefinition,
+  piAgentDefinitionId,
   isAccountSyncCollection,
   isAgentDefinitionId,
   repositoryDefaultRuntimePolicy
@@ -109,7 +111,6 @@ import {
 import { AgentRuntimeDomain } from "./domains/agent-runtime/store.js";
 import { createDefaultAgentRuntimeAdapterRegistry } from "../agent-harness/default-agent-runtime-adapters.js";
 import type { AgentRuntimeAdapter } from "../agent-harness/agent-runtime-adapter.js";
-import { describeAgentRuntimeAdapter } from "../agent-harness/agent-runtime-catalog.js";
 import {
   aiModelRegistry,
   computeModelAvailability,
@@ -159,7 +160,6 @@ import type {
   AccountSummary,
   AgentContextSource,
   AgentDefinition,
-  AgentRuntimeAdapterDescriptor,
   AiModelSummary,
   AgentEvaluationEvent,
   AgentOwnerCorrection,
@@ -1447,8 +1447,6 @@ export class Cp2Store {
         }
         return binding;
       },
-      resolveAgentRuntimeAdapterId: (agentId) =>
-        this.nativeRuntimeBindings.resolveAgentRuntimeAdapterId(agentId),
       resolveProductionModelTemplate: (businessId, agentId, modelId, task) =>
         this.modelTemplatesDomain.resolveProductionTemplate({
           businessId,
@@ -1938,6 +1936,20 @@ export class Cp2Store {
       this.pendingRefreshTokens.set(session.id, refreshToken);
     }
     return refreshToken;
+  }
+
+  authorizeBusinessAction(input: {
+    sessionId: string | null;
+    businessId: string;
+    permission: BusinessPermission;
+    now?: Date;
+  }): AuthenticatedActorView {
+    return this.requireAuthorizedActor(
+      input.sessionId,
+      input.businessId,
+      input.permission,
+      input.now
+    );
   }
 
   consumeSessionRefreshToken(sessionId: string): string {
@@ -3641,7 +3653,7 @@ export class Cp2Store {
           op.checkpointId!
         );
         const agent = this.nativeRuntimeBindings.agentsMap.get(checkpoint.runtime.agentId)!;
-        const harness =
+        const runtimeAdapter =
           this.options.agentRuntimeAdapterResolver?.(runtimeAdapterIdForAgent(agent)) ??
           this.defaultAgentRuntimeAdapters.resolve(runtimeAdapterIdForAgent(agent));
         const model = isModelExecutionTarget(host.type)
@@ -3652,7 +3664,7 @@ export class Cp2Store {
               shopId: op.businessId ?? ""
             })
           : undefined;
-        if (!harness || !model)
+        if (!runtimeAdapter || !model)
           throw new Cp2Error(
             409,
             "TARGET_ACTIVATION_FAILED",
@@ -3668,7 +3680,7 @@ export class Cp2Store {
               executionHostId: host.id,
               signal
             }),
-            harness.canRun({
+            runtimeAdapter.canRun({
               agent,
               modelId: checkpoint.runtime.modelId,
               shopId: op.businessId ?? "",
@@ -3956,11 +3968,6 @@ export class Cp2Store {
     ...args: Parameters<AgentRuntimeDomain["getActiveAgentModelBinding"]>
   ): ReturnType<AgentRuntimeDomain["getActiveAgentModelBinding"]> {
     return this.agentRuntimeDomain.getActiveAgentModelBinding(...args);
-  }
-  getAgentRuntimeHarness(
-    ...args: Parameters<AgentRuntimeDomain["getAgentRuntimeHarness"]>
-  ): ReturnType<AgentRuntimeDomain["getAgentRuntimeHarness"]> {
-    return this.agentRuntimeDomain.getAgentRuntimeHarness(...args);
   }
   removeAgentModelBinding(
     ...args: Parameters<AgentRuntimeDomain["removeAgentModelBinding"]>
@@ -5213,6 +5220,7 @@ export class Cp2Store {
         quantity,
         buyingPrice: existing?.buyingPrice ?? null,
         sellingPrice,
+        unitWeightGrams: existing?.unitWeightGrams ?? null,
         fieldValues: existing?.fieldValues ?? {},
         createdAt: existing?.createdAt ?? now.toISOString(),
         updatedAt: now.toISOString()
@@ -8025,6 +8033,11 @@ export class Cp2Store {
         defaultAgentDefinitionId,
         cloneAgentCatalogEntry(defaultAgentDefinition)
       );
+      // A second built-in definition so the Pi engine stays choosable now that engine choice is a
+      // property of the agent definition, not an independent dimension - a shop picks this instead
+      // of the default to run on Pi,
+      // rather than toggling a separate engine field on the same agent.
+      this.agentCatalog.set(piAgentDefinitionId, cloneAgentCatalogEntry(piAgentDefinition));
     }
   }
 
@@ -8161,23 +8174,6 @@ export class Cp2Store {
     return this.listAgentCatalog();
   }
 
-  /** Every AgentRuntimeAdapter actually registered in this deployment (see
-   *  agent-harness/default-agent-runtime-adapters.ts) - the harnesses a shop can choose between. */
-  listAgentRuntimeAdapters(): AgentRuntimeAdapterDescriptor[] {
-    return this.defaultAgentRuntimeAdapters
-      .list()
-      .map((adapter) => describeAgentRuntimeAdapter(adapter.id))
-      .sort((left, right) => left.displayName.localeCompare(right.displayName));
-  }
-
-  listPlatformAgentRuntimeAdapters(
-    sessionId: string | null,
-    now = new Date()
-  ): AgentRuntimeAdapterDescriptor[] {
-    this.requirePinVerifiedSession(sessionId, now);
-    return this.listAgentRuntimeAdapters();
-  }
-
   upsertAgentCatalogEntry(input: {
     sessionId: string | null;
     agent: AgentDefinition;
@@ -8198,6 +8194,13 @@ export class Cp2Store {
     }
     if (agent.instructions.trim() === "" || agent.instructions.length > 20_000) {
       throw new Cp2Error(400, "agent_catalog_entry_invalid", "Agent instructions are invalid.");
+    }
+    if (this.defaultAgentRuntimeAdapters.resolve(agent.runtimeAdapterId) === undefined) {
+      throw new Cp2Error(
+        400,
+        "agent_catalog_entry_invalid",
+        "Agent runtimeAdapterId is not a registered adapter."
+      );
     }
     if (
       !Array.isArray(agent.tools) ||

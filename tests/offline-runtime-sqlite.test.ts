@@ -54,7 +54,11 @@ describe("Native SQLite local store", () => {
         "utf8"
       );
       driver.exec(sql);
-      expect(driver.prepare("SELECT count(*) AS n FROM local_migrations").get()?.n).toBe(1);
+      // openSqliteLocalDatabase already recorded versions 1 and 3 (3's ALTER TABLE DROP COLUMN
+      // isn't idempotent like the CREATE TABLE IF NOT EXISTS statements, so it's the first
+      // migration since 1 to need its own local_migrations row) - re-execing schema/local.sql's
+      // own "INSERT OR IGNORE ... VALUES (1, ...)" is a no-op against that, leaving 2 rows total.
+      expect(driver.prepare("SELECT count(*) AS n FROM local_migrations").get()?.n).toBe(2);
     } finally {
       db.close();
     }

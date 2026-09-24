@@ -19,7 +19,7 @@ describe("effective runtime API", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        harness: { id: "pi", name: "Pi" },
+        agent: { id: "builtin:shopkeeper", name: "Shopkeeper", runtimeAdapterId: "pi" },
         model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
         execution: { type: "vercel", ready: true },
         source: "default",
@@ -44,7 +44,7 @@ describe("effective runtime API", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        harness: { id: "pi" },
+        agent: { id: "builtin:shopkeeper", runtimeAdapterId: "pi" },
         model: { id: "smollm2-360m" },
         execution: { type: "vercel", hostId: null, ready: false },
         binding: null,

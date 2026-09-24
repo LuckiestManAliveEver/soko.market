@@ -323,8 +323,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   > = {
     soko: createSokoCatalogRegistryAdapter({
       listModels: () => store.listModelCatalog(),
-      listAgents: () => store.listAgentCatalog(),
-      listHarnesses: () => store.listAgentRuntimeAdapters()
+      listAgents: () => store.listAgentCatalog()
     }),
     github: createGitHubRegistryAdapter({
       modelCatalog: githubModelCatalog,

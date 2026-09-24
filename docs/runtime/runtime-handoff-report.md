@@ -29,7 +29,7 @@ Settings action -> useRuntimeHandoff -> RuntimeHandoffController
 -> /v1/runtime/:taskId capabilities / handoffs / transfers
 -> RuntimeHandoffDomain -> NativeRuntimeBindingStore -> execution host
 -> unpromoted RuntimeHandoff checkpoint -> target prepare/restore
--> receipt or hosted model/harness readiness -> compare-and-swap commit
+-> receipt or hosted model/agent-adapter readiness -> compare-and-swap commit
 -> Postgres persistence barrier -> canonical frontend routing
 ```
 
@@ -132,7 +132,7 @@ POST /transfers/:id/fail
 {}
 ```
 
-Hosted completion uses `{}` and server model/harness readiness probes. Completion/failure responses
+Hosted completion uses `{}` and server model/agent-adapter readiness probes. Completion/failure responses
 contain the canonical transfer status; FAILED includes `failureCode` and `message`. Runtime durability
 that remains unconfirmed returns 503 `RUNTIME_PERSISTENCE_PENDING`. Legacy host swaps require this
 acknowledged protocol in both directions. Read-only business status without a selected conversation

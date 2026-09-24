@@ -214,7 +214,7 @@ async function installDelayedApi(page: Page): Promise<void> {
     if (url.pathname === "/v1/ai-models") return json({ models: [] });
     if (url.pathname.endsWith("/runtime/effective") && url.pathname.startsWith("/businesses/")) {
       return json({
-        harness: { id: "soko-ai", name: "Soko AI" },
+        agent: { id: "builtin:shopkeeper", name: "Soko AI", runtimeAdapterId: "soko" },
         model: { id: "qwen2.5-0.5b-android", name: "Qwen2.5 0.5B (Android recommended)" },
         execution: { type: "backend", hostId: null, ready: true },
         binding: activeBinding !== null ? { id: activeBinding.id } : null,

@@ -1,6 +1,6 @@
 import { emptyState, scopeKey, type LocalState, type Scope } from "../types.js";
 import type { LocalDatabase } from "./client.js";
-import { initialSql, offlineOrdersSql } from "./migrations/sql.js";
+import { dropHarnessVersionPinColumnSql, initialSql, offlineOrdersSql } from "./migrations/sql.js";
 /** Structural subset of better-sqlite3; native code stays out of the PWA bundle. */
 export interface SqliteDriver {
   exec(sql: string): unknown;
@@ -10,6 +10,12 @@ export interface SqliteDriver {
 export function openSqliteLocalDatabase(driver: SqliteDriver): LocalDatabase {
   driver.exec(initialSql);
   driver.exec(offlineOrdersSql);
+  // ALTER TABLE DROP COLUMN isn't idempotent like the CREATE TABLE IF NOT EXISTS statements above,
+  // so this one is gated on local_migrations instead of being exec'd unconditionally every open.
+  const migration3Applied = driver
+    .prepare("SELECT version FROM local_migrations WHERE version = ?")
+    .get(3);
+  if (!migration3Applied) driver.exec(dropHarnessVersionPinColumnSql);
   function read(scope: Scope): LocalState {
     const result = driver
       .prepare("SELECT state_json FROM runtime_scopes WHERE scope_key = ?")
@@ -101,7 +107,7 @@ export function openSqliteLocalDatabase(driver: SqliteDriver): LocalDatabase {
           const pin = state.pin;
           driver
             .prepare(
-              "INSERT OR REPLACE INTO device_runtime_pins VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+              "INSERT OR REPLACE INTO device_runtime_pins VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .run(
               key,
@@ -114,7 +120,6 @@ export function openSqliteLocalDatabase(driver: SqliteDriver): LocalDatabase {
               0,
               pin.agentId,
               pin.agentVersion,
-              pin.harnessVersion,
               pin.modelId,
               pin.modelVersion,
               Number(pin.explicitSwap),

@@ -21,25 +21,6 @@ import {
 } from "./types.js";
 import type { RuntimeRegistryImportStore } from "./import-store.js";
 
-/**
- * The one hard boundary this whole module respects: importing a harness NEVER fetches, evals,
- * requires, or otherwise executes any code from the source repository. Discovery and inspection are
- * static-metadata-and-manifest-file-only (see runtime-registry/harness-manifest.ts and
- * github-adapter.ts's fetchHarnessManifest). A harness import can reach REGISTERED (a Soko-side
- * record referencing the validated manifest) and then PROVISIONING, and stops there: no isolated
- * runtime environment (isolated-vm, container, Firecracker, ...) exists in this repo to safely run
- * untrusted third-party code, so building an unsafe substitute would be worse than stopping here.
- * The only path from PROVISIONING to ACTIVE is a human/operator deploying the adapter through the
- * trusted AgentRuntimeAdapterRegistry.register() path (services/api/src/agent-harness/agent-runtime-adapter.ts).
- */
-export const harnessProvisioningBoundaryReason =
-  "Server-side execution requires deploying this adapter through the trusted " +
-  "AgentRuntimeAdapterRegistry.register() path; automatic sandboxed provisioning of third-party " +
-  "harness code is not yet built and is intentionally out of scope here — no isolated runtime " +
-  "environment (e.g. isolated-vm, container, Firecracker) exists in this repo to safely execute " +
-  "untrusted third-party code, and building an unsafe substitute would be worse than not building " +
-  "this last step at all.";
-
 const modelArtifactStorageNotWiredReason =
   "Safe artifact storage (streamed, size-capped, checksum-verified) is not wired into this import " +
   "path yet - see services/api/src/cp2/account-ai-asset-store.ts. Downloading the full model " +
@@ -120,9 +101,6 @@ export function createRuntimeRegistryImportService(deps: RuntimeRegistryImportSe
         return transition(record, "INSPECTION_FAILED", message);
       }
 
-      if (input.ref.kind === "harness") {
-        return importHarness(record, details, transition);
-      }
       if (input.ref.kind === "agent") {
         return importAgent(record, details, input, transition);
       }
@@ -145,38 +123,6 @@ type TransitionFn = (
   stateReason: string | null,
   extra?: Partial<Pick<RuntimeRegistryImport, "provenance" | "registeredAssetId">>
 ) => Promise<RuntimeRegistryImport>;
-
-// ---------------------------------------------------------------------------
-// Harness: discover -> inspect (already done) -> validate -> register -> STOP at PROVISIONING
-// ---------------------------------------------------------------------------
-
-async function importHarness(
-  record: RuntimeRegistryImport,
-  details: RuntimeRegistryResourceDetails,
-  transition: TransitionFn
-): Promise<RuntimeRegistryImport> {
-  if (details.compatibility.status !== "compatible") {
-    const state: RuntimeAssetImportState =
-      details.compatibility.status === "incompatible" ? "INCOMPATIBLE" : "VALIDATION_FAILED";
-    return transition(
-      record,
-      state,
-      details.compatibility.reason ??
-        "No valid soko.harness.json manifest was found; static inspection cannot confirm this " +
-          "repository is a Soko-compatible harness."
-    );
-  }
-
-  record = await transition(record, "VALIDATED", null);
-  record = await transition(record, "IMPORTING", null);
-  record = await transition(record, "REGISTERED", null, {
-    registeredAssetId: `${details.provider}:${details.externalId}`
-  });
-  // Hard stop, by design: never IMPORTs this far into ACTIVE without the trusted
-  // AgentRuntimeAdapterRegistry.register() path actually loading the adapter. See
-  // harnessProvisioningBoundaryReason above.
-  return transition(record, "PROVISIONING", harnessProvisioningBoundaryReason);
-}
 
 // ---------------------------------------------------------------------------
 // Agent: discover -> inspect -> validate (soko.agent.json if present, else synthesize) -> REGISTERED

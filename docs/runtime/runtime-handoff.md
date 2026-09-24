@@ -62,7 +62,7 @@ Example for an installation without a local executor:
 
 Capabilities are reported per host: support, configuration, registry health, reachability,
 compatibility/availability, and active state are distinct. Hosted readiness is checked again with
-the actual model adapter's `healthCheck` and agent harness's `canRun` before return commit.
+the actual model adapter's `healthCheck` and agent adapter's `canRun` before return commit.
 Local means browser/browser-local, installed-app, or remote-shop-device. Hosted model transports
 remain generic; model/provider identity does not determine local portability.
 

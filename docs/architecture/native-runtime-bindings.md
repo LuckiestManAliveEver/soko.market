@@ -153,4 +153,4 @@ semantics rather than duplicating them.
 Execution location changes use the existing native binding graph and immutable RuntimeHandoff.
 See [the canonical runtime handoff contract](../runtime/runtime-handoff.md) for capabilities,
 device leases, target restore receipts, source preservation, durability and recovery. A healthy
-model installation alone does not prove that its agent harness can execute on a local device.
+model installation alone does not prove that its agent adapter can execute on a local device.

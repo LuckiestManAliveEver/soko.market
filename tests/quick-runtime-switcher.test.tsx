@@ -26,11 +26,16 @@ describe("quick runtime switcher", () => {
   });
 
   function business(id: string): ActiveBusiness {
-    return { id, role: "owner" } as unknown as ActiveBusiness;
+    return { id, role: "owner", sokoId: `soko.${id}` } as unknown as ActiveBusiness;
   }
 
   function agent(): AgentSettings {
-    return { name: "Shopkeeper", model: "smollm2-360m" } as unknown as AgentSettings;
+    return {
+      name: "Shopkeeper",
+      model: "smollm2-360m",
+      agentDefinitionId: "builtin:shopkeeper",
+      contextScripts: []
+    } as unknown as AgentSettings;
   }
 
   function jsonResponse(body: unknown, status = 200): Response {
@@ -56,18 +61,30 @@ describe("quick runtime switcher", () => {
     return fetchMock;
   }
 
-  it("loads the registered harnesses and hosted models, and shows the shop's current selection", async () => {
+  it("loads the registered agent definitions and hosted models, and shows the shop's current selection", async () => {
     stubFetch({
-      "/v1/platform/agent-runtime-adapters": () =>
+      "/v1/platform/agent-catalog": () =>
         jsonResponse({
-          adapters: [
-            { id: "pi", displayName: "Pi", description: "The default harness." },
-            { id: "soko", displayName: "Soko (built-in)", description: "The legacy harness." }
+          agents: [
+            {
+              id: "builtin:shopkeeper",
+              displayName: "Shopkeeper",
+              description: "The default agent."
+            },
+            {
+              id: "builtin:pi-assistant",
+              displayName: "Shopkeeper (Pi engine)",
+              description: "Same behavior, running on Pi."
+            }
           ]
         }),
-      "/businesses/harness-shop/runtime/effective": () =>
+      "/businesses/agent-shop/runtime/effective": () =>
         jsonResponse({
-          harness: { id: "pi", name: "Pi" },
+          agent: {
+            id: "builtin:pi-assistant",
+            name: "Shopkeeper (Pi engine)",
+            runtimeAdapterId: "pi"
+          },
           model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
           execution: { type: "backend", hostId: "host-1", ready: true },
           binding: { id: "binding-1" },
@@ -124,7 +141,7 @@ describe("quick runtime switcher", () => {
       root = createRoot(host);
       root.render(
         <QuickRuntimeSwitcher
-          business={business("harness-shop")}
+          business={business("agent-shop")}
           agent={agent()}
           updateAgent={vi.fn()}
           onAgentChange={vi.fn()}
@@ -135,8 +152,8 @@ describe("quick runtime switcher", () => {
       await Promise.resolve();
     });
 
-    const harnessSelect = host.querySelector<HTMLSelectElement>("select");
-    expect(harnessSelect?.value).toBe("pi");
+    const agentSelect = host.querySelector<HTMLSelectElement>("select");
+    expect(agentSelect?.value).toBe("builtin:pi-assistant");
     const selects = host.querySelectorAll<HTMLSelectElement>("select");
     const modelSelect = selects[1] as HTMLSelectElement;
     expect(modelSelect.value).toBe("smollm2-360m");
@@ -144,19 +161,19 @@ describe("quick runtime switcher", () => {
     expect(modelOptionValues).toEqual(["smollm2-360m"]);
   });
 
-  it("activates a harness change immediately and reports the new selection", async () => {
-    const activateBodies: unknown[] = [];
+  it("activates an agent-definition change immediately and reports the new selection", async () => {
+    const profileUpdateBodies: unknown[] = [];
     stubFetch({
-      "/v1/platform/agent-runtime-adapters": () =>
+      "/v1/platform/agent-catalog": () =>
         jsonResponse({
-          adapters: [
-            { id: "pi", displayName: "Pi", description: "" },
-            { id: "soko", displayName: "Soko (built-in)", description: "" }
+          agents: [
+            { id: "builtin:shopkeeper", displayName: "Shopkeeper", description: "" },
+            { id: "builtin:pi-assistant", displayName: "Shopkeeper (Pi engine)", description: "" }
           ]
         }),
-      "/businesses/harness-shop-2/runtime/effective": () =>
+      "/businesses/agent-shop-2/runtime/effective": () =>
         jsonResponse({
-          harness: { id: "pi", name: "Pi" },
+          agent: { id: "builtin:shopkeeper", name: "Shopkeeper", runtimeAdapterId: "soko" },
           model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
           execution: { type: "backend", hostId: "host-1", ready: true },
           binding: { id: "binding-1" },
@@ -196,7 +213,7 @@ describe("quick runtime switcher", () => {
       root = createRoot(host);
       root.render(
         <QuickRuntimeSwitcher
-          business={business("harness-shop-2")}
+          business={business("agent-shop-2")}
           agent={agent()}
           updateAgent={updateAgent}
           onAgentChange={onAgentChange}
@@ -208,29 +225,41 @@ describe("quick runtime switcher", () => {
     });
 
     const fetchMock = stubFetch({
-      "/api/agents/harness-shop-2/models/smollm2-360m/activate": (init) => {
-        activateBodies.push(JSON.parse(String(init?.body)));
+      "/businesses/agent-shop-2/agent-profile": (init) => {
+        profileUpdateBodies.push(JSON.parse(String(init?.body)));
         return jsonResponse({
-          binding: { modelId: "smollm2-360m", executionTarget: "backend" },
-          healthCheck: { latencyMs: 5 }
+          agentDefinitionId: "builtin:pi-assistant",
+          name: "Shopkeeper",
+          description: "",
+          modelId: "smollm2-360m",
+          role: "General shopkeeper",
+          language: "en",
+          personality: "Warm",
+          instructions: "Handle one task at a time.",
+          knowledge: "Use saved records.",
+          tools: [],
+          integrations: [],
+          contextScripts: [],
+          runtimeVersion: 2
         });
       }
     });
 
-    const harnessSelect = host.querySelector<HTMLSelectElement>("select") as HTMLSelectElement;
+    const agentSelect = host.querySelector<HTMLSelectElement>("select") as HTMLSelectElement;
     await act(async () => {
-      harnessSelect.value = "soko";
-      harnessSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      agentSelect.value = "builtin:pi-assistant";
+      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(activateBodies[0]).toMatchObject({
-      shopId: "harness-shop-2",
-      agentRuntimeAdapterId: "soko"
+    expect(profileUpdateBodies[0]).toMatchObject({
+      agentDefinitionId: "builtin:pi-assistant"
     });
-    expect(updateAgent).toHaveBeenCalledWith({ model: "smollm2-360m" });
-    expect(host.textContent).toContain("Soko (built-in)");
+    expect(updateAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentDefinitionId: "builtin:pi-assistant" })
+    );
+    expect(host.textContent).toContain("Shopkeeper (Pi engine)");
   });
 });

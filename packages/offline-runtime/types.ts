@@ -69,7 +69,6 @@ export interface ReceiptOcrExtraction {
 export interface RuntimeBinding {
   agentId: string;
   agentVersion: string;
-  harnessVersion: string;
   modelId: string;
   modelVersion: string;
   artifacts: Artifact[];

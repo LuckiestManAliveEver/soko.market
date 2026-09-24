@@ -26,7 +26,7 @@ export interface ExternalRegistryConnection {
 // Unified discovery / search contract
 // ---------------------------------------------------------------------------
 
-export type RuntimeAssetKind = "agent" | "harness" | "model";
+export type RuntimeAssetKind = "agent" | "model";
 
 export type RuntimeRegistryProviderId = "soko" | "github" | "huggingface";
 

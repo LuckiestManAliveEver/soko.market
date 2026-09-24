@@ -104,9 +104,12 @@ entry to `modelExecutionTargets` (`packages/shared-types/src/index.ts`), a
 `modelRuntimeAdapters` map in `index.ts` under `` `${newTarget}:${modelId}` `` - the routing,
 resolver, and chat pipeline require no changes.
 
-**Swap the agent harness**: register a new `AgentRuntimeAdapter` and point
-`PLATFORM_DEFAULT_AGENT_ADAPTER_ID` (or a specific binding's `agentRuntimeAdapterId`) at it. Model
-and execution-host selection are independent of which harness is running.
+**Swap the engine**: which `AgentRuntimeAdapter` runs a shop's turns is a property of their chosen
+agent definition (`AgentDefinition.runtimeAdapterId` - see
+`docs/architecture/swappable-agent-model-runtime.md`), not an independent activation input. Pick a
+different built-in agent definition (or import one that declares a different adapter) to change
+engines; `PLATFORM_DEFAULT_AGENT_ADAPTER_ID` still controls the deployment-wide zero-setup default
+for untouched shops. Model and execution-host selection remain independent of which engine runs.
 
 ## Failure semantics
 
