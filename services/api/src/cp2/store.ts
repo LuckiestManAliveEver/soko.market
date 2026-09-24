@@ -8,6 +8,7 @@ import {
 } from "@soko/business-core";
 import {
   formatGrams,
+  type ChannelProvider,
   type ConfirmedOrderReference,
   type FulfillmentMethod,
   type FulfillmentStatus,
@@ -1172,6 +1173,7 @@ export class Cp2Store {
       productsForBusiness: (businessId) => this.salesDomain.productsForBusiness(businessId),
       pushOfflineOrderIntents: (sessionId, intents) =>
         this.pushOfflineOrderIntents(sessionId, intents),
+      createChannelOrder: (input) => this.createChannelOrder(input),
       ensureSokoSessionContext: (session, now) => this.ensureSokoSessionContext(session, now),
       createRuntimeTurn: (input) => this.agentRuntimeDomain.createRuntimeTurn(input),
       agentModelRecoveryGuidance: (businessId, error) =>
@@ -3587,6 +3589,11 @@ export class Cp2Store {
     ...args: Parameters<MessagingDomain["sendChannelMessage"]>
   ): ReturnType<MessagingDomain["sendChannelMessage"]> {
     return this.messagingDomain.sendChannelMessage(...args);
+  }
+  deliverFulfillmentNotification(
+    ...args: Parameters<MessagingDomain["deliverFulfillmentNotification"]>
+  ): ReturnType<MessagingDomain["deliverFulfillmentNotification"]> {
+    return this.messagingDomain.deliverFulfillmentNotification(...args);
   }
   ingestProviderMessage(
     ...args: Parameters<MessagingDomain["ingestProviderMessage"]>
@@ -6743,6 +6750,51 @@ export class Cp2Store {
     intents: OfflineOrderIntent[]
   ): OfflineOrderIntentOutcome[] {
     return intents.map((intent) => this.reconcileOfflineOrderIntent(sessionId, intent));
+  }
+
+  private createChannelOrder(input: {
+    businessId: string;
+    customerId: string;
+    provider: ChannelProvider;
+    actorId: string;
+    items: Array<{ productId: string; quantity: number; name: string }>;
+    idempotencyKey: string;
+    now: Date;
+  }): OfflineOrderIntentOutcome {
+    return this.offlineJournal.replayOrderIntent(input.idempotencyKey, () => {
+      if (input.provider !== "telegram") {
+        throw new Cp2Error(400, "channel_order_unsupported", "This order channel is not enabled.");
+      }
+      this.salesDomain.requireCustomer(input.businessId, input.customerId);
+      const created = this.salesDomain.createAndConfirmChannelInvoice({
+        businessId: input.businessId,
+        customerId: input.customerId,
+        items: input.items,
+        source: "TELEGRAM",
+        sourceMessageChannel: "telegram",
+        actorId: input.actorId,
+        now: input.now
+      });
+      this.logisticsDomain.createChannelDelivery({
+        businessId: input.businessId,
+        invoiceId: created.invoice.id,
+        actorId: input.actorId,
+        now: input.now
+      });
+      return {
+        id: input.idempotencyKey,
+        status: "confirmed",
+        invoiceId: created.invoice.id,
+        confirmedItems: input.items.map((item) => ({
+          name: item.name,
+          quantity: item.quantity,
+          productId: item.productId,
+          reason: null
+        })),
+        rejectedItems: [],
+        message: `Order confirmed as invoice ${created.invoice.invoiceNumber}.`
+      };
+    });
   }
 
   private reconcileOfflineOrderIntent(

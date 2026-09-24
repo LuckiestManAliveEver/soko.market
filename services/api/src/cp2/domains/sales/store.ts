@@ -737,32 +737,12 @@ export class SalesDomain {
       "invoice:write",
       now
     );
-    assertValid(validateInvoiceInput(input.invoice));
-    this.buildInvoicePreview(input.businessId, input.invoice);
-
-    const invoice = this.buildStoredInvoice({
+    return this.createInvoiceAsActor({
       businessId: input.businessId,
-      invoiceId: randomUUID(),
-      invoiceNumber: this.nextInvoiceNumber(input.businessId),
-      input: input.invoice,
-      status: "draft",
-      confirmedAt: null,
-      now,
-      source: input.invoice.source ?? "MANUAL",
-      createdByUserId: session.user.id
+      invoice: input.invoice,
+      actorId: session.user.id,
+      now
     });
-
-    this.invoices.set(invoice.id, invoice);
-    this.deps.appendBusinessEvent(
-      invoiceCreatedEvent({
-        id: randomUUID(),
-        invoice,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return invoice;
   }
 
   updateInvoice(input: {
@@ -828,6 +808,91 @@ export class SalesDomain {
       "invoice:confirm",
       now
     );
+    return this.confirmInvoiceAsActor({
+      businessId: input.businessId,
+      invoiceId: input.invoiceId,
+      actorId: session.user.id,
+      now
+    });
+  }
+
+  /** Trusted channel adapter entry point. Authorization and identity resolution happen upstream. */
+  createAndConfirmChannelInvoice(input: {
+    businessId: string;
+    customerId: string;
+    items: Array<{ productId: string; quantity: number }>;
+    source: OrderSource;
+    sourceMessageChannel: MessageChannel;
+    actorId: string;
+    now: Date;
+  }): { invoice: InvoiceSummary; movements: InventoryMovementSummary[] } {
+    const invoice = this.createInvoiceAsActor({
+      businessId: input.businessId,
+      actorId: input.actorId,
+      now: input.now,
+      invoice: {
+        customerId: input.customerId,
+        customerName: null,
+        taxRate: 0,
+        source: input.source,
+        sourceMessageChannel: input.sourceMessageChannel,
+        items: input.items.map((item) => {
+          const product = this.requireProduct(input.businessId, item.productId);
+          return {
+            productId: product.id,
+            quantity: item.quantity,
+            unitPrice: product.sellingPrice ?? 0
+          };
+        })
+      }
+    });
+    return this.confirmInvoiceAsActor({
+      businessId: input.businessId,
+      invoiceId: invoice.id,
+      actorId: input.actorId,
+      now: input.now
+    });
+  }
+
+  private createInvoiceAsActor(input: {
+    businessId: string;
+    invoice: InvoiceInput;
+    actorId: string;
+    now: Date;
+  }): InvoiceSummary {
+    assertValid(validateInvoiceInput(input.invoice));
+    this.buildInvoicePreview(input.businessId, input.invoice);
+    const invoice = this.buildStoredInvoice({
+      businessId: input.businessId,
+      invoiceId: randomUUID(),
+      invoiceNumber: this.nextInvoiceNumber(input.businessId),
+      input: input.invoice,
+      status: "draft",
+      confirmedAt: null,
+      now: input.now,
+      source: input.invoice.source ?? "MANUAL",
+      sourceMessageChannel: input.invoice.sourceMessageChannel ?? null,
+      createdByUserId: input.actorId
+    });
+    this.invoices.set(invoice.id, invoice);
+    this.deps.appendBusinessEvent(
+      invoiceCreatedEvent({
+        id: randomUUID(),
+        invoice,
+        actorId: input.actorId,
+        occurredAt: input.now.toISOString()
+      })
+    );
+    return invoice;
+  }
+
+  private confirmInvoiceAsActor(input: {
+    businessId: string;
+    invoiceId: string;
+    actorId: string;
+    now: Date;
+  }): { invoice: InvoiceSummary; movements: InventoryMovementSummary[] } {
+    const now = input.now;
     const invoice = this.requireInvoice(input.businessId, input.invoiceId);
 
     if (invoice.status !== "draft") {
@@ -874,7 +939,7 @@ export class SalesDomain {
           quantityBefore: product.quantity,
           quantityAfter: updatedProduct.quantity,
           reason: `Invoice ${invoice.invoiceNumber}`,
-          actorId: session.user.id,
+          actorId: input.actorId,
           now
         })
       );
@@ -898,12 +963,12 @@ export class SalesDomain {
     };
 
     this.invoices.set(confirmed.id, confirmed);
-    this.deps.onInvoiceConfirmed?.(confirmed, session.user.id);
+    this.deps.onInvoiceConfirmed?.(confirmed, input.actorId);
     this.deps.appendBusinessEvent(
       invoiceConfirmedEvent({
         id: randomUUID(),
         invoice: confirmed,
-        actorId: session.user.id,
+        actorId: input.actorId,
         occurredAt: now.toISOString()
       })
     );

@@ -4,7 +4,7 @@ Status: **Phase 0 and Phases 1a–1c are implemented and merged (PRs #56–#58; 
 Phase 2 is implemented: deterministic policy evaluation, persisted approvals, vehicle/day
 reservations, scheduled cutoff execution, manifest cancellation, departure, asynchronous
 transactional-outbox delivery, MCP tools, and the mobile driver workflow. Phase 3 order-channel
-integration has not started.**
+integration is implemented for Telegram; WhatsApp remains credential-gated.**
 
 The owner asked to continue past Phase 0 ("continue and fix any gaps"). Phase 1a therefore
 adopts the recommendation of every §9 decision it depends on (D1 = option A, D2, D6, D7, D8,
@@ -864,7 +864,23 @@ A `sales_agent` can see the pools summary but not the order list or manifests' w
 
 ### 14.3 Phase 3 status
 
-The repository already has an authenticated Telegram webhook and outbound `sendMessage`, but no
-adapter translates a Telegram identity/conversation into the canonical invoice/order flow. That
-adapter, official WhatsApp Business integration, and outbox-driven customer notifications remain
-Phase 3 work. No channel-specific order model should be introduced.
+Telegram now uses the existing authenticated Bot API webhook, provider-update deduplication,
+identity links and canonical conversations. Quantity-led order messages are parsed by the same
+deterministic catalogue matcher used for SMS orders. The adapter calls trusted Sales and Logistics
+domain entry points; it does not own commerce or fulfillment state.
+
+The resulting confirmed invoice records `source = TELEGRAM` and
+`sourceMessageChannel = telegram`, snapshots catalogue weight, creates canonical delivery
+logistics, and enters the normal corridor intake path. Telegram and field-sales orders therefore
+share pools, allocation and manifests. Deterministic clarification and order-result replies render
+through the official adapter.
+
+The Phase 2 outbox worker now passes `manifest.created` and per-order `delivery.completed` events
+to the messaging domain. Linked customer channels receive idempotent adapter-rendered scheduling
+and delivery notifications. The event ID plus invoice ID is the delivery idempotency key.
+
+The real-PostgreSQL Phase 3 scenario proves Telegram conversation to canonical order, weight,
+location/corridor provenance, a shared field-sales pool and manifest, delivery recording, and
+outbox-driven Telegram notifications. WhatsApp stays explicitly disabled until official WhatsApp
+Business Platform credentials and approvals are available; Computer Runtime is not used to bypass
+that restriction.

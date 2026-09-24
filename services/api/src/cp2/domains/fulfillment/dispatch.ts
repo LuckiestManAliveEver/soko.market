@@ -1237,7 +1237,8 @@ export function createDispatchOperations(
                 manifestId,
                 corridorId: corridor.id,
                 vehicleId: vehicle.id,
-                totalWeightGrams: summary.totalWeightGrams
+                totalWeightGrams: summary.totalWeightGrams,
+                invoiceIds: summary.stops.map((stop) => stop.invoiceId)
               },
               now
             });

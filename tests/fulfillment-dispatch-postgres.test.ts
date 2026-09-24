@@ -10,6 +10,7 @@ import type { Pool as PgPool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store, type Cp2Store } from "../services/api/src/cp2/store";
+import { createChannelGatewayFromEnvironment } from "../services/api/src/messaging/channel-gateway";
 import {
   createPostgresFulfillmentService,
   fulfillmentDepsFromStore,
@@ -96,14 +97,36 @@ describePostgres("corridor fulfillment Phase 1c on PostgreSQL", () => {
   let service: FulfillmentService;
   let app: TestApp;
   let pendingIntakes: Array<Promise<unknown>>;
+  let telegramDeliveries: string[];
 
   beforeAll(() => {
     pool = new Pool({ connectionString: databaseUrl ?? "" });
   });
 
   beforeEach(() => {
-    store = createCp2Store();
-    service = createPostgresFulfillmentService({ pool, deps: fulfillmentDepsFromStore(store) });
+    telegramDeliveries = [];
+    store = createCp2Store({
+      channelGateway: createChannelGatewayFromEnvironment(
+        {
+          TELEGRAM_BOT_TOKEN: "test-token",
+          TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
+          TELEGRAM_BOT_USERNAME: "soko_test_bot"
+        },
+        async (_url, init) => {
+          const body = JSON.parse(String(init?.body)) as { text: string };
+          telegramDeliveries.push(body.text);
+          return new Response(JSON.stringify({ ok: true, result: { message_id: randomUUID() } }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+      )
+    });
+    service = createPostgresFulfillmentService({
+      pool,
+      deps: fulfillmentDepsFromStore(store),
+      deliverOutboxEvent: (event) => store.deliverFulfillmentNotification(event)
+    });
     pendingIntakes = [];
     store.setFulfillmentIntakeListener((input) => {
       const intake = service.intakeOrder(input);
@@ -1299,6 +1322,98 @@ describePostgres("corridor fulfillment Phase 1c on PostgreSQL", () => {
         [owner.businessId]
       );
       expect(pending.rows[0]?.count).toBe(0);
+    });
+  });
+
+  describe("Phase 3 Telegram order channel", () => {
+    it("puts Telegram and field-sales orders in the same pool and manifest", async () => {
+      await pool.query(
+        "update fulfillment_outbox_events set delivered_at = now() where delivered_at is null"
+      );
+      const { owner, corridorId, vehicleId } = await setupBusiness({ targetKg: 2000 });
+      const customer = await createCustomer(app, owner, "Telegram Shop");
+      await ok(app, "PUT", url(owner, `shops/${customer.id}/location`), owner.cookie, alongX(0.3));
+      const product = await createProduct(app, owner, {
+        name: "Telegram maize flour",
+        unitWeightGrams: String(1000 * KG)
+      });
+      const grant = await ok<{ token: string }>(
+        app,
+        "POST",
+        `/businesses/${owner.businessId}/customers/${customer.id}/channel-link-grants`,
+        owner.cookie,
+        { provider: "telegram", automaticRepliesEnabled: false }
+      );
+      const telegram = async (updateId: number, messageId: number, text: string) =>
+        app.inject({
+          method: "POST",
+          url: "/v1/webhooks/channels/telegram",
+          headers: {
+            "content-type": "application/json",
+            "x-telegram-bot-api-secret-token": "test-webhook-secret"
+          },
+          payload: JSON.stringify({
+            update_id: updateId,
+            message: {
+              message_id: messageId,
+              from: { id: 3301, first_name: "Telegram Buyer" },
+              chat: { id: 2201 },
+              text
+            }
+          })
+        });
+      expect((await telegram(1, 1, `/start ${grant.token}`)).statusCode).toBe(200);
+      const ordered = await telegram(2, 2, "1 Telegram maize flour");
+      expect(ordered.statusCode, ordered.body).toBe(200);
+      const telegramInvoiceId = ordered.json<{
+        orderIntentOutcome: { status: string; invoiceId: string };
+      }>().orderIntentOutcome.invoiceId;
+      await settleIntakes();
+
+      const field = await deliveryOrder(owner, 1000 * KG, alongX(0.7));
+      const sharedPool = await poolFor(owner, corridorId);
+      expect(sharedPool).toMatchObject({
+        eligibleOrderCount: 2,
+        eligibleTotalWeightGrams: String(2000 * KG),
+        readiness: "DISPATCH_READY"
+      });
+      const telegramInvoice = store
+        .snapshot()
+        .invoices.find((invoice) => invoice.id === telegramInvoiceId);
+      expect(telegramInvoice).toMatchObject({
+        status: "confirmed",
+        source: "TELEGRAM",
+        sourceMessageChannel: "telegram"
+      });
+
+      const manifest = await createManifest(owner, { corridorId, vehicleId });
+      expect(manifest.status).toBe(200);
+      expect(manifest.body.allocatedInvoiceIds).toEqual(
+        expect.arrayContaining([telegramInvoiceId, field.invoiceId])
+      );
+      expect(manifest.body.manifest.stops).toHaveLength(2);
+      await service.deliverPendingOutboxEvents({ batchSize: 200 });
+      expect(telegramDeliveries).toContain("Your delivery has been scheduled.");
+
+      const closed = await ok<ManifestView>(
+        app,
+        "POST",
+        url(owner, `manifests/${manifest.body.manifest.id}/close`),
+        owner.cookie,
+        {}
+      );
+      const telegramStop = closed.stops.find((stop) => stop.invoiceId === telegramInvoiceId);
+      expect(telegramStop).toBeDefined();
+      await ok(
+        app,
+        "POST",
+        url(owner, `manifests/${closed.id}/stops/${telegramStop?.id}/delivery`),
+        owner.cookie,
+        { outcome: "DELIVERED" }
+      );
+      await service.deliverPendingOutboxEvents({ batchSize: 200 });
+      expect(telegramDeliveries).toContain("Your order has been delivered.");
+      expect(product.id).toBeTruthy();
     });
   });
 });

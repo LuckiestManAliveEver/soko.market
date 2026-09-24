@@ -238,7 +238,11 @@ if (shouldUsePostgresStore) {
   fulfillmentService = createPostgresFulfillmentService({
     pool: fulfillmentPool,
     deps: fulfillmentDepsFromStore(cp2Store),
-    idempotencyRetentionHours: positiveIntegerFromEnv("FULFILLMENT_IDEMPOTENCY_RETENTION_HOURS", 24)
+    idempotencyRetentionHours: positiveIntegerFromEnv(
+      "FULFILLMENT_IDEMPOTENCY_RETENTION_HOURS",
+      24
+    ),
+    deliverOutboxEvent: (event) => cp2Store.deliverFulfillmentNotification(event)
   });
   // Orders enter fulfillment when they become deliverable (docs/architecture/corridor-fulfillment.md
   // §5.3). The reconciler runner below catches any intake this misses.
