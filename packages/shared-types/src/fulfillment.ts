@@ -273,7 +273,8 @@ export interface ConfirmedOrderReference {
   weight: OrderFulfillmentWeightSummary;
 }
 
-export type CorridorPoolReadiness = "ACCUMULATING" | "DISPATCHABLE" | "DISPATCH_READY";
+export type CorridorPoolReadiness =
+  "ACCUMULATING" | "DISPATCHABLE" | "DISPATCH_READY" | "APPROVAL_REQUIRED";
 
 /**
  * A corridor pool, computed from live authoritative state (A13); nothing here is persisted.
@@ -392,6 +393,7 @@ export interface ManifestSummary {
   totalWeightGrams: GramsString;
   plannedDepartureAt: string | null;
   closedAt: string | null;
+  departedAt: string | null;
   completedAt: string | null;
   createdBy: string;
   createdAt: string;
@@ -425,4 +427,53 @@ export interface OrderFulfillmentStatusSummary {
     sequence: number;
     deliveryStatus: ManifestStopDeliveryStatus;
   } | null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 2: deterministic policy evaluation and manifest lifecycle
+// ---------------------------------------------------------------------------------------------
+
+export type DispatchEvaluationOutcome = "READY" | "WAIT" | "FALLBACK" | "APPROVAL_REQUIRED";
+
+export type DispatchRecommendation =
+  | {
+      action: "TRY_SMALLER_VEHICLE";
+      vehicleId: string;
+      capacityGrams: GramsString;
+    }
+  | {
+      action: "TRY_COMPATIBLE_CORRIDOR";
+      corridorId: string;
+    };
+
+/** Result of the idempotent, clock-injected Phase 2 policy evaluator. */
+export interface DispatchEvaluationSummary {
+  outcome: DispatchEvaluationOutcome;
+  readiness: CorridorPoolReadiness;
+  maxWaitReached: boolean;
+  recommendation: DispatchRecommendation | null;
+  reason:
+    | "TARGET_REACHED"
+    | "MAX_WAIT_NOT_REACHED"
+    | "FALLBACK_RECOMMENDED"
+    | "APPROVAL_POLICY"
+    | "NO_ACTIONABLE_FALLBACK";
+}
+
+export type DispatchApprovalDecision = "APPROVE" | "DEFER" | "REJECT";
+
+export type DispatchApprovalStatus = "OPEN" | "APPROVED" | "DEFERRED" | "REJECTED";
+
+export interface DispatchApprovalSummary {
+  id: string;
+  businessId: string;
+  corridorId: string;
+  evaluationId: string;
+  policyVersionId: string;
+  status: DispatchApprovalStatus;
+  reason: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }

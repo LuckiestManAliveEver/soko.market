@@ -52,6 +52,10 @@ interface ManifestParams extends BusinessParams {
   manifestId: string;
 }
 
+interface ApprovalParams extends BusinessParams {
+  approvalId: string;
+}
+
 interface InvoiceParams extends BusinessParams {
   invoiceId: string;
 }
@@ -644,6 +648,79 @@ export function registerFulfillmentRoutes(
   );
 
   app.post(
+    "/businesses/:businessId/fulfillment/manifests/:manifestId/depart",
+    async (request: FastifyRequest<{ Params: ManifestParams }>, reply) => {
+      try {
+        return await fulfillment.departManifest({
+          ...actor(request),
+          manifestId: request.params.manifestId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/corridors/:corridorId/evaluate-dispatch",
+    async (request: FastifyRequest<{ Params: CorridorParams }>, reply) => {
+      try {
+        return await fulfillment.evaluateDispatch({
+          ...actor(request),
+          corridorId: request.params.corridorId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/dispatch-approvals",
+    async (
+      request: FastifyRequest<{
+        Params: BusinessParams;
+        Querystring: { status?: "OPEN" | "APPROVED" | "DEFERRED" | "REJECTED" };
+      }>,
+      reply
+    ) => {
+      try {
+        return await fulfillment.listDispatchApprovals({
+          ...actor(request),
+          ...(request.query.status === undefined ? {} : { status: request.query.status })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/dispatch-approvals/:approvalId/decision",
+    async (request: FastifyRequest<{ Params: ApprovalParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        const decision = parseString(body.decision, "decision");
+        if (!approvalDecisions.includes(decision as (typeof approvalDecisions)[number])) {
+          throw new Cp2Error(
+            400,
+            "approval_decision_invalid",
+            "Decision must be APPROVE, DEFER or REJECT."
+          );
+        }
+        return await fulfillment.decideDispatchApproval({
+          ...actor(request),
+          approvalId: request.params.approvalId,
+          decision: decision as (typeof approvalDecisions)[number],
+          reason: parseString(body.reason, "reason")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
     "/businesses/:businessId/fulfillment/manifests/:manifestId/orders/:invoiceId/remove",
     async (request: FastifyRequest<{ Params: ManifestParams & { invoiceId: string } }>, reply) => {
       try {
@@ -693,6 +770,7 @@ const manifestStatuses: ManifestStatus[] = [
   "CANCELLED"
 ];
 const deliveryOutcomes: DeliveryOutcome[] = ["ARRIVED", "DELIVERED", "FAILED", "SKIPPED"];
+const approvalDecisions = ["APPROVE", "DEFER", "REJECT"] as const;
 
 function parseGramsField(value: unknown, field: string, positive: true): bigint;
 function parseGramsField(value: unknown, field: string, positive: false): bigint | null;

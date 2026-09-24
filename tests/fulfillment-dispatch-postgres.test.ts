@@ -1098,4 +1098,156 @@ describePostgres("corridor fulfillment Phase 1c on PostgreSQL", () => {
       }
     });
   });
+
+  describe("Phase 2 dispatch automation", () => {
+    it("persists one daily approval evaluation and gives open approval readiness precedence", async () => {
+      const { owner, corridorId } = await setupBusiness({ targetKg: 6000, minimumKg: 3000 });
+      await ok(app, "POST", url(owner, "policies"), owner.cookie, {
+        name: "Approval fallback",
+        targetLoadGrams: String(6000 * KG),
+        minimumDispatchLoadGrams: String(3000 * KG),
+        maxDiversionMeters: 2000,
+        cutoffLocalTime: "18:00",
+        maxWaitHours: 72,
+        fulfillmentLeadDays: 1,
+        underThresholdFallback: ["REQUIRE_DISPATCH_APPROVAL"],
+        overflowStrategy: "NEXT_MANIFEST",
+        makeBusinessDefault: true
+      });
+      const order = await deliveryOrder(owner, 4000 * KG, alongX(0.5));
+      await pool.query(
+        "update fulfillment_orders set confirmed_at = now() - interval '73 hours' where business_id = $1 and invoice_id = $2",
+        [owner.businessId, order.invoiceId]
+      );
+
+      const first = await ok<{ outcome: string; readiness: string }>(
+        app,
+        "POST",
+        url(owner, `corridors/${corridorId}/evaluate-dispatch`),
+        owner.cookie,
+        {}
+      );
+      const second = await ok<{ outcome: string }>(
+        app,
+        "POST",
+        url(owner, `corridors/${corridorId}/evaluate-dispatch`),
+        owner.cookie,
+        {}
+      );
+      expect(first).toMatchObject({
+        outcome: "APPROVAL_REQUIRED",
+        readiness: "DISPATCHABLE"
+      });
+      expect(second).toEqual(expect.objectContaining(first));
+      expect((await poolFor(owner, corridorId)).readiness).toBe("APPROVAL_REQUIRED");
+
+      const approvals = await ok<Array<{ id: string; status: string }>>(
+        app,
+        "GET",
+        url(owner, "dispatch-approvals?status=OPEN"),
+        owner.cookie
+      );
+      expect(approvals).toHaveLength(1);
+      const decided = await ok<{ status: string; reason: string }>(
+        app,
+        "POST",
+        url(owner, `dispatch-approvals/${approvals[0]?.id}/decision`),
+        owner.cookie,
+        { decision: "APPROVE", reason: "Essential route is due." }
+      );
+      expect(decided).toMatchObject({ status: "APPROVED", reason: "Essential route is due." });
+      expect((await poolFor(owner, corridorId)).readiness).toBe("DISPATCHABLE");
+
+      const persisted = await pool.query<{ evaluations: number; events: number }>(
+        `select
+           (select count(*)::int from fulfillment_dispatch_evaluations where business_id = $1) as evaluations,
+           (select count(*)::int from fulfillment_outbox_events where business_id = $1 and event_type = 'dispatch.approval_required') as events`,
+        [owner.businessId]
+      );
+      expect(persisted.rows[0]).toEqual({ evaluations: 1, events: 1 });
+    });
+
+    it("prevents same-day vehicle double booking and records departure with outbox events", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      await deliveryOrder(owner, 1000 * KG, alongX(0.2));
+      const plannedDepartureAt = "2026-09-25T05:00:00.000Z";
+      const first = await createManifest(owner, {
+        corridorId,
+        vehicleId,
+        plannedDepartureAt
+      });
+      expect(first.status).toBe(200);
+      await deliveryOrder(owner, 1000 * KG, alongX(0.8));
+      const collision = await createManifest(owner, {
+        corridorId,
+        vehicleId,
+        plannedDepartureAt
+      });
+      expect(collision.status).toBe(409);
+      expect(collision.body.code).toBe("vehicle_unavailable");
+
+      const manifestId = first.body.manifest.id;
+      await ok(app, "POST", url(owner, `manifests/${manifestId}/close`), owner.cookie, {});
+      const departed = await ok<ManifestView & { departedAt: string }>(
+        app,
+        "POST",
+        url(owner, `manifests/${manifestId}/depart`),
+        owner.cookie,
+        {}
+      );
+      expect(departed.status).toBe("DEPARTED");
+      expect(departed.departedAt).toBeTruthy();
+      const invalid = await request<{ code: string }>(
+        app,
+        "POST",
+        url(owner, `manifests/${manifestId}/depart`),
+        owner.cookie,
+        {}
+      );
+      expect(invalid).toMatchObject({
+        status: 409,
+        body: { code: "manifest_transition_invalid" }
+      });
+
+      const database = await pool.query<{ reservations: number; events: string[] }>(
+        `select
+           (select count(*)::int from fulfillment_vehicle_reservations where business_id = $1 and active) as reservations,
+           (select array_agg(event_type order by event_type) from fulfillment_outbox_events where business_id = $1) as events`,
+        [owner.businessId]
+      );
+      expect(database.rows[0]?.reservations).toBe(1);
+      expect(database.rows[0]?.events).toEqual([
+        "manifest.closed",
+        "manifest.created",
+        "manifest.departed"
+      ]);
+    });
+
+    it("enforces vehicle/day exclusivity in the database", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      const firstOrder = await deliveryOrder(owner, 1000 * KG, alongX(0.2));
+      const first = await createManifest(owner, {
+        corridorId,
+        vehicleId,
+        orderIds: [firstOrder.invoiceId]
+      });
+      const secondOrder = await deliveryOrder(owner, 1000 * KG, alongX(0.8));
+      const second = await createManifest(owner, {
+        corridorId,
+        vehicleId,
+        orderIds: [secondOrder.invoiceId]
+      });
+      const now = new Date();
+      await pool.query(
+        "insert into fulfillment_vehicle_reservations (id, business_id, vehicle_id, manifest_id, service_date, active, created_at, updated_at) values ($1, $2, $3, $4, '2026-09-26', true, $5, $5)",
+        [randomUUID(), owner.businessId, vehicleId, first.body.manifest.id, now]
+      );
+      await expect(
+        pool.query(
+          "insert into fulfillment_vehicle_reservations (id, business_id, vehicle_id, manifest_id, service_date, active, created_at, updated_at) values ($1, $2, $3, $4, '2026-09-26', true, $5, $5)",
+          [randomUUID(), owner.businessId, vehicleId, second.body.manifest.id, now]
+        )
+      ).rejects.toMatchObject({ code: "23505" });
+    });
+  });
 });

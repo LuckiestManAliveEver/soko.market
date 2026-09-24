@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   allocateAutomatically,
+  canTransitionManifest,
   computePoolReadiness,
+  evaluateDispatchPolicy,
   nextCutoff,
   percentOfTarget,
   zonedWallTimeToUtc
@@ -86,6 +88,86 @@ describe("A21 automatic allocation", () => {
       kg(7000)
     );
     expect(result.allocated.map((entry) => entry.id)).toEqual(["c", "a", "b"]);
+  });
+});
+
+describe("Phase 2 dispatch policy evaluation", () => {
+  const base = {
+    allocatableGrams: kg(4000),
+    targetLoadGrams: TARGET,
+    minimumDispatchLoadGrams: kg(3000),
+    oldestWaitingAgeHours: 72,
+    maxWaitHours: 72,
+    fallbackActions: [
+      "TRY_SMALLER_VEHICLE",
+      "TRY_COMPATIBLE_CORRIDOR",
+      "REQUIRE_DISPATCH_APPROVAL"
+    ] as const,
+    vehicles: [] as Array<{ id: string; capacityGrams: bigint; active: boolean }>,
+    compatibleCorridors: [] as Array<{ id: string; priority: number }>
+  };
+
+  it("returns READY at target without creating a departure decision", () => {
+    expect(evaluateDispatchPolicy({ ...base, allocatableGrams: TARGET })).toMatchObject({
+      outcome: "READY",
+      readiness: "DISPATCH_READY",
+      reason: "TARGET_REACHED"
+    });
+  });
+
+  it("waits until max wait is reached", () => {
+    expect(evaluateDispatchPolicy({ ...base, oldestWaitingAgeHours: 71.99 })).toMatchObject({
+      outcome: "WAIT",
+      readiness: "DISPATCHABLE",
+      reason: "MAX_WAIT_NOT_REACHED"
+    });
+  });
+
+  it("chooses the smallest active fitting vehicle deterministically", () => {
+    const result = evaluateDispatchPolicy({
+      ...base,
+      vehicles: [
+        { id: "z", capacityGrams: kg(5000), active: true },
+        { id: "b", capacityGrams: kg(4500), active: true },
+        { id: "a", capacityGrams: kg(4500), active: true },
+        { id: "inactive", capacityGrams: kg(4000), active: false }
+      ]
+    });
+    expect(result).toMatchObject({
+      outcome: "FALLBACK",
+      recommendation: { action: "TRY_SMALLER_VEHICLE", vehicleId: "a" }
+    });
+  });
+
+  it("follows configured fallback order and creates an approval decision last", () => {
+    expect(evaluateDispatchPolicy(base)).toMatchObject({
+      outcome: "APPROVAL_REQUIRED",
+      reason: "APPROVAL_POLICY"
+    });
+    expect(
+      evaluateDispatchPolicy({
+        ...base,
+        compatibleCorridors: [
+          { id: "corridor-z", priority: 20 },
+          { id: "corridor-b", priority: 10 },
+          { id: "corridor-a", priority: 10 }
+        ]
+      })
+    ).toMatchObject({
+      outcome: "FALLBACK",
+      recommendation: { action: "TRY_COMPATIBLE_CORRIDOR", corridorId: "corridor-a" }
+    });
+  });
+});
+
+describe("Phase 2 manifest state machine", () => {
+  it("accepts only documented transitions", () => {
+    expect(canTransitionManifest("OPEN", "CLOSED")).toBe(true);
+    expect(canTransitionManifest("CLOSED", "DEPARTED")).toBe(true);
+    expect(canTransitionManifest("DEPARTED", "COMPLETED")).toBe(true);
+    expect(canTransitionManifest("OPEN", "DEPARTED")).toBe(false);
+    expect(canTransitionManifest("COMPLETED", "OPEN")).toBe(false);
+    expect(canTransitionManifest("CANCELLED", "OPEN")).toBe(false);
   });
 });
 

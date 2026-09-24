@@ -32,6 +32,171 @@ export function percentOfTarget(grams: bigint, targetLoadGrams: bigint): number 
 }
 
 // ---------------------------------------------------------------------------------------------
+// Phase 2 policy evaluation
+// ---------------------------------------------------------------------------------------------
+
+export interface DispatchEvaluationVehicle {
+  id: string;
+  capacityGrams: bigint;
+  active: boolean;
+}
+
+export interface CompatibleCorridorRecommendation {
+  id: string;
+  priority: number;
+}
+
+export interface DispatchEvaluationInput {
+  allocatableGrams: bigint;
+  targetLoadGrams: bigint;
+  minimumDispatchLoadGrams: bigint | null;
+  oldestWaitingAgeHours: number | null;
+  maxWaitHours: number;
+  fallbackActions: readonly (
+    "TRY_SMALLER_VEHICLE" | "TRY_COMPATIBLE_CORRIDOR" | "REQUIRE_DISPATCH_APPROVAL"
+  )[];
+  vehicles: readonly DispatchEvaluationVehicle[];
+  compatibleCorridors: readonly CompatibleCorridorRecommendation[];
+}
+
+export type DispatchPolicyEvaluation =
+  | {
+      outcome: "READY";
+      readiness: "DISPATCH_READY";
+      maxWaitReached: boolean;
+      recommendation: null;
+      reason: "TARGET_REACHED";
+    }
+  | {
+      outcome: "WAIT";
+      readiness: PoolReadiness;
+      maxWaitReached: boolean;
+      recommendation: null;
+      reason: "MAX_WAIT_NOT_REACHED" | "NO_ACTIONABLE_FALLBACK";
+    }
+  | {
+      outcome: "FALLBACK";
+      readiness: PoolReadiness;
+      maxWaitReached: true;
+      recommendation:
+        | { action: "TRY_SMALLER_VEHICLE"; vehicleId: string; capacityGrams: bigint }
+        | { action: "TRY_COMPATIBLE_CORRIDOR"; corridorId: string };
+      reason: "FALLBACK_RECOMMENDED";
+    }
+  | {
+      outcome: "APPROVAL_REQUIRED";
+      readiness: PoolReadiness;
+      maxWaitReached: true;
+      recommendation: null;
+      reason: "APPROVAL_POLICY";
+    };
+
+/**
+ * Evaluates a pool after cutoff. The caller owns scheduling and persistence; this function only
+ * makes the deterministic policy decision and therefore remains safe to rerun for a business day.
+ */
+export function evaluateDispatchPolicy(input: DispatchEvaluationInput): DispatchPolicyEvaluation {
+  const readiness = computePoolReadiness(
+    input.allocatableGrams,
+    input.targetLoadGrams,
+    input.minimumDispatchLoadGrams
+  );
+  const maxWaitReached =
+    input.oldestWaitingAgeHours !== null && input.oldestWaitingAgeHours >= input.maxWaitHours;
+
+  if (readiness === "DISPATCH_READY") {
+    return {
+      outcome: "READY",
+      readiness,
+      maxWaitReached,
+      recommendation: null,
+      reason: "TARGET_REACHED"
+    };
+  }
+  if (!maxWaitReached) {
+    return {
+      outcome: "WAIT",
+      readiness,
+      maxWaitReached: false,
+      recommendation: null,
+      reason: "MAX_WAIT_NOT_REACHED"
+    };
+  }
+
+  for (const action of input.fallbackActions) {
+    if (action === "TRY_SMALLER_VEHICLE") {
+      const vehicle = input.vehicles
+        .filter((entry) => entry.active && entry.capacityGrams >= input.allocatableGrams)
+        .sort((left, right) =>
+          left.capacityGrams === right.capacityGrams
+            ? left.id.localeCompare(right.id)
+            : left.capacityGrams < right.capacityGrams
+              ? -1
+              : 1
+        )[0];
+      if (vehicle !== undefined) {
+        return {
+          outcome: "FALLBACK",
+          readiness,
+          maxWaitReached: true,
+          recommendation: {
+            action,
+            vehicleId: vehicle.id,
+            capacityGrams: vehicle.capacityGrams
+          },
+          reason: "FALLBACK_RECOMMENDED"
+        };
+      }
+      continue;
+    }
+    if (action === "TRY_COMPATIBLE_CORRIDOR") {
+      const corridor = [...input.compatibleCorridors].sort(
+        (left, right) => left.priority - right.priority || left.id.localeCompare(right.id)
+      )[0];
+      if (corridor !== undefined) {
+        return {
+          outcome: "FALLBACK",
+          readiness,
+          maxWaitReached: true,
+          recommendation: { action, corridorId: corridor.id },
+          reason: "FALLBACK_RECOMMENDED"
+        };
+      }
+      continue;
+    }
+    return {
+      outcome: "APPROVAL_REQUIRED",
+      readiness,
+      maxWaitReached: true,
+      recommendation: null,
+      reason: "APPROVAL_POLICY"
+    };
+  }
+
+  return {
+    outcome: "WAIT",
+    readiness,
+    maxWaitReached: true,
+    recommendation: null,
+    reason: "NO_ACTIONABLE_FALLBACK"
+  };
+}
+
+const manifestTransitions: Record<string, readonly string[]> = {
+  DRAFT: ["OPEN", "CANCELLED"],
+  OPEN: ["CLOSED", "CANCELLED"],
+  CLOSED: ["DEPARTED", "CANCELLED"],
+  DEPARTED: ["COMPLETED"],
+  COMPLETED: [],
+  CANCELLED: []
+};
+
+/** The single authoritative Phase 2 manifest state-machine transition check. */
+export function canTransitionManifest(from: string, to: string): boolean {
+  return manifestTransitions[from]?.includes(to) ?? false;
+}
+
+// ---------------------------------------------------------------------------------------------
 // A21 allocation
 // ---------------------------------------------------------------------------------------------
 

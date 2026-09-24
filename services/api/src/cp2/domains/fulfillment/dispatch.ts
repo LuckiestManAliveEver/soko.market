@@ -18,7 +18,10 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import {
   allocateAutomatically,
+  canTransitionManifest,
   computePoolReadiness,
+  evaluateDispatchPolicy,
+  localDate,
   nextCutoff,
   percentOfTarget,
   type BusinessPermission,
@@ -34,6 +37,9 @@ import {
   type CorridorPoolSummary,
   type CorridorResolutionStatusSummary,
   type CreateManifestResultSummary,
+  type DispatchApprovalDecision,
+  type DispatchApprovalSummary,
+  type DispatchEvaluationSummary,
   type FulfillmentStatus,
   type ManifestStatus,
   type ManifestStopDeliveryStatus,
@@ -88,6 +94,20 @@ export interface DispatchOperations {
     input: DispatchActor & { manifestId: string; invoiceId: string }
   ): Promise<ManifestSummary>;
   closeManifest(input: DispatchActor & { manifestId: string }): Promise<ManifestSummary>;
+  departManifest(input: DispatchActor & { manifestId: string }): Promise<ManifestSummary>;
+  evaluateDispatch(
+    input: DispatchActor & { corridorId: string }
+  ): Promise<DispatchEvaluationSummary>;
+  listDispatchApprovals(
+    input: DispatchActor & { status?: "OPEN" | "APPROVED" | "DEFERRED" | "REJECTED" }
+  ): Promise<DispatchApprovalSummary[]>;
+  decideDispatchApproval(
+    input: DispatchActor & {
+      approvalId: string;
+      decision: DispatchApprovalDecision;
+      reason: string;
+    }
+  ): Promise<DispatchApprovalSummary>;
   recordDelivery(
     input: DispatchActor & {
       manifestId: string;
@@ -362,12 +382,80 @@ export function createDispatchOperations(
       totalWeightGrams: manifest.total_weight_grams,
       plannedDepartureAt: iso(manifest.planned_departure_at),
       closedAt: iso(manifest.closed_at),
+      departedAt: iso(manifest.departed_at),
       completedAt: iso(manifest.completed_at),
       createdBy: manifest.created_by,
       createdAt: manifest.created_at.toISOString(),
       updatedAt: manifest.updated_at.toISOString(),
       stops: stops.rows.map((stop) => stopSummary(stop, context.customerName))
     };
+  }
+
+  async function appendOutbox(
+    client: PoolClient,
+    input: {
+      businessId: string;
+      eventType: string;
+      eventKey: string;
+      payload: Record<string, unknown>;
+      now: Date;
+    }
+  ): Promise<void> {
+    await client.query(
+      `
+        insert into fulfillment_outbox_events
+          (id, business_id, event_type, event_key, payload, occurred_at)
+        values ($1, $2, $3, $4, $5::jsonb, $6)
+        on conflict (business_id, event_key) do nothing
+      `,
+      [
+        randomUUID(),
+        input.businessId,
+        input.eventType,
+        input.eventKey,
+        JSON.stringify(input.payload),
+        input.now
+      ]
+    );
+  }
+
+  async function reserveVehicle(
+    client: PoolClient,
+    input: {
+      businessId: string;
+      vehicleId: string;
+      manifestId: string;
+      serviceDate: string;
+      now: Date;
+    }
+  ): Promise<void> {
+    await client
+      .query(
+        `
+          insert into fulfillment_vehicle_reservations
+            (id, business_id, vehicle_id, manifest_id, service_date, active, created_at, updated_at)
+          values ($1, $2, $3, $4, $5::date, true, $6, $6)
+          on conflict (manifest_id) do nothing
+        `,
+        [
+          randomUUID(),
+          input.businessId,
+          input.vehicleId,
+          input.manifestId,
+          input.serviceDate,
+          input.now
+        ]
+      )
+      .catch((error: unknown) => {
+        if (isPgUniqueViolation(error)) {
+          throw new Cp2Error(
+            409,
+            "vehicle_unavailable",
+            "This vehicle is already reserved for that service day."
+          );
+        }
+        throw error;
+      });
   }
 
   /** Recomputes an OPEN manifest's loaded weight from its active stops (A12). */
@@ -663,12 +751,22 @@ export function createDispatchOperations(
       const rows = await pooledRows(pool, actor.businessId);
       const largest = await largestActiveVehicleCapacity(pool, actor.businessId);
       const timeZone = context.businessTimezone(actor.businessId);
+      const openApprovals = await pool.query<{ corridor_id: string }>(
+        "select corridor_id from fulfillment_dispatch_approvals where business_id = $1 and status = 'OPEN'",
+        [actor.businessId]
+      );
+      const approvalCorridors = new Set(openApprovals.rows.map((row) => row.corridor_id));
       const pools: CorridorPoolSummary[] = [];
       for (const corridor of corridors.rows) {
         const members = rows.filter((row) => row.corridor_id === corridor.id);
         if (!corridor.active && members.length === 0) continue;
         const policy = await effectivePolicy(pool, actor.businessId, corridor.policy_override_id);
-        pools.push(summarizePool(corridor, policy, members, largest, timeZone, now));
+        const summary = summarizePool(corridor, policy, members, largest, timeZone, now);
+        pools.push(
+          approvalCorridors.has(corridor.id)
+            ? { ...summary, readiness: "APPROVAL_REQUIRED" }
+            : summary
+        );
       }
       const unassigned = rows.filter((row) => row.corridor_id === null);
       const candidates = context
@@ -727,6 +825,12 @@ export function createDispatchOperations(
         context.businessTimezone(actor.businessId),
         now
       );
+      const openApproval = await pool.query(
+        "select 1 from fulfillment_dispatch_approvals where business_id = $1 and corridor_id = $2 and status = 'OPEN' limit 1",
+        [actor.businessId, corridor.id]
+      );
+      const effectiveSummary: CorridorPoolSummary =
+        openApproval.rows.length > 0 ? { ...summary, readiness: "APPROVAL_REQUIRED" } : summary;
       const orders: CorridorPoolOrderSummary[] = rows.map((row) => {
         const weight =
           row.weight_status === "RESOLVED" && row.total_weight_grams !== null
@@ -751,7 +855,7 @@ export function createDispatchOperations(
           requiresPlanning: weight !== null && largest !== null && weight > largest
         };
       });
-      return { ...summary, orders };
+      return { ...effectiveSummary, orders };
     },
 
     async getOrderFulfillment(actor) {
@@ -861,7 +965,7 @@ export function createDispatchOperations(
               throw new Cp2Error(404, "vehicle_not_found", "Vehicle was not found.");
             const vehicle = (
               await client.query<{ id: string; capacity_grams: string; active: boolean }>(
-                "select id, capacity_grams, active from fulfillment_vehicles where business_id = $1 and id = $2",
+                "select id, capacity_grams, active from fulfillment_vehicles where business_id = $1 and id = $2 for update",
                 [actor.businessId, actor.vehicleId]
               )
             ).rows[0];
@@ -1040,6 +1144,23 @@ export function createDispatchOperations(
                 now
               ]
             );
+            if (plannedDepartureAt !== null) {
+              const timeZone = context.businessTimezone(actor.businessId);
+              if (timeZone === null) {
+                throw new Cp2Error(
+                  422,
+                  "business_timezone_required",
+                  "Configure the business timezone before scheduling a vehicle."
+                );
+              }
+              await reserveVehicle(client, {
+                businessId: actor.businessId,
+                vehicleId: vehicle.id,
+                manifestId,
+                serviceDate: formatLocalDate(plannedDepartureAt, timeZone),
+                now
+              });
+            }
             // Stops in road order: snapshotted distance along the corridor, then order id.
             const ordered = [...allocated].sort(
               (left, right) =>
@@ -1088,6 +1209,18 @@ export function createDispatchOperations(
               ])
             ).rows[0] as ManifestRow;
             const summary = await manifestSummary(client, actor.businessId, manifest);
+            await appendOutbox(client, {
+              businessId: actor.businessId,
+              eventType: "manifest.created",
+              eventKey: `manifest.created:${manifestId}`,
+              payload: {
+                manifestId,
+                corridorId: corridor.id,
+                vehicleId: vehicle.id,
+                totalWeightGrams: summary.totalWeightGrams
+              },
+              now
+            });
             context.log("fulfillment.manifest_created", {
               businessId: actor.businessId,
               manifestId,
@@ -1245,6 +1378,13 @@ export function createDispatchOperations(
           "update fulfillment_manifests set status = 'CLOSED', closed_at = $2, updated_at = $2 where id = $1",
           [manifest.id, now]
         );
+        await appendOutbox(client, {
+          businessId: actor.businessId,
+          eventType: "manifest.closed",
+          eventKey: `manifest.closed:${manifest.id}`,
+          payload: { manifestId: manifest.id, totalWeightGrams: manifest.total_weight_grams },
+          now
+        });
         context.log("fulfillment.manifest_closed", {
           businessId: actor.businessId,
           manifestId: manifest.id,
@@ -1256,6 +1396,256 @@ export function createDispatchOperations(
           actor.businessId,
           await lockManifest(client, actor.businessId, manifest.id)
         );
+      });
+    },
+
+    async departManifest(actor) {
+      const { userId } = context.authorize(actor, "fulfillment:dispatch");
+      const now = actor.now ?? new Date();
+      return context.transaction(async (client) => {
+        const manifest = await lockManifest(client, actor.businessId, actor.manifestId);
+        if (!canTransitionManifest(manifest.status, "DEPARTED")) {
+          throw new Cp2Error(
+            409,
+            "manifest_transition_invalid",
+            "Only a closed manifest can depart.",
+            false,
+            { status: manifest.status, requestedStatus: "DEPARTED" }
+          );
+        }
+        await client.query(
+          "select id from fulfillment_vehicles where business_id = $1 and id = $2 for update",
+          [actor.businessId, manifest.vehicle_id]
+        );
+        const timeZone = context.businessTimezone(actor.businessId);
+        if (timeZone === null) {
+          throw new Cp2Error(
+            422,
+            "business_timezone_required",
+            "Configure the business timezone before dispatching a vehicle."
+          );
+        }
+        await reserveVehicle(client, {
+          businessId: actor.businessId,
+          vehicleId: manifest.vehicle_id,
+          manifestId: manifest.id,
+          serviceDate: formatLocalDate(manifest.planned_departure_at ?? now, timeZone),
+          now
+        });
+        await client.query(
+          "update fulfillment_manifests set status = 'DEPARTED', departed_at = $2, updated_at = $2 where id = $1",
+          [manifest.id, now]
+        );
+        await appendOutbox(client, {
+          businessId: actor.businessId,
+          eventType: "manifest.departed",
+          eventKey: `manifest.departed:${manifest.id}`,
+          payload: { manifestId: manifest.id, vehicleId: manifest.vehicle_id },
+          now
+        });
+        context.log("fulfillment.manifest_departed", {
+          businessId: actor.businessId,
+          manifestId: manifest.id,
+          actorId: userId
+        });
+        return manifestSummary(
+          client,
+          actor.businessId,
+          await lockManifest(client, actor.businessId, manifest.id)
+        );
+      });
+    },
+
+    async evaluateDispatch(actor) {
+      const { userId } = context.authorize(actor, "fulfillment:dispatch");
+      const now = actor.now ?? new Date();
+      const timeZone = context.businessTimezone(actor.businessId);
+      if (timeZone === null) {
+        throw new Cp2Error(
+          422,
+          "business_timezone_required",
+          "Configure the business timezone before evaluating dispatch."
+        );
+      }
+      return context.transaction(async (client) => {
+        const corridor = await lockCorridor(client, actor.businessId, actor.corridorId);
+        const policy = await effectivePolicy(client, actor.businessId, corridor.policy_override_id);
+        if (policy === null) {
+          throw new Cp2Error(422, "no_dispatch_policy", "This corridor has no dispatch policy.");
+        }
+        const rows = await pooledRows(client, actor.businessId, { corridorId: corridor.id });
+        let allocatable = 0n;
+        let oldest: Date | null = null;
+        for (const row of rows) {
+          if (
+            row.weight_status !== "RESOLVED" ||
+            row.total_weight_grams === null ||
+            staleReasons(row).length > 0
+          )
+            continue;
+          allocatable += parseGrams(row.total_weight_grams, "totalWeightGrams");
+          if (oldest === null || row.confirmed_at < oldest) oldest = row.confirmed_at;
+        }
+        const vehicles = await client.query<{
+          id: string;
+          capacity_grams: string;
+          active: boolean;
+        }>(
+          "select id, capacity_grams, active from fulfillment_vehicles where business_id = $1 order by id",
+          [actor.businessId]
+        );
+        const evaluation = evaluateDispatchPolicy({
+          allocatableGrams: allocatable,
+          targetLoadGrams: parseGrams(policy.target_load_grams, "targetLoadGrams"),
+          minimumDispatchLoadGrams:
+            policy.minimum_dispatch_load_grams === null
+              ? null
+              : parseGrams(policy.minimum_dispatch_load_grams, "minimumDispatchLoadGrams"),
+          oldestWaitingAgeHours:
+            oldest === null ? null : Math.max(0, (now.getTime() - oldest.getTime()) / 3_600_000),
+          maxWaitHours: policy.max_wait_hours,
+          fallbackActions: policy.under_threshold_fallback,
+          vehicles: vehicles.rows.map((vehicle) => ({
+            id: vehicle.id,
+            capacityGrams: parseGrams(vehicle.capacity_grams, "capacityGrams"),
+            active: vehicle.active
+          })),
+          compatibleCorridors: []
+        });
+        const businessDate = formatLocalDate(now, timeZone);
+        const recommendation =
+          evaluation.recommendation === null
+            ? null
+            : evaluation.recommendation.action === "TRY_SMALLER_VEHICLE"
+              ? {
+                  ...evaluation.recommendation,
+                  capacityGrams: formatGrams(evaluation.recommendation.capacityGrams)
+                }
+              : evaluation.recommendation;
+        const evaluationId = randomUUID();
+        const inserted = await client.query<EvaluationRow>(
+          `
+            insert into fulfillment_dispatch_evaluations
+              (id, business_id, corridor_id, policy_version_id, business_date, outcome, readiness,
+               max_wait_reached, recommendation, reason, evaluated_by, evaluated_at)
+            values ($1, $2, $3, $4, $5::date, $6, $7, $8, $9::jsonb, $10, $11, $12)
+            on conflict (business_id, corridor_id, business_date) do nothing
+            returning *
+          `,
+          [
+            evaluationId,
+            actor.businessId,
+            corridor.id,
+            policy.id,
+            businessDate,
+            evaluation.outcome,
+            evaluation.readiness,
+            evaluation.maxWaitReached,
+            recommendation === null ? null : JSON.stringify(recommendation),
+            evaluation.reason,
+            userId,
+            now
+          ]
+        );
+        const persisted =
+          inserted.rows[0] ??
+          (
+            await client.query<EvaluationRow>(
+              "select * from fulfillment_dispatch_evaluations where business_id = $1 and corridor_id = $2 and business_date = $3::date",
+              [actor.businessId, corridor.id, businessDate]
+            )
+          ).rows[0];
+        if (persisted === undefined) throw new Error("Dispatch evaluation disappeared.");
+        if (persisted.outcome === "APPROVAL_REQUIRED") {
+          await client.query(
+            `
+              insert into fulfillment_dispatch_approvals
+                (id, business_id, corridor_id, evaluation_id, policy_version_id, status,
+                 created_at, updated_at)
+              values ($1, $2, $3, $4, $5, 'OPEN', $6, $6)
+              on conflict do nothing
+            `,
+            [
+              randomUUID(),
+              actor.businessId,
+              corridor.id,
+              persisted.id,
+              persisted.policy_version_id,
+              now
+            ]
+          );
+          await appendOutbox(client, {
+            businessId: actor.businessId,
+            eventType: "dispatch.approval_required",
+            eventKey: `dispatch.approval_required:${persisted.id}`,
+            payload: { corridorId: corridor.id, evaluationId: persisted.id },
+            now
+          });
+        }
+        if (persisted.outcome === "READY") {
+          await appendOutbox(client, {
+            businessId: actor.businessId,
+            eventType: "corridor.threshold_reached",
+            eventKey: `corridor.threshold_reached:${persisted.id}`,
+            payload: { corridorId: corridor.id, evaluationId: persisted.id },
+            now
+          });
+        }
+        return {
+          outcome: persisted.outcome,
+          readiness: persisted.readiness,
+          maxWaitReached: persisted.max_wait_reached,
+          recommendation: persisted.recommendation,
+          reason: persisted.reason
+        } as DispatchEvaluationSummary;
+      });
+    },
+
+    async listDispatchApprovals(actor) {
+      context.authorize(actor, "fulfillment:dispatch");
+      const result = await pool.query<ApprovalRow>(
+        "select * from fulfillment_dispatch_approvals where business_id = $1 and ($2::text is null or status = $2) order by created_at desc, id",
+        [actor.businessId, actor.status ?? null]
+      );
+      return result.rows.map(approvalSummary);
+    },
+
+    async decideDispatchApproval(actor) {
+      const { userId } = context.authorize(actor, "fulfillment:dispatch");
+      const reason = actor.reason.trim();
+      if (reason === "" || reason.length > 240) {
+        throw new Cp2Error(400, "approval_reason_invalid", "Give a reason of 1 to 240 characters.");
+      }
+      if (!isUuid(actor.approvalId)) {
+        throw new Cp2Error(404, "dispatch_approval_not_found", "Approval was not found.");
+      }
+      const now = actor.now ?? new Date();
+      return context.transaction(async (client) => {
+        const existing = (
+          await client.query<ApprovalRow>(
+            "select * from fulfillment_dispatch_approvals where business_id = $1 and id = $2 for update",
+            [actor.businessId, actor.approvalId]
+          )
+        ).rows[0];
+        if (existing === undefined) {
+          throw new Cp2Error(404, "dispatch_approval_not_found", "Approval was not found.");
+        }
+        if (existing.status !== "OPEN") {
+          throw new Cp2Error(409, "dispatch_approval_decided", "Approval was already decided.");
+        }
+        const status =
+          actor.decision === "APPROVE"
+            ? "APPROVED"
+            : actor.decision === "DEFER"
+              ? "DEFERRED"
+              : "REJECTED";
+        const updated = (
+          await client.query<ApprovalRow>(
+            "update fulfillment_dispatch_approvals set status = $3, reason = $4, decided_by = $5, decided_at = $6, updated_at = $6 where business_id = $1 and id = $2 returning *",
+            [actor.businessId, existing.id, status, reason, userId, now]
+          )
+        ).rows[0] as ApprovalRow;
+        return approvalSummary(updated);
       });
     },
 
@@ -1367,6 +1757,27 @@ export function createDispatchOperations(
             "update fulfillment_manifests set status = 'COMPLETED', completed_at = $2, updated_at = $2 where id = $1",
             [manifest.id, now]
           );
+          await appendOutbox(client, {
+            businessId: actor.businessId,
+            eventType: "delivery.completed",
+            eventKey: `manifest.completed:${manifest.id}`,
+            payload: { manifestId: manifest.id },
+            now
+          });
+        }
+        if (actor.outcome === "DELIVERED" || actor.outcome === "FAILED") {
+          await appendOutbox(client, {
+            businessId: actor.businessId,
+            eventType: actor.outcome === "DELIVERED" ? "delivery.completed" : "delivery.failed",
+            eventKey: `delivery.${actor.outcome.toLowerCase()}:${stop.id}`,
+            payload: {
+              manifestId: manifest.id,
+              stopId: stop.id,
+              invoiceId: stop.invoice_id,
+              orderWeightGrams: stop.order_weight_grams
+            },
+            now
+          });
         }
         context.log(
           actor.outcome === "DELIVERED"
@@ -1463,6 +1874,9 @@ interface PolicyRow {
   minimum_dispatch_load_grams: string | null;
   cutoff_local_time: string;
   max_wait_hours: number;
+  under_threshold_fallback: Array<
+    "TRY_SMALLER_VEHICLE" | "TRY_COMPATIBLE_CORRIDOR" | "REQUIRE_DISPATCH_APPROVAL"
+  >;
 }
 
 interface PoolRow {
@@ -1499,10 +1913,60 @@ interface ManifestRow {
   total_weight_grams: string;
   planned_departure_at: Date | null;
   closed_at: Date | null;
+  departed_at: Date | null;
   completed_at: Date | null;
   created_by: string;
   created_at: Date;
   updated_at: Date;
+}
+
+interface ApprovalRow {
+  id: string;
+  business_id: string;
+  corridor_id: string;
+  evaluation_id: string;
+  policy_version_id: string;
+  status: "OPEN" | "APPROVED" | "DEFERRED" | "REJECTED";
+  reason: string | null;
+  decided_by: string | null;
+  decided_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface EvaluationRow {
+  id: string;
+  policy_version_id: string;
+  outcome: "READY" | "WAIT" | "FALLBACK" | "APPROVAL_REQUIRED";
+  readiness: "ACCUMULATING" | "DISPATCHABLE" | "DISPATCH_READY";
+  max_wait_reached: boolean;
+  recommendation: DispatchEvaluationSummary["recommendation"];
+  reason: DispatchEvaluationSummary["reason"];
+}
+
+function approvalSummary(row: ApprovalRow): DispatchApprovalSummary {
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    corridorId: row.corridor_id,
+    evaluationId: row.evaluation_id,
+    policyVersionId: row.policy_version_id,
+    status: row.status,
+    reason: row.reason,
+    decidedBy: row.decided_by,
+    decidedAt: iso(row.decided_at),
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString()
+  };
+}
+
+function formatLocalDate(instant: Date, timeZone: string): string {
+  const date = localDate(instant, timeZone);
+  return `${date.year}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`;
+}
+
+function isPgUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }
 
 interface StopRow {
