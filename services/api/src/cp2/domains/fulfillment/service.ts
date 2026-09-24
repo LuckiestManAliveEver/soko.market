@@ -71,6 +71,13 @@ export interface FulfillmentServiceDeps {
   requireConfirmedOrder: (businessId: string, invoiceId: string) => ConfirmedOrderReference;
   /** Display name of a shop for manifests and pools; null if it no longer exists. */
   customerName: (businessId: string, customerId: string) => string | null;
+  deliveryDetails: (
+    businessId: string,
+    invoiceId: string
+  ) => {
+    items: Array<{ productName: string; quantity: number }>;
+    payOnDeliveryAmount: number | null;
+  };
   businessTimezone: (businessId: string) => string | null;
   listIntakeCandidates: () => Array<{ businessId: string; invoiceId: string; actorId: string }>;
   existingInvoiceIds: (businessId: string, invoiceIds: readonly string[]) => Set<string>;
@@ -99,6 +106,8 @@ export function fulfillmentDepsFromStore(store: Cp2Store): FulfillmentServiceDep
         return null;
       }
     },
+    deliveryDetails: (businessId, invoiceId) =>
+      store.fulfillmentDeliveryDetails(businessId, invoiceId),
     businessTimezone: (businessId) => store.businessTimezone(businessId),
     listIntakeCandidates: () => store.listFulfillmentIntakeCandidates(),
     existingInvoiceIds: (businessId, invoiceIds) =>
@@ -178,6 +187,10 @@ export interface FulfillmentService
   listShopLocationHistory(input: Actor & { customerId: string }): Promise<ShopLocationSummary[]>;
   /** A23 retention; returns the number of records removed. */
   purgeExpiredIdempotencyRecords(input: { now?: Date; retentionHours?: number }): Promise<number>;
+  deliverPendingOutboxEvents(input?: { now?: Date; batchSize?: number }): Promise<{
+    delivered: number;
+    failed: number;
+  }>;
 }
 
 export function createUnavailableFulfillmentService(): FulfillmentService {
@@ -221,6 +234,7 @@ export function createUnavailableFulfillmentService(): FulfillmentService {
     removeOrderFromManifest: unavailable,
     closeManifest: unavailable,
     departManifest: unavailable,
+    cancelManifest: unavailable,
     evaluateDispatch: unavailable,
     listDispatchApprovals: unavailable,
     decideDispatchApproval: unavailable,
@@ -228,7 +242,9 @@ export function createUnavailableFulfillmentService(): FulfillmentService {
     cancelOrderFulfillment: unavailable,
     intakeOrder: unavailable,
     reconcileIntake: async () => ({ takenIn: 0, orphaned: 0, failed: 0 }),
-    purgeExpiredIdempotencyRecords: async () => 0
+    evaluateDueDispatches: async () => ({ evaluated: 0, skipped: 0, failed: 0 }),
+    purgeExpiredIdempotencyRecords: async () => 0,
+    deliverPendingOutboxEvents: async () => ({ delivered: 0, failed: 0 })
   };
 }
 
@@ -250,6 +266,13 @@ export function createPostgresFulfillmentService(input: {
   deps: FulfillmentServiceDeps;
   transactionOptions?: FulfillmentTransactionOptions;
   idempotencyRetentionHours?: number;
+  deliverOutboxEvent?: (event: {
+    id: string;
+    businessId: string;
+    eventType: string;
+    payload: Record<string, unknown>;
+    occurredAt: string;
+  }) => Promise<void>;
 }): FulfillmentService {
   const { pool, deps } = input;
   const transaction = <T>(run: (client: PoolClient) => Promise<T>) =>
@@ -418,6 +441,7 @@ export function createPostgresFulfillmentService(input: {
       deps.hasPermission({ sessionId: actor.sessionId, businessId: actor.businessId, permission }),
     requireConfirmedOrder: deps.requireConfirmedOrder,
     customerName: deps.customerName,
+    deliveryDetails: deps.deliveryDetails,
     businessTimezone: deps.businessTimezone,
     listIntakeCandidates: deps.listIntakeCandidates,
     existingInvoiceIds: deps.existingInvoiceIds,
@@ -765,6 +789,69 @@ export function createPostgresFulfillmentService(input: {
         [new Date(now.getTime() - hours * 3_600_000)]
       );
       return result.rowCount ?? 0;
+    },
+
+    async deliverPendingOutboxEvents(options = {}) {
+      const now = options.now ?? new Date();
+      const batchSize = options.batchSize ?? 50;
+      if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 200) {
+        throw new Error("Fulfillment outbox batch size must be between 1 and 200.");
+      }
+      let delivered = 0;
+      let failed = 0;
+      for (let index = 0; index < batchSize; index += 1) {
+        const processed = await transaction(async (client) => {
+          const event = (
+            await client.query<{
+              id: string;
+              business_id: string;
+              event_type: string;
+              payload: Record<string, unknown>;
+              occurred_at: Date;
+            }>(
+              `select id, business_id, event_type, payload, occurred_at
+                 from fulfillment_outbox_events
+                where delivered_at is null
+                order by occurred_at, id
+                for update skip locked
+                limit 1`
+            )
+          ).rows[0];
+          if (event === undefined) return null;
+          try {
+            const delivery = {
+              id: event.id,
+              businessId: event.business_id,
+              eventType: event.event_type,
+              payload: event.payload,
+              occurredAt: event.occurred_at.toISOString()
+            };
+            if (input.deliverOutboxEvent === undefined) {
+              logFulfillmentEvent("fulfillment.outbox_delivered", delivery);
+            } else {
+              await input.deliverOutboxEvent(delivery);
+            }
+            await client.query(
+              "update fulfillment_outbox_events set delivered_at = $2, attempt_count = attempt_count + 1, last_error = null where id = $1",
+              [event.id, now]
+            );
+            return true;
+          } catch (error) {
+            await client.query(
+              "update fulfillment_outbox_events set attempt_count = attempt_count + 1, last_error = $2 where id = $1",
+              [event.id, (error instanceof Error ? error.message : String(error)).slice(0, 500)]
+            );
+            return false;
+          }
+        });
+        if (processed === null) break;
+        if (processed) delivered += 1;
+        else {
+          failed += 1;
+          break;
+        }
+      }
+      return { delivered, failed };
     }
   };
 }

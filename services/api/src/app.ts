@@ -478,6 +478,9 @@ export function buildApi(options: BuildApiOptions = {}) {
     cp2Store = store;
     registerMcpRoutes(routes, {
       store,
+      ...(options.cp2?.fulfillmentService === undefined
+        ? {}
+        : { fulfillmentService: options.cp2.fulfillmentService }),
       allowedOrigins: [...allowedCorsOrigins],
       publicOrigin: webPublicUrl
     });

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { McpAccessScope, McpPrincipal, RuntimeSwapDimension } from "@soko/shared-types";
 import { Cp2Error, readSessionCookie, type Cp2Store } from "../cp2/store.js";
+import type { FulfillmentService } from "../cp2/domains/fulfillment/service.js";
 import { mcpOAuthChallenge, mcpSecuritySchemes, registerMcpOAuthRoutes } from "./oauth.js";
 
 const protocolVersion = "2025-11-25";
@@ -11,6 +12,7 @@ export interface McpRouteOptions {
   allowedOrigins: string[];
   publicOrigin: string;
   store: Cp2Store;
+  fulfillmentService?: FulfillmentService;
 }
 
 interface McpSession {
@@ -134,7 +136,9 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
         return reply.send({
           jsonrpc: "2.0",
           id,
-          result: { tools: mcpToolsForPrincipal(principal) }
+          result: {
+            tools: mcpToolsForPrincipal(principal, options.fulfillmentService !== undefined)
+          }
         });
       }
       if (rpc.method === "tools/call") {
@@ -142,7 +146,8 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
           options.store,
           principal,
           rpc.params,
-          options.publicOrigin
+          options.publicOrigin,
+          options.fulfillmentService
         );
         return reply.send({ jsonrpc: "2.0", id, result });
       }
@@ -153,7 +158,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
   });
 }
 
-function mcpToolsForPrincipal(principal: McpPrincipal) {
+function mcpToolsForPrincipal(principal: McpPrincipal, fulfillmentAvailable: boolean) {
   const tools: Array<Record<string, unknown>> = [];
   if (principal.scopes.includes("mcp:read")) {
     tools.push(
@@ -225,6 +230,24 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         annotations: { readOnlyHint: true, destructiveHint: false }
       }
     );
+    if (fulfillmentAvailable) {
+      tools.push({
+        name: "fulfillment.get_corridor_load",
+        description:
+          "Return the authoritative pooled load and readiness for one delivery corridor.",
+        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["shopId", "corridorId"],
+          properties: {
+            shopId: { type: "string", format: "uuid" },
+            corridorId: { type: "string", format: "uuid" }
+          }
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+      });
+    }
   }
   if (principal.scopes.includes("mcp:act")) {
     tools.push(
@@ -348,6 +371,25 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
         annotations: { readOnlyHint: false, destructiveHint: false }
       }))
     );
+    if (fulfillmentAvailable) {
+      tools.push({
+        name: "fulfillment.evaluate_dispatch",
+        description:
+          "Idempotently evaluate dispatch policy for one corridor and business-local day.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["shopId", "corridorId", "idempotencyKey"],
+          properties: {
+            shopId: { type: "string", format: "uuid" },
+            corridorId: { type: "string", format: "uuid" },
+            idempotencyKey: { type: "string", minLength: 1, maxLength: 200 }
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+      });
+    }
   }
   return tools;
 }
@@ -356,7 +398,8 @@ async function callMcpTool(
   store: Cp2Store,
   principal: McpPrincipal,
   params: unknown,
-  publicOrigin: string
+  publicOrigin: string,
+  fulfillmentService?: FulfillmentService
 ) {
   const record = objectValue(params, "params");
   const name = stringValue(record.name, "name");
@@ -393,6 +436,29 @@ async function callMcpTool(
         principal,
         taskId: stringValue(args.taskId, "taskId")
       });
+    } else if (name === "fulfillment.get_corridor_load") {
+      requireScope(principal, "mcp:read");
+      const shopId = requiredShop(principal, args.shopId);
+      if (fulfillmentService === undefined) throw fulfillmentUnavailable();
+      result = await store.runFulfillmentForMcp(principal, () =>
+        fulfillmentService.getCorridorPool({
+          sessionId: null,
+          businessId: shopId,
+          corridorId: stringValue(args.corridorId, "corridorId")
+        })
+      );
+    } else if (name === "fulfillment.evaluate_dispatch") {
+      requireScope(principal, "mcp:act");
+      const shopId = requiredShop(principal, args.shopId);
+      if (fulfillmentService === undefined) throw fulfillmentUnavailable();
+      result = await store.runFulfillmentForMcp(principal, () =>
+        fulfillmentService.evaluateDispatch({
+          sessionId: null,
+          businessId: shopId,
+          corridorId: stringValue(args.corridorId, "corridorId"),
+          idempotencyKey: stringValue(args.idempotencyKey, "idempotencyKey")
+        })
+      );
     } else if (name === "soko.runtime_checkpoint") {
       requireScope(principal, "mcp:act");
       result = store.createRuntimeCheckpointForMcp({
@@ -505,14 +571,26 @@ async function callMcpTool(
         name === "soko.get_sync_changes" ||
         name === "soko.query_catalogue" ||
         name === "soko.runtime_status";
+      const fulfillmentReadTool = name === "fulfillment.get_corridor_load";
       const challenge =
         error.code === "mcp_scope_forbidden"
-          ? mcpOAuthChallenge(publicOrigin, readTool ? "mcp:read" : "mcp:act")
+          ? mcpOAuthChallenge(
+              publicOrigin,
+              readTool || fulfillmentReadTool ? "mcp:read" : "mcp:act"
+            )
           : undefined;
       return toolResult({ code: error.code, message: error.message }, true, challenge);
     }
     throw error;
   }
+}
+
+function fulfillmentUnavailable(): Cp2Error {
+  return new Cp2Error(
+    503,
+    "fulfillment_requires_postgres",
+    "Corridor fulfillment requires PostgreSQL."
+  );
 }
 
 function toolResult(value: unknown, isError: boolean, challenge?: string) {

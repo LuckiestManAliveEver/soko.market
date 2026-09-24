@@ -12,6 +12,7 @@ import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { getJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
+import { formatMoney } from "./formatters";
 import { fulfillmentCopy, formatDurationSeconds } from "./fulfillment-copy";
 
 type DeliveryOutcome = "ARRIVED" | "DELIVERED" | "FAILED" | "SKIPPED";
@@ -87,6 +88,26 @@ export default function CorridorDispatchCard(props: { businessId: string }) {
     replaceManifest(
       await postJson<ManifestSummary>(`${fulfillmentPath}/manifests/${manifest.id}/close`, {})
     );
+  }
+
+  async function departManifest(manifest: ManifestSummary) {
+    replaceManifest(
+      await postJson<ManifestSummary>(`${fulfillmentPath}/manifests/${manifest.id}/depart`, {})
+    );
+  }
+
+  async function cancelManifest(manifest: ManifestSummary) {
+    const reason = (notes[manifest.id] ?? "").trim();
+    if (reason.length === 0) {
+      setMessage(t.cancellationReasonRequired);
+      return;
+    }
+    replaceManifest(
+      await postJson<ManifestSummary>(`${fulfillmentPath}/manifests/${manifest.id}/cancel`, {
+        reason
+      })
+    );
+    setNotes((current) => ({ ...current, [manifest.id]: "" }));
   }
 
   async function removeStop(manifest: ManifestSummary, stop: ManifestStopSummary) {
@@ -256,6 +277,28 @@ export default function CorridorDispatchCard(props: { businessId: string }) {
                     {stop.sequence}. {stop.customerName ?? t.walkIn} · {kg(stop.orderWeightGrams)} ·{" "}
                     {stop.allocationActive ? t.stopStatus[stop.deliveryStatus] : t.released}
                   </span>
+                  {stop.items.length > 0 ? (
+                    <small>
+                      {t.items}:{" "}
+                      {stop.items
+                        .map((item) => `${item.quantity} x ${item.productName}`)
+                        .join(", ")}
+                    </small>
+                  ) : null}
+                  {stop.payOnDeliveryAmount !== null ? (
+                    <strong>
+                      {t.payOnDelivery}: {formatMoney(stop.payOnDeliveryAmount)}
+                    </strong>
+                  ) : null}
+                  {stop.allocationActive ? (
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${stop.latitude},${stop.longitude}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {t.location}
+                    </a>
+                  ) : null}
                   {manifest.status === "OPEN" && stop.allocationActive ? (
                     <button
                       className="secondary"
@@ -319,6 +362,41 @@ export default function CorridorDispatchCard(props: { businessId: string }) {
                   }
                 >
                   {t.close}
+                </button>
+              </div>
+            ) : null}
+            {manifest.status === "CLOSED" ? (
+              <div className="row-actions">
+                <button
+                  type="button"
+                  disabled={isPending(`manifest-depart-${manifest.id}`)}
+                  onClick={() =>
+                    act(`manifest-depart-${manifest.id}`, () => departManifest(manifest))
+                  }
+                >
+                  {t.depart}
+                </button>
+              </div>
+            ) : null}
+            {manifest.status === "OPEN" || manifest.status === "CLOSED" ? (
+              <div className="row-actions">
+                <input
+                  aria-label={t.note}
+                  placeholder={t.note}
+                  value={notes[manifest.id] ?? ""}
+                  onChange={(event) =>
+                    setNotes((current) => ({ ...current, [manifest.id]: event.target.value }))
+                  }
+                />
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={isPending(`manifest-cancel-${manifest.id}`)}
+                  onClick={() =>
+                    act(`manifest-cancel-${manifest.id}`, () => cancelManifest(manifest))
+                  }
+                >
+                  {t.cancel}
                 </button>
               </div>
             ) : null}

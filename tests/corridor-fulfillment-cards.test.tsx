@@ -111,6 +111,8 @@ function manifest(status: ManifestSummary["status"]): ManifestSummary {
         latitude: -1.25,
         longitude: 36.801,
         orderWeightGrams: "900000",
+        items: [{ productName: "Cooking oil", quantity: 2 }],
+        payOnDeliveryAmount: 1250,
         allocationActive: true,
         deliveryStatus: "PENDING",
         deliveryNote: null,

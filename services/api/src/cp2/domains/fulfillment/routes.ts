@@ -662,6 +662,22 @@ export function registerFulfillmentRoutes(
   );
 
   app.post(
+    "/businesses/:businessId/fulfillment/manifests/:manifestId/cancel",
+    async (request: FastifyRequest<{ Params: ManifestParams; Body: unknown }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return await fulfillment.cancelManifest({
+          ...actor(request),
+          manifestId: request.params.manifestId,
+          reason: parseString(body.reason, "reason")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
     "/businesses/:businessId/fulfillment/corridors/:corridorId/evaluate-dispatch",
     async (request: FastifyRequest<{ Params: CorridorParams }>, reply) => {
       try {
