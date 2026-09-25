@@ -75,6 +75,9 @@ describe("stored shop on a device", () => {
   it("is what the app uses at launch and after leaving", () => {
     const launch = readFileSync("apps/web/src/hooks/useMarketplaceState.ts", "utf8");
     expect(launch).toContain("resolveStoredShopAtLaunch(storedBusiness");
+    // Only after the server answered that this account is not the owner: a failing request in the
+    // owner branch must never drop the owner's shop (regression caught by the e2e certification).
+    expect(launch).toContain("if (ownerCheck !== null && !ownerCheck.allowed) {");
     expect(readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8")).toContain(
       "shopAfterLeaving(shops, business.id)"
     );

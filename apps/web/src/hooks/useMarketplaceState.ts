@@ -98,11 +98,15 @@ export function useMarketplaceState(deps: UseMarketplaceStateDeps) {
       return;
     }
 
+    // Set only when the server answered the owner check; a failure anywhere below (including the
+    // owner branch's own follow-up requests) must not be mistaken for "not the owner".
+    let ownerCheck: RoleCheckResponse | null = null;
     try {
       const roleCheck = await postJson<RoleCheckResponse>("/roles/check", {
         businessId: storedBusiness.id,
         role: "owner"
       });
+      ownerCheck = roleCheck;
 
       if (roleCheck.allowed) {
         setBusiness(storedBusiness);
@@ -119,24 +123,26 @@ export function useMarketplaceState(deps: UseMarketplaceStateDeps) {
       // Local development uses an in-memory API store; stale cached business views are expected after restarts.
     }
 
-    // Not the owner: open the stored shop only if the account is still a member of it (staff can
-    // be removed or leave), with the role the server reports now.
-    const decision = await resolveStoredShopAtLaunch(storedBusiness, async () => {
-      const { shops } = await fetchFreshJson<{ shops: AccountShopSummary[] }>("/v1/shops");
-      return shops;
-    });
-    if (decision.action === "forget") {
-      localStorage.removeItem(activeBusinessStorageKey);
-      setBusiness(null);
-      return;
-    }
-    if (decision.action === "open") {
-      setBusiness(decision.business);
-      setStatusMessage("Saved workspace loaded");
-      return;
+    // The server says this account is not the owner: open the stored shop only if the account is
+    // still a member of it (staff can be removed or leave), with the role the server reports now.
+    if (ownerCheck !== null && !ownerCheck.allowed) {
+      const decision = await resolveStoredShopAtLaunch(storedBusiness, async () => {
+        const { shops } = await fetchFreshJson<{ shops: AccountShopSummary[] }>("/v1/shops");
+        return shops;
+      });
+      if (decision.action === "forget") {
+        localStorage.removeItem(activeBusinessStorageKey);
+        setBusiness(null);
+        return;
+      }
+      if (decision.action === "open") {
+        setBusiness(decision.business);
+        setStatusMessage("Saved workspace loaded");
+        return;
+      }
     }
 
-    // Offline: keep the device's saved workspace until the server can answer.
+    // The owner, an unanswered check, or offline: keep the device's saved workspace.
     setBusiness(storedBusiness);
     setStatusMessage("Saved workspace loaded");
   }
