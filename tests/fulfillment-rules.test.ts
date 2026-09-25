@@ -21,6 +21,7 @@ import {
   formatKilogramsForDisplay,
   isGramsString,
   parseGrams,
+  parseKilogramsInput,
   parsePositiveGrams
 } from "../packages/shared-types/src";
 
@@ -77,6 +78,46 @@ describe("A22 gram wire format", () => {
     expect(formatKilogramsForDisplay("9007199254740991007", { maximumFractionDigits: 0 })).toBe(
       "9,007,199,254,740,991 kg"
     );
+  });
+
+  it("parses typed kilograms into exact grams without floating point", () => {
+    expect(parseKilogramsInput("6000")).toBe("6000000");
+    expect(parseKilogramsInput("6,000")).toBe("6000000");
+    expect(parseKilogramsInput(" 6 000 kg ")).toBe("6000000");
+    expect(parseKilogramsInput("0.9")).toBe("900");
+    expect(parseKilogramsInput("12.345")).toBe("12345");
+    expect(parseKilogramsInput("0.1")).toBe("100");
+    expect(parseKilogramsInput("1.005")).toBe("1005");
+    expect(parseKilogramsInput("0")).toBe("0");
+    expect(parseKilogramsInput("007")).toBe("7000");
+    // Round-trips with the display helper.
+    expect(formatKilogramsForDisplay(parseKilogramsInput("6,150"))).toBe("6,150 kg");
+    // Above Number.MAX_SAFE_INTEGER grams stays exact.
+    expect(parseKilogramsInput("9007199254740991.007")).toBe("9007199254740991007");
+    expect(parseKilogramsInput("1,234,567.5")).toBe("1234567500");
+    expect(parseKilogramsInput("12_000")).toBe("12000000");
+    // Decimal commas and loose separators are refused, never read as a 10x or 100x weight.
+    for (const ambiguous of [
+      "0,900",
+      "0,500",
+      "0 250",
+      "00,900",
+      "0,9",
+      "6,5",
+      "6 5",
+      "1,2,3",
+      "6,0000",
+      "60,00",
+      "6,000 000",
+      "6,"
+    ]) {
+      expect(() => parseKilogramsInput(ambiguous), ambiguous).toThrow(GramsFormatError);
+    }
+    for (const bad of ["", " ", "-5", "+5", "1e3", "1.2345", "1.", ".5", "abc", "5 lb", "1.2.3"]) {
+      expect(() => parseKilogramsInput(bad), bad).toThrow(GramsFormatError);
+    }
+    expect(() => parseKilogramsInput("9223372036854775.808")).toThrow(GramsFormatError);
+    expect(parseKilogramsInput("9223372036854775.807")).toBe(MAX_GRAMS.toString());
   });
 });
 

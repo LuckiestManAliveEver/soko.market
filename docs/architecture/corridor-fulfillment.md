@@ -3,12 +3,15 @@
 Status: **Phase 0 and Phases 1a–1c are implemented and merged (PRs #56–#58; see §§11–13).
 Phase 2 is implemented: deterministic policy evaluation, persisted approvals, vehicle/day
 reservations, scheduled cutoff execution, manifest cancellation, departure, asynchronous
-transactional-outbox delivery, MCP tools, and the mobile driver workflow. Phase 3 order-channel
+transactional-outbox delivery, MCP tools, and the mobile driver workflow. Owners configure their
+own business through the self-serve setup card, and every public fulfillment operation is an MCP
+tool (§15). Phase 3 order-channel
 integration is implemented for Telegram; WhatsApp remains credential-gated.**
 
 The owner asked to continue past Phase 0 ("continue and fix any gaps"). Phase 1a therefore
 adopts the recommendation of every §9 decision it depends on (D1 = option A, D2, D6, D7, D8,
-D10). D3, D4, D5, D9 and D11 are still open; none of them blocks Phase 1a.
+D10). D3, D4, D5 and D11 are still open; none of them blocks Phase 1a. D9 is resolved by owner
+self-serve setup (§15.1): no business id is seeded or hard-coded.
 
 This document records what the repository actually contains. The phased prompt ("Soko Corridor
 Fulfillment — Phased Agent Prompts v4", Part A) assumes some things that turned out to be wrong.
@@ -643,11 +646,8 @@ assigned manifests is Phase 1c/2 work.
   exists, only owners can use fulfillment in production. Field salespeople, dispatchers and
   drivers need this before Phase 1c's field-sales flow is usable. It is a separate, auth-
   sensitive change.
-- **Owner seed configuration (D9)** has not been applied; the owner's business id is still
-  unknown. Once it is known, apply the §7 values through the API (`PATCH /fulfillment/settings`
-  with `Africa/Nairobi`, then `POST /fulfillment/policies` with `makeBusinessDefault: true`,
-  `targetLoadGrams "6000000"`, `maxDiversionMeters 2000`, `cutoffLocalTime "18:00"`,
-  `maxWaitHours 72`, `fulfillmentLeadDays 1`, `overflowStrategy "NEXT_MANIFEST"`).
+- **Owner seed configuration (D9)** was pending here. It is superseded by owner self-serve setup
+  (§15.1): each owner enters their own timezone and dispatch rules; nothing is seeded.
 - **No UI yet.** Phase 1a is API-only. The field-sales and operations UI is Phase 1c scope.
 - **The Chromium integration test** (`tests/computer-runtime-browser.integration.test.ts`) fails
   in environments whose Playwright headless-shell build is missing. It fails identically on the
@@ -811,7 +811,8 @@ A `sales_agent` can see the pools summary but not the order list or manifests' w
 
 - **Staff invitation (§11.6)** still does not exist. Non-owner roles (sales agent, dispatcher,
   driver) are exercised in tests but cannot yet be granted in production.
-- **Owner seed configuration (D9)** still waits on the business id.
+- **Owner seed configuration (D9)** is superseded by self-serve setup (§15.1): no business id is
+  seeded or hard-coded; each owner enters their own settings.
 - Named driver assignment and assignment-scoped driver access are not yet exposed. Phase 2 added
   the explicit `CLOSED → DEPARTED` operation and the mobile manifest departure control.
 
@@ -884,3 +885,167 @@ location/corridor provenance, a shared field-sales pool and manifest, delivery r
 outbox-driven Telegram notifications. WhatsApp stays explicitly disabled until official WhatsApp
 Business Platform credentials and approvals are available; Computer Runtime is not used to bypass
 that restriction.
+
+---
+
+## 15. Owner self-serve setup and complete MCP surface
+
+### 15.1 Owner setup (resolves D9)
+
+D9 asked for the owner's business id so the §7 values could be seeded. That is the wrong shape for
+a multi-tenant product: it would work for one business and hard-code it. Instead, any owner
+configures the business they are signed into. `apps/web/src/FulfillmentSetupCard.tsx` is mounted
+at the top of `LogisticsSurface` and covers the four prerequisites, with a progress line
+("2 of 4 steps done"):
+
+| Step           | Endpoint(s)                                                                                            | Notes                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| Timezone       | `PATCH /fulfillment/settings`                                                                          | IANA name with a datalist from `Intl.supportedValuesOf`; a one-tap "use this device's timezone"                 |
+| Dispatch rules | `POST /fulfillment/policies` (first, `makeBusinessDefault`), then `POST /policies/:policyId/revisions` | Editing appends a version; the default pointer follows the lineage (A9)                                         |
+| Vehicles       | `POST /fulfillment/vehicles`, `PATCH /vehicles/:id {active}`                                           | Retire/reactivate, never delete                                                                                 |
+| Corridors      | `POST /fulfillment/corridors`, `PATCH /corridors/:id {active}`                                         | Route typed or pasted as "latitude, longitude" lines, or built by tapping the GPS button while driving the road |
+
+- **Nothing is pre-filled from code.** An unconfigured business shows empty fields with examples
+  only as (localized) placeholders (A3.5, "policy is data").
+- **Who may change it is the server's answer.** `GET /fulfillment/settings` (and the MCP
+  `fulfillment.get_settings`) returns `viewerCanManage`, computed with the same permission check
+  that authorizes the mutation (`fulfillment:manage`, the owner) and, over MCP, false for a
+  token without `mcp:act`. Roles with `fulfillment:read` but not `fulfillment:manage` (manager,
+  sales agent) see the settings read-only with no controls that would be refused; roles without
+  `fulfillment:read` (cashier, driver, view-only) get a 403 and the card renders nothing. The web
+  app duplicates no role table.
+- **Exact weights.** Kilograms become gram strings through `parseKilogramsInput`
+  (`packages/shared-types/src/grams.ts`): integer arithmetic; `.` is the only decimal separator;
+  a comma, space or underscore is accepted only between complete 3-digit groups. A decimal comma
+  (`"0,9"`, `"6,5"`) is rejected rather than read as 9 or 65 kg, and the card echoes "= 6,000 kg"
+  under every kilogram field so the owner sees exactly what will be saved.
+- **Typing is never lost.** Any fulfillment mutation on the page (a manifest in the dispatch card)
+  refreshes the card; a field the owner has edited is dirty and only its own successful save
+  clears that, so a refresh cannot silently revert it. While a save is in flight its fields are
+  locked, because the saved result replaces the draft. The card is keyed by business, so switching
+  business discards drafts instead of submitting them into the other business.
+- **Stale writes are refused, not applied.** The owner and an agent (over MCP) can edit the same
+  setup. The card reads everything it edits uncached (`fetchFreshJson`; the shared cache may serve
+  a copy up to 30 s old, or a persisted local copy). Each draft remembers exactly what it was based
+  on and sends it as optional preconditions, all checked on the server under row locks:
+  - a policy draft is based on a lineage and version, or on "no default yet". A first create sends
+    `expectedDefaultPolicyId: null`; a revision goes to the lineage it was based on (never whichever
+    policy is default now) with `expectedVersion` and `expectedDefaultPolicyId`. The server locks
+    the business's default-pointer row (inserting an empty one if needed, so two first-ever
+    creates also serialize) and refuses with 409 `default_policy_changed` or
+    `dispatch_policy_version_conflict` if either moved. A malformed `expectedDefaultPolicyId` is a
+    400 (`expected_default_policy_invalid`), and ids compare case-insensitively.
+  - the timezone sends `expectedTimezone`; a different stored value is refused with 409
+    `timezone_changed`. Writing the value already stored always succeeds, so a retry of your own
+    write is never mistaken for a conflict.
+
+  On a conflict the card locks the form, reloads, shows the newer values (with the current value in
+  the error's `details`), and asks the owner to re-apply their edits. The version and default checks
+  run after the idempotency lookup, so a lost-response retry still replays. Every precondition is
+  optional; callers that omit them behave exactly as before.
+
+- **Retry-safe creation.** Each create carries an `Idempotency-Key` derived per payload: resending
+  the same payload reuses the key (the server replays the first result), an edited payload gets a
+  fresh key. A first policy create whose response was lost keeps its "no default yet" base, so its
+  retry is the same create with the same key and the server replays it even if a refresh has since
+  shown the policy it made; a revision is keyed on its lineage and base version. Neither retry can
+  append a duplicate version. If the server still reports
+  `idempotency_key_reused`, the card reloads and says so.
+- **A corridor waits for its GPS point.** While a GPS fix is on its way, the corridor cannot be
+  saved, so the point is never dropped from the corridor or left behind in the next draft.
+- **A failed refresh is visible.** If a refresh fails after the card has loaded, it keeps the
+  values it has, says they may be out of date, and offers a retry; the warning clears once a
+  refresh succeeds.
+- `apps/web/src/corridor-route-input.ts` only swaps typed `lat, lng` into GeoJSON `[lng, lat]`. The
+  server validates geometry and computes length; the card decides nothing.
+
+### 15.2 MCP tools
+
+`services/api/src/mcp/fulfillment-tools.ts` declares every public fulfillment operation as one MCP
+tool (40 tools): setup (settings, policies, vehicles), corridors and shop locations, order
+weight/resolution/intake/cancellation, pools, dispatch evaluation and approvals, manifests and
+delivery. Each tool parses its arguments with the same parsers as the HTTP routes
+(`cp2/domains/fulfillment/input.ts`, extracted from `routes.ts`) and calls the same
+`FulfillmentService` or `Cp2Store` method inside `store.runFulfillmentForMcp`, so the MCP principal
+is authorized against its business membership and role exactly like a browser session.
+
+- Reads need `mcp:read`; mutations need `mcp:act`. `shopId` must be the business the token is bound
+  to (`mcp_shop_forbidden`). Unknown arguments are rejected (`mcp_input_invalid`). Grams are decimal
+  strings in and out (A22). Errors carry the same `code`, `message`, `retryable` and `details` as
+  HTTP, so an agent can tell its own earlier success from someone else's change.
+- **Every mutation states its true retry behaviour** in its description (`retry` in the table):
+
+| Contract       | Meaning                                                                                                                                                                                              | Tools                                                                                                                                                                     |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replay`       | A23 record in the same transaction. Key required. Same key and arguments return the first result; same key, other arguments is refused.                                                              | create/revise/set-default policy, create/update vehicle, create/update corridor, corridor geometry, capture shop location, resolve/assign order corridor, create manifest |
+| `refused`      | A state transition: repeating it after it happened is refused (`manifest_not_open`, `stop_already_recorded`, `order_not_pooled`, ...).                                                               | close/depart/cancel manifest, remove order from manifest, record delivery, decide approval, cancel order                                                                  |
+| `deduplicated` | The domain keeps one result, so repeating returns it.                                                                                                                                                | intake order (one per order), evaluate dispatch (one per corridor and business day)                                                                                       |
+| `absolute`     | Writes an absolute value; repeating writes the same value and succeeds. Takes no `idempotencyKey` (one is rejected rather than ignored); pass `expectedTimezone` to refuse a change made in between. | update settings (the timezone lives in the Cp2Store, which cannot share a transaction with the fulfillment idempotency table)                                             |
+
+To make `replay` true for updates, `updateVehicle`, `updateCorridor` and `setDefaultDispatchPolicy`
+now run through the fulfillment idempotency record (keyless HTTP calls behave as before). Without
+it, an agent retrying a lost "retire truck" call would retire a truck the owner had reactivated in
+between. The contracts are enforced, not remembered: a gate test derives, from source, whether the
+service method behind each tool calls `idempotent(`, and fails if a tool claims `replay` without it
+or omits it with it.
+
+- **Precise locations over MCP (decision).** A token acts with its account's role. An owner's
+  `mcp:read` token can therefore read precise shop coordinates and location history, exactly as the
+  owner's browser session can; the owner grants that when authorizing the connector. Roles without
+  `shop_location:read_precise` get redacted coordinates and no history over MCP too. A separate
+  consent scope for coordinates is not added now; it would be a new OAuth scope (`mcp:location`).
+- This supersedes the §8 C11 recommendation to route fulfillment only through the runtime tool
+  registry. The registry path exists for chat-proposed mutations that need a confirmation turn; the
+  fulfillment tools are explicit, typed, permission-checked operations on the public service, which
+  `check-boundaries.mjs` permits (it forbids MCP calling catalogue/customer/payment store mutations
+  directly, not the fulfillment service).
+- Completeness is enforced: `tests/fulfillment-mcp-tools.test.ts` derives the set of service/store
+  methods the HTTP routes call and the set the MCP tools call, and fails if either has a method the
+  other lacks.
+
+**HTTP additions:** optional `expectedVersion` on `POST /policies/:policyId/revisions` and
+optional `expectedDefaultPolicyId` on `POST /policies` and on revisions, and optional
+`expectedTimezone` on `PATCH /settings` (optimistic concurrency, §15.1); the MCP `create_policy`,
+`revise_policy` and `update_settings` tools accept the same fields.
+
+**HTTP behaviour changed by the shared parsers** (both pinned by tests): an unknown
+`GET /dispatch-approvals?status=` value is now `400 approval_status_invalid` instead of an empty
+list that looked like "no approvals"; the `corridor_geometry_separate` message now names both the
+HTTP route and the MCP tool.
+
+### 15.3 Tests
+
+- `tests/fulfillment-mcp-tools.test.ts` (gate): HTTP/MCP parity; retry contracts derived from the
+  service source; schema limits checked against the domain validators; descriptor invariants;
+  scope-filtered listing; parsed input reaching the service (bigint grams); bad input rejected
+  before the service; HTTP validation through the shared parsers; shop binding.
+- `tests/fulfillment-dispatch-postgres.test.ts` "MCP fulfillment tools" (real PostgreSQL): an owner
+  configures timezone, default policy, vehicle and corridor through MCP only, orders pool, a
+  manifest is created (a replay returns the same manifest), closed (a replayed close is refused),
+  departed, a repeated stop outcome is refused with its recorded status in `details`, and orders
+  read back `DELIVERED`. Keyed `update_vehicle` and `set_default_policy` retries replay instead of
+  re-applying over a later change, and a reused key with different arguments is refused.
+  `viewerCanManage` is true for the owner and false for a sales agent; a read-only token cannot
+  mutate; a sales agent gets redacted coordinates and no location history; a sales agent is refused
+  management; another business cannot see or reach this business's corridors.
+- Optimistic concurrency on real PostgreSQL: stale `expectedVersion` and changed default refused over
+  HTTP and MCP while the writer's own keyed retry still replays; an identical timezone retry
+  succeeds. A contention test holds the default-pointer row on a second connection while four
+  writers start, and requires exactly one to win; it fails (all four win) if the precondition read
+  loses its `FOR UPDATE`.
+- `tests/fulfillment-setup-card.test.tsx` (jsdom): no invented values; timezone save; first policy
+  created as default with exact grams; revision instead of duplication; inexact kilograms refused;
+  non-owner read-only view; unsaved edits survive a refresh through the real mutation bus; an
+  untouched form follows a policy changed elsewhere; idempotency key reused for the same payload
+  and rotated for an edited one; `idempotency_key_reused` reloads; load failure offers retry; kg
+  echo and whole-number messages; corridor lat/lng swap; malformed route line named; Swahili parity.
+  Route-parser unit tests live in the same file.
+- `tests/fulfillment-rules.test.ts`: `parseKilogramsInput` exactness, grouping, decimal-comma
+  rejection, values above `Number.MAX_SAFE_INTEGER`, the BIGINT ceiling.
+
+### 15.4 Remaining gaps
+
+- **Staff invitation** still does not exist (§11.6). Owners can set up and run fulfillment
+  themselves; sales agents, dispatchers and drivers still cannot be granted roles in production.
+- **The timezone update over MCP is `absolute`, not `replay`.** Making it replayable needs either
+  the timezone in Postgres or an idempotency record in the Cp2Store.

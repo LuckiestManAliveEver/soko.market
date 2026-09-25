@@ -198,3 +198,76 @@ export async function withMigrationsReversed(
     await client.query(readFileSync(`infra/db/migrations/${name}`, "utf8"));
   }
 }
+
+export interface McpToolResult<T = Record<string, unknown>> {
+  isError: boolean;
+  structuredContent: T;
+}
+
+/**
+ * Connects to the MCP gateway as the session's account: mints a token (bound to `shopId`, with
+ * `scopes`), initializes an MCP session, and returns `list()` / `call()` helpers.
+ */
+export async function connectMcp(
+  app: TestApp,
+  cookie: string,
+  shopId: string,
+  scopes: Array<"mcp:read" | "mcp:act"> = ["mcp:read", "mcp:act"]
+) {
+  const minted = await request<{ accessToken: string }>(
+    app,
+    "POST",
+    "/v1/mcp/tokens",
+    cookie,
+    { name: "Fulfillment agent", scopes, shopId },
+    { origin: "http://localhost:5173" }
+  );
+  expect(minted.status).toBe(200);
+  const token = minted.body.accessToken;
+  let nextId = 1;
+  const post = (payload: Record<string, unknown>, sessionId?: string) =>
+    app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId })
+      },
+      payload: JSON.stringify({ jsonrpc: "2.0", id: nextId++, ...payload })
+    });
+  const initialized = await post({
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "soko-test", version: "1.0.0" }
+    }
+  });
+  const sessionId = String(initialized.headers["mcp-session-id"]);
+  return {
+    async list(): Promise<Array<{ name: string; inputSchema: Record<string, unknown> }>> {
+      return (await post({ method: "tools/list", params: {} }, sessionId)).json().result.tools;
+    },
+    async call<T = Record<string, unknown>>(
+      name: string,
+      args: Record<string, unknown>
+    ): Promise<McpToolResult<T>> {
+      const response = await post(
+        { method: "tools/call", params: { name, arguments: { shopId, ...args } } },
+        sessionId
+      );
+      expect(response.statusCode).toBe(200);
+      return response.json().result as McpToolResult<T>;
+    },
+    /** Like `call`, but throws with the tool's error payload unless it succeeded. */
+    async ok<T = Record<string, unknown>>(name: string, args: Record<string, unknown>): Promise<T> {
+      const result = await this.call<T>(name, args);
+      if (result.isError) {
+        throw new Error(`${name} -> ${JSON.stringify(result.structuredContent)}`);
+      }
+      return result.structuredContent;
+    }
+  };
+}

@@ -521,56 +521,76 @@ export function createCorridorOperations(
     async updateCorridor(actor) {
       const { userId } = context.authorize(actor, "fulfillment:manage");
       const now = actor.now ?? new Date();
-      return context.transaction(async (client) => {
-        const existing = await requireCorridor(client, actor.businessId, actor.corridorId, true);
-        const next = normalizeCorridor({
-          name: actor.patch.name ?? existing.name,
-          originLabel: actor.patch.originLabel ?? existing.origin_label,
-          destinationLabel: actor.patch.destinationLabel ?? existing.destination_label,
-          routeGeometry: existing.route_geometry,
-          priority: actor.patch.priority ?? existing.priority,
-          policyOverrideId:
-            actor.patch.policyOverrideId === undefined
-              ? existing.policy_override_id
-              : actor.patch.policyOverrideId,
-          active: actor.patch.active ?? existing.active
-        });
-        if (
-          next.policyOverrideId !== null &&
-          next.policyOverrideId !== existing.policy_override_id
-        ) {
-          await context.requireActivePolicyLineage(client, actor.businessId, next.policyOverrideId);
-        }
-        const result = await client.query<CorridorRow>(
-          `
+      // A23: a retried update replays its first result instead of re-applying the patch over a
+      // change someone made in between.
+      return context.transaction((client) =>
+        context.idempotent(
+          client,
+          actor,
+          "fulfillment.updateCorridor",
+          { corridorId: actor.corridorId, ...actor.patch },
+          now,
+          async () => {
+            const existing = await requireCorridor(
+              client,
+              actor.businessId,
+              actor.corridorId,
+              true
+            );
+            const next = normalizeCorridor({
+              name: actor.patch.name ?? existing.name,
+              originLabel: actor.patch.originLabel ?? existing.origin_label,
+              destinationLabel: actor.patch.destinationLabel ?? existing.destination_label,
+              routeGeometry: existing.route_geometry,
+              priority: actor.patch.priority ?? existing.priority,
+              policyOverrideId:
+                actor.patch.policyOverrideId === undefined
+                  ? existing.policy_override_id
+                  : actor.patch.policyOverrideId,
+              active: actor.patch.active ?? existing.active
+            });
+            if (
+              next.policyOverrideId !== null &&
+              next.policyOverrideId !== existing.policy_override_id
+            ) {
+              await context.requireActivePolicyLineage(
+                client,
+                actor.businessId,
+                next.policyOverrideId
+              );
+            }
+            const result = await client.query<CorridorRow>(
+              `
             update fulfillment_corridors
             set name = $3, origin_label = $4, destination_label = $5, priority = $6,
                 policy_override_id = $7, active = $8, updated_at = $9
             where business_id = $1 and id = $2
             returning *
           `,
-          [
-            actor.businessId,
-            existing.id,
-            next.name,
-            next.originLabel,
-            next.destinationLabel,
-            next.priority,
-            next.policyOverrideId,
-            next.active,
-            now
-          ]
-        );
-        const updated = corridorSummary(result.rows[0] as CorridorRow);
-        context.log("fulfillment.corridor_updated", {
-          businessId: actor.businessId,
-          corridorId: updated.id,
-          actorId: userId,
-          active: updated.active,
-          priority: updated.priority
-        });
-        return updated;
-      });
+              [
+                actor.businessId,
+                existing.id,
+                next.name,
+                next.originLabel,
+                next.destinationLabel,
+                next.priority,
+                next.policyOverrideId,
+                next.active,
+                now
+              ]
+            );
+            const updated = corridorSummary(result.rows[0] as CorridorRow);
+            context.log("fulfillment.corridor_updated", {
+              businessId: actor.businessId,
+              corridorId: updated.id,
+              actorId: userId,
+              active: updated.active,
+              priority: updated.priority
+            });
+            return updated;
+          }
+        )
+      );
     },
 
     async updateCorridorGeometry(actor) {

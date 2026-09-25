@@ -130,6 +130,12 @@ export interface FulfillmentSettingsSummary {
   businessId: string;
   /** IANA timezone, or null when the business has not configured one yet. */
   timezone: string | null;
+  /**
+   * Whether this caller may change setup (timezone, dispatch policy, vehicles, corridors): its role
+   * holds `fulfillment:manage` (the owner) and, over MCP, its token has `mcp:act`. Server-computed
+   * so no client duplicates the role table.
+   */
+  viewerCanManage: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------
