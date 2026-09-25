@@ -4624,7 +4624,11 @@ export class Cp2Store {
     this.requireAuthorizedActor(input.sessionId, input.businessId, "fulfillment:read", input.now);
     return {
       businessId: input.businessId,
-      timezone: this.requireBusiness(input.businessId).timezone ?? null
+      timezone: this.requireBusiness(input.businessId).timezone ?? null,
+      // A read-only MCP token cannot change setup whatever the account's role.
+      viewerCanManage:
+        this.mcpPrincipalContext.getStore()?.scopes.includes("mcp:act") !== false &&
+        this.hasBusinessPermission({ ...input, permission: "fulfillment:manage" })
     };
   }
 
@@ -4633,6 +4637,12 @@ export class Cp2Store {
     sessionId: string | null;
     businessId: string;
     timezone: string | null;
+    /**
+     * Optimistic concurrency: the timezone the caller saw. When given (null included) and the
+     * stored timezone differs, the update is refused with 409 `timezone_changed` rather than
+     * overwriting someone else's newer choice. Omitted: an unconditional set.
+     */
+    expectedTimezone?: string | null;
     now?: Date;
   }): FulfillmentSettingsSummary {
     const now = input.now ?? new Date();
@@ -4651,6 +4661,21 @@ export class Cp2Store {
     }
     const business = this.requireBusiness(input.businessId);
     const previousTimezone = business.timezone ?? null;
+    // Writing the value that is already stored is a success, never a conflict, so repeating an
+    // identical call (a retry after a lost response) behaves as the absolute set it is.
+    if (
+      input.expectedTimezone !== undefined &&
+      input.timezone !== previousTimezone &&
+      input.expectedTimezone !== previousTimezone
+    ) {
+      throw new Cp2Error(
+        409,
+        "timezone_changed",
+        "The timezone was changed since you opened it. Review the latest value and save again.",
+        false,
+        { timezone: previousTimezone }
+      );
+    }
     if (previousTimezone !== input.timezone) {
       this.businesses.set(business.id, { ...business, timezone: input.timezone });
       this.recordAuditEvent({
@@ -4662,7 +4687,8 @@ export class Cp2Store {
         payload: { previousTimezone, timezone: input.timezone }
       });
     }
-    return { businessId: business.id, timezone: input.timezone };
+    // Only a manager can reach this line, so the viewer can manage by construction.
+    return { businessId: business.id, timezone: input.timezone, viewerCanManage: true };
   }
 
   /**

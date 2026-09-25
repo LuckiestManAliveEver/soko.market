@@ -1,5 +1,6 @@
 import type {
   CorridorPoolReadiness,
+  DispatchFallbackAction,
   ManifestStatus,
   ManifestStopDeliveryStatus
 } from "@soko/shared-types";
@@ -91,7 +92,76 @@ const en = {
   note: "Reason",
   noteRequired: "Enter a reason for a failed or skipped delivery.",
   released: "Returned to pool",
-  walkIn: "Walk-in customer"
+  walkIn: "Walk-in customer",
+  setup: "Delivery setup",
+  setupHeading: "Set up corridor deliveries",
+  setupIntro:
+    "These settings belong to this business only. The owner sets them; staff who plan deliveries can view them.",
+  setupProgress: (done: number, total: number) => `${done} of ${total} steps done`,
+  stepDone: "Done",
+  stepTodo: "To do",
+  timezone: "Timezone",
+  timezoneHint: "Daily cutoff and next-day delivery are worked out in this timezone.",
+  timezonePlaceholder: "e.g. Africa/Nairobi",
+  useDeviceTimezone: (zone: string) => `Use this device's timezone (${zone})`,
+  save: "Save",
+  saved: "Saved",
+  policy: "Dispatch rules",
+  policyName: "Rule name",
+  targetLoad: "Target load (kg)",
+  targetHint: "A corridor is ready to dispatch when its waiting orders reach this weight.",
+  minimumLoad: "Minimum worthwhile load (kg, optional)",
+  maxDiversion: "Largest detour off the road (metres)",
+  cutoff: "Daily order cutoff",
+  maxWait: "Longest an order may wait (hours)",
+  leadDays: "Deliver how many days after ordering",
+  fallbacks: "If a corridor stays under target",
+  fallback: {
+    TRY_SMALLER_VEHICLE: "Suggest a smaller vehicle",
+    TRY_COMPATIBLE_CORRIDOR: "Suggest joining a nearby corridor",
+    REQUIRE_DISPATCH_APPROVAL: "Ask a dispatcher to approve"
+  } satisfies Record<DispatchFallbackAction, string>,
+  savePolicy: "Save dispatch rules",
+  policyVersion: (version: number) => `Version ${version}`,
+  vehicles: "Vehicles",
+  vehicleName: "Vehicle name",
+  registration: "Registration (optional)",
+  capacity: "Capacity (kg)",
+  addVehicle: "Add vehicle",
+  retire: "Retire",
+  reactivate: "Reactivate",
+  retired: "Retired",
+  noVehiclesYet: "No vehicles yet.",
+  corridors: "Corridors",
+  corridorName: "Corridor name",
+  origin: "Starts at",
+  destination: "Ends at",
+  routePoints: "Points along the road, start to end: latitude, longitude (one per line)",
+  routeHint: "Copy points from a maps app, or drive the road and tap the GPS button at each turn.",
+  addGpsPoint: "Add my current GPS point",
+  addCorridor: "Add corridor",
+  noCorridorsYet: "No corridors yet.",
+  corridorLength: (km: string, version: number) => `${km} km · route version ${version}`,
+  routeError: (reason: "format" | "range" | "too_few", line: number | null) =>
+    reason === "too_few"
+      ? "Add at least two points along the road."
+      : reason === "range"
+        ? `Line ${line}: latitude must be -90 to 90 and longitude -180 to 180.`
+        : `Line ${line}: write the point as "latitude, longitude", e.g. -1.2921, 36.8219.`,
+  invalidKg: (field: string) =>
+    `${field}: enter kilograms such as 6000, 6,000 or 0.9 (use a dot for decimals).`,
+  required: (field: string) => `${field} is required.`,
+  wholeNumber: (field: string) => `${field}: enter a whole number, e.g. 72.`,
+  kgEcho: (text: string) => `= ${text}`,
+  ownerOnly: "Only the owner can change these settings.",
+  retryLoad: "Try again",
+  changedElsewhere:
+    "This was already saved with different details. The latest is shown; check it and save again.",
+  examplePolicyName: "Default",
+  exampleVehicleName: "7-tonne truck",
+  changedSinceOpened:
+    "Someone else changed this since you opened it. The latest is shown; re-apply your edits and save.",
+  refreshFailed: "Could not refresh. The values shown may be out of date."
 };
 
 export type FulfillmentCopy = typeof en;
@@ -172,7 +242,77 @@ const sw: FulfillmentCopy = {
   note: "Sababu",
   noteRequired: "Andika sababu ya kushindikana au kurukwa.",
   released: "Imerudishwa kusubiri",
-  walkIn: "Mteja wa papo hapo"
+  walkIn: "Mteja wa papo hapo",
+  setup: "Mipangilio ya usafirishaji",
+  setupHeading: "Andaa usafirishaji kwa njia",
+  setupIntro:
+    "Mipangilio hii ni ya biashara hii pekee. Mmiliki ndiye anayeiweka; wafanyakazi wanaopanga usafirishaji wanaweza kuiona.",
+  setupProgress: (done: number, total: number) => `Hatua ${done} kati ya ${total} zimekamilika`,
+  stepDone: "Imekamilika",
+  stepTodo: "Bado",
+  timezone: "Saa za eneo",
+  timezoneHint: "Muda wa mwisho wa kila siku na usafirishaji wa kesho hupimwa kwa saa hizi.",
+  timezonePlaceholder: "mf. Africa/Nairobi",
+  useDeviceTimezone: (zone: string) => `Tumia saa za kifaa hiki (${zone})`,
+  save: "Hifadhi",
+  saved: "Imehifadhiwa",
+  policy: "Kanuni za usafirishaji",
+  policyName: "Jina la kanuni",
+  targetLoad: "Mzigo lengwa (kg)",
+  targetHint: "Njia iko tayari kutuma gari oda zinazosubiri zikifikia uzito huu.",
+  minimumLoad: "Mzigo wa chini unaofaa (kg, si lazima)",
+  maxDiversion: "Mchepuko mkubwa zaidi kutoka barabarani (mita)",
+  cutoff: "Muda wa mwisho wa oda kila siku",
+  maxWait: "Muda mrefu zaidi oda inaweza kusubiri (saa)",
+  leadDays: "Peleka siku ngapi baada ya oda",
+  fallbacks: "Njia ikibaki chini ya lengo",
+  fallback: {
+    TRY_SMALLER_VEHICLE: "Pendekeza gari dogo zaidi",
+    TRY_COMPATIBLE_CORRIDOR: "Pendekeza kuunganisha na njia jirani",
+    REQUIRE_DISPATCH_APPROVAL: "Omba idhini ya msimamizi wa usafirishaji"
+  } satisfies Record<DispatchFallbackAction, string>,
+  savePolicy: "Hifadhi kanuni za usafirishaji",
+  policyVersion: (version: number) => `Toleo ${version}`,
+  vehicles: "Magari",
+  vehicleName: "Jina la gari",
+  registration: "Namba ya usajili (si lazima)",
+  capacity: "Uwezo wa kubeba (kg)",
+  addVehicle: "Ongeza gari",
+  retire: "Staafisha",
+  reactivate: "Rudisha kazini",
+  retired: "Limestaafu",
+  noVehiclesYet: "Bado hakuna magari.",
+  corridors: "Njia",
+  corridorName: "Jina la njia",
+  origin: "Inaanzia",
+  destination: "Inaishia",
+  routePoints: "Sehemu za barabara, mwanzo hadi mwisho: latitudo, longitudo (moja kwa kila mstari)",
+  routeHint:
+    "Nakili sehemu kutoka programu ya ramani, au endesha barabara ukibonyeza kitufe cha GPS kila kona.",
+  addGpsPoint: "Ongeza eneo langu la GPS sasa",
+  addCorridor: "Ongeza njia",
+  noCorridorsYet: "Bado hakuna njia.",
+  corridorLength: (km: string, version: number) => `km ${km} · toleo la njia ${version}`,
+  routeError: (reason: "format" | "range" | "too_few", line: number | null) =>
+    reason === "too_few"
+      ? "Ongeza angalau sehemu mbili za barabara."
+      : reason === "range"
+        ? `Mstari ${line}: latitudo iwe -90 hadi 90 na longitudo -180 hadi 180.`
+        : `Mstari ${line}: andika sehemu kama "latitudo, longitudo", mf. -1.2921, 36.8219.`,
+  invalidKg: (field: string) =>
+    `${field}: andika kilo kama 6000, 6,000 au 0.9 (tumia nukta kwa desimali).`,
+  required: (field: string) => `${field} inahitajika.`,
+  wholeNumber: (field: string) => `${field}: andika namba kamili, mf. 72.`,
+  kgEcho: (text: string) => `= ${text}`,
+  ownerOnly: "Mmiliki pekee ndiye anayeweza kubadilisha mipangilio hii.",
+  retryLoad: "Jaribu tena",
+  changedElsewhere:
+    "Hii ilikwisha hifadhiwa kwa maelezo tofauti. Toleo jipya linaonyeshwa; likague kisha uhifadhi tena.",
+  examplePolicyName: "Kawaida",
+  exampleVehicleName: "Lori la tani 7",
+  changedSinceOpened:
+    "Mtu mwingine alibadilisha hii tangu ulipoifungua. Toleo jipya linaonyeshwa; weka mabadiliko yako tena kisha uhifadhi.",
+  refreshFailed: "Imeshindwa kusasisha. Thamani zinazoonyeshwa huenda si za sasa."
 };
 
 export function fulfillmentCopy(

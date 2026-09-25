@@ -688,7 +688,11 @@ describePostgres("corridor fulfillment Phase 1a on PostgreSQL", () => {
           `/businesses/${owner.businessId}/fulfillment/settings`,
           owner.cookie
         )
-      ).toEqual({ businessId: owner.businessId, timezone: "Africa/Nairobi" });
+      ).toEqual({
+        businessId: owner.businessId,
+        timezone: "Africa/Nairobi",
+        viewerCanManage: true
+      });
       await restoredApp.close();
     }, 30_000);
   });

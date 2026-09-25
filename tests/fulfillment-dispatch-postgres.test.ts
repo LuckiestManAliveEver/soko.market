@@ -19,6 +19,7 @@ import {
 import {
   addMember,
   confirmInvoice,
+  connectMcp,
   createCustomer,
   createOwner,
   createProduct,
@@ -1415,5 +1416,508 @@ describePostgres("corridor fulfillment Phase 1c on PostgreSQL", () => {
       expect(telegramDeliveries).toContain("Your order has been delivered.");
       expect(product.id).toBeTruthy();
     });
+  });
+
+  describe("MCP fulfillment tools", () => {
+    it("lets an owner set up and run a corridor entirely through MCP", async () => {
+      const owner = await createOwner(app, "MCP Wholesale");
+      const mcp = await connectMcp(app, owner.cookie, owner.businessId);
+
+      // Setup: nothing is pre-configured; the owner supplies their own business settings.
+      expect(await mcp.ok("fulfillment.get_settings", {})).toMatchObject({ timezone: null });
+      await mcp.ok("fulfillment.update_settings", {
+        timezone: "Africa/Nairobi",
+        expectedTimezone: null
+      });
+      expect(await mcp.ok("fulfillment.get_settings", {})).toMatchObject({
+        businessId: owner.businessId,
+        timezone: "Africa/Nairobi"
+      });
+      await mcp.ok("fulfillment.create_policy", {
+        name: "Default",
+        targetLoadGrams: String(6000 * KG),
+        minimumDispatchLoadGrams: null,
+        maxDiversionMeters: 2000,
+        cutoffLocalTime: "18:00",
+        maxWaitHours: 72,
+        fulfillmentLeadDays: 1,
+        underThresholdFallback: [],
+        overflowStrategy: "NEXT_MANIFEST",
+        makeBusinessDefault: true,
+        idempotencyKey: "policy-1"
+      });
+      expect(await mcp.ok("fulfillment.get_default_policy", {})).toMatchObject({
+        policy: { targetLoadGrams: "6000000", cutoffLocalTime: "18:00", isBusinessDefault: true }
+      });
+      const vehicleArgs = {
+        name: "7-tonne truck",
+        capacityGrams: String(7000 * KG),
+        idempotencyKey: "vehicle-1"
+      };
+      const vehicle = await mcp.ok<{ id: string }>("fulfillment.create_vehicle", vehicleArgs);
+      // A23 through MCP: a retried call with the same key returns the same vehicle, no duplicate.
+      expect((await mcp.ok<{ id: string }>("fulfillment.create_vehicle", vehicleArgs)).id).toBe(
+        vehicle.id
+      );
+      expect(
+        await mcp.call("fulfillment.create_vehicle", { ...vehicleArgs, name: "Other" })
+      ).toMatchObject({
+        isError: true
+      });
+      expect(await mcp.ok<unknown[]>("fulfillment.list_vehicles", {})).toHaveLength(1);
+      const corridor = await mcp.ok<{ id: string; geometryVersion: number }>(
+        "fulfillment.create_corridor",
+        {
+          name: "Corridor X",
+          originLabel: "Depot",
+          destinationLabel: "Market",
+          routeGeometry: corridorX,
+          idempotencyKey: "corridor-1"
+        }
+      );
+
+      // Orders arrive through the normal sales flow and pool on the corridor.
+      const first = await deliveryOrder(owner, 900 * KG, alongX(0.8));
+      const second = await deliveryOrder(owner, 900 * KG, alongX(0.2));
+      const load = await mcp.ok<PoolView>("fulfillment.get_corridor_load", {
+        corridorId: corridor.id
+      });
+      expect(load).toMatchObject({
+        eligibleTotalWeightGrams: "1800000",
+        readiness: "ACCUMULATING"
+      });
+      const shopMatch = await mcp.ok<{ status: string }>("fulfillment.match_shop_corridor", {
+        customerId: first.customerId
+      });
+      expect(shopMatch.status).toBe("RESOLVED");
+
+      // Dispatch through MCP; a retry with the same key replays the same manifest.
+      const manifestArgs = {
+        corridorId: corridor.id,
+        vehicleId: vehicle.id,
+        idempotencyKey: "manifest-1"
+      };
+      const created = await mcp.ok<CreateManifestResult>(
+        "fulfillment.create_manifest",
+        manifestArgs
+      );
+      const replayed = await mcp.ok<CreateManifestResult>(
+        "fulfillment.create_manifest",
+        manifestArgs
+      );
+      expect(replayed.manifest.id).toBe(created.manifest.id);
+      expect(created.allocatedInvoiceIds.sort()).toEqual(
+        [first.invoiceId, second.invoiceId].sort()
+      );
+      expect(created.manifest.totalWeightGrams).toBe("1800000");
+      // Stops are sequenced by distance along the corridor: the 0.2 shop comes first.
+      expect(created.manifest.stops.map((stop) => stop.invoiceId)).toEqual([
+        second.invoiceId,
+        first.invoiceId
+      ]);
+      const manifests = await mcp.ok<ManifestView[]>("fulfillment.list_manifests", {});
+      expect(manifests.map((manifest) => manifest.id)).toEqual([created.manifest.id]);
+
+      const closed = await mcp.ok<ManifestView>("fulfillment.close_manifest", {
+        manifestId: created.manifest.id,
+        idempotencyKey: "close-1"
+      });
+      // A replayed state transition is refused, never applied twice.
+      expect(
+        await mcp.call("fulfillment.close_manifest", {
+          manifestId: created.manifest.id,
+          idempotencyKey: "close-1"
+        })
+      ).toMatchObject({ isError: true, structuredContent: { code: "manifest_not_open" } });
+      await mcp.ok("fulfillment.depart_manifest", {
+        manifestId: closed.id,
+        idempotencyKey: "depart-1"
+      });
+      // A repeated stop outcome is refused, and the error carries the stop's recorded status so an
+      // agent can tell that its own first call landed.
+      const firstStop = closed.stops[0] as ManifestView["stops"][number];
+      await mcp.ok("fulfillment.record_delivery", {
+        manifestId: closed.id,
+        stopId: firstStop.id,
+        outcome: "ARRIVED"
+      });
+      expect(
+        await mcp.call("fulfillment.record_delivery", {
+          manifestId: closed.id,
+          stopId: firstStop.id,
+          outcome: "ARRIVED"
+        })
+      ).toMatchObject({
+        isError: true,
+        structuredContent: { code: "stop_already_recorded", details: { deliveryStatus: "ARRIVED" } }
+      });
+      for (const stop of closed.stops) {
+        await mcp.ok("fulfillment.record_delivery", {
+          manifestId: closed.id,
+          stopId: stop.id,
+          outcome: "DELIVERED",
+          idempotencyKey: `deliver-${stop.id}`
+        });
+      }
+      for (const order of [first, second]) {
+        expect(
+          await mcp.ok<{ state: string }>("fulfillment.get_order", { invoiceId: order.invoiceId })
+        ).toMatchObject({ state: "DELIVERED" });
+      }
+      expect(
+        await mcp.ok<ManifestView>("fulfillment.get_manifest", { manifestId: closed.id })
+      ).toMatchObject({ status: "COMPLETED" });
+    }, 60_000);
+
+    it("replays keyed updates instead of re-applying them over a later change", async () => {
+      const { owner, vehicleId } = await setupBusiness();
+      const mcp = await connectMcp(app, owner.cookie, owner.businessId);
+      const retire = { vehicleId, active: false, idempotencyKey: "retire-truck" };
+      expect(await mcp.ok<{ active: boolean }>("fulfillment.update_vehicle", retire)).toMatchObject(
+        {
+          active: false
+        }
+      );
+      // Meanwhile the owner reactivates the truck in the app (no key)...
+      await ok(app, "PATCH", url(owner, `vehicles/${vehicleId}`), owner.cookie, { active: true });
+      // ...and the agent's retry of its lost call replays the first result, it does not retire
+      // the truck again.
+      expect(await mcp.ok<{ active: boolean }>("fulfillment.update_vehicle", retire)).toMatchObject(
+        {
+          active: false
+        }
+      );
+      const [truck] = await ok<Array<{ id: string; active: boolean }>>(
+        app,
+        "GET",
+        url(owner, "vehicles?include=inactive"),
+        owner.cookie
+      );
+      expect(truck).toMatchObject({ id: vehicleId, active: true });
+      // The same key for a different change is refused, never silently applied.
+      expect(
+        await mcp.call("fulfillment.update_vehicle", { ...retire, name: "Renamed" })
+      ).toMatchObject({ isError: true, structuredContent: { code: "idempotency_key_reused" } });
+
+      // Same for the default policy pointer.
+      const policies = await ok<Array<{ policyId: string }>>(
+        app,
+        "GET",
+        url(owner, "policies"),
+        owner.cookie
+      );
+      const original = (policies[0] as { policyId: string }).policyId;
+      const second = await mcp.ok<{ policyId: string }>("fulfillment.create_policy", {
+        name: "Busy season",
+        targetLoadGrams: "5000000",
+        maxDiversionMeters: 1500,
+        cutoffLocalTime: "17:00",
+        maxWaitHours: 48,
+        fulfillmentLeadDays: 1,
+        idempotencyKey: "policy-busy"
+      });
+      const pointAtSecond = { policyId: second.policyId, idempotencyKey: "default-busy" };
+      await mcp.ok("fulfillment.set_default_policy", pointAtSecond);
+      await ok(app, "PUT", url(owner, "default-policy"), owner.cookie, { policyId: original });
+      await mcp.ok("fulfillment.set_default_policy", pointAtSecond);
+      expect(
+        await ok<{ defaultPolicyId: string }>(
+          app,
+          "GET",
+          url(owner, "default-policy"),
+          owner.cookie
+        )
+      ).toMatchObject({ defaultPolicyId: original });
+    }, 60_000);
+
+    it("refuses a revision based on an outdated version, over HTTP and MCP", async () => {
+      const { owner } = await setupBusiness();
+      const mcp = await connectMcp(app, owner.cookie, owner.businessId);
+      const current = await ok<{ policy: { policyId: string; version: number } }>(
+        app,
+        "GET",
+        url(owner, "default-policy"),
+        owner.cookie
+      );
+      const { policyId, version } = current.policy;
+      const rules = {
+        name: "Default",
+        targetLoadGrams: "9000000",
+        maxDiversionMeters: 2000,
+        cutoffLocalTime: "18:00",
+        maxWaitHours: 72,
+        fulfillmentLeadDays: 1
+      };
+      // An agent revises first, based on the current version...
+      const agentRevision = await mcp.ok<{ version: number }>("fulfillment.revise_policy", {
+        policyId,
+        ...rules,
+        expectedVersion: version,
+        idempotencyKey: "agent-revision"
+      });
+      expect(agentRevision.version).toBe(version + 1);
+      // ...so the owner's save, based on the same old version, is refused instead of undoing it.
+      const stale = await request<{ code: string; details: Record<string, number> }>(
+        app,
+        "POST",
+        url(owner, `policies/${policyId}/revisions`),
+        owner.cookie,
+        { ...rules, targetLoadGrams: "6000000", expectedVersion: version }
+      );
+      expect(stale.status).toBe(409);
+      expect(stale.body).toMatchObject({
+        code: "dispatch_policy_version_conflict",
+        details: { expectedVersion: version, currentVersion: version + 1 }
+      });
+      expect(
+        await mcp.call("fulfillment.revise_policy", {
+          policyId,
+          ...rules,
+          expectedVersion: version,
+          idempotencyKey: "second-agent-revision"
+        })
+      ).toMatchObject({
+        isError: true,
+        structuredContent: { code: "dispatch_policy_version_conflict" }
+      });
+      // The agent's lost-response retry still replays (idempotency is checked first).
+      expect(
+        (
+          await mcp.ok<{ version: number }>("fulfillment.revise_policy", {
+            policyId,
+            ...rules,
+            expectedVersion: version,
+            idempotencyKey: "agent-revision"
+          })
+        ).version
+      ).toBe(version + 1);
+      expect(
+        await ok<{ policy: { targetLoadGrams: string; version: number } }>(
+          app,
+          "GET",
+          url(owner, "default-policy"),
+          owner.cookie
+        )
+      ).toMatchObject({ policy: { targetLoadGrams: "9000000", version: version + 1 } });
+    }, 60_000);
+
+    it("refuses creating or revising the default on the basis of a default that changed", async () => {
+      const owner = await createOwner(app, "Default Race Wholesale");
+      const mcp = await connectMcp(app, owner.cookie, owner.businessId);
+      const rules = {
+        targetLoadGrams: "6000000",
+        maxDiversionMeters: 2000,
+        cutoffLocalTime: "18:00",
+        maxWaitHours: 72,
+        fulfillmentLeadDays: 1
+      };
+      // The owner opens an empty setup (no default). Meanwhile an agent creates the default.
+      const agentPolicy = await mcp.ok<{ policyId: string }>("fulfillment.create_policy", {
+        name: "Agent rules",
+        ...rules,
+        makeBusinessDefault: true,
+        expectedDefaultPolicyId: null,
+        idempotencyKey: "agent-create"
+      });
+      // The owner's "first" create, based on no default, is refused instead of replacing it.
+      const ownerCreate = await request<{ code: string; details: Record<string, unknown> }>(
+        app,
+        "POST",
+        url(owner, "policies"),
+        owner.cookie,
+        { name: "Owner rules", ...rules, makeBusinessDefault: true, expectedDefaultPolicyId: null }
+      );
+      expect(ownerCreate.status).toBe(409);
+      expect(ownerCreate.body).toMatchObject({
+        code: "default_policy_changed",
+        details: { expectedDefaultPolicyId: null, defaultPolicyId: agentPolicy.policyId }
+      });
+      // The agent's lost-response retry still replays.
+      expect(
+        (
+          await mcp.ok<{ policyId: string }>("fulfillment.create_policy", {
+            name: "Agent rules",
+            ...rules,
+            makeBusinessDefault: true,
+            expectedDefaultPolicyId: null,
+            idempotencyKey: "agent-create"
+          })
+        ).policyId
+      ).toBe(agentPolicy.policyId);
+
+      // Now the agent switches the default to a second policy B...
+      const second = await mcp.ok<{ policyId: string }>("fulfillment.create_policy", {
+        name: "Busy season",
+        ...rules,
+        targetLoadGrams: "5000000",
+        makeBusinessDefault: true,
+        expectedDefaultPolicyId: agentPolicy.policyId,
+        idempotencyKey: "agent-create-b"
+      });
+      // ...so revising A "as the default" is refused, though A's own version did not move.
+      const staleRevision = await request<{ code: string }>(
+        app,
+        "POST",
+        url(owner, `policies/${agentPolicy.policyId}/revisions`),
+        owner.cookie,
+        {
+          name: "Owner edit",
+          ...rules,
+          expectedVersion: 1,
+          expectedDefaultPolicyId: agentPolicy.policyId
+        }
+      );
+      expect(staleRevision.status).toBe(409);
+      expect(staleRevision.body.code).toBe("default_policy_changed");
+      const effective = await ok<{
+        defaultPolicyId: string;
+        policy: { targetLoadGrams: string; version: number };
+      }>(app, "GET", url(owner, "default-policy"), owner.cookie);
+      expect(effective).toMatchObject({
+        defaultPolicyId: second.policyId,
+        policy: { targetLoadGrams: "5000000", version: 1 }
+      });
+      // Without the optional preconditions, the operations behave exactly as before.
+      expect(
+        await ok<{ version: number }>(
+          app,
+          "POST",
+          url(owner, `policies/${agentPolicy.policyId}/revisions`),
+          owner.cookie,
+          { name: "Owner edit", ...rules }
+        )
+      ).toMatchObject({ version: 2 });
+    }, 60_000);
+
+    it("lets exactly one of several concurrent writers replace the same expected default", async () => {
+      const owner = await createOwner(app, "Default Contention Wholesale");
+      const rules = {
+        targetLoadGrams: "6000000",
+        maxDiversionMeters: 2000,
+        cutoffLocalTime: "18:00",
+        maxWaitHours: 72,
+        fulfillmentLeadDays: 1
+      };
+      const original = await ok<{ policyId: string }>(
+        app,
+        "POST",
+        url(owner, "policies"),
+        owner.cookie,
+        { name: "Original", ...rules, makeBusinessDefault: true, expectedDefaultPolicyId: null }
+      );
+      // Force the dangerous interleaving: another connection holds the pointer row while the
+      // writers start, so every writer has begun before any of them can move the default. The
+      // precondition read must queue on the row lock; a plain read would let all of them see the
+      // original default and all of them "win".
+      const blocker = await pool.connect();
+      try {
+        await blocker.query("begin");
+        await blocker.query(
+          "select default_policy_id from fulfillment_business_settings where business_id = $1 for update",
+          [owner.businessId]
+        );
+        const writes = Array.from({ length: 4 }, (_, index) =>
+          request<{ code?: string }>(app, "POST", url(owner, "policies"), owner.cookie, {
+            name: `Writer ${index}`,
+            ...rules,
+            makeBusinessDefault: true,
+            expectedDefaultPolicyId: original.policyId
+          })
+        );
+        await new Promise((done) => setTimeout(done, 400));
+        await blocker.query("commit");
+        const results = await Promise.all(writes);
+        expect(results.filter((result) => result.status === 200)).toHaveLength(1);
+        for (const result of results.filter((entry) => entry.status !== 200)) {
+          expect(result).toMatchObject({ status: 409, body: { code: "default_policy_changed" } });
+        }
+      } finally {
+        blocker.release();
+      }
+      const policies = await pool.query<{ count: number }>(
+        "select count(*)::int as count from fulfillment_dispatch_policies where business_id = $1",
+        [owner.businessId]
+      );
+      expect(policies.rows[0]?.count).toBe(2);
+    }, 60_000);
+
+    it("tells each caller what it may manage and redacts precise locations by role", async () => {
+      const { owner } = await setupBusiness();
+      const shop = await createCustomer(app, owner, "Mama Njeri Shop");
+      await ok(app, "PUT", url(owner, `shops/${shop.id}/location`), owner.cookie, alongX(0.5));
+
+      const ownerRead = await connectMcp(app, owner.cookie, owner.businessId, ["mcp:read"]);
+      // The owner may manage, but not through a read-only token.
+      expect(await ownerRead.ok("fulfillment.get_settings", {})).toMatchObject({
+        viewerCanManage: false
+      });
+      const ownerAct = await connectMcp(app, owner.cookie, owner.businessId);
+      expect(await ownerAct.ok("fulfillment.get_settings", {})).toMatchObject({
+        viewerCanManage: true
+      });
+      // A read-only token cannot mutate, whatever the account's role.
+      expect(
+        await ownerRead.call("fulfillment.create_vehicle", {
+          name: "Van",
+          capacityGrams: "1000000",
+          idempotencyKey: "k"
+        })
+      ).toMatchObject({ isError: true, structuredContent: { code: "mcp_scope_forbidden" } });
+      expect(
+        await ownerRead.ok<{ coordinatesRedacted: boolean }>("fulfillment.get_shop_location", {
+          customerId: shop.id
+        })
+      ).toMatchObject({ coordinatesRedacted: false });
+
+      const salesperson = await signUp(app);
+      addMember(store, owner.businessId, salesperson.userId, "sales_agent");
+      const sales = await connectMcp(app, salesperson.cookie, owner.businessId);
+      expect(await sales.ok("fulfillment.get_settings", {})).toMatchObject({
+        viewerCanManage: false
+      });
+      expect(
+        await sales.ok("fulfillment.get_shop_location", { customerId: shop.id })
+      ).toMatchObject({
+        coordinatesRedacted: true,
+        current: { latitude: null, longitude: null }
+      });
+      expect(
+        await sales.call("fulfillment.list_shop_location_history", { customerId: shop.id })
+      ).toMatchObject({ isError: true, structuredContent: { code: "permission_denied" } });
+    }, 60_000);
+
+    it("applies business roles and tenant isolation to MCP callers", async () => {
+      const { owner, corridorId } = await setupBusiness();
+      const salesperson = await signUp(app);
+      addMember(store, owner.businessId, salesperson.userId, "sales_agent");
+      const sales = await connectMcp(app, salesperson.cookie, owner.businessId);
+      // A salesperson's token has mcp:act, but the role still cannot manage vehicles or policy.
+      for (const [name, args] of [
+        [
+          "fulfillment.create_vehicle",
+          { name: "Van", capacityGrams: "1000000", idempotencyKey: randomUUID() }
+        ],
+        ["fulfillment.update_settings", { timezone: "Africa/Kampala" }],
+        [
+          "fulfillment.cancel_manifest",
+          { manifestId: randomUUID(), reason: "no", idempotencyKey: randomUUID() }
+        ]
+      ] as const) {
+        expect(await sales.call(name, args), name).toMatchObject({
+          isError: true,
+          structuredContent: { code: "permission_denied" }
+        });
+      }
+
+      // Another business's owner sees none of this business's corridors, even by id.
+      const stranger = await createOwner(app, "Stranger Wholesale");
+      const strangerMcp = await connectMcp(app, stranger.cookie, stranger.businessId);
+      expect(await strangerMcp.ok<unknown[]>("fulfillment.list_corridors", {})).toEqual([]);
+      const probe = await strangerMcp.call("fulfillment.get_corridor", { corridorId });
+      expect(probe.isError).toBe(true);
+      expect(
+        await strangerMcp.call("fulfillment.list_pools", { shopId: owner.businessId })
+      ).toMatchObject({ isError: true, structuredContent: { code: "mcp_shop_forbidden" } });
+    }, 60_000);
   });
 });

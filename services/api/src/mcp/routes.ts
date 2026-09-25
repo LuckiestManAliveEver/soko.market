@@ -4,6 +4,12 @@ import type { McpAccessScope, McpPrincipal, RuntimeSwapDimension } from "@soko/s
 import { Cp2Error, readSessionCookie, type Cp2Store } from "../cp2/store.js";
 import type { FulfillmentService } from "../cp2/domains/fulfillment/service.js";
 import { mcpOAuthChallenge, mcpSecuritySchemes, registerMcpOAuthRoutes } from "./oauth.js";
+import {
+  describeFulfillmentMcpTool,
+  findFulfillmentMcpTool,
+  fulfillmentMcpTools,
+  runFulfillmentMcpTool
+} from "./fulfillment-tools.js";
 
 const protocolVersion = "2025-11-25";
 const maxRequestsPerMinute = 120;
@@ -118,7 +124,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: "soko-market", version: "0.1.0" },
             instructions:
-              "Soko business tools are tenant-scoped. Mutations require a separate confirmation call."
+              "Soko business tools are tenant-scoped. soko.* business mutations require a separate confirmation call. fulfillment.* mutations run directly under the account's role permissions; each tool's description states what repeating it does, and tools that replay from an idempotency record require an idempotencyKey. Grams are decimal strings."
           }
         });
       }
@@ -230,24 +236,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal, fulfillmentAvailable: boo
         annotations: { readOnlyHint: true, destructiveHint: false }
       }
     );
-    if (fulfillmentAvailable) {
-      tools.push({
-        name: "fulfillment.get_corridor_load",
-        description:
-          "Return the authoritative pooled load and readiness for one delivery corridor.",
-        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["shopId", "corridorId"],
-          properties: {
-            shopId: { type: "string", format: "uuid" },
-            corridorId: { type: "string", format: "uuid" }
-          }
-        },
-        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-      });
-    }
+    if (fulfillmentAvailable) tools.push(...fulfillmentToolDescriptors("mcp:read"));
   }
   if (principal.scopes.includes("mcp:act")) {
     tools.push(
@@ -371,27 +360,15 @@ function mcpToolsForPrincipal(principal: McpPrincipal, fulfillmentAvailable: boo
         annotations: { readOnlyHint: false, destructiveHint: false }
       }))
     );
-    if (fulfillmentAvailable) {
-      tools.push({
-        name: "fulfillment.evaluate_dispatch",
-        description:
-          "Idempotently evaluate dispatch policy for one corridor and business-local day.",
-        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["shopId", "corridorId", "idempotencyKey"],
-          properties: {
-            shopId: { type: "string", format: "uuid" },
-            corridorId: { type: "string", format: "uuid" },
-            idempotencyKey: { type: "string", minLength: 1, maxLength: 200 }
-          }
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
-      });
-    }
+    if (fulfillmentAvailable) tools.push(...fulfillmentToolDescriptors("mcp:act"));
   }
   return tools;
+}
+
+function fulfillmentToolDescriptors(scope: McpAccessScope) {
+  return fulfillmentMcpTools
+    .filter((tool) => tool.scope === scope)
+    .map((tool) => describeFulfillmentMcpTool(tool, mcpSecuritySchemes([scope])));
 }
 
 async function callMcpTool(
@@ -404,6 +381,7 @@ async function callMcpTool(
   const record = objectValue(params, "params");
   const name = stringValue(record.name, "name");
   const args = objectValue(record.arguments ?? {}, "arguments");
+  const fulfillmentTool = findFulfillmentMcpTool(name);
   try {
     let result: unknown;
     if (name === "soko.get_profile") {
@@ -436,27 +414,16 @@ async function callMcpTool(
         principal,
         taskId: stringValue(args.taskId, "taskId")
       });
-    } else if (name === "fulfillment.get_corridor_load") {
-      requireScope(principal, "mcp:read");
+    } else if (fulfillmentTool !== undefined) {
+      requireScope(principal, fulfillmentTool.scope);
       const shopId = requiredShop(principal, args.shopId);
       if (fulfillmentService === undefined) throw fulfillmentUnavailable();
-      result = await store.runFulfillmentForMcp(principal, () =>
-        fulfillmentService.getCorridorPool({
-          sessionId: null,
+      result = await store.runFulfillmentForMcp(principal, async () =>
+        runFulfillmentMcpTool(fulfillmentTool, {
+          args,
           businessId: shopId,
-          corridorId: stringValue(args.corridorId, "corridorId")
-        })
-      );
-    } else if (name === "fulfillment.evaluate_dispatch") {
-      requireScope(principal, "mcp:act");
-      const shopId = requiredShop(principal, args.shopId);
-      if (fulfillmentService === undefined) throw fulfillmentUnavailable();
-      result = await store.runFulfillmentForMcp(principal, () =>
-        fulfillmentService.evaluateDispatch({
-          sessionId: null,
-          businessId: shopId,
-          corridorId: stringValue(args.corridorId, "corridorId"),
-          idempotencyKey: stringValue(args.idempotencyKey, "idempotencyKey")
+          service: fulfillmentService,
+          store
         })
       );
     } else if (name === "soko.runtime_checkpoint") {
@@ -571,7 +538,7 @@ async function callMcpTool(
         name === "soko.get_sync_changes" ||
         name === "soko.query_catalogue" ||
         name === "soko.runtime_status";
-      const fulfillmentReadTool = name === "fulfillment.get_corridor_load";
+      const fulfillmentReadTool = fulfillmentTool?.scope === "mcp:read";
       const challenge =
         error.code === "mcp_scope_forbidden"
           ? mcpOAuthChallenge(
@@ -579,7 +546,18 @@ async function callMcpTool(
               readTool || fulfillmentReadTool ? "mcp:read" : "mcp:act"
             )
           : undefined;
-      return toolResult({ code: error.code, message: error.message }, true, challenge);
+      // Same error body as HTTP (sendCp2Error): an agent retrying needs `details` (for example
+      // the stop's recorded deliveryStatus) to tell its own success from someone else's change.
+      return toolResult(
+        {
+          code: error.code,
+          message: error.message,
+          ...(error.retryable === undefined ? {} : { retryable: error.retryable }),
+          ...(error.details === undefined ? {} : { details: error.details })
+        },
+        true,
+        challenge
+      );
     }
     throw error;
   }

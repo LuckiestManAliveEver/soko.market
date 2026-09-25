@@ -5,7 +5,7 @@ import { getCachedJson, invalidateApiCacheForMutation } from "./api-request-cach
 export async function postJson<TResponse>(
   path: string,
   body: Record<string, unknown>,
-  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+  options: { signal?: AbortSignal; timeoutMs?: number; idempotencyKey?: string } = {}
 ): Promise<TResponse> {
   const response = await apiFetch<TResponse>(path, { method: "POST", body, ...options });
   await invalidateApiCacheForMutation(path);
@@ -49,4 +49,13 @@ export async function getJson<TResponse>(
     path,
     onBackgroundUpdate === undefined ? {} : { onBackgroundUpdate }
   );
+}
+
+/**
+ * An uncached GET for data a person is about to edit in place (a settings form). The shared cache
+ * may serve a copy up to its stale time old - or a persisted local copy - and a form that loads
+ * stale values would save them back over a newer change. This always asks the server.
+ */
+export async function fetchFreshJson<TResponse>(path: string): Promise<TResponse> {
+  return apiFetch<TResponse>(path);
 }

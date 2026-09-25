@@ -6,6 +6,7 @@ import {
 } from "./soko-application-shared";
 import CorridorDispatchCard from "./CorridorDispatchCard";
 import DeliveryRoutesCard from "./DeliveryRoutesCard";
+import FulfillmentSetupCard from "./FulfillmentSetupCard";
 
 export interface LogisticsSurfaceProps {
   businessId: string;
@@ -29,6 +30,7 @@ export function LogisticsSurface(props: LogisticsSurfaceProps) {
 
   return (
     <div className="records-surface">
+      <FulfillmentSetupCard businessId={props.businessId} />
       <CorridorDispatchCard businessId={props.businessId} />
       <DeliveryRoutesCard businessId={props.businessId} />
 

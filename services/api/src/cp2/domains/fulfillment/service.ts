@@ -171,10 +171,30 @@ export interface FulfillmentService
     input: Actor & { includeHistory?: boolean }
   ): Promise<DispatchPolicySummary[]>;
   createDispatchPolicy(
-    input: Actor & { policy: DispatchPolicyInput; makeBusinessDefault: boolean }
+    input: Actor & {
+      policy: DispatchPolicyInput;
+      makeBusinessDefault: boolean;
+      /**
+       * Optimistic concurrency on the business default: the default policy lineage the caller saw
+       * (null = none yet). When given and the default has changed, refused with 409
+       * `default_policy_changed` instead of replacing someone else's default.
+       */
+      expectedDefaultPolicyId?: string | null;
+    }
   ): Promise<DispatchPolicySummary>;
   reviseDispatchPolicy(
-    input: Actor & { policyId: string; policy: DispatchPolicyInput }
+    input: Actor & {
+      policyId: string;
+      policy: DispatchPolicyInput;
+      /**
+       * Optimistic concurrency: the version the caller edited. When given and the active version
+       * has moved on (someone else revised it), the revision is refused with 409
+       * `dispatch_policy_version_conflict` instead of silently replacing the newer rules.
+       */
+      expectedVersion?: number | null;
+      /** As on create: the caller edits this lineage believing it is the business default. */
+      expectedDefaultPolicyId?: string | null;
+    }
   ): Promise<DispatchPolicySummary>;
   setDefaultDispatchPolicy(
     input: Actor & { policyId: string }
@@ -373,6 +393,46 @@ export function createPostgresFulfillmentService(input: {
     );
   }
 
+  /**
+   * Locks the business's default-policy pointer row (creating an empty one if none exists, so two
+   * first-ever creates serialize too) and refuses when it no longer points where the caller
+   * expected. `expected === undefined` means the caller asked for no check. Lock order: a policy
+   * lineage (if any) is locked before this row, as setDefaultDispatchPolicy does.
+   */
+  async function assertDefaultPointer(
+    client: PoolClient,
+    businessId: string,
+    expected: string | null | undefined,
+    actorId: string,
+    now: Date
+  ): Promise<void> {
+    if (expected === undefined) return;
+    await client.query(
+      `
+        insert into fulfillment_business_settings (business_id, default_policy_id, updated_by, updated_at)
+        values ($1, null, $2, $3)
+        on conflict (business_id) do nothing
+      `,
+      [businessId, actorId, now]
+    );
+    const current =
+      (
+        await client.query<{ default_policy_id: string | null }>(
+          "select default_policy_id from fulfillment_business_settings where business_id = $1 for update",
+          [businessId]
+        )
+      ).rows[0]?.default_policy_id ?? null;
+    if (current !== expected) {
+      throw new Cp2Error(
+        409,
+        "default_policy_changed",
+        "The business's default dispatch rules were changed since you opened them. Review the latest and save again.",
+        false,
+        { expectedDefaultPolicyId: expected, defaultPolicyId: current }
+      );
+    }
+  }
+
   async function defaultPolicyId(client: PoolClient | Pool, businessId: string) {
     const result = await client.query<{ default_policy_id: string | null }>(
       "select default_policy_id from fulfillment_business_settings where business_id = $1",
@@ -520,48 +580,60 @@ export function createPostgresFulfillmentService(input: {
     async updateVehicle(actor) {
       const { userId } = authorize(actor, "fulfillment:manage");
       const now = actor.now ?? new Date();
-      return transaction(async (client) => {
-        const existing = await requireVehicle(client, actor.businessId, actor.vehicleId, true);
-        const next = normalizeVehicle({
-          name: actor.patch.name ?? existing.name,
-          registration:
-            actor.patch.registration === undefined
-              ? existing.registration
-              : actor.patch.registration,
-          capacityGrams:
-            actor.patch.capacityGrams ?? parseGrams(existing.capacity_grams, "capacityGrams"),
-          active: actor.patch.active ?? existing.active
-        });
-        assertValid(validateVehicleInput(next));
-        const result = await client
-          .query<VehicleRow>(
-            `
+      const request = {
+        vehicleId: actor.vehicleId,
+        ...actor.patch,
+        capacityGrams:
+          actor.patch.capacityGrams === undefined
+            ? undefined
+            : formatGrams(actor.patch.capacityGrams)
+      };
+      // A23: a retried update replays its first result instead of re-applying the patch over a
+      // change someone made in between.
+      return transaction((client) =>
+        idempotent(client, actor, "fulfillment.updateVehicle", request, now, async () => {
+          const existing = await requireVehicle(client, actor.businessId, actor.vehicleId, true);
+          const next = normalizeVehicle({
+            name: actor.patch.name ?? existing.name,
+            registration:
+              actor.patch.registration === undefined
+                ? existing.registration
+                : actor.patch.registration,
+            capacityGrams:
+              actor.patch.capacityGrams ?? parseGrams(existing.capacity_grams, "capacityGrams"),
+            active: actor.patch.active ?? existing.active
+          });
+          assertValid(validateVehicleInput(next));
+          const result = await client
+            .query<VehicleRow>(
+              `
               update fulfillment_vehicles
               set name = $3, registration = $4, capacity_grams = $5::bigint, active = $6, updated_at = $7
               where business_id = $1 and id = $2
               returning *
             `,
-            [
-              actor.businessId,
-              existing.id,
-              next.name,
-              next.registration,
-              formatGrams(next.capacityGrams),
-              next.active,
-              now
-            ]
-          )
-          .catch(rethrowRegistrationConflict);
-        const updated = vehicleSummary(result.rows[0] as VehicleRow);
-        logFulfillmentEvent("fulfillment.vehicle_updated", {
-          businessId: actor.businessId,
-          vehicleId: updated.id,
-          actorId: userId,
-          capacityGrams: updated.capacityGrams,
-          active: updated.active
-        });
-        return updated;
-      });
+              [
+                actor.businessId,
+                existing.id,
+                next.name,
+                next.registration,
+                formatGrams(next.capacityGrams),
+                next.active,
+                now
+              ]
+            )
+            .catch(rethrowRegistrationConflict);
+          const updated = vehicleSummary(result.rows[0] as VehicleRow);
+          logFulfillmentEvent("fulfillment.vehicle_updated", {
+            businessId: actor.businessId,
+            vehicleId: updated.id,
+            actorId: userId,
+            capacityGrams: updated.capacityGrams,
+            active: updated.active
+          });
+          return updated;
+        })
+      );
     },
 
     async listDispatchPolicies(actor) {
@@ -588,9 +660,20 @@ export function createPostgresFulfillmentService(input: {
           client,
           actor,
           "fulfillment.createDispatchPolicy",
-          { ...policyRequest(policy), makeBusinessDefault: actor.makeBusinessDefault },
+          {
+            ...policyRequest(policy),
+            makeBusinessDefault: actor.makeBusinessDefault,
+            expectedDefaultPolicyId: actor.expectedDefaultPolicyId
+          },
           now,
           async () => {
+            await assertDefaultPointer(
+              client,
+              actor.businessId,
+              actor.expectedDefaultPolicyId,
+              userId,
+              now
+            );
             const policyId = randomUUID();
             const row = await insertPolicyVersion(client, {
               businessId: actor.businessId,
@@ -630,7 +713,12 @@ export function createPostgresFulfillmentService(input: {
           client,
           actor,
           "fulfillment.reviseDispatchPolicy",
-          { policyId: actor.policyId, ...policyRequest(policy) },
+          {
+            policyId: actor.policyId,
+            ...policyRequest(policy),
+            expectedVersion: actor.expectedVersion ?? null,
+            expectedDefaultPolicyId: actor.expectedDefaultPolicyId
+          },
           now,
           async () => {
             // Serialize revisions of one lineage on a STABLE row: version 1 is never modified.
@@ -644,6 +732,23 @@ export function createPostgresFulfillmentService(input: {
                 404,
                 "dispatch_policy_not_found",
                 "Dispatch policy was not found."
+              );
+            }
+            await assertDefaultPointer(
+              client,
+              actor.businessId,
+              actor.expectedDefaultPolicyId,
+              userId,
+              now
+            );
+            const expectedVersion = actor.expectedVersion ?? null;
+            if (expectedVersion !== null && current.version !== expectedVersion) {
+              throw new Cp2Error(
+                409,
+                "dispatch_policy_version_conflict",
+                "These dispatch rules were changed since you opened them. Review the latest version and save again.",
+                false,
+                { expectedVersion, currentVersion: current.version }
               );
             }
             await client.query(
@@ -675,20 +780,33 @@ export function createPostgresFulfillmentService(input: {
     async setDefaultDispatchPolicy(actor) {
       const { userId } = authorize(actor, "fulfillment:manage");
       const now = actor.now ?? new Date();
-      return transaction(async (client) => {
-        await lockPolicyLineage(client, actor.businessId, actor.policyId);
-        const policy = await activePolicyVersion(client, actor.businessId, actor.policyId);
-        if (policy === null) {
-          throw new Cp2Error(404, "dispatch_policy_not_found", "Dispatch policy was not found.");
-        }
-        await setDefaultPointer(client, actor.businessId, policy.policy_id, userId, now);
-        logFulfillmentEvent("fulfillment.default_policy_set", {
-          businessId: actor.businessId,
-          policyId: policy.policy_id,
-          version: policy.version
-        });
-        return effectiveDefault(client, actor.businessId);
-      });
+      return transaction((client) =>
+        idempotent(
+          client,
+          actor,
+          "fulfillment.setDefaultDispatchPolicy",
+          { policyId: actor.policyId },
+          now,
+          async () => {
+            await lockPolicyLineage(client, actor.businessId, actor.policyId);
+            const policy = await activePolicyVersion(client, actor.businessId, actor.policyId);
+            if (policy === null) {
+              throw new Cp2Error(
+                404,
+                "dispatch_policy_not_found",
+                "Dispatch policy was not found."
+              );
+            }
+            await setDefaultPointer(client, actor.businessId, policy.policy_id, userId, now);
+            logFulfillmentEvent("fulfillment.default_policy_set", {
+              businessId: actor.businessId,
+              policyId: policy.policy_id,
+              version: policy.version
+            });
+            return effectiveDefault(client, actor.businessId);
+          }
+        )
+      );
     },
 
     async getEffectiveDefaultPolicy(actor) {

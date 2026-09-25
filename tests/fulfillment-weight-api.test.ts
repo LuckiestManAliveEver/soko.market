@@ -183,7 +183,8 @@ describe("business timezone (A11)", () => {
     const settingsUrl = `/businesses/${owner.businessId}/fulfillment/settings`;
     expect(await ok(app, "GET", settingsUrl, owner.cookie)).toEqual({
       businessId: owner.businessId,
-      timezone: null
+      timezone: null,
+      viewerCanManage: true
     });
 
     const invalid = await request<{ code: string }>(app, "PATCH", settingsUrl, owner.cookie, {
@@ -196,15 +197,54 @@ describe("business timezone (A11)", () => {
       await ok(app, "PATCH", settingsUrl, owner.cookie, { timezone: "Africa/Nairobi" })
     ).toEqual({
       businessId: owner.businessId,
-      timezone: "Africa/Nairobi"
+      timezone: "Africa/Nairobi",
+      viewerCanManage: true
     });
+
+    // Optimistic concurrency: a stale expectedTimezone is refused, never applied.
+    const stale = await request<{ code: string; details: { timezone: string } }>(
+      app,
+      "PATCH",
+      settingsUrl,
+      owner.cookie,
+      { timezone: "Africa/Kampala", expectedTimezone: null }
+    );
+    expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({
+      code: "timezone_changed",
+      details: { timezone: "Africa/Nairobi" }
+    });
+    expect((await ok<{ timezone: string }>(app, "GET", settingsUrl, owner.cookie)).timezone).toBe(
+      "Africa/Nairobi"
+    );
+    expect(
+      await ok(app, "PATCH", settingsUrl, owner.cookie, {
+        timezone: "Africa/Nairobi",
+        expectedTimezone: "Africa/Nairobi"
+      })
+    ).toMatchObject({ timezone: "Africa/Nairobi" });
+    // Repeating your own write (a retry after a lost response) succeeds: the stored value is
+    // already what you asked for, so there is nothing to conflict with.
+    expect(
+      await ok(app, "PATCH", settingsUrl, owner.cookie, {
+        timezone: "Africa/Nairobi",
+        expectedTimezone: null
+      })
+    ).toMatchObject({ timezone: "Africa/Nairobi" });
 
     // A dispatcher (manager) can read but not manage settings; a cashier cannot even read.
     const dispatcher = await signUp(app);
     addMember(store, owner.businessId, dispatcher.userId, "manager");
     const cashier = await signUp(app);
     addMember(store, owner.businessId, cashier.userId, "cashier");
-    expect((await request(app, "GET", settingsUrl, dispatcher.cookie)).status).toBe(200);
+    const dispatcherView = await request(app, "GET", settingsUrl, dispatcher.cookie);
+    expect(dispatcherView.status).toBe(200);
+    // The server tells the UI the dispatcher may read but not manage (no client role table).
+    expect(dispatcherView.body).toEqual({
+      businessId: owner.businessId,
+      timezone: "Africa/Nairobi",
+      viewerCanManage: false
+    });
     expect(
       (await request(app, "PATCH", settingsUrl, dispatcher.cookie, { timezone: "UTC" })).status
     ).toBe(403);

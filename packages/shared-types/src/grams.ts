@@ -111,3 +111,38 @@ export function formatKilogramsForDisplay(
   const fractionText = fraction.toString().padStart(maximumFractionDigits, "0").replace(/0+$/u, "");
   return `${wholeText}${decimalSeparator}${fractionText} kg`;
 }
+
+// Whole part: plain digits, or 1-3 digits (not starting with 0) followed by 3-digit groups joined by ONE consistent
+// thousands separator (comma, space or underscore). A decimal part uses "." only.
+const kilogramsInputPattern =
+  /^(?<whole>[0-9]+|[1-9][0-9]{0,2}(?<sep>[, _])[0-9]{3}(?:\k<sep>[0-9]{3})*)(?:\.(?<fraction>[0-9]{1,3}))?$/u;
+
+/**
+ * Parses kilograms a person typed (for example `"6000"`, `"6,000"`, `"6 000 kg"`, `"0.9"`,
+ * `"12.345"`) into canonical grams. Exact: the text is split at the decimal point and scaled in
+ * integer space, so no binary float ever touches the value. Deliberately strict, because a
+ * misread weight is worse than a rejected one: a comma, space or underscore is accepted only as a
+ * thousands separator between complete 3-digit groups, so a decimal comma such as `"0,9"` or
+ * `"6,5"`, or `"0,900"` (0.9 kg written with a decimal comma) is rejected rather than silently
+ * read as 9, 65 or 900 kg. `.` is the only decimal separator;
+ * more than three decimals (below one gram), signs, exponents and empty input are rejected. Zero is
+ * returned as `"0"` - callers that need a positive weight pass the result through
+ * `parsePositiveGrams`, exactly as the server does.
+ */
+export function parseKilogramsInput(value: string, field = "kilograms"): GramsString {
+  const normalized = value.trim().replace(/\s*kg$/iu, "");
+  const match = kilogramsInputPattern.exec(normalized);
+  if (match === null) {
+    throw new GramsFormatError(
+      field,
+      `${field} must be kilograms such as 6000, 6,000 or 0.9 (a dot for decimals, at most three).`
+    );
+  }
+  const whole = BigInt((match.groups?.whole ?? "0").replace(/[, _]/gu, ""));
+  const fraction = BigInt((match.groups?.fraction ?? "").padEnd(3, "0"));
+  const grams = whole * 1000n + fraction;
+  if (grams > MAX_GRAMS) {
+    throw new GramsFormatError(field, `${field} exceeds the largest storable weight.`);
+  }
+  return formatGrams(grams);
+}
