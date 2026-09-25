@@ -120,6 +120,7 @@ INSERT INTO purge_table_plan (table_name, classification, delete_order, reason) 
   ('cp2_account_deletion_proofs', 'DELETE', 11, 'Account purge completion records'),
   ('cp2_shop_presences', 'DELETE', 11, 'Business public presence state'),
   ('cp2_network_invites', 'DELETE', 11, 'User/business invitations'),
+  ('cp2_staff_invitations', 'DELETE', 11, 'Invitations to join a business with a role'),
   ('cp2_public_customer_care_requests', 'DELETE', 11, 'Business customer-care requests'),
   ('cp2_public_storefront_messages', 'DELETE', 11, 'Legacy public message records'),
   ('cp2_public_orders', 'DELETE', 11, 'Legacy public order request records'),

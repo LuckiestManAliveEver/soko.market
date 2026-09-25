@@ -79,6 +79,7 @@ import { registerRuntimeHandoffRoutes } from "./domains/runtime-handoff/routes.j
 import { registerComputerRuntimeRoutes } from "./domains/computer-runtime/routes.js";
 import { registerMessagingRoutes } from "./domains/messaging/routes.js";
 import { registerOtpRoutes } from "./domains/otp/routes.js";
+import { registerStaffRoutes } from "./domains/staff/routes.js";
 import { registerDeviceBootstrapRoutes } from "./domains/device-bootstrap/routes.js";
 import { registerModelTemplateRoutes } from "./domains/model-templates/routes.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
@@ -1909,6 +1910,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   registerSalesRoutes(app, store);
   registerCatalogueSharingRoutes(app, store);
+  registerStaffRoutes(app, store);
   registerOfflineRuntimeRoutes(app, store);
 
   registerSuppliersRoutes(app, store, binaryUploadPipeline, ocrProcessor);
@@ -2430,6 +2432,7 @@ const businessPermissions: BusinessPermission[] = [
   "business:read",
   "membership:read",
   "membership:manage",
+  "membership:invite",
   "product:read",
   "product:write",
   "customer:read",

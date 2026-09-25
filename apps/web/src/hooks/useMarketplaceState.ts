@@ -1,9 +1,11 @@
 import { useState } from "react";
 
-import type { BuyFeedSummary } from "@soko/shared-types";
+import type { AccountShopSummary, BuyFeedSummary } from "@soko/shared-types";
 
 import { getErrorMessage } from "../chat-message-plumbing";
-import { getJson, postJson } from "../api-helpers";
+import { fetchFreshJson, getJson, postJson } from "../api-helpers";
+import { resolveStoredShopAtLaunch } from "../stored-shop";
+import { activeBusinessStorageKey } from "../soko-application-shared";
 import { agentSettingsFromBusinessProfile, readStoredBusiness } from "../owner-app-bootstrap";
 import type {
   ActiveBusiness,
@@ -117,6 +119,24 @@ export function useMarketplaceState(deps: UseMarketplaceStateDeps) {
       // Local development uses an in-memory API store; stale cached business views are expected after restarts.
     }
 
+    // Not the owner: open the stored shop only if the account is still a member of it (staff can
+    // be removed or leave), with the role the server reports now.
+    const decision = await resolveStoredShopAtLaunch(storedBusiness, async () => {
+      const { shops } = await fetchFreshJson<{ shops: AccountShopSummary[] }>("/v1/shops");
+      return shops;
+    });
+    if (decision.action === "forget") {
+      localStorage.removeItem(activeBusinessStorageKey);
+      setBusiness(null);
+      return;
+    }
+    if (decision.action === "open") {
+      setBusiness(decision.business);
+      setStatusMessage("Saved workspace loaded");
+      return;
+    }
+
+    // Offline: keep the device's saved workspace until the server can answer.
     setBusiness(storedBusiness);
     setStatusMessage("Saved workspace loaded");
   }

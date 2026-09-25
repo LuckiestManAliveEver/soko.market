@@ -580,6 +580,11 @@ export function useAuthState(deps: UseAuthStateDeps) {
         setAgentSettings(nextAgent);
         localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
         localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
+      } else {
+        // The account belongs to no shop now (for example removed as staff, or left): forget the
+        // shop this device last opened instead of keeping a business it can no longer use.
+        setBusiness(null);
+        localStorage.removeItem(activeBusinessStorageKey);
       }
 
       setMode(restoredMode);
@@ -667,6 +672,16 @@ export function useAuthState(deps: UseAuthStateDeps) {
     }
   }
 
+  // After accepting a staff invitation (StaffInvitationsPrompt): refresh the account's shop list
+  // first, then open the shop just joined, so the refresh cannot switch back to the previous one.
+  async function joinStaffShop(
+    shop: AccountShopSummary,
+    setActiveConversationId: (conversationId: string | null) => void
+  ) {
+    await loadSokoSessionContext(setActiveConversationId);
+    switchActiveBusiness(shop);
+  }
+
   deps.registerReset("auth", () => {
     setOauthProviders([]);
     setOauthProvidersLoaded(false);
@@ -703,6 +718,7 @@ export function useAuthState(deps: UseAuthStateDeps) {
     loadSokoSessionContext,
     patchSokoSessionContext,
     applySessionContextForConversation,
-    switchActiveBusiness
+    switchActiveBusiness,
+    joinStaffShop
   };
 }

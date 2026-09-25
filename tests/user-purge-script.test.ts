@@ -54,8 +54,11 @@ describe("registered-user purge script", () => {
     // Phonebook identity resolution (docs/architecture/phonebook-identity-resolution.md) added
     // cp2_identity_candidates, classified DELETE - pending identity candidates are account-scoped
     // and must not survive an account purge.
-    expect(plan.size).toBe(200);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(193);
+    // Staff invitations (infra/db/migrations/099_staff_invitations.sql, docs/architecture/
+    // staff-invitations.md) added cp2_staff_invitations, classified DELETE - business-scoped
+    // invitation records, same family as cp2_network_invites.
+    expect(plan.size).toBe(201);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(194);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

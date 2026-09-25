@@ -65,6 +65,10 @@ export type BusinessPermission =
   | "business:read"
   | "membership:read"
   | "membership:manage"
+  // Staff invitations (docs/architecture/staff-invitations.md): invite people into the business
+  // and manage their roles. Held by owner and manager; which roles each may grant or manage is
+  // decided by `rolesGrantableBy` / `canManageMemberRole` below, never by comparing role names.
+  | "membership:invite"
   | "product:read"
   | "product:write"
   | "customer:read"
@@ -118,6 +122,7 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "business:read",
     "membership:read",
     "membership:manage",
+    "membership:invite",
     "product:read",
     "product:write",
     "customer:read",
@@ -164,6 +169,7 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
   manager: new Set([
     "business:read",
     "membership:read",
+    "membership:invite",
     "product:read",
     "product:write",
     "customer:read",
@@ -261,4 +267,42 @@ export function roleCan(role: BusinessRole, permission: BusinessPermission): boo
 
 export function permissionsForRole(role: BusinessRole): BusinessPermission[] {
   return [...(rolePermissions[role] ?? new Set<BusinessPermission>())];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Staff role hierarchy (docs/architecture/staff-invitations.md)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Authority rank for staff management. You may grant, change or remove only roles strictly below
+ * your own: the owner manages managers and staff; a manager manages staff but never another
+ * manager or the owner. Every non-management role shares the lowest rank.
+ */
+const staffRank: Record<BusinessRole, number> = {
+  owner: 3,
+  manager: 2,
+  sales_agent: 1,
+  cashier: 1,
+  driver: 1,
+  view_only: 1
+};
+
+/** Roles an invitation may carry. `owner` is never grantable: a business has exactly one. */
+export const invitableRoles: readonly BusinessRole[] = [
+  "manager",
+  "sales_agent",
+  "cashier",
+  "driver",
+  "view_only"
+];
+
+/** The roles `actorRole` may invite someone into or change someone to. Empty if none. */
+export function rolesGrantableBy(actorRole: BusinessRole): BusinessRole[] {
+  if (!roleCan(actorRole, "membership:invite")) return [];
+  return invitableRoles.filter((role) => staffRank[role] < staffRank[actorRole]);
+}
+
+/** Whether `actorRole` may change or remove a member currently holding `targetRole`. */
+export function canManageMemberRole(actorRole: BusinessRole, targetRole: BusinessRole): boolean {
+  return roleCan(actorRole, "membership:invite") && staffRank[targetRole] < staffRank[actorRole];
 }
