@@ -28,10 +28,13 @@ import { ModelTemplateReportCardPanel } from "./ModelTemplateReportCardPanel";
 import { ModelTemplateWorkbenchPanel } from "./ModelTemplateWorkbenchPanel";
 import { ModelTemplateGovernancePanel } from "./ModelTemplateGovernancePanel";
 import { YourShopsPanel } from "./YourShopsPanel";
+import StaffCard from "./StaffCard";
+import { shopAfterLeaving } from "./stored-shop";
 
 import {
   AgentModelPanel,
   IdentitySecurityPanel,
+  activeBusinessStorageKey,
   type ActiveBusiness,
   type AgentSettings,
   type AiModelSummary,
@@ -435,6 +438,20 @@ export function AgentProfileSurface({
           defaultOpen
         >
           <YourShopsPanel shops={shops} business={business} onSwitchBusiness={onSwitchBusiness} />
+          <StaffCard
+            businessId={business.id}
+            businessName={business.name}
+            viewerRole={business.role}
+            onLeft={() => {
+              const remaining = shopAfterLeaving(shops, business.id);
+              if (remaining !== null) onSwitchBusiness(remaining);
+              else {
+                // No shop left: forget this one on the device, then start from the marketplace.
+                localStorage.removeItem(activeBusinessStorageKey);
+                window.location.assign("/");
+              }
+            }}
+          />
 
           <PublicStorefrontPanel
             business={business}

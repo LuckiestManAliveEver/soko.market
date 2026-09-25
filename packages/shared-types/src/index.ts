@@ -8,6 +8,7 @@ export * from "./phone-number.js";
 export * from "./portable-agent.js";
 export * from "./runtime-handoff.js";
 export * from "./runtime-registry.js";
+export * from "./staff.js";
 export * from "./store-links.js";
 export * from "./workload.js";
 

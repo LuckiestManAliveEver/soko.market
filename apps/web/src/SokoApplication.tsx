@@ -68,7 +68,6 @@ import { setConnectivityAuthentication } from "./connectivity";
 import { clearMessagingOutbox } from "./messaging/outbox";
 
 import { AppIcon } from "./AppIcon";
-import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { IdentityNetworkOnboardingCard } from "./IdentityNetworkOnboardingCard";
 import { LazyModuleErrorBoundary } from "./LazyModuleErrorBoundary";
 import { clearDeviceRecoveryCredential } from "./device-recovery";
@@ -118,7 +117,6 @@ import {
 
 import {
   isHumanDirectConversation,
-  isRedundantAgentErrorMessage,
   getErrorMessage,
   logClientEvent
 } from "./chat-message-plumbing";
@@ -141,6 +139,7 @@ import {
 } from "./lazy-module-recovery";
 export { PublicStorefrontChat } from "./PublicStorefrontChat";
 
+import ShellNotices from "./ShellNotices";
 const AgentProfileSurface = lazy(() =>
   loadLazyModuleWithRecovery(
     agentProfileModuleKeys.surface,
@@ -655,7 +654,8 @@ export function OwnerApp() {
     loadSokoSessionContext,
     patchSokoSessionContext,
     applySessionContextForConversation,
-    switchActiveBusiness
+    switchActiveBusiness,
+    joinStaffShop
   } = useAuthState({
     business,
     setBusiness,
@@ -1806,14 +1806,12 @@ export function OwnerApp() {
             </nav>
           ) : null}
 
-          {!isAuthScreen &&
-          statusMessage.length > 0 &&
-          !isRedundantAgentErrorMessage(statusMessage) ? (
-            <div className="app-action-notice" role="status" aria-live="polite">
-              {hasPending ? "Working…" : <AuthenticationActionMessage message={statusMessage} />}
-            </div>
-          ) : null}
-
+          <ShellNotices
+            statusMessage={isAuthScreen ? "" : statusMessage}
+            working={hasPending}
+            accountId={isAuthScreen || authBootstrapPending ? null : (session?.account.id ?? null)}
+            onJoinedShop={(shop) => joinStaffShop(shop, setActiveConversationId)}
+          />
           {authBootstrapPending ? (
             <NativeLaunchScreen
               message={bootstrapProgressMessage(

@@ -135,6 +135,7 @@ import {
 import { SalesDomain } from "./domains/sales/store.js";
 import { type ProductMediaRecord } from "./domains/sales/shared.js";
 import { CatalogueSharingDomain } from "./domains/catalogue-sharing/store.js";
+import { StaffDomain } from "./domains/staff/store.js";
 import { McpTokensDomain } from "./domains/mcp-tokens/store.js";
 import { type McpAccessTokenRecord } from "./domains/mcp-tokens/shared.js";
 import { ExternalConnectionsDomain } from "./domains/external-connections/store.js";
@@ -232,6 +233,7 @@ import type {
   NativeSmsDeviceCommandSummary,
   NativeSmsDeviceSummary,
   NetworkInviteSummary,
+  StaffInvitationSummary,
   OfflineCacheSnapshot,
   PaymentSummary,
   ProductFieldSchemaSummary,
@@ -717,6 +719,7 @@ export interface Cp2Snapshot
   accountDeletionProofs?: AccountDeletionProof[];
   shopPresences?: ShopPresenceSummary[];
   networkInvites?: NetworkInviteSummary[];
+  staffInvitations?: StaffInvitationSummary[];
   publicCustomerCareRequests?: PublicCustomerCareRequestSummary[];
   publicStorefrontMessages?: PublicStorefrontMessageSummary[];
   publicOrders?: PublicOrderSummary[];
@@ -1025,6 +1028,18 @@ export class Cp2Store {
         this.commercialRecordsDomain.recordProductPriceMutation(input),
       onInvoiceConfirmed: (invoice, actorId) =>
         this.notifyFulfillmentIntake(invoice.businessId, invoice.id, actorId)
+    });
+    this.staffDomain = new StaffDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
+      requireAuthenticatedActor: (sessionId, now) => this.requireAuthenticatedActor(sessionId, now),
+      memberships: this.memberships,
+      businesses: this.businesses,
+      users: this.users,
+      accounts: this.accounts,
+      quarantinedBusinessIds: this.quarantinedBusinessIds,
+      accountIdentities: () => this.accountIdentities.values(),
+      recordAuditEvent: (input) => this.recordAuditEvent(input)
     });
     this.catalogueSharing = new CatalogueSharingDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -1761,6 +1776,7 @@ export class Cp2Store {
   // Reads businesses/shopPresences/products live off the maps above and delegates every product
   // creation back to salesDomain.createProduct - it persists nothing of its own.
   private readonly catalogueSharing: CatalogueSharingDomain;
+  private readonly staffDomain: StaffDomain;
   // productCaptureJobs/statusBroadcasts/buyOrders/statusOrders/unifiedCheckouts now live inside
   // `commerce` (services/api/src/cp2/domains/commerce/store.ts) - accessed via its map getters for
   // the generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
@@ -4805,6 +4821,62 @@ export class Cp2Store {
     return presence;
   }
 
+  // ---- Staff invitations (domains/staff) ----------------------------------------------------
+
+  inviteStaff(
+    ...args: Parameters<StaffDomain["inviteStaff"]>
+  ): ReturnType<StaffDomain["inviteStaff"]> {
+    return this.staffDomain.inviteStaff(...args);
+  }
+
+  getStaffOverview(
+    ...args: Parameters<StaffDomain["getStaffOverview"]>
+  ): ReturnType<StaffDomain["getStaffOverview"]> {
+    return this.staffDomain.getStaffOverview(...args);
+  }
+
+  revokeStaffInvitation(
+    ...args: Parameters<StaffDomain["revokeStaffInvitation"]>
+  ): ReturnType<StaffDomain["revokeStaffInvitation"]> {
+    return this.staffDomain.revokeStaffInvitation(...args);
+  }
+
+  changeStaffRole(
+    ...args: Parameters<StaffDomain["changeStaffRole"]>
+  ): ReturnType<StaffDomain["changeStaffRole"]> {
+    return this.staffDomain.changeStaffRole(...args);
+  }
+
+  removeStaffMember(
+    ...args: Parameters<StaffDomain["removeStaffMember"]>
+  ): ReturnType<StaffDomain["removeStaffMember"]> {
+    return this.staffDomain.removeStaffMember(...args);
+  }
+
+  leaveBusiness(
+    ...args: Parameters<StaffDomain["leaveBusiness"]>
+  ): ReturnType<StaffDomain["leaveBusiness"]> {
+    return this.staffDomain.leaveBusiness(...args);
+  }
+
+  listMyStaffInvitations(
+    ...args: Parameters<StaffDomain["listMyStaffInvitations"]>
+  ): ReturnType<StaffDomain["listMyStaffInvitations"]> {
+    return this.staffDomain.listMyStaffInvitations(...args);
+  }
+
+  acceptStaffInvitation(
+    ...args: Parameters<StaffDomain["acceptStaffInvitation"]>
+  ): ReturnType<StaffDomain["acceptStaffInvitation"]> {
+    return this.staffDomain.acceptStaffInvitation(...args);
+  }
+
+  declineStaffInvitation(
+    ...args: Parameters<StaffDomain["declineStaffInvitation"]>
+  ): ReturnType<StaffDomain["declineStaffInvitation"]> {
+    return this.staffDomain.declineStaffInvitation(...args);
+  }
+
   listShareableCatalogues(
     ...args: Parameters<CatalogueSharingDomain["listShareableCatalogues"]>
   ): ReturnType<CatalogueSharingDomain["listShareableCatalogues"]> {
@@ -7683,6 +7755,7 @@ export class Cp2Store {
       accountDeletionProofs: [...this.accountDeletionProofs.values()],
       shopPresences: [...this.shopPresences.values()],
       networkInvites: [...this.networkInvites.values()],
+      staffInvitations: this.staffDomain.snapshot(),
       publicCustomerCareRequests: [...this.salesDomain.publicCustomerCareRequestsMap.values()],
       publicStorefrontMessages: [...this.salesDomain.publicStorefrontMessagesMap.values()],
       publicOrders: [...this.salesDomain.publicOrdersMap.values()],
@@ -7772,6 +7845,7 @@ export class Cp2Store {
     this.accountDeletionProofs.clear();
     this.shopPresences.clear();
     this.networkInvites.clear();
+    this.staffDomain.restore([]);
     this.compliance.clear();
     this.documentImportDomain.clear();
     this.notificationsDomain.clear();
@@ -7971,6 +8045,8 @@ export class Cp2Store {
     for (const invite of snapshot.networkInvites ?? []) {
       this.networkInvites.set(invite.id, invite);
     }
+
+    this.staffDomain.restore(snapshot.staffInvitations);
 
     for (const item of snapshot.verificationTiers) {
       this.compliance.verificationTiersMap.set(item.businessId, item);
@@ -9251,6 +9327,35 @@ export class Cp2Store {
     const existing = this.sessionContexts.get(key);
 
     if (existing !== undefined) {
+      // A context can outlive its shop membership (staff removed or left, shop quarantined): heal
+      // it to the marketplace instead of leaving every later read and patch refused for a shop
+      // this person no longer belongs to (docs/architecture/staff-invitations.md).
+      if (
+        existing.activeShopId !== null &&
+        !this.hasActiveMembership(existing.activeShopId, session.user.id)
+      ) {
+        const healed: StoredSokoSessionContext = {
+          ...existing,
+          activeShopId: null,
+          mode: "marketplace",
+          activeSurface: sellerOnlySurfaces.has(existing.activeSurface)
+            ? "conversation"
+            : existing.activeSurface,
+          sessionVersion: existing.sessionVersion + 1,
+          updatedAt: now.toISOString()
+        };
+        this.sessionContexts.set(key, healed);
+        this.recordSyncChange({
+          accountId: session.account.id,
+          collection: "session_context",
+          entityId: healed.conversationId,
+          operation: "upsert",
+          shopId: null,
+          entity: healed,
+          now
+        });
+        return healed;
+      }
       return existing;
     }
 
@@ -9266,6 +9371,14 @@ export class Cp2Store {
       now
     });
     return context;
+  }
+
+  private hasActiveMembership(businessId: string, userId: string): boolean {
+    if (this.quarantinedBusinessIds.has(businessId)) return false;
+    for (const membership of this.memberships.values()) {
+      if (membership.businessId === businessId && membership.userId === userId) return true;
+    }
+    return false;
   }
 
   private sokoSessionContextView(
@@ -11062,6 +11175,7 @@ export class Cp2Store {
     for (const [id, invite] of this.networkInvites.entries()) {
       if (invite.businessId === businessId) this.networkInvites.delete(id);
     }
+    this.staffDomain.deleteForBusiness(businessId);
     for (const [id, request] of this.salesDomain.publicCustomerCareRequestsMap.entries()) {
       if (request.businessId === businessId)
         this.salesDomain.publicCustomerCareRequestsMap.delete(id);
@@ -11296,6 +11410,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.accountDeletionRequests, scope);
       deletedRecordCount += deleteScopedMapRecords(this.shopPresences, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkInvites, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.staffDomain.staffInvitationsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(
         this.salesDomain.publicCustomerCareRequestsMap,
         scope

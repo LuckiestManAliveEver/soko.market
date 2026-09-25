@@ -201,10 +201,13 @@ describe("frontend user guidance", () => {
   });
 
   it("suppresses the redundant persistent agent error prompt", () => {
+    // The shell's status line lives in ShellNotices (extracted from SokoApplication).
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const shellNotices = readFileSync("apps/web/src/ShellNotices.tsx", "utf8");
     const chatMessagePlumbing = readFileSync("apps/web/src/chat-message-plumbing.ts", "utf8");
 
-    expect(application).toContain("isRedundantAgentErrorMessage");
+    expect(application).toContain("<ShellNotices");
+    expect(shellNotices).toContain("!isRedundantAgentErrorMessage(props.statusMessage)");
     expect(chatMessagePlumbing).toContain(
       `normalized.includes("you've just experienced an error")`
     );
@@ -413,7 +416,10 @@ describe("frontend user guidance", () => {
     expect(readAuthenticationRouteHash("#catalogue")).toBeNull();
     expect(actionMessage).toContain("getAuthenticationPromptTarget(message)");
     expect(actionMessage).toContain("href={authenticationRoute(target)}");
-    expect(application).toContain("<AuthenticationActionMessage message={statusMessage} />");
+    expect(application).toContain('statusMessage={isAuthScreen ? "" : statusMessage}');
+    expect(readFileSync("apps/web/src/ShellNotices.tsx", "utf8")).toContain(
+      "<AuthenticationActionMessage message={props.statusMessage} />"
+    );
     expect(application).toContain("readAuthenticationRouteHash(window.location.hash)");
     expect(phoneFirst).toContain('className="auth-onboarding"');
     expect(styles).toContain(".app-frame.auth-frame > .auth-top-bar");

@@ -641,11 +641,8 @@ assigned manifests is Phase 1c/2 work.
 
 ### 11.6 Known gaps carried forward
 
-- **There is no staff-invitation flow.** Memberships other than the business creator's owner
-  role can only be created in tests (`hydrateSnapshot`). Until a membership-management API
-  exists, only owners can use fulfillment in production. Field salespeople, dispatchers and
-  drivers need this before Phase 1c's field-sales flow is usable. It is a separate, auth-
-  sensitive change.
+- **There was no staff-invitation flow** here. Resolved: owners and managers now invite staff
+  with a role and the invitee accepts (docs/architecture/staff-invitations.md).
 - **Owner seed configuration (D9)** was pending here. It is superseded by owner self-serve setup
   (§15.1): each owner enters their own timezone and dispatch rules; nothing is seeded.
 - **No UI yet.** Phase 1a is API-only. The field-sales and operations UI is Phase 1c scope.
@@ -809,8 +806,7 @@ A `sales_agent` can see the pools summary but not the order list or manifests' w
 
 ### 13.6 Known gaps carried forward
 
-- **Staff invitation (§11.6)** still does not exist. Non-owner roles (sales agent, dispatcher,
-  driver) are exercised in tests but cannot yet be granted in production.
+- **Staff invitation (§11.6)** is now implemented (docs/architecture/staff-invitations.md).
 - **Owner seed configuration (D9)** is superseded by self-serve setup (§15.1): no business id is
   seeded or hard-coded; each owner enters their own settings.
 - Named driver assignment and assignment-scoped driver access are not yet exposed. Phase 2 added
@@ -1045,7 +1041,8 @@ HTTP route and the MCP tool.
 
 ### 15.4 Remaining gaps
 
-- **Staff invitation** still does not exist (§11.6). Owners can set up and run fulfillment
-  themselves; sales agents, dispatchers and drivers still cannot be granted roles in production.
+- **Staff invitation** is implemented (docs/architecture/staff-invitations.md): sales agents,
+  dispatchers (managers) and drivers can now be granted roles in production. Assigning a manifest
+  to a specific driver is still not modelled.
 - **The timezone update over MCP is `absolute`, not `replay`.** Making it replayable needs either
   the timezone in Postgres or an idempotency record in the Cp2Store.

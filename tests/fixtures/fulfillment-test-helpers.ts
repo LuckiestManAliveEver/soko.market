@@ -43,7 +43,10 @@ export async function createOwner(app: TestApp, name = "Corridor Wholesale"): Pr
   return { businessId: business.body.business.id, userId, cookie };
 }
 
-/** Adds `userId` to `businessId` with `role` (there is no staff-invitation API yet). */
+/**
+ * Adds `userId` to `businessId` with `role` directly, as test setup. Production grants roles
+ * through staff invitations (docs/architecture/staff-invitations.md); tests of that flow use the API.
+ */
 export function addMember(
   store: Cp2Store,
   businessId: string,
