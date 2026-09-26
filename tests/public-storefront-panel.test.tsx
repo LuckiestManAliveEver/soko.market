@@ -16,6 +16,7 @@ describe("PublicStorefrontPanel", () => {
     (
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = true;
+    Object.defineProperty(navigator, "share", { configurable: true, value: undefined });
     host = document.createElement("div");
     document.body.append(host);
   });
@@ -76,5 +77,71 @@ describe("PublicStorefrontPanel", () => {
     });
 
     expect(copyStorefrontValue).toHaveBeenCalledWith("mama-mboga@soko.market", "Public ID");
+  });
+
+  it("opens the native share sheet with the canonical storefront link", async () => {
+    const share = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "share", { configurable: true, value: share });
+
+    act(() => {
+      root = createRoot(host);
+      root.render(
+        <PublicStorefrontPanel
+          business={{ sokoId: "soko.mama-mboga" }}
+          storefrontUrl="https://soko.market/public/storefronts/soko.mama-mboga"
+          ownerLabel="Mama Mboga"
+          draftAgent={draftAgent}
+          isEditing={false}
+          updateAgent={() => {}}
+          copyStorefrontValue={() => Promise.resolve()}
+        />
+      );
+    });
+
+    const shareButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent === "Share shop"
+    );
+    await act(async () => {
+      shareButton!.click();
+      await Promise.resolve();
+    });
+
+    expect(share).toHaveBeenCalledWith({
+      title: "Mama Mboga's shop on Soko.market",
+      text: "Browse and message Mama Mboga's shop on Soko.market.",
+      url: "https://soko.market/public/storefronts/soko.mama-mboga"
+    });
+  });
+
+  it("copies the storefront link when native sharing is unavailable", async () => {
+    const copyStorefrontValue = vi.fn().mockResolvedValue(undefined);
+
+    act(() => {
+      root = createRoot(host);
+      root.render(
+        <PublicStorefrontPanel
+          business={{ sokoId: "soko.mama-mboga" }}
+          storefrontUrl="https://soko.market/public/storefronts/soko.mama-mboga"
+          ownerLabel="Mama Mboga"
+          draftAgent={draftAgent}
+          isEditing={false}
+          updateAgent={() => {}}
+          copyStorefrontValue={copyStorefrontValue}
+        />
+      );
+    });
+
+    const shareButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent === "Share shop"
+    );
+    await act(async () => {
+      shareButton!.click();
+      await Promise.resolve();
+    });
+
+    expect(copyStorefrontValue).toHaveBeenCalledWith(
+      "https://soko.market/public/storefronts/soko.mama-mboga",
+      "Storefront URL"
+    );
   });
 });

@@ -22,6 +22,27 @@ export function PublicStorefrontPanel({
 }: PublicStorefrontPanelProps) {
   const publicId = commerceAddressFromSokoId(business.sokoId);
 
+  async function shareStorefront() {
+    const shareData = {
+      title: `${ownerLabel}'s shop on Soko.market`,
+      text: `Browse and message ${ownerLabel}'s shop on Soko.market.`,
+      url: storefrontUrl
+    };
+
+    if (navigator.share === undefined) {
+      await copyStorefrontValue(storefrontUrl, "Storefront URL");
+      return;
+    }
+
+    try {
+      await navigator.share(shareData);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        await copyStorefrontValue(storefrontUrl, "Storefront URL");
+      }
+    }
+  }
+
   return (
     <div className="record-form">
       <div className="section-heading">
@@ -33,6 +54,9 @@ export function PublicStorefrontPanel({
         <strong>{publicId}</strong>
         <p>Print this on packaging, receipts, QR codes, and storefront material.</p>
         <div className="storefront-share-actions">
+          <button type="button" onClick={() => void shareStorefront()}>
+            Share shop
+          </button>
           <button type="button" onClick={() => void copyStorefrontValue(publicId, "Public ID")}>
             Copy ID
           </button>
