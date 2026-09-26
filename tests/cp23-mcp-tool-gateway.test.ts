@@ -18,6 +18,266 @@ interface McpTokenResponse {
 }
 
 describe("CP23 MCP tool gateway", () => {
+  it("supports authenticated E2EE communication between external agents and model runtimes", async () => {
+    const app = buildApi();
+    const senderCookie = await createSession(app, "254700000241");
+    const recipientCookie = await createSession(app, "254700000242");
+    await postJson(
+      app,
+      "/v1/e2ee/devices",
+      {
+        deviceId: "recipient-model-endpoint",
+        label: "Recipient model runtime",
+        publicKey: secureFixturePublicKey
+      },
+      recipientCookie
+    );
+    const token = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      { name: "Sender agent runtime", scopes: ["mcp:read", "mcp:act"], shopId: null },
+      senderCookie,
+      { origin: "http://localhost:5173" }
+    );
+    const initialized = await mcpPost(app, token.accessToken, initializeRequest());
+    const sessionId = String(initialized.headers["mcp-session-id"]);
+
+    const endpoint = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(2, "soko.register_secure_endpoint", {
+        endpointId: "sender-agent-endpoint",
+        label: "Sender agent runtime",
+        publicKey: secureFixturePublicKey
+      }),
+      sessionId
+    );
+    expect(endpoint.json().result).toMatchObject({
+      isError: false,
+      structuredContent: { id: "sender-agent-endpoint", accountId: token.token.accountId }
+    });
+
+    const created = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(3, "soko.create_secure_channel", {
+        recipient: "+254700000242",
+        title: "Agent and model coordination"
+      }),
+      sessionId
+    );
+    const conversationId = created.json().result.structuredContent.conversation.id;
+    const channel = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(4, "soko.get_secure_channel", { conversationId }),
+      sessionId
+    );
+    expect(channel.json().result.structuredContent.devices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "sender-agent-endpoint" }),
+        expect.objectContaining({ id: "recipient-model-endpoint" })
+      ])
+    );
+
+    const secureMessage = encryptedMcpFixture([
+      "sender-agent-endpoint",
+      "recipient-model-endpoint"
+    ]);
+    const sent = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(5, "soko.send_secure_message", {
+        conversationId,
+        idempotencyKey: "secure-agent-model-message-1",
+        content: secureMessage
+      }),
+      sessionId
+    );
+    expect(sent.json().result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        conversationId,
+        author: "agent",
+        content: { type: "encrypted", ciphertext: secureMessage.ciphertext }
+      }
+    });
+
+    const replayed = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(6, "soko.send_secure_message", {
+        conversationId,
+        idempotencyKey: "secure-agent-model-message-1",
+        content: secureMessage
+      }),
+      sessionId
+    );
+    expect(replayed.json().result.structuredContent.id).toBe(
+      sent.json().result.structuredContent.id
+    );
+
+    // The E2EE carve-out in the messaging guard must not reopen plaintext agent posts into DMs.
+    const plaintext = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(7, "soko.send_message", {
+        conversationId,
+        text: "Agent and model plaintext leak",
+        idempotencyKey: "plaintext-agent-model-message-1"
+      }),
+      sessionId
+    );
+    expect(plaintext.json().result).toMatchObject({
+      isError: true,
+      structuredContent: { code: "e2ee_required" }
+    });
+    const plaintextDisguised = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(8, "soko.send_secure_message", {
+        conversationId,
+        idempotencyKey: "plaintext-agent-model-message-2",
+        content: { type: "text", text: "Agent and model plaintext leak" }
+      }),
+      sessionId
+    );
+    expect(plaintextDisguised.json().result).toMatchObject({
+      isError: true,
+      structuredContent: { code: "mcp_input_invalid" }
+    });
+
+    const recipientView = await app.inject({
+      method: "GET",
+      url: `/v1/conversations/${conversationId}`,
+      headers: { cookie: recipientCookie }
+    });
+    expect(recipientView.statusCode).toBe(200);
+    expect(recipientView.body).not.toContain("Agent and model secret");
+    expect(recipientView.body).not.toContain("plaintext leak");
+    const agentMessages = recipientView
+      .json()
+      .messages.filter((message: { author: string }) => message.author === "agent");
+    expect(agentMessages).toHaveLength(1);
+    expect(agentMessages[0].content).toMatchObject({ type: "encrypted" });
+    await app.close();
+  });
+
+  it("rejects secure agent messages whose envelopes do not exactly match the live endpoint set", async () => {
+    const app = buildApi();
+    const senderCookie = await createSession(app, "254700000243");
+    const recipientCookie = await createSession(app, "254700000244");
+    const token = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      { name: "Sender agent runtime", scopes: ["mcp:read", "mcp:act"], shopId: null },
+      senderCookie,
+      { origin: "http://localhost:5173" }
+    );
+    const initialized = await mcpPost(app, token.accessToken, initializeRequest());
+    const sessionId = String(initialized.headers["mcp-session-id"]);
+    let requestId = 2;
+    const call = (name: string, args: Record<string, unknown>) =>
+      mcpPost(app, token.accessToken, toolCall(requestId++, name, args), sessionId);
+    const send = async (idempotencyKey: string, deviceIds: string[]) =>
+      (
+        await call("soko.send_secure_message", {
+          conversationId,
+          idempotencyKey,
+          content: encryptedMcpFixture(deviceIds)
+        })
+      ).json().result;
+    const rejected = (code: string) => ({ isError: true, structuredContent: { code } });
+
+    await call("soko.register_secure_endpoint", {
+      endpointId: "sender-agent-endpoint",
+      label: "Sender agent runtime",
+      publicKey: secureFixturePublicKey
+    });
+    const created = await call("soko.create_secure_channel", { recipient: "+254700000244" });
+    const conversationId: string = created.json().result.structuredContent.conversation.id;
+
+    // Recipient has no endpoint yet: nothing can be encrypted for them.
+    expect(await send("envelope-no-recipient", ["sender-agent-endpoint"])).toMatchObject(
+      rejected("e2ee_recipient_unavailable")
+    );
+
+    await postJson(
+      app,
+      "/v1/e2ee/devices",
+      {
+        deviceId: "recipient-model-endpoint",
+        label: "Recipient model",
+        publicKey: secureFixturePublicKey
+      },
+      recipientCookie
+    );
+    const live = ["sender-agent-endpoint", "recipient-model-endpoint"];
+
+    // Missing recipient, unknown extra recipient, duplicated recipient.
+    expect(await send("envelope-missing", ["sender-agent-endpoint"])).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    expect(await send("envelope-extra", [...live, "attacker-endpoint"])).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    // Same-size key substitution: an attacker endpoint in place of the real recipient.
+    expect(
+      await send("envelope-swapped", ["sender-agent-endpoint", "attacker-endpoint"])
+    ).toMatchObject(rejected("e2ee_device_set_changed"));
+    expect(await send("envelope-duplicate", [...live, "recipient-model-endpoint"])).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    expect(await send("envelope-exact-1", live)).toMatchObject({ isError: false });
+
+    // Recipient adds a second endpoint: the stale set is refused until the agent refreshes.
+    await postJson(
+      app,
+      "/v1/e2ee/devices",
+      {
+        deviceId: "recipient-model-endpoint-2",
+        label: "Recipient model 2",
+        publicKey: secureFixturePublicKey
+      },
+      recipientCookie
+    );
+    expect(await send("envelope-stale-add", live)).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    const refreshed = await call("soko.get_secure_channel", { conversationId });
+    const refreshedIds = refreshed
+      .json()
+      .result.structuredContent.devices.map((device: { id: string }) => device.id)
+      .sort();
+    expect(refreshedIds).toEqual([...live, "recipient-model-endpoint-2"].sort());
+    expect(await send("envelope-exact-2", refreshedIds)).toMatchObject({ isError: false });
+
+    // Recipient revokes that endpoint: encrypting for it again is refused.
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: "/v1/e2ee/devices/recipient-model-endpoint-2",
+      headers: { cookie: recipientCookie }
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect(await send("envelope-stale-revoke", refreshedIds)).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    expect(await send("envelope-exact-3", live)).toMatchObject({ isError: false });
+
+    const recipientView = await app.inject({
+      method: "GET",
+      url: `/v1/conversations/${conversationId}`,
+      headers: { cookie: recipientCookie }
+    });
+    const agentMessages = recipientView
+      .json()
+      .messages.filter((message: { author: string }) => message.author === "agent");
+    expect(
+      agentMessages.map((message: { clientMessageId: string }) => message.clientMessageId)
+    ).toEqual(["envelope-exact-1", "envelope-exact-2", "envelope-exact-3"]);
+    await app.close();
+  });
+
   it("exposes tenant-scoped fulfillment load and dispatch evaluation with decimal gram values", async () => {
     const getCorridorPool = vi.fn(async () => ({
       corridorId: "11111111-1111-4111-8111-111111111111",
@@ -582,10 +842,14 @@ describe("CP23 MCP tool gateway", () => {
       "soko.query_catalogue",
       "soko.get_inbox",
       "soko.search_marketplace",
+      "soko.get_secure_channel",
       "soko.runtime_status",
       "soko.runtime_turn",
       "soko.confirm_runtime_action",
       "soko.send_message",
+      "soko.register_secure_endpoint",
+      "soko.create_secure_channel",
+      "soko.send_secure_message",
       "soko.prepare_checkout",
       "soko.confirm_checkout",
       "soko.runtime_checkpoint",
@@ -717,6 +981,7 @@ describe("CP23 MCP tool gateway", () => {
       "soko.query_catalogue",
       "soko.get_inbox",
       "soko.search_marketplace",
+      "soko.get_secure_channel",
       "soko.runtime_status"
     ]);
     const readOnlyAction = await mcpPost(
@@ -793,10 +1058,14 @@ describe("CP23 MCP tool gateway", () => {
       "soko.query_catalogue",
       "soko.get_inbox",
       "soko.search_marketplace",
+      "soko.get_secure_channel",
       "soko.runtime_status",
       "soko.runtime_turn",
       "soko.confirm_runtime_action",
       "soko.send_message",
+      "soko.register_secure_endpoint",
+      "soko.create_secure_channel",
+      "soko.send_secure_message",
       "soko.prepare_checkout",
       "soko.confirm_checkout",
       "soko.runtime_checkpoint",
@@ -1127,6 +1396,32 @@ function initializeRequest() {
 
 function toolCall(id: number, name: string, args: Record<string, unknown>) {
   return { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } };
+}
+
+const secureFixturePublicKey = {
+  kty: "EC" as const,
+  crv: "P-256" as const,
+  x: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  y: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+  ext: true
+};
+
+function encryptedMcpFixture(recipientDeviceIds: string[]) {
+  return {
+    type: "encrypted",
+    attachmentCount: 0,
+    iv: "AAAAAAAAAAAAAAAA",
+    ciphertext: "QWdlbnRhbmRtb2RlbHNlY3JldA",
+    envelopes: recipientDeviceIds.map((recipientDeviceId) => ({
+      version: 1,
+      algorithm: "ECDH-P256-HKDF-SHA256-AES-256-GCM",
+      recipientDeviceId,
+      ephemeralPublicKey: secureFixturePublicKey,
+      salt: "AAAAAAAAAAAAAAAAAAAAAA",
+      iv: "AAAAAAAAAAAAAAAA",
+      ciphertext: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+    }))
+  };
 }
 
 async function mcpPost(

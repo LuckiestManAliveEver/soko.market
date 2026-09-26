@@ -3015,6 +3015,7 @@ export class MessagingDomain {
     const author = input.author ?? "user";
     if (
       author === "agent" &&
+      input.content.type !== "encrypted" &&
       [...this.conversationParticipants.values()].some(
         (participant) =>
           participant.conversationId === conversation.id &&
@@ -3025,7 +3026,7 @@ export class MessagingDomain {
       throw new Cp2Error(
         403,
         "agent_message_forbidden",
-        "Agent messages cannot impersonate a direct-message participant."
+        "Agent messages in direct conversations must be end-to-end encrypted."
       );
     }
     const message: ConversationMessageSummary = {
