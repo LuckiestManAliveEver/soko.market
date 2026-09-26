@@ -163,6 +163,121 @@ describe("CP23 MCP tool gateway", () => {
     await app.close();
   });
 
+  it("rejects secure agent messages whose envelopes do not exactly match the live endpoint set", async () => {
+    const app = buildApi();
+    const senderCookie = await createSession(app, "254700000243");
+    const recipientCookie = await createSession(app, "254700000244");
+    const token = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      { name: "Sender agent runtime", scopes: ["mcp:read", "mcp:act"], shopId: null },
+      senderCookie,
+      { origin: "http://localhost:5173" }
+    );
+    const initialized = await mcpPost(app, token.accessToken, initializeRequest());
+    const sessionId = String(initialized.headers["mcp-session-id"]);
+    let requestId = 2;
+    const call = (name: string, args: Record<string, unknown>) =>
+      mcpPost(app, token.accessToken, toolCall(requestId++, name, args), sessionId);
+    const send = async (idempotencyKey: string, deviceIds: string[]) =>
+      (
+        await call("soko.send_secure_message", {
+          conversationId,
+          idempotencyKey,
+          content: encryptedMcpFixture(deviceIds)
+        })
+      ).json().result;
+    const rejected = (code: string) => ({ isError: true, structuredContent: { code } });
+
+    await call("soko.register_secure_endpoint", {
+      endpointId: "sender-agent-endpoint",
+      label: "Sender agent runtime",
+      publicKey: secureFixturePublicKey
+    });
+    const created = await call("soko.create_secure_channel", { recipient: "+254700000244" });
+    const conversationId: string = created.json().result.structuredContent.conversation.id;
+
+    // Recipient has no endpoint yet: nothing can be encrypted for them.
+    expect(await send("envelope-no-recipient", ["sender-agent-endpoint"])).toMatchObject(
+      rejected("e2ee_recipient_unavailable")
+    );
+
+    await postJson(
+      app,
+      "/v1/e2ee/devices",
+      {
+        deviceId: "recipient-model-endpoint",
+        label: "Recipient model",
+        publicKey: secureFixturePublicKey
+      },
+      recipientCookie
+    );
+    const live = ["sender-agent-endpoint", "recipient-model-endpoint"];
+
+    // Missing recipient, unknown extra recipient, duplicated recipient.
+    expect(await send("envelope-missing", ["sender-agent-endpoint"])).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    expect(await send("envelope-extra", [...live, "attacker-endpoint"])).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    // Same-size key substitution: an attacker endpoint in place of the real recipient.
+    expect(
+      await send("envelope-swapped", ["sender-agent-endpoint", "attacker-endpoint"])
+    ).toMatchObject(rejected("e2ee_device_set_changed"));
+    expect(await send("envelope-duplicate", [...live, "recipient-model-endpoint"])).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    expect(await send("envelope-exact-1", live)).toMatchObject({ isError: false });
+
+    // Recipient adds a second endpoint: the stale set is refused until the agent refreshes.
+    await postJson(
+      app,
+      "/v1/e2ee/devices",
+      {
+        deviceId: "recipient-model-endpoint-2",
+        label: "Recipient model 2",
+        publicKey: secureFixturePublicKey
+      },
+      recipientCookie
+    );
+    expect(await send("envelope-stale-add", live)).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    const refreshed = await call("soko.get_secure_channel", { conversationId });
+    const refreshedIds = refreshed
+      .json()
+      .result.structuredContent.devices.map((device: { id: string }) => device.id)
+      .sort();
+    expect(refreshedIds).toEqual([...live, "recipient-model-endpoint-2"].sort());
+    expect(await send("envelope-exact-2", refreshedIds)).toMatchObject({ isError: false });
+
+    // Recipient revokes that endpoint: encrypting for it again is refused.
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: "/v1/e2ee/devices/recipient-model-endpoint-2",
+      headers: { cookie: recipientCookie }
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect(await send("envelope-stale-revoke", refreshedIds)).toMatchObject(
+      rejected("e2ee_device_set_changed")
+    );
+    expect(await send("envelope-exact-3", live)).toMatchObject({ isError: false });
+
+    const recipientView = await app.inject({
+      method: "GET",
+      url: `/v1/conversations/${conversationId}`,
+      headers: { cookie: recipientCookie }
+    });
+    const agentMessages = recipientView
+      .json()
+      .messages.filter((message: { author: string }) => message.author === "agent");
+    expect(
+      agentMessages.map((message: { clientMessageId: string }) => message.clientMessageId)
+    ).toEqual(["envelope-exact-1", "envelope-exact-2", "envelope-exact-3"]);
+    await app.close();
+  });
+
   it("exposes tenant-scoped fulfillment load and dispatch evaluation with decimal gram values", async () => {
     const getCorridorPool = vi.fn(async () => ({
       corridorId: "11111111-1111-4111-8111-111111111111",

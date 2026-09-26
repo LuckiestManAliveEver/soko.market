@@ -386,7 +386,7 @@ function mcpToolsForPrincipal(principal: McpPrincipal, fulfillmentAvailable: boo
       {
         name: "soko.send_secure_message",
         description:
-          "Send a replay-safe E2EE message from the authenticated agent or model runtime. Encrypt locally for every endpoint returned by soko.get_secure_channel.",
+          "Send a replay-safe E2EE message from the authenticated agent or model runtime. Encrypt locally for exactly the endpoints returned by soko.get_secure_channel, one envelope each. On e2ee_device_set_changed, refresh the channel and re-encrypt; on e2ee_recipient_unavailable, a participant has no endpoint yet.",
         securitySchemes: mcpSecuritySchemes(["mcp:act"]),
         inputSchema: {
           type: "object",
