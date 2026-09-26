@@ -2382,6 +2382,11 @@ button:disabled {
   display: none;
 }
 
+/* Links that act as buttons (SMS / WhatsApp / email delivery of a staff invitation). */
+a.button-like {
+  text-decoration: none;
+}
+
 @media (min-width: 720px) {
   .supplier-card-header {
     grid-template-columns: minmax(0, 1.3fr) minmax(180px, 0.7fr);

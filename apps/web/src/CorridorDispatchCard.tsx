@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   formatKilogramsForDisplay,
   type ActivePoolsSummary,
+  type AssignableDriverSummary,
   type CorridorPoolSummary,
   type CreateManifestResultSummary,
   type ManifestStopSummary,
@@ -12,6 +13,7 @@ import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { getJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
+import { ApiRequestError } from "./lib/api";
 import { formatMoney } from "./formatters";
 import { fulfillmentCopy, formatDurationSeconds } from "./fulfillment-copy";
 
@@ -35,27 +37,47 @@ export default function CorridorDispatchCard(props: { businessId: string }) {
   const [vehicleByCorridor, setVehicleByCorridor] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
+  const [drivers, setDrivers] = useState<AssignableDriverSummary[]>([]);
+  // Only dispatchers can load the assignable drivers; anyone else sees who is assigned, read-only.
+  const [canAssign, setCanAssign] = useState(false);
+  const [driversFailed, setDriversFailed] = useState(false);
+  const [reload, setReload] = useState(0);
+  // Roles that cannot see delivery pools (drivers, cashiers) get a 403: show nothing, not an error.
+  const [forbidden, setForbidden] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
       getJson<ActivePoolsSummary>(`${fulfillmentPath}/pools`),
       getJson<VehicleSummary[]>(`${fulfillmentPath}/vehicles`).catch(() => []),
-      getJson<ManifestSummary[]>(`${fulfillmentPath}/manifests`).catch(() => [])
+      getJson<ManifestSummary[]>(`${fulfillmentPath}/manifests`).catch(() => []),
+      getJson<AssignableDriverSummary[]>(`${fulfillmentPath}/drivers`)
+        .then((list) => ({ ok: true as const, forbidden: false, list }))
+        .catch((error: unknown) => ({
+          ok: false as const,
+          // A 403 means this viewer cannot dispatch; anything else is a failure worth saying.
+          forbidden: error instanceof ApiRequestError && error.status === 403,
+          list: [] as AssignableDriverSummary[]
+        }))
     ])
-      .then(([loadedPools, loadedVehicles, loadedManifests]) => {
+      .then(([loadedPools, loadedVehicles, loadedManifests, loadedDrivers]) => {
         if (cancelled) return;
         setPools(loadedPools);
+        setDrivers(loadedDrivers.list);
+        setCanAssign(loadedDrivers.ok);
+        setDriversFailed(!loadedDrivers.ok && !loadedDrivers.forbidden);
         setVehicles(loadedVehicles.filter((vehicle) => vehicle.active));
         setManifests(loadedManifests);
       })
       .catch((error) => {
-        if (!cancelled) setMessage(getUserFacingErrorMessage(error));
+        if (cancelled) return;
+        if (error instanceof ApiRequestError && error.status === 403) setForbidden(true);
+        else setMessage(getUserFacingErrorMessage(error));
       });
     return () => {
       cancelled = true;
     };
-  }, [fulfillmentPath, mutationRevision]);
+  }, [fulfillmentPath, mutationRevision, reload]);
 
   function replaceManifest(updated: ManifestSummary) {
     setManifests((current) => {
@@ -93,6 +115,14 @@ export default function CorridorDispatchCard(props: { businessId: string }) {
   async function departManifest(manifest: ManifestSummary) {
     replaceManifest(
       await postJson<ManifestSummary>(`${fulfillmentPath}/manifests/${manifest.id}/depart`, {})
+    );
+  }
+
+  async function assignDriver(manifest: ManifestSummary, driverUserId: string | null) {
+    replaceManifest(
+      await postJson<ManifestSummary>(`${fulfillmentPath}/manifests/${manifest.id}/driver`, {
+        driverUserId
+      })
     );
   }
 
@@ -152,6 +182,8 @@ export default function CorridorDispatchCard(props: { businessId: string }) {
     pools?.pools.find((pool) => pool.corridorId === corridorId)?.corridorName ?? corridorId;
   const unassigned = pools?.unassigned;
 
+  if (forbidden) return null;
+
   return (
     <section className="record-form corridor-dispatch-card" aria-label={t.dispatch}>
       <div className="section-heading">
@@ -159,6 +191,16 @@ export default function CorridorDispatchCard(props: { businessId: string }) {
         <h3>{t.poolsHeading}</h3>
       </div>
       {message.length > 0 ? <p className="shell-note">{message}</p> : null}
+      {driversFailed ? (
+        <div className="row-actions">
+          <p className="shell-note" role="alert">
+            {t.driversUnavailable}
+          </p>
+          <button className="secondary" type="button" onClick={() => setReload((n) => n + 1)}>
+            {t.retry}
+          </button>
+        </div>
+      ) : null}
       {pools === null ? (
         message.length > 0 ? null : (
           <p>{t.loading}</p>
@@ -270,6 +312,39 @@ export default function CorridorDispatchCard(props: { businessId: string }) {
               {t.loadOf(kg(manifest.totalWeightGrams), kg(manifest.vehicleCapacityGrams))} ·{" "}
               {t.orders(activeStops.length)}
             </span>
+            {!canAssign || manifest.status === "COMPLETED" || manifest.status === "CANCELLED" ? (
+              <small>
+                {t.driver}:{" "}
+                {manifest.driverName ??
+                  (manifest.driverUserId === null ? t.noDriver : t.driverLeft)}
+              </small>
+            ) : (
+              <label>
+                {t.assignDriver}
+                <select
+                  value={manifest.driverUserId ?? ""}
+                  disabled={isPending(`manifest-driver-${manifest.id}`)}
+                  onChange={(event) =>
+                    act(`manifest-driver-${manifest.id}`, () =>
+                      assignDriver(manifest, event.target.value === "" ? null : event.target.value)
+                    )
+                  }
+                >
+                  <option value="">{t.noDriver}</option>
+                  {manifest.driverUserId !== null &&
+                  !drivers.some((driver) => driver.userId === manifest.driverUserId) ? (
+                    <option value={manifest.driverUserId}>
+                      {manifest.driverName ?? t.driverLeft}
+                    </option>
+                  ) : null}
+                  {drivers.map((driver) => (
+                    <option key={driver.userId} value={driver.userId}>
+                      {driver.displayName || driver.userId}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <ol className="manifest-stops">
               {manifest.stops.map((stop) => (
                 <li key={stop.id}>

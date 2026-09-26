@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import { getErrorMessage } from "../chat-message-plumbing";
 import { getJson, patchJson, postJson } from "../api-helpers";
@@ -41,7 +42,7 @@ export function useImportsState(deps: UseImportsStateDeps) {
         setSelectedImportJobId(jobs[0].id);
       }
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

@@ -248,6 +248,8 @@ if (shouldUsePostgresStore) {
   // §5.3). The reconciler runner below catches any intake this misses.
   const intakeService = fulfillmentService;
   cp2Store.setFulfillmentIntakeListener((input) => intakeService.intakeOrder(input));
+  // A member who leaves or loses the delivery role is released from their open trips (§16).
+  cp2Store.setMembershipChangedListener((input) => intakeService.releaseDriverAssignments(input));
 }
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,

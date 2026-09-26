@@ -34,12 +34,36 @@ const en = {
   phone: "Their phone number",
   roleLabel: "Role",
   send: "Create invitation",
-  invited: (name: string, phone: string) =>
-    `Invitation ready. Ask ${name} to sign in to Soko with ${phone} and accept it.`,
-  shareText: (business: string, role: string) =>
-    `You're invited to join ${business} on Soko as ${role}. Sign in to Soko with this phone number to accept.`,
+  invited: (name: string, destination: string, channel: "phone" | "email") =>
+    channel === "phone"
+      ? `Invitation ready. Send it to ${name} (${destination}) by SMS or WhatsApp below.`
+      : `Invitation ready. Send it to ${name} (${destination}) by email below.`,
+  shareText: (
+    business: string,
+    role: string,
+    link: string,
+    channel: "phone" | "email" = "phone"
+  ) =>
+    channel === "phone"
+      ? `You're invited to join ${business} on Soko as ${role}. Open this link and sign in with this phone number to accept: ${link}`
+      : `You're invited to join ${business} on Soko as ${role}. Open this link and sign in with this email address to accept: ${link}`,
+  shareTextWithoutLink: (business: string, role: string) =>
+    `You're invited to join ${business} on Soko as ${role}. Sign in to Soko with the number or email this was sent to and accept the invitation.`,
+  emailSubject: (business: string) => `Join ${business} on Soko`,
   share: "Share",
+  sendSms: "Send SMS",
+  sendWhatsApp: "WhatsApp",
+  sendEmail: "Email",
+  copyLink: "Copy link",
   copied: "Copied",
+  confirmedByLink: "confirmed by link",
+  joinBanner:
+    "You have been invited to join a shop on Soko. Sign up or log in with the phone number the invitation was sent to.",
+  joinBannerSignUp: "Sign up",
+  joinBannerLogIn: "Log in",
+  joinLinkNotForYou:
+    "This invitation link can't be used here: it was sent to a different number, or it was already answered, cancelled or has expired. Sign in with the number it was sent to, or ask for a new invitation.",
+  dismiss: "Dismiss",
   expires: (date: string) => `expires ${date}`,
   revoke: "Revoke",
   remove: "Remove",
@@ -99,12 +123,36 @@ const sw: StaffCopy = {
   phone: "Namba yake ya simu",
   roleLabel: "Jukumu",
   send: "Tengeneza mwaliko",
-  invited: (name: string, phone: string) =>
-    `Mwaliko uko tayari. Mwambie ${name} aingie Soko kwa ${phone} na aukubali.`,
-  shareText: (business: string, role: string) =>
-    `Umealikwa kujiunga na ${business} kwenye Soko kama ${role}. Ingia Soko kwa namba hii ya simu ili kukubali.`,
+  invited: (name: string, destination: string, channel: "phone" | "email") =>
+    channel === "phone"
+      ? `Mwaliko uko tayari. Mtumie ${name} (${destination}) kwa SMS au WhatsApp hapa chini.`
+      : `Mwaliko uko tayari. Mtumie ${name} (${destination}) kwa barua pepe hapa chini.`,
+  shareText: (
+    business: string,
+    role: string,
+    link: string,
+    channel: "phone" | "email" = "phone"
+  ) =>
+    channel === "phone"
+      ? `Umealikwa kujiunga na ${business} kwenye Soko kama ${role}. Fungua kiungo hiki na uingie kwa namba hii ya simu ili kukubali: ${link}`
+      : `Umealikwa kujiunga na ${business} kwenye Soko kama ${role}. Fungua kiungo hiki na uingie kwa barua pepe hii ili kukubali: ${link}`,
+  shareTextWithoutLink: (business: string, role: string) =>
+    `Umealikwa kujiunga na ${business} kwenye Soko kama ${role}. Ingia Soko kwa namba au barua pepe ambayo ujumbe huu ulitumwa na ukubali mwaliko.`,
+  emailSubject: (business: string) => `Jiunge na ${business} kwenye Soko`,
   share: "Shiriki",
+  sendSms: "Tuma SMS",
+  sendWhatsApp: "WhatsApp",
+  sendEmail: "Barua pepe",
+  copyLink: "Nakili kiungo",
   copied: "Imenakiliwa",
+  confirmedByLink: "amethibitisha kwa kiungo",
+  joinBanner:
+    "Umealikwa kujiunga na duka kwenye Soko. Jisajili au ingia kwa namba ya simu ambayo mwaliko ulitumwa.",
+  joinBannerSignUp: "Jisajili",
+  joinBannerLogIn: "Ingia",
+  joinLinkNotForYou:
+    "Kiungo hiki cha mwaliko hakiwezi kutumika hapa: kilitumwa kwa namba nyingine, au tayari kilijibiwa, kufutwa au muda wake umeisha. Ingia kwa namba kilichotumwa, au omba mwaliko mpya.",
+  dismiss: "Funga",
   expires: (date: string) => `unaisha ${date}`,
   revoke: "Futa mwaliko",
   remove: "Ondoa",

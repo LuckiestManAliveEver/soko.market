@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import type {
   ProductFieldDefinition,
@@ -84,7 +85,7 @@ export function useProductsState(deps: UseProductsStateDeps) {
         setStockQuantityAfter(String(response[0].quantity));
       }
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 
@@ -96,7 +97,7 @@ export function useProductsState(deps: UseProductsStateDeps) {
       );
       setProductFields(schema.fields);
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

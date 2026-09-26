@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import type { SyncMutationPayload, SyncMutationType } from "@soko/shared-types";
 
@@ -55,7 +56,7 @@ export function useInvoicesState(deps: UseInvoicesStateDeps) {
         await getJson<InvoiceSummary[]>(`/businesses/${businessId}/invoices`, setInvoices)
       );
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

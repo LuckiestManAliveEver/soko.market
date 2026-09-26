@@ -226,6 +226,12 @@ type ChatThreadState = Pick<
 
 export interface OwnerWorkspaceBindings {
   businessId: string | null;
+  /**
+   * The viewer's permissions in the open business (display only: which cards to show; the server
+   * authorizes everything). Empty when unknown, including while the session context still
+   * describes another shop or marketplace mode (see active-shop-permissions.ts).
+   */
+  businessPermissions: readonly string[];
   view: ShellView;
   publicStorefrontUrl: string;
   asyncActions: AsyncState;
@@ -685,6 +691,7 @@ export function renderOwnerWorkspace(input: OwnerWorkspaceBindings) {
       return (
         <LogisticsSurface
           businessId={businessId}
+          viewerPermissions={input.businessPermissions}
           invoices={invoices}
           logistics={logistics}
           form={logisticsForm}

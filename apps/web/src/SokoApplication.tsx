@@ -140,6 +140,7 @@ import {
 export { PublicStorefrontChat } from "./PublicStorefrontChat";
 
 import ShellNotices from "./ShellNotices";
+import { permissionsForOpenShop } from "./active-shop-permissions";
 const AgentProfileSurface = lazy(() =>
   loadLazyModuleWithRecovery(
     agentProfileModuleKeys.surface,
@@ -1393,6 +1394,7 @@ export function OwnerApp() {
 
   const ownerWorkspaceBindings: OwnerWorkspaceBindings = {
     businessId: business?.id ?? null,
+    businessPermissions: permissionsForOpenShop(sokoSessionContext, business?.id ?? null),
     view,
     publicStorefrontUrl,
     asyncActions: { runAction },
@@ -1810,6 +1812,7 @@ export function OwnerApp() {
             statusMessage={isAuthScreen ? "" : statusMessage}
             working={hasPending}
             accountId={isAuthScreen || authBootstrapPending ? null : (session?.account.id ?? null)}
+            signedOut={!isAuthScreen && !authBootstrapPending && session === null}
             onJoinedShop={(shop) => joinStaffShop(shop, setActiveConversationId)}
           />
           {authBootstrapPending ? (

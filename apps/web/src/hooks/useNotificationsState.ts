@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import { getErrorMessage } from "../chat-message-plumbing";
 import { getJson, patchJson } from "../api-helpers";
@@ -37,7 +38,7 @@ export function useNotificationsState(deps: UseNotificationsStateDeps) {
         )
       );
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

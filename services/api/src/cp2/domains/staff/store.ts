@@ -17,7 +17,7 @@
  * This domain owns the `staffInvitations` collection. Memberships stay in the core store (they are
  * the auth kernel's), injected here as the live Map, like the other domain slices do.
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   canManageMemberRole,
   isBusinessRole,
@@ -70,6 +70,15 @@ export interface StaffDomainDeps {
   accounts: Map<string, AccountSummary>;
   quarantinedBusinessIds: Set<string>;
   accountIdentities: () => Iterable<StaffIdentity>;
+  /**
+   * A member's role changed, they left, or they just joined: fulfillment releases trips they can
+   * no longer drive (or, on joining, stale trips from an earlier membership).
+   */
+  onMembershipChanged?: (
+    businessId: string,
+    userId: string,
+    change: { previousRole: BusinessRole | null; joined: boolean; at: string }
+  ) => void;
   recordAuditEvent: (input: {
     type: string;
     aggregateType: string;
@@ -192,7 +201,10 @@ export class StaffDomain {
       expiresAt: new Date(now.getTime() + staffInvitationTtlMs).toISOString(),
       respondedAt: null,
       acceptedByUserId: null,
-      membershipId: null
+      membershipId: null,
+      // 144 random bits: the join link's secret, sent to the invited number by the owner.
+      joinToken: randomBytes(18).toString("base64url"),
+      acceptedWithLink: false
     };
     this.staffInvitations.set(invitation.id, invitation);
     this.audit("staff.invitation_created", invitation.id, actor.user.id, now, {
@@ -228,6 +240,7 @@ export class StaffDomain {
           phone: this.phoneOf(membership.userId),
           role: membership.role,
           isYou,
+          confirmedByLink: this.joinedWithLink(membership.id),
           manageable: !isYou && canManageMemberRole(actorRole, membership.role)
         };
       })
@@ -305,6 +318,11 @@ export class StaffDomain {
       const updated: MembershipSummary = { ...membership, role: input.role };
       this.deps.memberships.set(membership.id, updated);
       this.revokeInvitationsNoLongerGrantable(membership.businessId, membership.userId, now);
+      this.deps.onMembershipChanged?.(membership.businessId, membership.userId, {
+        previousRole: membership.role,
+        joined: false,
+        at: now.toISOString()
+      });
       this.audit("staff.role_changed", membership.id, actor.user.id, now, {
         businessId: input.businessId,
         userId: membership.userId,
@@ -336,6 +354,11 @@ export class StaffDomain {
     const membership = this.requireManageableMember(input, actor, actorRole);
     this.deps.memberships.delete(membership.id);
     this.revokeInvitationsNoLongerGrantable(membership.businessId, membership.userId, now);
+    this.deps.onMembershipChanged?.(membership.businessId, membership.userId, {
+      previousRole: membership.role,
+      joined: false,
+      at: now.toISOString()
+    });
     this.audit("staff.member_removed", membership.id, actor.user.id, now, {
       businessId: input.businessId,
       userId: membership.userId,
@@ -364,6 +387,11 @@ export class StaffDomain {
     }
     this.deps.memberships.delete(membership.id);
     this.revokeInvitationsNoLongerGrantable(membership.businessId, membership.userId, now);
+    this.deps.onMembershipChanged?.(membership.businessId, membership.userId, {
+      previousRole: membership.role,
+      joined: false,
+      at: now.toISOString()
+    });
     this.audit("staff.member_left", membership.id, actor.user.id, now, {
       businessId: input.businessId,
       role: membership.role
@@ -397,14 +425,30 @@ export class StaffDomain {
       }));
   }
 
-  acceptStaffInvitation(input: { sessionId: string | null; invitationId: string; now?: Date }): {
-    invitation: StaffInvitationSummary;
+  acceptStaffInvitation(input: {
+    sessionId: string | null;
+    invitationId: string;
+    /** The join link's secret, when the person opened the link sent to their number. */
+    joinToken?: string | null;
+    now?: Date;
+  }): {
+    invitation: Omit<StaffInvitationSummary, "joinToken">;
     business: BusinessSummary;
     membership: MembershipSummary;
   } {
     const now = input.now ?? new Date();
     const actor = this.deps.requireAuthenticatedActor(input.sessionId, now);
     const invitation = this.requireMyInvitation(input.invitationId, actor.account.id);
+    // A link never grants anything by itself (the identity check above still applies), but a wrong
+    // secret is refused rather than silently accepted without proof.
+    const withLink = input.joinToken !== undefined && input.joinToken !== null;
+    if (withLink && !joinTokenMatches(invitation.joinToken, input.joinToken as string)) {
+      throw new Cp2Error(
+        403,
+        "staff_invitation_link_invalid",
+        "This invitation link is not valid. Ask for a new one."
+      );
+    }
     this.requireStillPending(invitation, now);
     if (!this.isOpen(invitation, now)) {
       // The inviter lost the authority to grant this role, or the business is being removed.
@@ -436,16 +480,28 @@ export class StaffDomain {
       status: "accepted",
       respondedAt: now.toISOString(),
       acceptedByUserId: actor.user.id,
-      membershipId: membership.id
+      membershipId: membership.id,
+      acceptedWithLink: withLink
     };
     this.staffInvitations.set(accepted.id, accepted);
+    // A new member cannot have legitimate trips yet: clear any left over from an earlier
+    // membership whose release did not run (removal releases are fire-and-forget).
+    this.deps.onMembershipChanged?.(invitation.businessId, actor.user.id, {
+      previousRole: null,
+      joined: true,
+      at: now.toISOString()
+    });
     this.audit("staff.invitation_accepted", invitation.id, actor.user.id, now, {
       businessId: invitation.businessId,
       role: invitation.role,
-      membershipId: membership.id
+      membershipId: membership.id,
+      viaLink: withLink
     });
+    // The invitee never receives the join-link secret.
+    const invitationForInvitee: Omit<StaffInvitationSummary, "joinToken"> = { ...accepted };
+    delete (invitationForInvitee as Partial<StaffInvitationSummary>).joinToken;
     return {
-      invitation: accepted,
+      invitation: invitationForInvitee,
       business: this.deps.businesses.get(invitation.businessId) as BusinessSummary,
       membership
     };
@@ -549,8 +605,17 @@ export class StaffDomain {
       phone: this.phoneOf(membership.userId),
       role: membership.role,
       isYou,
+      confirmedByLink: this.joinedWithLink(membership.id),
       manageable: !isYou && canManageMemberRole(viewerRole, membership.role)
     };
+  }
+
+  /** Whether the member accepted through the join link sent to their number. */
+  private joinedWithLink(membershipId: string): boolean {
+    for (const invitation of this.staffInvitations.values()) {
+      if (invitation.membershipId === membershipId) return invitation.acceptedWithLink === true;
+    }
+    return false;
   }
 
   /** The member's sign-in phone (not the editable profile phone), so the owner sees who joined. */
@@ -577,7 +642,7 @@ export class StaffDomain {
    * - its primary phone (sign-up), its `primaryAuthDestination` (accounts older than the identity
    *   ledger), and any verified phone always count;
    * - a phone later linked to the profile (`PUT /account/phone`: how one-tap accounts add a phone,
-   *   and how a number is changed) counts only if it was linked BEFORE the invitation was created.
+   *   and how a number is changed) counts only if it was linked at or before the moment the invitation was created.
    *   So a one-tap owner or someone who changed number is reachable, but an existing account cannot
    *   attach an already-invited number to take the invitation.
    * Emails count only when verified.
@@ -760,4 +825,12 @@ const roleOrder: BusinessRole[] = [
 
 function invitationNotFound(): Cp2Error {
   return new Cp2Error(404, "staff_invitation_not_found", "Invitation was not found.");
+}
+
+/** Constant-time comparison of a presented join-link secret with the stored one. */
+function joinTokenMatches(expected: string | undefined, presented: string): boolean {
+  if (expected === undefined) return false;
+  const left = Buffer.from(expected);
+  const right = Buffer.from(presented);
+  return left.length === right.length && timingSafeEqual(left, right);
 }

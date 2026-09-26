@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import { getErrorMessage } from "../chat-message-plumbing";
 import { getJson, patchJson, postJson } from "../api-helpers";
@@ -84,7 +85,7 @@ export function useReadinessState(deps: UseReadinessStateDeps) {
         deviceTrustReason: trust.reason ?? ""
       }));
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 
@@ -224,7 +225,7 @@ export function useReadinessState(deps: UseReadinessStateDeps) {
         pauseReason: readiness.access.pauseReason ?? ""
       }));
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 
@@ -373,7 +374,7 @@ export function useReadinessState(deps: UseReadinessStateDeps) {
         pauseReason: readiness.settings.pauseReason ?? ""
       }));
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

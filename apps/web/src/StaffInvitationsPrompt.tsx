@@ -4,6 +4,8 @@ import { useAsyncActions } from "./hooks/useAsyncActions";
 import { fetchFreshJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import { staffCopy } from "./staff-copy";
+import { clearPendingJoin, readPendingJoin, type PendingJoin } from "./staff-join-link";
+import { ApiRequestError } from "./lib/api";
 
 // Invitations waiting for the signed-in person (docs/architecture/staff-invitations.md). Mounted
 // in the app shell for every signed-in account, including someone who just signed up and has no
@@ -19,13 +21,24 @@ export default function StaffInvitationsPrompt(props: {
   const [invitations, setInvitations] = useState<MyStaffInvitationSummary[]>([]);
   const [message, setMessage] = useState("");
   const [failed, setFailed] = useState(false);
+  // The join link this device was opened with, if any: its secret is sent with Accept as proof
+  // the person received the message on the invited number.
+  const [pendingJoin, setPendingJoin] = useState<PendingJoin | null>(() =>
+    readPendingJoin(window.localStorage)
+  );
+  const [linkNotForYou, setLinkNotForYou] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     const check = () => {
       fetchFreshJson<{ invitations: MyStaffInvitationSummary[] }>("/v1/staff-invitations")
         .then((loaded) => {
-          if (!cancelled) setInvitations(loaded.invitations);
+          if (cancelled) return;
+          setInvitations(loaded.invitations);
+          const link = readPendingJoin(window.localStorage);
+          setLinkNotForYou(
+            link !== null && !loaded.invitations.some((item) => item.id === link.invitationId)
+          );
         })
         .catch(() => {
           // Invitations are an optional prompt; a failed check simply shows nothing new.
@@ -46,6 +59,12 @@ export default function StaffInvitationsPrompt(props: {
     };
   }, [props.accountId]);
 
+  function forgetLink() {
+    clearPendingJoin(window.localStorage);
+    setPendingJoin(null);
+    setLinkNotForYou(false);
+  }
+
   function answer(invitation: MyStaffInvitationSummary, accept: boolean) {
     setMessage("");
     setFailed(false);
@@ -54,26 +73,41 @@ export default function StaffInvitationsPrompt(props: {
         if (accept) {
           const joined = await postJson<AccountShopSummary>(
             `/v1/staff-invitations/${invitation.id}/accept`,
-            {}
+            pendingJoin?.invitationId === invitation.id ? { joinToken: pendingJoin.joinToken } : {}
           );
+          if (pendingJoin?.invitationId === invitation.id) forgetLink();
           setInvitations((current) => current.filter((item) => item.id !== invitation.id));
           await props.onJoined({ business: joined.business, membership: joined.membership });
           setMessage(t.joined(joined.business.name));
         } else {
           await postJson(`/v1/staff-invitations/${invitation.id}/decline`, {});
+          if (pendingJoin?.invitationId === invitation.id) forgetLink();
           setInvitations((current) => current.filter((item) => item.id !== invitation.id));
         }
       } catch (error) {
+        if (error instanceof ApiRequestError && error.code === "staff_invitation_link_invalid") {
+          forgetLink();
+        }
         setFailed(true);
         setMessage(getUserFacingErrorMessage(error));
       }
     });
   }
 
-  if (invitations.length === 0 && message === "") return null;
+  if (invitations.length === 0 && message === "" && !linkNotForYou) return null;
 
   return (
     <section className="record-form staff-invitations-prompt" aria-label={t.invitations}>
+      {linkNotForYou ? (
+        <div className="row-actions">
+          <p className="shell-note" role="alert">
+            {t.joinLinkNotForYou}
+          </p>
+          <button className="secondary" type="button" onClick={forgetLink}>
+            {t.dismiss}
+          </button>
+        </div>
+      ) : null}
       {message.length > 0 ? (
         <p className="shell-note" role={failed ? "alert" : "status"}>
           {message}

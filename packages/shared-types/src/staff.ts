@@ -31,6 +31,14 @@ export interface StaffInvitationSummary {
   /** Set on acceptance: which account took it and the membership it created. */
   acceptedByUserId: string | null;
   membershipId: string | null;
+  /**
+   * Secret for the invitation's join link (`/?staffInvite=<id>&t=<joinToken>`), sent by the owner
+   * to the invited number by SMS or WhatsApp. Only the business's owner/managers see it; the
+   * invitee API never returns it. Absent on invitations created before join links existed.
+   */
+  joinToken?: string;
+  /** Accepted through the join link: the person received the message sent to the invited number. */
+  acceptedWithLink?: boolean;
 }
 
 /**
@@ -51,6 +59,8 @@ export interface StaffMemberSummary {
   phone: string | null;
   role: BusinessRole;
   isYou: boolean;
+  /** Joined by opening the invitation link sent to their number: proof they hold that phone. */
+  confirmedByLink: boolean;
   /** Whether the viewer may change this member's role or remove them. */
   manageable: boolean;
 }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import type {
   PublicCustomerCareRequestSummary,
@@ -6,7 +7,6 @@ import type {
   PublicStorefrontMessageSummary
 } from "@soko/shared-types";
 
-import { getErrorMessage } from "../chat-message-plumbing";
 import { getJson } from "../api-helpers";
 
 interface UseStorefrontCareStateDeps {
@@ -41,7 +41,7 @@ export function useStorefrontCareState(deps: UseStorefrontCareStateDeps) {
       setStorefrontMessages(messages);
       setStorefrontOrders(orders);
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

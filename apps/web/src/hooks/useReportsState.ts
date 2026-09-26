@@ -1,6 +1,6 @@
 import { useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
-import { getErrorMessage } from "../chat-message-plumbing";
 import { getJson } from "../api-helpers";
 import type { BusinessKnowledgeSummary, BusinessReportSummary } from "../soko-application-shared";
 
@@ -33,7 +33,7 @@ export function useReportsState(deps: UseReportsStateDeps) {
       setReportSummary(report);
       setKnowledgeSummary(knowledge);
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

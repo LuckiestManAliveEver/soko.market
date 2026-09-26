@@ -1,4 +1,5 @@
 import { useState, type ChangeEvent, type Dispatch, type SetStateAction } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import { commerceAddressFromSokoId, type NetworkInviteSummary } from "@soko/shared-types";
 
@@ -79,7 +80,7 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
         await getJson<NetworkInviteSummary[]>(`/businesses/${businessId}/network/invites`)
       );
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

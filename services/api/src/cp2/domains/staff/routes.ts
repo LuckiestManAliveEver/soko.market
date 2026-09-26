@@ -185,11 +185,15 @@ export function registerStaffRoutes(app: FastifyInstance, store: Cp2Store): void
 
   app.post(
     "/v1/staff-invitations/:invitationId/accept",
-    async (request: FastifyRequest<{ Params: MyInvitationParams }>, reply) => {
+    async (request: FastifyRequest<{ Params: MyInvitationParams; Body: unknown }>, reply) => {
       try {
+        const body =
+          request.body === undefined || request.body === null ? {} : parseRequestBody(request.body);
+        const joinToken = typeof body.joinToken === "string" ? body.joinToken.trim() : null;
         return store.acceptStaffInvitation({
           sessionId: session(request),
-          invitationId: request.params.invitationId
+          invitationId: request.params.invitationId,
+          joinToken: joinToken === "" ? null : joinToken
         });
       } catch (error) {
         return sendCp2Error(reply, error);

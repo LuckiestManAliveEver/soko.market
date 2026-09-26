@@ -809,8 +809,9 @@ A `sales_agent` can see the pools summary but not the order list or manifests' w
 - **Staff invitation (§11.6)** is now implemented (docs/architecture/staff-invitations.md).
 - **Owner seed configuration (D9)** is superseded by self-serve setup (§15.1): no business id is
   seeded or hard-coded; each owner enters their own settings.
-- Named driver assignment and assignment-scoped driver access are not yet exposed. Phase 2 added
-  the explicit `CLOSED → DEPARTED` operation and the mobile manifest departure control.
+- Named driver assignment and assignment-scoped driver access were not exposed here; they are now
+  (§16). Phase 2 added the explicit `CLOSED → DEPARTED` operation and the mobile manifest departure
+  control.
 
 ---
 
@@ -958,7 +959,7 @@ at the top of `LogisticsSurface` and covers the four prerequisites, with a progr
 ### 15.2 MCP tools
 
 `services/api/src/mcp/fulfillment-tools.ts` declares every public fulfillment operation as one MCP
-tool (40 tools): setup (settings, policies, vehicles), corridors and shop locations, order
+tool (43 tools, including driver assignment, §16): setup (settings, policies, vehicles), corridors and shop locations, order
 weight/resolution/intake/cancellation, pools, dispatch evaluation and approvals, manifests and
 delivery. Each tool parses its arguments with the same parsers as the HTTP routes
 (`cp2/domains/fulfillment/input.ts`, extracted from `routes.ts`) and calls the same
@@ -1042,7 +1043,72 @@ HTTP route and the MCP tool.
 ### 15.4 Remaining gaps
 
 - **Staff invitation** is implemented (docs/architecture/staff-invitations.md): sales agents,
-  dispatchers (managers) and drivers can now be granted roles in production. Assigning a manifest
-  to a specific driver is still not modelled.
+  dispatchers (managers) and drivers can now be granted roles in production, and manifests are
+  assigned to specific drivers (§16).
 - **The timezone update over MCP is `absolute`, not `replay`.** Making it replayable needs either
   the timezone in Postgres or an idempotency record in the Cp2Store.
+
+---
+
+## 16. Driver assignment
+
+A dispatcher (owner or manager: `fulfillment:dispatch`) assigns a manifest to one member of the
+business, and a driver then sees and works only the trips assigned to them.
+
+- **Model.** `fulfillment_manifests.driver_user_id` (migration 100, with rollback), null = not
+  assigned. `ManifestSummary` carries `driverUserId` and `driverName` (null when unassigned or the
+  person is no longer a member). Assignment writes a `manifest.driver_assigned` outbox event in the
+  same transaction and runs through the A23 idempotency record, so a keyed retry replays.
+- **Who can be assigned.** Only members whose role holds `delivery:record` (driver, manager,
+  owner); anyone else, or a non-member, is refused with 409 `driver_not_eligible`. A COMPLETED or
+  CANCELLED manifest cannot be reassigned. `GET /fulfillment/drivers` lists eligible members.
+- **Scope.** `GET /fulfillment/my-manifests` returns the caller's own OPEN, CLOSED and DEPARTED
+  trips (`delivery:record`). Departing a manifest and recording a stop outcome now need
+  `delivery:record`; a caller without `fulfillment:dispatch` may do either only on a manifest
+  assigned to them, and anyone else's manifest is indistinguishable from a missing one (404).
+  Dispatchers keep working every manifest, assigned or not. Drivers cannot list all manifests or
+  assign trips.
+- **Removal.** Removing a member, their leaving, or a role change that takes away
+  `delivery:record` ends their access immediately (their next request is refused), and the staff
+  domain notifies fulfillment (`setMembershipChangedListener` → `releaseDriverAssignments`), which
+  unassigns them from every trip that is not COMPLETED or CANCELLED, with a
+  `manifest.driver_assigned` outbox event (`reason: "driver_left"`). The dispatcher sees the trip
+  unassigned and reassigns it, and a re-invited former driver starts with no trips. Assignment and
+  release serialize on the manifest rows: an assignment checks eligibility only after locking its
+  manifest, and the release locks the business's unfinished manifests before unassigning, so an
+  assignment still in flight when the person is removed is either refused or committed and then
+  released (both orders are tested on PostgreSQL). The release skips people whose previous role
+  never delivered (removing a cashier takes no locks) and uses `FOR NO KEY UPDATE`. It is
+  fire-and-forget like order intake; if it fails (logged `fulfillment.driver_release_failed`), the
+  person still has no access and the trip shows "Driver no longer in this business" until
+  reassigned. If they are invited back, accepting releases every trip assigned to them before the
+  moment they joined (`reason: "stale_on_rejoin"`), while trips given to them after joining are
+  kept, so a returning driver never gets stale trips back.
+- **Idempotency and events.** Eligibility is checked inside the idempotency record, so a keyed
+  retry replays its first result even if the driver has since left. Each assignment event has a
+  unique key, so two reassignments in the same millisecond are both recorded.
+- **UI.** The dispatch card shows each manifest's driver by name and, only for someone who can
+  load the assignable drivers (a dispatcher), an "Assign driver" select per open manifest; roles
+  that cannot see the pools (drivers, cashiers) get a 403 and the card renders nothing.
+  `DriverManifestsCard` ("My deliveries", in Logistics) shows the driver's trips with road-ordered
+  stops, map links, items, cash to collect, Start route and outcomes (Failed and Skipped need a
+  reason). Logistics uses the session's server-computed permissions, but only when they describe the open
+  shop in seller mode (`active-shop-permissions.ts`; otherwise they count as unknown): a member who
+  records
+  deliveries but does not dispatch (a driver) sees only "My deliveries" (with "No deliveries
+  assigned to you yet." when empty); the older logistics cards need `logistics:read` and the create
+  form `logistics:write`; a role with none of these (view only) is told it has no delivery work;
+  while permissions are unknown everything is shown as before. Background loads of shop data no
+  longer report a role's `permission_denied` 403 in the status line, since a staff role not being
+  able to read some data is expected; any other failure, including losing membership, is still
+  reported (`background-load-error.ts`).
+- **MCP.** `fulfillment.assign_manifest_driver` (replay), `fulfillment.list_my_manifests`,
+  `fulfillment.list_assignable_drivers`; the source-derived parity test covers them.
+- **Tests.** Real PostgreSQL: eligibility (driver, owner allowed; cashier and non-member refused),
+  drivers cannot assign, idempotent replay with exactly one outbox event, my-manifests scoping,
+  another driver gets 404 on depart and delivery, the assigned driver departs and delivers,
+  unassigning removes access at once while the owner can still work the trip, no reassignment
+  after completion, and a removed driver loses access while the manifest keeps the id without a
+  name. Each scoping rule was checked to fail its test when removed. jsdom: assignment from the
+  dispatch card, the card hidden on 403, the driver's trips, Start route, reason-gated outcomes,
+  and the empty states.

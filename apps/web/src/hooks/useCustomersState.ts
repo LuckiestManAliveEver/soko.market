@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import type { SyncMutationPayload, SyncMutationType } from "@soko/shared-types";
 
@@ -36,7 +37,7 @@ export function useCustomersState(deps: UseCustomersStateDeps) {
         await getJson<CustomerSummary[]>(`/businesses/${businessId}/customers`, setCustomers)
       );
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

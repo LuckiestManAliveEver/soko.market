@@ -897,6 +897,111 @@ describe("staff invitations over HTTP", () => {
     ).toBe(200);
   });
 
+  it("gives the owner a secret join link and records proof when it is used", async () => {
+    const { app, store } = setup();
+    const owner = await createOwner(app);
+    const phone = uniquePhone();
+    const created = await request<{ id: string; joinToken: string }>(
+      app,
+      "POST",
+      staffUrl(owner, "/invitations"),
+      owner.cookie,
+      { phone: `+${phone}`, role: "driver", name: "Otieno" }
+    );
+    expect(created.body.joinToken).toMatch(/^[A-Za-z0-9_-]{24}$/u);
+    const overview = await ok<StaffOverviewSummary>(app, "GET", staffUrl(owner), owner.cookie);
+    expect(overview.invitations[0]?.joinToken).toBe(created.body.joinToken);
+
+    const person = await signUp(app, phone);
+    // The invitee never receives the secret from the API.
+    const mine = await ok<{ invitations: Array<Record<string, unknown>> }>(
+      app,
+      "GET",
+      "/v1/staff-invitations",
+      person.cookie
+    );
+    expect(mine.invitations[0]).not.toHaveProperty("joinToken");
+    // A wrong secret is refused and grants nothing.
+    const wrong = await request<{ code: string }>(
+      app,
+      "POST",
+      `/v1/staff-invitations/${created.body.id}/accept`,
+      person.cookie,
+      { joinToken: "not-the-secret-000000000" }
+    );
+    expect(wrong).toMatchObject({ status: 403, body: { code: "staff_invitation_link_invalid" } });
+    expect((await ok<{ shops: unknown[] }>(app, "GET", "/v1/shops", person.cookie)).shops).toEqual(
+      []
+    );
+    // A stranger holding the right link still cannot use it: the invited number is required.
+    const stranger = await signUp(app);
+    expect(
+      await request(
+        app,
+        "POST",
+        `/v1/staff-invitations/${created.body.id}/accept`,
+        stranger.cookie,
+        {
+          joinToken: created.body.joinToken
+        }
+      )
+    ).toMatchObject({ status: 404 });
+
+    const accepted = await ok<{ invitation: Record<string, unknown> }>(
+      app,
+      "POST",
+      `/v1/staff-invitations/${created.body.id}/accept`,
+      person.cookie,
+      { joinToken: created.body.joinToken }
+    );
+    expect(accepted.invitation).not.toHaveProperty("joinToken");
+    expect(accepted.invitation).toMatchObject({ acceptedWithLink: true });
+    const members = await ok<StaffOverviewSummary>(app, "GET", staffUrl(owner), owner.cookie);
+    expect(members.members.find((member) => member.userId === person.userId)).toMatchObject({
+      confirmedByLink: true
+    });
+    expect(
+      store
+        .snapshot()
+        .auditEvents.some(
+          (event) =>
+            event.type === "staff.invitation_accepted" &&
+            (event.payload as { viaLink?: boolean }).viaLink === true
+        )
+    ).toBe(true);
+  });
+
+  it("does not accept one invitation's secret for another, and marks in-app joins unconfirmed", async () => {
+    const { app } = setup();
+    const owner = await createOwner(app);
+    const phone = uniquePhone();
+    const other = await request<{ joinToken: string }>(
+      app,
+      "POST",
+      staffUrl(owner, "/invitations"),
+      owner.cookie,
+      { phone: `+${uniquePhone()}`, role: "driver", name: "Other" }
+    );
+    const mineInvite = await invite(app, owner, phone, "driver");
+    const person = await signUp(app, phone);
+    expect(
+      await request(
+        app,
+        "POST",
+        `/v1/staff-invitations/${mineInvite.body.id}/accept`,
+        person.cookie,
+        {
+          joinToken: other.body.joinToken
+        }
+      )
+    ).toMatchObject({ status: 403 });
+    await ok(app, "POST", `/v1/staff-invitations/${mineInvite.body.id}/accept`, person.cookie);
+    const members = await ok<StaffOverviewSummary>(app, "GET", staffUrl(owner), owner.cookie);
+    expect(members.members.find((member) => member.userId === person.userId)).toMatchObject({
+      confirmedByLink: false
+    });
+  });
+
   it("keeps every business's staff and invitations to itself", async () => {
     const { app } = setup();
     const owner = await createOwner(app, "Shop A");

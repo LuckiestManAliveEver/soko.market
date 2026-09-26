@@ -86,8 +86,21 @@ purpose (the real person can no longer sign up with it), so the invitation adds 
 Mitigations: nothing is granted without an explicit accept; the owner sees who joined (display
 name and sign-in phone); removal is one confirmed tap and effective immediately; invitations expire
 after 7 days and can be revoked. The 24-hour cooldown after a decline therefore cannot lock out the
-real person either. A stronger check (SMS OTP at acceptance) is possible once phone OTP delivery is
-reliable in production.
+real person either.
+
+**Proof of possession by link.** Every invitation carries a secret join link
+(`/?staffInvite=<id>&t=<secret>`, 144 random bits) that only the business's owner and managers see.
+The staff card sends it straight to the invited number from the owner's own phone: **Send SMS**
+(an `sms:` link to the exact number with the message prefilled) or **WhatsApp** (official `wa.me`
+click-to-chat), or by email for email invitations; **Copy link** shares it any other way. Opening
+the link and accepting sends the secret with the acceptance; the server compares it in constant
+time and records `acceptedWithLink`, and the owner's staff list marks that member **confirmed by
+link**, meaning they received the message sent to the invited number, the possession proof that
+PIN sign-up lacks. The link never grants anything by itself: the invited sign-in identity is still
+required, a stranger holding it gets 404, and a wrong secret (or another invitation's) is refused
+with 403 `staff_invitation_link_invalid`. The invitee API never returns the secret. A squatter who
+registered the number first cannot get "confirmed by link" unless the real person forwards the
+message, so the owner can tell the two apart.
 
 ## API
 
@@ -114,6 +127,10 @@ Staff management is not exposed over MCP: granting access is deliberately a huma
   invitations (Share, Revoke), invite form (name, phone with country, role with a one-line
   description), role change and confirmed removal where the server says `manageable`. Staff who
   may not manage people get a 403 on the list and see only a confirmed "Leave this business".
+- Join links: opening one is captured at app start (`staff-join-link.ts`, before routing; the
+  secret is removed from the address bar), survives signing up or logging in, is sent with Accept,
+  and tells the person when the link was sent to a different number. Signed-out visitors who
+  opened a link see "Sign up or log in with the phone number the invitation was sent to".
 - `apps/web/src/StaffInvitationsPrompt.tsx`, in the app shell for every signed-in account,
   including someone who just signed up with no shop of their own: Accept / Decline. It checks again
   whenever the app comes back into view, so a person already signed in sees a new invitation
@@ -140,6 +157,12 @@ Staff management is not exposed over MCP: granting access is deliberately a huma
 - `tests/staff-invitations-postgres.test.ts` (real PostgreSQL): pending, accepted, declined and
   revoked invitations, role changes, removals and leaving all survive a restart; the decline
   cooldown holds after it; a pending invitation is accepted after it.
+- Join links (gate): the owner gets the secret, the invitee API never returns it, a wrong or other
+  invitation's secret is refused, a stranger holding the link gets 404, a valid link records
+  `confirmedByLink` and an audited `viaLink`, in-app acceptance stays unconfirmed; the proof and
+  the secret survive a restart on PostgreSQL; `tests/staff-join-link.test.ts` covers link building,
+  SMS/WhatsApp/email addressing and encoding, capture and cleanup of the address bar, and expiry;
+  the cards send the secret on accept, show the wrong-number notice and the signed-out banner.
 - `tests/stored-shop.test.ts`: a device forgets a stored shop the account no longer belongs to,
   takes the server's role for one it still has, and moves to another shop after leaving.
 - `tests/staff-cards.test.tsx` (jsdom): list and server-driven controls, invite by phone, role

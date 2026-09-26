@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import type { SyncMutationPayload, SyncMutationType } from "@soko/shared-types";
 
@@ -49,7 +50,7 @@ export function usePaymentsState(deps: UsePaymentsStateDeps) {
       setInvoicePayments(nextSummaries);
       setCustomerDebts(nextDebts);
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

@@ -18,11 +18,14 @@ const putJson = vi.fn();
 
 vi.mock("../apps/web/src/api-helpers", () => ({
   getJson: (...args: unknown[]) => getJson(...args),
+  fetchFreshJson: (...args: unknown[]) => getJson(...args),
   postJson: (...args: unknown[]) => postJson(...args),
   putJson: (...args: unknown[]) => putJson(...args)
 }));
 
 const { default: CorridorDispatchCard } = await import("../apps/web/src/CorridorDispatchCard");
+const { default: DriverManifestsCard } = await import("../apps/web/src/DriverManifestsCard");
+const { ApiRequestError } = await import("../apps/web/src/lib/api");
 const { default: ShopLocationCard } = await import("../apps/web/src/ShopLocationCard");
 const { fulfillmentCopy, formatDurationSeconds } = await import("../apps/web/src/fulfillment-copy");
 
@@ -97,6 +100,8 @@ function manifest(status: ManifestSummary["status"]): ManifestSummary {
     createdBy: "owner",
     createdAt: at,
     updatedAt: at,
+    driverUserId: null,
+    driverName: null,
     stops: [
       {
         id: "stop-1",
@@ -307,6 +312,150 @@ describe("corridor fulfillment cards", () => {
     expect(host.textContent).toContain(en.savedLocation);
     expect(host.textContent).toContain(en.onCorridor("Corridor X", 111.2));
     expect(host.textContent).toContain(en.accuracy(8));
+  });
+
+  it("assigns a manifest to a driver from the dispatch card", async () => {
+    getJson.mockImplementation(async (path: string) =>
+      path.endsWith("/pools")
+        ? pools
+        : path.endsWith("/vehicles")
+          ? [vehicle]
+          : path.endsWith("/manifests")
+            ? [manifest("OPEN")]
+            : path.endsWith("/drivers")
+              ? [{ userId: "driver-1", displayName: "Otieno", role: "driver" }]
+              : []
+    );
+    postJson.mockResolvedValue({
+      ...manifest("OPEN"),
+      driverUserId: "driver-1",
+      driverName: "Otieno"
+    });
+    await render(<CorridorDispatchCard businessId="shop-a" />);
+    const select = [...host.querySelectorAll("label")]
+      .find((label) => (label.textContent ?? "").startsWith(en.assignDriver))
+      ?.querySelector("select") as HTMLSelectElement;
+    expect(select.value).toBe("");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+        select,
+        "driver-1"
+      );
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(postJson).toHaveBeenCalledWith(`${base}/manifests/manifest-1/driver`, {
+      driverUserId: "driver-1"
+    });
+  });
+
+  it("shows who is assigned, read-only, to someone who cannot assign drivers", async () => {
+    getJson.mockImplementation(async (path: string) => {
+      if (path.endsWith("/drivers")) throw new ApiRequestError(403, "Permission denied.");
+      if (path.endsWith("/pools")) return pools;
+      if (path.endsWith("/vehicles")) return [vehicle];
+      if (path.endsWith("/manifests")) {
+        return [{ ...manifest("OPEN"), driverUserId: "driver-1", driverName: "Otieno" }];
+      }
+      return [];
+    });
+    await render(<CorridorDispatchCard businessId="shop-a" />);
+    expect(host.textContent).toContain(`${en.driver}: Otieno`);
+    expect(host.textContent).not.toContain(en.driverLeft);
+    expect(
+      [...host.querySelectorAll("label")].some((label) =>
+        (label.textContent ?? "").startsWith(en.assignDriver)
+      )
+    ).toBe(false);
+  });
+
+  it("tells a dispatcher when the drivers list fails, instead of silently hiding assignment", async () => {
+    getJson.mockImplementation(async (path: string) => {
+      if (path.endsWith("/drivers")) throw new ApiRequestError(500, "Server error.");
+      if (path.endsWith("/pools")) return pools;
+      if (path.endsWith("/vehicles")) return [vehicle];
+      if (path.endsWith("/manifests")) return [manifest("OPEN")];
+      return [];
+    });
+    await render(<CorridorDispatchCard businessId="shop-a" />);
+    expect(host.textContent).toContain(en.driversUnavailable);
+    // Retry reloads, and once the list loads the dispatcher can assign again.
+    getJson.mockImplementation(async (path: string) => {
+      if (path.endsWith("/drivers"))
+        return [{ userId: "d1", displayName: "Otieno", role: "driver" }];
+      if (path.endsWith("/pools")) return pools;
+      if (path.endsWith("/vehicles")) return [vehicle];
+      if (path.endsWith("/manifests")) return [manifest("OPEN")];
+      return [];
+    });
+    await act(async () => button(host, en.retry).click());
+    await flush();
+    expect(host.textContent).not.toContain(en.driversUnavailable);
+    expect(
+      [...host.querySelectorAll("label")].some((label) =>
+        (label.textContent ?? "").startsWith(en.assignDriver)
+      )
+    ).toBe(true);
+  });
+
+  it("shows nothing, not an error, to roles that cannot dispatch", async () => {
+    getJson.mockRejectedValue(new ApiRequestError(403, "Permission denied."));
+    await render(<CorridorDispatchCard businessId="shop-a" />);
+    expect(host.textContent).toBe("");
+  });
+
+  it("gives a driver only their own trips, with road-ordered stops, Start route and outcomes", async () => {
+    getJson.mockImplementation(async (path: string) =>
+      path.endsWith("/my-manifests")
+        ? [{ ...manifest("CLOSED"), driverUserId: "me", driverName: "Me" }]
+        : []
+    );
+    postJson.mockResolvedValue({ ...manifest("DEPARTED"), driverUserId: "me", driverName: "Me" });
+    await render(<DriverManifestsCard businessId="shop-a" showEmptyState={true} />);
+    expect(host.textContent).toContain(en.myDeliveries);
+    expect(host.textContent).toContain("1. Shop A");
+    expect(host.querySelector('a[href*="google.com/maps"]')).not.toBeNull();
+    await act(async () => button(host, en.depart).click());
+    await flush();
+    expect(postJson).toHaveBeenCalledWith(`${base}/manifests/manifest-1/depart`, {});
+    // A failed stop needs a reason before anything is sent.
+    postJson.mockClear();
+    await act(async () => button(host, en.failed).click());
+    expect(postJson).not.toHaveBeenCalled();
+    expect(host.textContent).toContain(en.noteRequired);
+    await act(async () => button(host, en.delivered).click());
+    await flush();
+    expect(postJson).toHaveBeenCalledWith(`${base}/manifests/manifest-1/stops/stop-1/delivery`, {
+      outcome: "DELIVERED"
+    });
+  });
+
+  it("shows a driver with no trips an empty state, and others nothing", async () => {
+    getJson.mockResolvedValue([]);
+    await render(<DriverManifestsCard businessId="shop-a" showEmptyState={true} />);
+    expect(host.textContent).toContain(en.noAssignedTrips);
+    act(() => root.unmount());
+    await render(<DriverManifestsCard businessId="shop-a" showEmptyState={false} />);
+    expect(host.textContent).toBe("");
+    act(() => root.unmount());
+    getJson.mockRejectedValue(
+      new ApiRequestError(403, "Permission denied.", { code: "permission_denied" })
+    );
+    await render(<DriverManifestsCard businessId="shop-a" showEmptyState={false} />);
+    expect(host.textContent).toBe("");
+  });
+
+  it("tells a removed driver they lost access instead of showing no trips", async () => {
+    getJson.mockRejectedValue(
+      new ApiRequestError(403, "You are no longer part of this shop.", {
+        code: "membership_required"
+      })
+    );
+    await render(<DriverManifestsCard businessId="shop-a" showEmptyState={true} />);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      "no longer part of this shop"
+    );
+    expect(host.textContent).not.toContain(en.noAssignedTrips);
   });
 
   it("ships Swahili copy for every English string and mounts in the existing surfaces", () => {
