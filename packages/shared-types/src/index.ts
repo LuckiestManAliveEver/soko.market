@@ -56,12 +56,17 @@ export interface PlatformDefaultRuntimePolicy {
   executionTarget: ModelExecutionTarget;
 }
 
+/**
+ * Before a shop swaps anything it runs the Shopkeeper agent on the ZeroClaw agent runtime with
+ * OpenAI's GPT-6 Luna, paid for by Soko (docs/adr/ADR-zeroclaw-default-agent-runtime.md). A
+ * deployment without a ZeroClaw gateway runs Shopkeeper on Soko's built-in engine instead.
+ */
 export const repositoryDefaultRuntimePolicy: PlatformDefaultRuntimePolicy = {
-  agentId: "builtin:pi:v1",
-  agentName: "Pi",
-  agentRuntimeAdapterId: "pi",
-  modelId: "smollm2-360m",
-  executionTarget: "vercel"
+  agentId: "builtin:shopkeeper:v1",
+  agentName: "Shopkeeper",
+  agentRuntimeAdapterId: "zeroclaw",
+  modelId: "gpt-6-luna",
+  executionTarget: "backend"
 };
 
 export type InferenceRuntime =
@@ -966,7 +971,8 @@ export interface MarketplaceIntroStateSummary {
 
 /** Stable provider-registry key. Providers are runtime extensions, not a closed platform enum. */
 export type ModelProviderId = string;
-export const platformSharedModelId = "smollm2-360m" as const;
+/** The Soko-funded default model: platform-included, every other model is merchant-funded. */
+export const platformSharedModelId = "gpt-6-luna" as const;
 export type ModelCostResponsibility = "platform-included" | "merchant";
 
 export interface AiModelSummary {
@@ -1013,6 +1019,165 @@ export interface AiModelSummary {
   supportsToolCalling?: boolean;
   /** Verified support for a constrained/structured (e.g. `response_format: json_object`) response. */
   supportsStructuredOutput?: boolean;
+  /**
+   * Provider routing for models served by the multi-provider inference router
+   * (docs/architecture/multi-provider-inference-implementation.md). Absent on every catalog entry
+   * that predates the router, which keep their existing Vercel/owner-node execution unchanged. An
+   * operator registers a provider-backed model by adding this block through the existing catalog
+   * API - there is no second model registry.
+   */
+  inference?: AiModelInferenceRouting;
+  /**
+   * The native execution target a configured adapter actually serves this model on, computed per
+   * request by GET /v1/ai-models. Clients activate with this value instead of assuming one.
+   */
+  hostedExecutionTarget?: ModelExecutionTarget;
+}
+
+/**
+ * Where inference runs from the provider layer's point of view. Separate from
+ * ModelExecutionTarget on purpose: "browser-local"/"installed-app" are client-executed and never
+ * materialize a native execution host (ADR-device-independent-runtime-and-registry-discovery.md).
+ * "remote-inference" is served by the native "backend" target.
+ */
+export type InferenceExecutionTarget =
+  "browser-local" | "installed-app" | "remote-inference" | "remote-shop-device";
+
+export interface InferenceModelCapabilities {
+  text: boolean;
+  vision?: boolean;
+  tools?: boolean;
+  structuredOutput?: boolean;
+  reasoning?: boolean;
+  streaming?: boolean;
+}
+
+export interface InferenceModelPricing {
+  inputPerMillionTokens?: number;
+  cachedInputPerMillionTokens?: number;
+  outputPerMillionTokens?: number;
+  currency?: string;
+}
+
+export interface AiModelInferenceRouting {
+  /** Configured provider instance id (e.g. "openai", "anthropic", "zai-general", "soko-llama"). */
+  providerId: string;
+  /** The id sent to the provider API; distinct from the catalog id so hosting can move. */
+  providerModelId: string;
+  executionTarget: InferenceExecutionTarget;
+  capabilities: InferenceModelCapabilities;
+  maxOutputTokens?: number | null;
+  enabled: boolean;
+  pricing?: InferenceModelPricing | null;
+}
+
+export type InferenceProviderHealthStatus =
+  | "AVAILABLE"
+  | "DEGRADED"
+  | "UNAVAILABLE"
+  | "MISCONFIGURED"
+  | "RATE_LIMITED"
+  | "CREDENTIAL_INVALID";
+
+/** Public projection of a configured inference provider. Never carries credential material. */
+export interface InferenceProviderSummary {
+  id: string;
+  displayName: string;
+  type: "openai" | "anthropic" | "zai" | "openai-compatible" | "local";
+  executionTarget: InferenceExecutionTarget;
+  enabled: boolean;
+  /** Soko-funded credential is configured server-side (the key itself is never exposed). */
+  managedCredentialConfigured: boolean;
+  byokAllowed: boolean;
+  allowCredentialEndpoint: boolean;
+  billingProduct: string | null;
+}
+
+export type InferenceProviderConnectionScope = "tenant" | "user";
+export type InferenceProviderConnectionStatus = "ACTIVE" | "INVALID" | "REVOKED";
+
+/**
+ * Public projection of a BYOK provider credential. The encrypted secret never leaves the server;
+ * `secretHint` is at most the last four characters, and only for keys long enough to hint safely.
+ */
+export interface InferenceProviderConnectionSummary {
+  id: string;
+  providerId: string;
+  scope: InferenceProviderConnectionScope;
+  businessId: string | null;
+  connected: boolean;
+  status: InferenceProviderConnectionStatus;
+  secretHint: string | null;
+  customEndpoint: string | null;
+  lastVerifiedAt: string | null;
+  lastVerificationStatus: "passed" | "failed" | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Which on-device runtime a claiming device offers (see DeviceInferenceJob). */
+export type DeviceInferenceRuntime = "browser-local" | "installed-app";
+
+/**
+ * One generation the server delegates to the requesting member's own device. The prompt was built
+ * by the server exactly as for a hosted model; the device only generates. Returned only to
+ * authenticated sessions of the account the turn belongs to.
+ */
+export interface DeviceInferenceJob {
+  id: string;
+  /** One-time token required to submit this job's result. */
+  token: string;
+  turnId: string | null;
+  modelId: string;
+  /** The on-device engine's model id (a WebLLM prebuilt model id). */
+  providerModelId: string;
+  executionTarget: DeviceInferenceRuntime;
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  generation: { maxOutputTokens: number; temperature: number; jsonOutput: boolean };
+  expiresAt: string;
+}
+
+export interface DeviceInferenceResultInput {
+  token: string;
+  text: string;
+  usage?: { inputTokens?: number; outputTokens?: number };
+  latencyMs?: number;
+  firstTokenMs?: number;
+}
+
+/** Events on the per-turn reply stream (GET /v1/ai/turn-stream/:turnId). */
+export type AgentTurnStreamEvent =
+  | { type: "text"; text: string }
+  | { type: "reset" }
+  | { type: "device"; modelId: string }
+  | { type: "done" };
+
+export type InferenceFallbackPolicyMode = "NONE" | "SAME_PROVIDER" | "APPROVED_PROVIDERS";
+
+/** A shop's (or a person's, or the platform's) inference usage policy. */
+export interface InferencePolicySummary {
+  scope: "global" | "tenant" | "user";
+  businessId: string | null;
+  currency: string;
+  dailyBudget: number | null;
+  providerMonthlyCeilings: Record<string, number>;
+  maxRequestsPerMinute: number | null;
+  maxTokensPerRequest: number | null;
+  fallbackPolicy: InferenceFallbackPolicyMode;
+  approvedProviderIds: string[];
+  fallbackModelIds: string[];
+  updatedAt: string | null;
+}
+
+export interface InferenceProviderConnectionTestResult {
+  connection: InferenceProviderConnectionSummary;
+  health: {
+    status: InferenceProviderHealthStatus;
+    checkedAt: string;
+    latencyMs: number | null;
+    errorCode: string | null;
+    message: string | null;
+  };
 }
 
 export interface ActiveAiModelSummary {
@@ -1058,20 +1223,34 @@ export type AgentModelBindingStatus =
   "inactive" | "verifying" | "active" | "failed" | "unavailable";
 
 /**
- * "backend": Soko-operated inference infrastructure (the normal, zero-setup default).
- * "remote-shop-device": a shop-owned machine registered as an execution host (e.g. a
- * merchant's laptop running Ollama, added via native-runtime execution hosts). This is
- * distinct from -- and replaces -- the retired "browser-local"/"installed-app" targets,
- * which meant "run privately on whichever device/browser happens to be open right now."
- * A client device never needs a private model copy to use normal agent chat.
+ * "vercel": Soko's hosted inference deployment (the platform default).
+ * "backend": Soko-operated server-side execution; the multi-provider inference router (OpenAI,
+ *   Anthropic, Z.ai, Soko-hosted llama.cpp, other OpenAI-compatible servers) runs here.
+ * "remote-shop-device": a shop-owned machine registered as an execution host (e.g. a merchant's
+ *   laptop running Ollama), brokered by the owner-node protocol.
+ * "browser-local" / "installed-app": the model runs on the chatting member's own device (WebLLM in
+ *   the browser, or the installed app). Reinstated by ADR-explicit-device-local-models.md as an
+ *   explicit, labeled per-shop choice - never a silent fallback. The server still builds the
+ *   prompt and owns tools and approvals; only generation is delegated to the device
+ *   (services/api/src/inference/device-inference-broker.ts).
  */
-export type ModelExecutionTarget = "vercel" | "backend" | "remote-shop-device";
+export type ModelExecutionTarget =
+  "vercel" | "backend" | "remote-shop-device" | "browser-local" | "installed-app";
 
 export const modelExecutionTargets = [
   "vercel",
   "backend",
-  "remote-shop-device"
+  "remote-shop-device",
+  "browser-local",
+  "installed-app"
 ] as const satisfies readonly ModelExecutionTarget[];
+
+/** Targets whose generation runs on the member's own device rather than a server-reachable host. */
+export function isDeviceExecutionTarget(
+  target: ModelExecutionTarget
+): target is "browser-local" | "installed-app" {
+  return target === "browser-local" || target === "installed-app";
+}
 
 export function isModelExecutionTarget(value: unknown): value is ModelExecutionTarget {
   return (modelExecutionTargets as readonly unknown[]).includes(value);
@@ -3752,6 +3931,12 @@ export type RuntimeInferenceErrorCategory =
   | "AUTHENTICATION_FAILED"
   | "PROVIDER_ERROR"
   | "ABORTED"
+  /**
+   * A deliberate policy decision, not a fault: a budget or rate ceiling, a client-executed (local)
+   * model, a forbidden endpoint, an unsupported capability. Never retryable - moving to another
+   * runtime candidate would route around the policy (e.g. onto a more expensive model).
+   */
+  | "POLICY_REJECTED"
   | "UNKNOWN";
 
 /**
@@ -3794,6 +3979,24 @@ const inferenceErrorCategoryByCode: Record<string, RuntimeInferenceErrorCategory
   CLOUD_SPENDING_LIMIT_REACHED: "RATE_LIMITED",
   CLOUD_CIRCUIT_OPEN: "ENGINE_UNREACHABLE",
   CLOUD_REQUEST_FAILED: "PROVIDER_ERROR",
+  // services/api/src/inference/providers/errors.ts (multi-provider inference router)
+  PROVIDER_UNAVAILABLE: "ENGINE_UNREACHABLE",
+  PROVIDER_MISCONFIGURED: "MODEL_UNAVAILABLE",
+  MODEL_UNAVAILABLE: "MODEL_UNAVAILABLE",
+  INVALID_CREDENTIAL: "AUTHENTICATION_FAILED",
+  CREDENTIAL_MISSING: "AUTHENTICATION_FAILED",
+  RATE_LIMITED: "RATE_LIMITED",
+  CONTEXT_TOO_LARGE: "CONTEXT_WINDOW_EXCEEDED",
+  REQUEST_TIMEOUT: "TIMEOUT",
+  REQUEST_CANCELLED: "ABORTED",
+  CAPABILITY_UNSUPPORTED: "POLICY_REJECTED",
+  BUDGET_EXCEEDED: "POLICY_REJECTED",
+  CONTENT_REJECTED: "POLICY_REJECTED",
+  INFERENCE_FAILED: "PROVIDER_ERROR",
+  ENDPOINT_FORBIDDEN: "POLICY_REJECTED",
+  LOCAL_EXECUTION_REQUIRED: "POLICY_REJECTED",
+  LOCAL_DEVICE_UNAVAILABLE: "ENGINE_UNREACHABLE",
+  INVALID_PROVIDER_RESPONSE: "INVALID_RESPONSE",
   // Historical: the retired browser-local inference architecture's error codes (see this type's
   // own docblock above) - no surface in this repository produces these anymore.
   WEBGPU_UNAVAILABLE: "ENGINE_UNREACHABLE",
@@ -4081,7 +4284,8 @@ export const defaultAgentDefinition: AgentDefinition = {
   id: defaultAgentDefinitionId,
   displayName: "Shopkeeper",
   role: "General shopkeeper and storefront attendant",
-  description: "Safe offline fallback while the open-source agent catalogue is unavailable.",
+  description:
+    "Soko's default shop assistant, running on the ZeroClaw agent runtime. Also the safe fallback while the open-source agent catalogue is unavailable.",
   operatingPattern: "Focused operator",
   workloadClass: "focused",
   minimumDeviceTier: "low",
@@ -4104,6 +4308,19 @@ export const defaultAgentDefinition: AgentDefinition = {
     "Workspace delivery"
   ],
   skillIds: [],
+  runtimeAdapterId: "zeroclaw"
+};
+
+/**
+ * Same built-in shopkeeper behavior as defaultAgentDefinition, running on Soko's built-in engine
+ * instead of ZeroClaw. Choosing it is how a shop swaps off ZeroClaw.
+ */
+export const sokoEngineAgentDefinitionId: AgentDefinitionId = "builtin:shopkeeper-soko";
+export const sokoEngineAgentDefinition: AgentDefinition = {
+  ...defaultAgentDefinition,
+  id: sokoEngineAgentDefinitionId,
+  displayName: "Shopkeeper (Soko engine)",
+  description: "Same shopkeeper behavior, running on Soko's built-in agent engine.",
   runtimeAdapterId: "soko"
 };
 

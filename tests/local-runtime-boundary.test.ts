@@ -24,8 +24,10 @@ describe("optional client-side runtime boundary", () => {
     expect(chatRuntime).toContain(
       "const shouldRequestServerInference = !shouldResolveClientInference;"
     );
-    expect(chatRuntime).toContain(
-      "postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`"
+    // The server turn is wrapped by withAgentTurnPreview (live reply text), but is still the
+    // plain authorized server runtime turn.
+    expect(chatRuntime).toMatch(
+      /postJson<RuntimeTurnResult>\(\s*`\/businesses\/\$\{business\.id\}\/runtime\/turns`/u
     );
   });
 

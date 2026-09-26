@@ -172,6 +172,12 @@ normally; only an actual inference turn against it surfaces `RUNTIME_MODEL_NOT_C
 
 ## OpenAI's role now (removed)
 
+> **Update:** OpenAI, Anthropic, Z.ai and any OpenAI-compatible server (including Soko-hosted
+> llama.cpp) are now reachable again as _optional_ providers through the multi-provider inference
+> router, exposed to agents as ordinary `ModelRuntimeAdapter`s on the `backend` target. None is
+> required to boot and none is a default. See
+> [multi-provider-inference-implementation.md](./multi-provider-inference-implementation.md).
+
 `services/api/src/inference/openai-provider.ts`, `createOpenAiProvider`, and the `openai-fast` /
 `openai-reasoning` catalog entries were removed entirely as part of the Vercel inference migration
 (`docs/runtime/vercel-inference-audit.md`) - not because OpenAI-as-one-optional-provider was ever

@@ -53,6 +53,7 @@ import {
 import { executeInferenceRoute } from "../inference/executor";
 import { readClientInferencePreferences } from "../inference/preferences";
 import { createRemoteInferenceProvider } from "../inference/remote-provider";
+import { withAgentTurnPreview } from "../inference/agent-turn-preview";
 import {
   apiFetch,
   isRetryableApiRequestError,
@@ -673,18 +674,27 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       try {
         const persisted =
           !hasHumanRecipient && business !== null && shouldRequestServerInference
-            ? await runtimeManager.runWithSession(
-                runtimeManagerKey(activeSession.account.id, business.id),
-                createManagedRuntimeSession,
-                (managedRuntimeSessionId) =>
-                  postJson<ProcessedConversationMessageResponse>("/v1/messages", {
-                    ...payload,
-                    agent: {
-                      ...(payload.agent as Record<string, unknown>),
-                      runtimeSessionId: managedRuntimeSessionId
-                    }
-                  })
-              )
+            ? await withAgentTurnPreview({
+                setChatMessages,
+                onStatus: setStatusMessage,
+                run: (turnHeaders) =>
+                  runtimeManager.runWithSession(
+                    runtimeManagerKey(activeSession.account.id, business.id),
+                    createManagedRuntimeSession,
+                    (managedRuntimeSessionId) =>
+                      postJson<ProcessedConversationMessageResponse>(
+                        "/v1/messages",
+                        {
+                          ...payload,
+                          agent: {
+                            ...(payload.agent as Record<string, unknown>),
+                            runtimeSessionId: managedRuntimeSessionId
+                          }
+                        },
+                        { headers: turnHeaders }
+                      )
+                  )
+              })
             : await postJson<ProcessedConversationMessageResponse>("/v1/messages", payload);
         if (activeConversation !== null) {
           setChatMessages((messages) => {
@@ -1282,15 +1292,21 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         business.id
       );
       const key = runtimeManagerKey(activeSession.account.id, business.id);
-      const result = await runtimeManager.runWithSession(
-        key,
-        createManagedRuntimeSession,
-        (managedRuntimeSessionId) =>
-          postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
-            runtimeSessionId: managedRuntimeSessionId,
-            message: runtimeMessage
-          })
-      );
+      const result = await withAgentTurnPreview({
+        setChatMessages,
+        onStatus: setStatusMessage,
+        run: (turnHeaders) =>
+          runtimeManager.runWithSession(
+            key,
+            createManagedRuntimeSession,
+            (managedRuntimeSessionId) =>
+              postJson<RuntimeTurnResult>(
+                `/businesses/${business.id}/runtime/turns`,
+                { runtimeSessionId: managedRuntimeSessionId, message: runtimeMessage },
+                { headers: turnHeaders }
+              )
+          )
+      });
       await applyRuntimeResult(result, true);
     } catch (error) {
       await appendAgentMessage(
@@ -1314,10 +1330,15 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     setChatMessages((messages) => [...messages, merchantMessage]);
 
     try {
-      const result = await postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
-        runtimeSessionId,
-        message: "confirm",
-        confirmationToken
+      const result = await withAgentTurnPreview({
+        setChatMessages,
+        onStatus: setStatusMessage,
+        run: (turnHeaders) =>
+          postJson<RuntimeTurnResult>(
+            `/businesses/${business.id}/runtime/turns`,
+            { runtimeSessionId, message: "confirm", confirmationToken },
+            { headers: turnHeaders }
+          )
       });
       setRuntimeSessionId(result.session.id);
       setChatMessages((messages) => [

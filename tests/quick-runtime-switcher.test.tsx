@@ -37,7 +37,7 @@ describe("quick runtime switcher", () => {
   function agent(): AgentSettings {
     return {
       name: "Shopkeeper",
-      model: "smollm2-360m",
+      model: "gpt-6-luna",
       agentDefinitionId: "builtin:shopkeeper",
       contextScripts: []
     } as unknown as AgentSettings;
@@ -100,7 +100,7 @@ describe("quick runtime switcher", () => {
             name: "Shopkeeper (Pi engine)",
             runtimeAdapterId: "pi"
           },
-          model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
+          model: { id: "gpt-6-luna", name: "GPT-6 Luna" },
           execution: { type: "backend", hostId: "host-1", ready: true },
           binding: { id: "binding-1" },
           source: "default",
@@ -111,8 +111,8 @@ describe("quick runtime switcher", () => {
         jsonResponse({
           models: [
             {
-              id: "smollm2-360m",
-              label: "SmolLM2 360M Instruct Q4_0",
+              id: "gpt-6-luna",
+              label: "GPT-6 Luna",
               provider: "local",
               description: "",
               capabilities: [],
@@ -171,9 +171,9 @@ describe("quick runtime switcher", () => {
     expect(agentSelect?.value).toBe("builtin:pi-assistant");
     const selects = host.querySelectorAll<HTMLSelectElement>("select");
     const modelSelect = selects[1] as HTMLSelectElement;
-    expect(modelSelect.value).toBe("smollm2-360m");
+    expect(modelSelect.value).toBe("gpt-6-luna");
     const modelOptionValues = [...modelSelect.options].map((option) => option.value);
-    expect(modelOptionValues).toEqual(["smollm2-360m"]);
+    expect(modelOptionValues).toEqual(["gpt-6-luna"]);
   });
 
   it("activates an agent-definition change immediately and reports the new selection", async () => {
@@ -189,7 +189,7 @@ describe("quick runtime switcher", () => {
       "/businesses/agent-shop-2/runtime/effective": () =>
         jsonResponse({
           agent: { id: "builtin:shopkeeper", name: "Shopkeeper", runtimeAdapterId: "soko" },
-          model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
+          model: { id: "gpt-6-luna", name: "GPT-6 Luna" },
           execution: { type: "backend", hostId: "host-1", ready: true },
           binding: { id: "binding-1" },
           source: "default",
@@ -200,8 +200,8 @@ describe("quick runtime switcher", () => {
         jsonResponse({
           models: [
             {
-              id: "smollm2-360m",
-              label: "SmolLM2 360M Instruct Q4_0",
+              id: "gpt-6-luna",
+              label: "GPT-6 Luna",
               provider: "local",
               description: "",
               capabilities: [],
@@ -246,7 +246,7 @@ describe("quick runtime switcher", () => {
           agentDefinitionId: "builtin:pi-assistant",
           name: "Shopkeeper",
           description: "",
-          modelId: "smollm2-360m",
+          modelId: "gpt-6-luna",
           role: "General shopkeeper",
           language: "en",
           personality: "Warm",
@@ -291,7 +291,7 @@ describe("quick runtime switcher", () => {
       [`/businesses/${shopId}/runtime/effective`]: () =>
         jsonResponse({
           agent: { id: "builtin:shopkeeper", name: "Shopkeeper", runtimeAdapterId: "soko" },
-          model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
+          model: { id: "gpt-6-luna", name: "GPT-6 Luna" },
           execution: { type: "backend", hostId: "host-1", ready: true },
           binding: { id: "binding-1" },
           source: "default",
@@ -302,8 +302,8 @@ describe("quick runtime switcher", () => {
         jsonResponse({
           models: [
             {
-              id: "smollm2-360m",
-              label: "SmolLM2 360M Instruct Q4_0",
+              id: "gpt-6-luna",
+              label: "GPT-6 Luna",
               provider: "local",
               description: "",
               capabilities: [],
@@ -379,7 +379,7 @@ describe("quick runtime switcher", () => {
     });
     // No activation request fired yet, and the dropdown still reflects the active model.
     expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/qwen3-4b/activate`)).toBe(false);
-    expect(modelSelect.value).toBe("smollm2-360m");
+    expect(modelSelect.value).toBe("gpt-6-luna");
     expect(host.textContent).toContain("merchant-funded");
     expect(updateAgent).not.toHaveBeenCalled();
 
@@ -430,7 +430,7 @@ describe("quick runtime switcher", () => {
     });
 
     expect(host.querySelector('[role="alertdialog"]')).toBeNull();
-    expect(modelSelect.value).toBe("smollm2-360m");
+    expect(modelSelect.value).toBe("gpt-6-luna");
     expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/qwen3-4b/activate`)).toBe(false);
   });
 
@@ -448,10 +448,10 @@ describe("quick runtime switcher", () => {
           status: "READY",
           ready: true
         }),
-      [`/api/agents/${shopId}/models/smollm2-360m/activate`]: () =>
+      [`/api/agents/${shopId}/models/gpt-6-luna/activate`]: () =>
         jsonResponse({
           status: "active",
-          binding: { id: "binding-1", agentId: shopId, modelId: "smollm2-360m" },
+          binding: { id: "binding-1", agentId: shopId, modelId: "gpt-6-luna" },
           healthCheck: { latencyMs: 5 }
         })
     });
@@ -472,14 +472,14 @@ describe("quick runtime switcher", () => {
 
     const modelSelect = host.querySelectorAll<HTMLSelectElement>("select")[1] as HTMLSelectElement;
     await act(async () => {
-      modelSelect.value = "smollm2-360m";
+      modelSelect.value = "gpt-6-luna";
       modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
 
     expect(host.querySelector('[role="alertdialog"]')).toBeNull();
-    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/smollm2-360m/activate`)).toBe(
+    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/gpt-6-luna/activate`)).toBe(
       true
     );
   });

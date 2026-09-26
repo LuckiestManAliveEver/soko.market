@@ -1,7 +1,7 @@
 import { OfflineRuntimeSettings } from "./OfflineRuntimeSettings";
 import { useRuntimeHandoff } from "./hooks/useRuntimeHandoff";
 import type { ChatMessage } from "./app-shell";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 
 import type {
   AccountShopSummary,
@@ -30,6 +30,11 @@ import { ModelTemplateGovernancePanel } from "./ModelTemplateGovernancePanel";
 import { YourShopsPanel } from "./YourShopsPanel";
 import StaffCard from "./StaffCard";
 import { shopAfterLeaving } from "./stored-shop";
+
+// Loaded only when the owner opens Settings -> AI providers, keeping it out of the owner route chunk.
+const AiProvidersPanel = lazy(() =>
+  import("./AiProvidersPanel").then((module) => ({ default: module.AiProvidersPanel }))
+);
 
 import {
   AgentModelPanel,
@@ -580,6 +585,16 @@ export function AgentProfileSurface({
               activeAiModelId={activeAiModelId}
               setActiveAiModelId={setActiveAiModelId}
             />
+          </Suspense>
+        </SettingsGroup>
+
+        <SettingsGroup
+          id="settings-group-ai-providers"
+          title="AI providers"
+          description="OpenAI, Anthropic, Z.ai, Soko Cloud, and on-device AI"
+        >
+          <Suspense fallback={<div className="inline-loading-card">Opening AI providers…</div>}>
+            <AiProvidersPanel businessId={business.id} />
           </Suspense>
         </SettingsGroup>
 

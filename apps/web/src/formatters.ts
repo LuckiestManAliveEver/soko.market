@@ -141,7 +141,9 @@ export function formatExecutionTarget(value: AgentModelBindingSummary["execution
     {
       vercel: "Soko backend",
       backend: "Soko backend",
-      "remote-shop-device": "signed-in shop device"
+      "remote-shop-device": "signed-in shop device",
+      "browser-local": "this device's browser",
+      "installed-app": "the installed Soko app"
     } satisfies Record<AgentModelBindingSummary["executionTarget"], string>
   )[value];
 }

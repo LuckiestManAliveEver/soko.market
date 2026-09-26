@@ -73,8 +73,8 @@ export class NativeRuntimeBindingStore {
       businessId: null,
       accountId: null,
       name: this.defaultRuntimePolicy.agentName,
-      provider: adapterId === "pi" ? "pi" : "soko-business-agent",
-      packageRef: adapterId === "pi" ? "npm:@earendil-works/pi-agent-core@0.84.4" : null,
+      provider: agentProviderFor(adapterId),
+      packageRef: agentPackageRefFor(adapterId),
       version: "1",
       runtimeContractVersion: nativeRuntimeContractVersion,
       capabilities: ["tools", "mcp"],
@@ -171,8 +171,8 @@ export class NativeRuntimeBindingStore {
       businessId: input.businessId,
       accountId: input.accountId,
       name: input.agentName,
-      provider: adapterId === "pi" ? "pi" : "soko-business-agent",
-      packageRef: adapterId === "pi" ? "npm:@earendil-works/pi-agent-core@0.84.4" : null,
+      provider: agentProviderFor(adapterId),
+      packageRef: agentPackageRefFor(adapterId),
       version: "1",
       runtimeContractVersion: nativeRuntimeContractVersion,
       capabilities: ["tools", "mcp"],
@@ -1337,4 +1337,17 @@ function incompatibleContract(
     false,
     { bindingId, agentId, modelId }
   );
+}
+
+/** Descriptive provenance for a native agent record, by engine. Execution never reads these. */
+function agentProviderFor(adapterId: string): string {
+  if (adapterId === "pi") return "pi";
+  if (adapterId === "zeroclaw") return "zeroclaw";
+  return "soko-business-agent";
+}
+
+function agentPackageRefFor(adapterId: string): string | null {
+  if (adapterId === "pi") return "npm:@earendil-works/pi-agent-core@0.84.4";
+  if (adapterId === "zeroclaw") return "github:zeroclaw-labs/zeroclaw";
+  return null;
 }

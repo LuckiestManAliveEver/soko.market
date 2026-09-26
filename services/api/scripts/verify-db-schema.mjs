@@ -151,6 +151,65 @@ const expectedFulfillmentColumns = new Map([
     ]
   ]
 ]);
+// Multi-provider inference tables (101_multi_provider_inference.sql). Checked for columns only:
+// they deliberately have no foreign keys (see that migration's header), so the stricter
+// expectedTables constraint check above does not apply.
+const expectedInferenceColumns = new Map([
+  [
+    "inference_providers",
+    [
+      "id",
+      "display_name",
+      "provider_type",
+      "base_url",
+      "execution_target",
+      "enabled",
+      "credential_ref"
+    ]
+  ],
+  [
+    "inference_provider_credentials",
+    [
+      "id",
+      "scope",
+      "tenant_id",
+      "user_id",
+      "provider_id",
+      "credential_type",
+      "encrypted_secret",
+      "key_version",
+      "status",
+      "created_at",
+      "updated_at",
+      "revoked_at",
+      "last_verified_at"
+    ]
+  ],
+  [
+    "inference_runs",
+    [
+      "id",
+      "request_id",
+      "conversation_id",
+      "agent_id",
+      "model_id",
+      "provider_id",
+      "credential_scope",
+      "execution_target",
+      "input_tokens",
+      "output_tokens",
+      "cached_input_tokens",
+      "estimated_cost",
+      "currency",
+      "latency_ms",
+      "first_token_ms",
+      "status",
+      "fallback_from_provider_id",
+      "created_at"
+    ]
+  ],
+  ["inference_policies", ["scope", "owner_key", "daily_budget", "fallback_policy"]]
+]);
 const expectedMigrations = new Map(
   await Promise.all(
     migrationFilenames.map(async (filename) => {
@@ -210,6 +269,22 @@ try {
       if (!constraintTypes.has(requiredType)) {
         throw new Error(`${tableName} is missing a ${requiredType} constraint.`);
       }
+    }
+  }
+
+  for (const [tableName, expectedColumns] of expectedInferenceColumns) {
+    const columns = await client.query(
+      `
+        select column_name
+        from information_schema.columns
+        where table_schema = 'public' and table_name = $1
+      `,
+      [tableName]
+    );
+    const actualColumns = new Set(columns.rows.map((row) => row.column_name));
+    const missingColumns = expectedColumns.filter((column) => !actualColumns.has(column));
+    if (missingColumns.length > 0) {
+      throw new Error(`${tableName} is missing columns: ${missingColumns.join(", ")}`);
     }
   }
 

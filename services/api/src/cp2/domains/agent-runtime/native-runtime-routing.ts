@@ -172,6 +172,8 @@ export function resolveNativeRuntimeModelProvider(input: {
       modelId,
       agentId,
       shopId,
+      ...(runtimeBindingId === null ? {} : { runtimeBindingId }),
+      ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
       ...(providerCredential === undefined ? {} : { providerCredential })
     }
   });

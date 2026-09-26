@@ -46,7 +46,7 @@ describe("AgentModelPanel merchant-funded activation confirmation", () => {
   function agent(): AgentSettings {
     return {
       name: "Shopkeeper",
-      model: "smollm2-360m",
+      model: "gpt-6-luna",
       agentDefinitionId: "builtin:shopkeeper",
       contextScripts: []
     } as unknown as AgentSettings;
@@ -69,8 +69,8 @@ describe("AgentModelPanel merchant-funded activation confirmation", () => {
 
   function backendModel(overrides: Partial<AiModelSummary> = {}): AiModelSummary {
     return {
-      id: "smollm2-360m",
-      label: "SmolLM2 360M Instruct Q4_0",
+      id: "gpt-6-luna",
+      label: "GPT-6 Luna",
       provider: "local",
       description: "",
       capabilities: [],
@@ -103,7 +103,7 @@ describe("AgentModelPanel merchant-funded activation confirmation", () => {
       [`/businesses/${shopId}/runtime/effective`]: () =>
         jsonResponse({
           agent: { id: "builtin:shopkeeper", name: "Shopkeeper", runtimeAdapterId: "soko" },
-          model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
+          model: { id: "gpt-6-luna", name: "GPT-6 Luna" },
           execution: { type: "backend", hostId: "host-1", ready: true },
           binding: { id: "binding-1" },
           source: "default",
@@ -149,7 +149,7 @@ describe("AgentModelPanel merchant-funded activation confirmation", () => {
   // same way the real host component does.
   function Harness({ shopId }: { shopId: string }) {
     const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
-    const [activeAiModelId, setActiveAiModelId] = useState("smollm2-360m");
+    const [activeAiModelId, setActiveAiModelId] = useState("gpt-6-luna");
     const [profileMessage, setProfileMessage] = useState("");
     return (
       <AgentModelPanel
@@ -282,13 +282,13 @@ describe("AgentModelPanel merchant-funded activation confirmation", () => {
     const shopId = "panel-shop-default";
     const fetchMock = stubFetch({
       ...fixture(shopId),
-      [`/api/agents/${shopId}/models/smollm2-360m/activate`]: () =>
+      [`/api/agents/${shopId}/models/gpt-6-luna/activate`]: () =>
         jsonResponse({
           status: "active",
           binding: {
             id: "binding-1",
             agentId: shopId,
-            modelId: "smollm2-360m",
+            modelId: "gpt-6-luna",
             status: "active",
             executionTarget: "vercel",
             lastVerifiedAt: null
@@ -307,13 +307,13 @@ describe("AgentModelPanel merchant-funded activation confirmation", () => {
 
     await openLibrary();
     await act(async () => {
-      useWithAgentButtonFor("SmolLM2 360M Instruct Q4_0").click();
+      useWithAgentButtonFor("GPT-6 Luna").click();
       await Promise.resolve();
       await Promise.resolve();
     });
 
     expect(host.querySelector('[role="alertdialog"]')).toBeNull();
-    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/smollm2-360m/activate`)).toBe(
+    expect(calledWithPath(fetchMock, `/api/agents/${shopId}/models/gpt-6-luna/activate`)).toBe(
       true
     );
   });

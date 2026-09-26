@@ -1,3 +1,4 @@
+import { isValidTurnId, turnContext } from "./inference/turn-stream.js";
 import Fastify, { type FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
@@ -95,6 +96,19 @@ export function buildApi(options: BuildApiOptions = {}) {
     })
   });
 
+  // Per-turn context (services/api/src/inference/turn-stream.ts): a client that watches a turn's
+  // reply stream, or whose device runs an on-device model, names the turn in x-soko-turn-id. The
+  // rest of the request runs inside that context so model adapters deep in the pipeline can find
+  // it without the turn pipeline carrying it. Callback-style so the context spans the handler.
+  app.addHook("onRequest", (request, _reply, done) => {
+    const turnId = request.headers["x-soko-turn-id"];
+    if (isValidTurnId(turnId)) {
+      turnContext.run({ turnId }, done);
+      return;
+    }
+    done();
+  });
+
   // Store subdomain redirect (docs/architecture/soko-id-slug-system.md): once a wildcard
   // *.soko.market custom domain is registered against this service, a request that arrives with
   // Host: {handle}.soko.market resolves to that business's canonical storefront and redirects
@@ -133,7 +147,7 @@ export function buildApi(options: BuildApiOptions = {}) {
       reply.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
       reply.header(
         "access-control-allow-headers",
-        "content-type,x-request-id,idempotency-key,x-soko-device-id,x-soko-device-name,x-soko-platform,x-soko-client"
+        "content-type,x-request-id,idempotency-key,x-soko-device-id,x-soko-device-name,x-soko-platform,x-soko-client,x-soko-turn-id"
       );
       reply.header(
         "access-control-expose-headers",

@@ -75,6 +75,216 @@ export function computeModelAvailability(modelId: string, storedAvailable: boole
   return storedAvailable;
 }
 
+/**
+ * On-device (browser-local) and Soko Cloud router models - also seeded into existing databases by
+ * infra/db/migrations/102_inference_catalog_seeds.sql and 103_shopkeeper_zeroclaw_default.sql,
+ * which must stay in step with this list.
+ */
+export const inferenceRouterSeedModels: AiModelSummary[] = [
+  {
+    id: "smollm2-360m-device",
+    label: "SmolLM2 360M (on this device)",
+    provider: "local",
+    description:
+      "Runs privately on your own phone or computer (WebGPU). Smallest and fastest to download; best for short replies. Nothing is sent to a cloud model.",
+    capabilities: ["chat", "on-device", "english"],
+    available: true,
+    source: "huggingface",
+    format: "remote",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/mlc-ai/SmolLM2-360M-Instruct-q4f16_1-MLC",
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: 394000000,
+    minimumMemoryGb: 2,
+    recommended: false,
+    contextWindow: 4096,
+    canonicalModelId: "SmolLM2-360M-Instruct-q4f16_1-MLC",
+    supportsToolCalling: false,
+    supportsStructuredOutput: true,
+    inference: {
+      providerId: "local",
+      providerModelId: "SmolLM2-360M-Instruct-q4f16_1-MLC",
+      executionTarget: "browser-local",
+      capabilities: {
+        text: true,
+        structuredOutput: true,
+        streaming: true
+      },
+      maxOutputTokens: 512,
+      enabled: true,
+      pricing: {
+        inputPerMillionTokens: 0,
+        outputPerMillionTokens: 0,
+        currency: "USD"
+      }
+    }
+  },
+  {
+    id: "qwen2.5-0.5b-device",
+    label: "Qwen2.5 0.5B (on this device)",
+    provider: "local",
+    description:
+      "Runs privately on your own phone or computer (WebGPU). Multilingual, a good balance of size and quality. Nothing is sent to a cloud model.",
+    capabilities: ["chat", "on-device", "multilingual"],
+    available: true,
+    source: "huggingface",
+    format: "remote",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: 990000000,
+    minimumMemoryGb: 3,
+    recommended: true,
+    contextWindow: 4096,
+    canonicalModelId: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+    supportsToolCalling: false,
+    supportsStructuredOutput: true,
+    inference: {
+      providerId: "local",
+      providerModelId: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+      executionTarget: "browser-local",
+      capabilities: {
+        text: true,
+        structuredOutput: true,
+        streaming: true
+      },
+      maxOutputTokens: 512,
+      enabled: true,
+      pricing: {
+        inputPerMillionTokens: 0,
+        outputPerMillionTokens: 0,
+        currency: "USD"
+      }
+    }
+  },
+  {
+    id: "qwen3-1.7b-device",
+    label: "Qwen3 1.7B (on this device)",
+    provider: "local",
+    description:
+      "Runs privately on your own computer or a high-end phone (WebGPU, about 2 GB). The most capable on-device option. Nothing is sent to a cloud model.",
+    capabilities: ["chat", "on-device", "multilingual", "reasoning"],
+    available: true,
+    source: "huggingface",
+    format: "remote",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/mlc-ai/Qwen3-1.7B-q4f16_1-MLC",
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: 2136000000,
+    minimumMemoryGb: 6,
+    recommended: false,
+    contextWindow: 4096,
+    canonicalModelId: "Qwen3-1.7B-q4f16_1-MLC",
+    supportsToolCalling: false,
+    supportsStructuredOutput: true,
+    inference: {
+      providerId: "local",
+      providerModelId: "Qwen3-1.7B-q4f16_1-MLC",
+      executionTarget: "browser-local",
+      capabilities: {
+        text: true,
+        structuredOutput: true,
+        streaming: true,
+        reasoning: true
+      },
+      maxOutputTokens: 768,
+      enabled: true,
+      pricing: {
+        inputPerMillionTokens: 0,
+        outputPerMillionTokens: 0,
+        currency: "USD"
+      }
+    }
+  },
+  {
+    id: "qwen3-4b-soko-cloud",
+    label: "Qwen3-4B (Soko Cloud)",
+    provider: "soko-llama",
+    description:
+      "Qwen3-4B served by Soko's own llama.cpp inference server. Available once an operator configures SOKO_LLAMA_BASE_URL and enables this entry.",
+    capabilities: ["chat", "multilingual", "reasoning"],
+    available: false,
+    source: "hosted",
+    format: "remote",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/Qwen/Qwen3-4B/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/Qwen/Qwen3-4B",
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: false,
+    contextWindow: 32768,
+    canonicalModelId: "Qwen/Qwen3-4B",
+    supportsToolCalling: false,
+    supportsStructuredOutput: false,
+    inference: {
+      providerId: "soko-llama",
+      providerModelId: "qwen3-4b",
+      executionTarget: "remote-inference",
+      capabilities: {
+        text: true,
+        streaming: true,
+        reasoning: true
+      },
+      maxOutputTokens: 1024,
+      enabled: false,
+      pricing: null
+    }
+  },
+  {
+    // The platform default model (repositoryDefaultRuntimePolicy): Soko-funded, run by the
+    // Shopkeeper agent on the ZeroClaw runtime (ADR-zeroclaw-default-agent-runtime.md). Pricing is
+    // OpenAI's published short-context rate at seeding time; operators re-verify it through
+    // PUT /v1/platform/model-catalog/gpt-6-luna when it changes.
+    id: "gpt-6-luna",
+    label: "GPT-6 Luna",
+    provider: "openai",
+    description:
+      "OpenAI's efficient model for focused, high-volume tasks. Included with Soko: the platform pays for it within Soko's usage limits.",
+    capabilities: ["chat", "multilingual", "reasoning", "instruction-following"],
+    available: true,
+    source: "hosted",
+    format: "remote",
+    license: null,
+    licenseUrl: null,
+    modelCardUrl: "https://developers.openai.com/api/docs/models/gpt-6-luna",
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: true,
+    contextWindow: 1050000,
+    canonicalModelId: "gpt-6-luna",
+    supportsToolCalling: true,
+    supportsStructuredOutput: true,
+    inference: {
+      providerId: "openai",
+      providerModelId: "gpt-6-luna",
+      executionTarget: "remote-inference",
+      capabilities: {
+        text: true,
+        structuredOutput: true,
+        streaming: true,
+        reasoning: true
+      },
+      maxOutputTokens: 1024,
+      enabled: true,
+      pricing: {
+        inputPerMillionTokens: 0.1,
+        outputPerMillionTokens: 0.5,
+        currency: "USD"
+      }
+    }
+  }
+];
+
 export const aiModelRegistry: AiModelSummary[] = [
   {
     id: "qwen3-4b",
@@ -173,10 +383,10 @@ export const aiModelRegistry: AiModelSummary[] = [
     contextWindow: 2_048
   },
   {
-    id: defaultAiModelId,
+    id: "smollm2-360m",
     label: "SmolLM2 360M Instruct Q4_0",
     provider: "local",
-    description: "Small Apache-2.0 instruction model used by the default hosted runtime.",
+    description: "Small Apache-2.0 instruction model served by Soko's Vercel inference host.",
     capabilities: ["chat", "english", "instruction-following"],
     available: true,
     source: "hosted",

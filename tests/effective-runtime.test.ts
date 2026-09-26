@@ -5,7 +5,7 @@ import { createCp2Store } from "../services/api/src/cp2/store";
 import type { ModelRuntimeAdapter } from "../services/api/src/inference/model-runtime";
 
 describe("effective runtime API", () => {
-  it("returns backend-verified Pi + SmolLM for an untouched account", async () => {
+  it("returns backend-verified Shopkeeper + GPT-6 Luna for an untouched account", async () => {
     const app = buildApi({
       cp2: { store: createCp2Store({ modelRuntimeAdapterResolver: resolver }) }
     });
@@ -19,9 +19,10 @@ describe("effective runtime API", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        agent: { id: "builtin:shopkeeper", name: "Shopkeeper", runtimeAdapterId: "pi" },
-        model: { id: "smollm2-360m", name: "SmolLM2 360M Instruct Q4_0" },
-        execution: { type: "vercel", ready: true },
+        // No ZeroClaw gateway in tests, so Shopkeeper's ZeroClaw engine resolves to Soko's own.
+        agent: { id: "builtin:shopkeeper", name: "Shopkeeper", runtimeAdapterId: "soko" },
+        model: { id: "gpt-6-luna", name: "GPT-6 Luna" },
+        execution: { type: "backend", ready: true },
         source: "default",
         status: "READY",
         ready: true
@@ -44,9 +45,9 @@ describe("effective runtime API", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        agent: { id: "builtin:shopkeeper", runtimeAdapterId: "pi" },
-        model: { id: "smollm2-360m" },
-        execution: { type: "vercel", hostId: null, ready: false },
+        agent: { id: "builtin:shopkeeper", runtimeAdapterId: "soko" },
+        model: { id: "gpt-6-luna" },
+        execution: { type: "backend", hostId: null, ready: false },
         binding: null,
         source: "default",
         status: "UNAVAILABLE",
@@ -96,7 +97,7 @@ describe("effective runtime API", () => {
       const restored = await effective(app, actor);
       expect(restored).toMatchObject({
         binding: { id: initialBindingId },
-        model: { id: "smollm2-360m" },
+        model: { id: "gpt-6-luna" },
         source: "default",
         ready: true
       });
@@ -106,19 +107,22 @@ describe("effective runtime API", () => {
   });
 });
 
+// The default (GPT-6 Luna) runs on "backend"; the explicitly activated model on "vercel".
 const resolver = ({ modelId, executionTarget }: { modelId: string; executionTarget: string }) =>
-  executionTarget === "vercel" ? adapter(modelId) : undefined;
+  executionTarget === "vercel" || executionTarget === "backend"
+    ? adapter(modelId, executionTarget)
+    : undefined;
 
-function adapter(modelId: string): ModelRuntimeAdapter {
+function adapter(modelId: string, executionTarget: "vercel" | "backend"): ModelRuntimeAdapter {
   return {
     provider: "test-vercel",
-    executionTarget: "vercel",
+    executionTarget,
     canRun: async () => ({ available: true, errorCode: null, message: null }),
     healthCheck: async () => ({
       available: true,
       modelId,
       provider: "test-vercel",
-      executionTarget: "vercel",
+      executionTarget,
       latencyMs: 1,
       responsePreview: "SOKO_MODEL_OK",
       errorCode: null,
@@ -129,7 +133,7 @@ function adapter(modelId: string): ModelRuntimeAdapter {
       text: JSON.stringify({ type: "response", message: "Ready." }),
       modelId,
       provider: "test-vercel",
-      executionTarget: "vercel",
+      executionTarget,
       latencyMs: 1
     })
   };

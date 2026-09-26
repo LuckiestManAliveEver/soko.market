@@ -76,8 +76,16 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
     );
   });
 
-  it("exposes exactly the three provider-neutral targets and rejects provider names", () => {
-    expect(modelExecutionTargets).toEqual(["vercel", "backend", "remote-shop-device"]);
+  it("exposes exactly the provider-neutral targets and rejects provider names", () => {
+    // browser-local / installed-app are location targets (ADR-explicit-device-local-models.md),
+    // not providers.
+    expect(modelExecutionTargets).toEqual([
+      "vercel",
+      "backend",
+      "remote-shop-device",
+      "browser-local",
+      "installed-app"
+    ]);
     expect(isModelExecutionTarget("openai")).toBe(false);
     expect(isModelExecutionTarget("anthropic")).toBe(false);
 
@@ -407,17 +415,17 @@ describe("zero-setup hosted-first runtime provisioning", () => {
   it("provisions a verified generic backend binding for first chat without manual activation", async () => {
     const backendGenerate = vi.fn(async () => ({
       text: JSON.stringify({ type: "response", message: "Soko AI is ready." }),
-      modelId: "smollm2-360m",
+      modelId: "gpt-6-luna",
       provider: "test-hosted-adapter",
-      executionTarget: "vercel" as const,
+      executionTarget: "backend" as const,
       latencyMs: 2
     }));
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ executionTarget }) =>
-        executionTarget === "vercel"
+        executionTarget === "backend"
           ? {
               provider: "test",
-              executionTarget: "vercel",
+              executionTarget: "backend",
               canRun: async () => ({ available: true, errorCode: null, message: null }),
               healthCheck: async () => {
                 throw new Error("not used in this test");
@@ -473,8 +481,8 @@ describe("zero-setup hosted-first runtime provisioning", () => {
         response: "Soko AI is ready.",
         model: {
           status: "available",
-          modelId: "smollm2-360m",
-          executionTarget: "vercel",
+          modelId: "gpt-6-luna",
+          executionTarget: "backend",
           fallbackIndex: 0
         }
       }
@@ -494,22 +502,22 @@ describe("zero-setup hosted-first runtime provisioning", () => {
   // never sends a conversationId (it uses runtimeSessionId, not a Conversation record). Resolution
   // used to hard-return null for every conversationId-less call, so this exact request threw
   // 409 NO_COMPATIBLE_EXECUTION_TARGET ("No execution target is configured for this model...") even
-  // though the platform default (Pi + SmolLM 360M) was fully provisionable. See
+  // though the platform default (then Pi + SmolLM 360M) was fully provisionable. See
   // NativeRuntimeBindingStore.resolveRuntimeBinding and docs/architecture/runtime-resolution.md.
   it("provisions and resolves the platform default for a conversation-free runtime turn (first chat with Soko AI)", async () => {
     const backendGenerate = vi.fn(async () => ({
       text: JSON.stringify({ type: "response", message: "Hi there!" }),
-      modelId: "smollm2-360m",
+      modelId: "gpt-6-luna",
       provider: "test-hosted-adapter",
-      executionTarget: "vercel" as const,
+      executionTarget: "backend" as const,
       latencyMs: 2
     }));
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ executionTarget }) =>
-        executionTarget === "vercel"
+        executionTarget === "backend"
           ? {
               provider: "test",
-              executionTarget: "vercel",
+              executionTarget: "backend",
               canRun: async () => ({ available: true, errorCode: null, message: null }),
               healthCheck: async () => {
                 throw new Error("not used in this test");
@@ -558,8 +566,8 @@ describe("zero-setup hosted-first runtime provisioning", () => {
         response: "Hi there!",
         model: {
           status: "available",
-          modelId: "smollm2-360m",
-          executionTarget: "vercel"
+          modelId: "gpt-6-luna",
+          executionTarget: "backend"
         }
       }
     });
@@ -579,17 +587,17 @@ describe("zero-setup hosted-first runtime provisioning", () => {
     // the resolver must not require a pre-existing binding row to reach the zero-setup path.
     const backendGenerate = vi.fn(async () => ({
       text: JSON.stringify({ type: "response", message: "Still ready." }),
-      modelId: "smollm2-360m",
+      modelId: "gpt-6-luna",
       provider: "test-hosted-adapter",
-      executionTarget: "vercel" as const,
+      executionTarget: "backend" as const,
       latencyMs: 2
     }));
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ executionTarget }) =>
-        executionTarget === "vercel"
+        executionTarget === "backend"
           ? {
               provider: "test",
-              executionTarget: "vercel",
+              executionTarget: "backend",
               canRun: async () => ({ available: true, errorCode: null, message: null }),
               healthCheck: async () => {
                 throw new Error("not used in this test");
@@ -638,7 +646,7 @@ describe("zero-setup hosted-first runtime provisioning", () => {
     });
     expect(second.statusCode).toBe(200);
     expect(second.json()).toMatchObject({
-      turn: { model: { status: "available", modelId: "smollm2-360m" } }
+      turn: { model: { status: "available", modelId: "gpt-6-luna" } }
     });
     // Idempotent: the second turn must not create a second provisioned binding.
     const provisioned = store

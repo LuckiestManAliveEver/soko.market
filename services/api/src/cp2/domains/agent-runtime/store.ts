@@ -425,26 +425,45 @@ export class AgentRuntimeDomain {
             ).includes(compactSearch))
         );
       })
-      .map((model) => ({
-        ...model,
-        capabilities: [...model.capabilities],
-        costResponsibility: model.id === platformSharedModelId ? "platform-included" : "merchant",
-        // The "backend" key is the frontend's stable field name for "is a server-hosted adapter
-        // configured for this model" (apps/web/src/AgentModelPanel.tsx, QuickRuntimeSwitcher.tsx)
-        // - it does not mean the "backend" ModelExecutionTarget literal specifically. Query
-        // whichever target is actually the live hosted default (Vercel today).
-        runtimeAvailability: {
-          backend:
-            this.deps.modelRuntimeAdapterResolver?.({
-              modelId: model.id,
-              executionTarget: this.deps.platformDefaultRuntime.executionTarget,
-              agentId: "model-catalog",
-              shopId: "model-catalog"
-            }) === undefined
-              ? "unconfigured"
-              : "configured"
-        }
-      }));
+      .map((model) => {
+        const hostedExecutionTarget = this.hostedExecutionTargetFor(model);
+        return {
+          ...model,
+          capabilities: [...model.capabilities],
+          costResponsibility: model.id === platformSharedModelId ? "platform-included" : "merchant",
+          // The "backend" key is the frontend's stable field name for "is a server-hosted adapter
+          // configured for this model" (apps/web/src/AgentModelPanel.tsx, QuickRuntimeSwitcher.tsx)
+          // - it does not mean the "backend" ModelExecutionTarget literal specifically.
+          // hostedExecutionTarget says which target that adapter actually serves.
+          runtimeAvailability: {
+            backend: hostedExecutionTarget === undefined ? "unconfigured" : "configured"
+          },
+          ...(hostedExecutionTarget === undefined ? {} : { hostedExecutionTarget })
+        };
+      });
+  }
+
+  /**
+   * The live hosted default target first (Vercel today), then the router's targets: "backend" for
+   * provider-routed models, "browser-local"/"installed-app" for device-local models. Never guesses: a target is
+   * returned only when an adapter is actually registered for it.
+   */
+  private hostedExecutionTargetFor(model: AiModelSummary): ModelExecutionTarget | undefined {
+    const candidates = [
+      this.deps.platformDefaultRuntime.executionTarget,
+      ...(model.inference === undefined
+        ? []
+        : (["backend", "browser-local", "installed-app"] as const))
+    ];
+    return candidates.find(
+      (executionTarget) =>
+        this.deps.modelRuntimeAdapterResolver?.({
+          modelId: model.id,
+          executionTarget,
+          agentId: "model-catalog",
+          shopId: "model-catalog"
+        }) !== undefined
+    );
   }
 
   getActiveAiModel(input: {
@@ -702,7 +721,12 @@ export class AgentRuntimeDomain {
     now?: Date;
   }): Promise<ModelRuntimeHealthSummary> {
     const now = input.now ?? new Date();
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage", now);
+    const session = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
     this.requireBusinessAgent(input.businessId, input.agentId, now);
     this.requireCanonicalAiModel(input.modelId);
     const adapter = this.requireModelRuntimeAdapter(input);
@@ -710,6 +734,7 @@ export class AgentRuntimeDomain {
       adapter.healthCheck({
         agentId: input.agentId,
         shopId: input.businessId,
+        accountId: session.account.id,
         modelId: input.modelId,
         signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal
       })
@@ -773,6 +798,7 @@ export class AgentRuntimeDomain {
           this.requireModelRuntimeAdapter(input).healthCheck({
             agentId: input.agentId,
             shopId: input.businessId,
+            accountId: session.account.id,
             modelId: input.modelId,
             signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal
           })
@@ -818,6 +844,7 @@ export class AgentRuntimeDomain {
           adapter.healthCheck({
             agentId: input.agentId,
             shopId: input.businessId,
+            accountId: session.account.id,
             modelId: input.modelId,
             signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal
           })
@@ -3164,6 +3191,13 @@ export class AgentRuntimeDomain {
             this.deps.platformDefaultRuntime.executionTarget
       );
     if (hasHostedRuntime) return;
+    // A member who chose an on-device model chose to keep conversations on their device: never
+    // attach a hosted (possibly cloud) fallback behind it (ADR-explicit-device-local-models.md).
+    // If no device is online the turn fails with LOCAL_DEVICE_UNAVAILABLE instead.
+    const primaryTarget =
+      nativeResolution?.primary.host?.type ??
+      nativeResolution?.primary.model.configuration.executionTarget;
+    if (primaryTarget === "browser-local" || primaryTarget === "installed-app") return;
     const modelRuntimeAdapterResolver = this.deps.modelRuntimeAdapterResolver;
     if (modelRuntimeAdapterResolver === undefined) return;
 
