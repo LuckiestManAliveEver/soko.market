@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { McpAccessScope, McpPrincipal, RuntimeSwapDimension } from "@soko/shared-types";
+import type { BuyCheckoutItemInput } from "@soko/shared-types";
 import { Cp2Error, readSessionCookie, type Cp2Store } from "../cp2/store.js";
 import type { FulfillmentService } from "../cp2/domains/fulfillment/service.js";
 import { mcpOAuthChallenge, mcpSecuritySchemes, registerMcpOAuthRoutes } from "./oauth.js";
@@ -33,10 +34,18 @@ interface JsonRpcRequest {
   params?: unknown;
 }
 
+interface PendingCheckout {
+  tokenId: string;
+  items: BuyCheckoutItemInput[];
+  idempotencyKey: string;
+  expiresAt: number;
+}
+
 export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions): void {
   const allowedOrigins = new Set(options.allowedOrigins);
   const sessions = new Map<string, McpSession>();
   const rateWindows = new Map<string, { startedAt: number; requests: number }>();
+  const pendingCheckouts = new Map<string, PendingCheckout>();
   registerMcpOAuthRoutes(app, { store: options.store, publicOrigin: options.publicOrigin });
 
   app.post("/v1/mcp/tokens", async (request, reply) => {
@@ -124,7 +133,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: "soko-market", version: "0.1.0" },
             instructions:
-              "Soko business tools are tenant-scoped. soko.* business mutations require a separate confirmation call. fulfillment.* mutations run directly under the account's role permissions; each tool's description states what repeating it does, and tools that replay from an idempotency record require an idempotencyKey. Grams are decimal strings."
+              "Soko tools act as the authenticated account. Read credentials can browse shops, the marketplace, messages, and notifications. Act credentials can send messages, run permission-checked shop activities, and prepare purchases; checkout requires a separate confirmation call. fulfillment.* mutations run directly under the account's role permissions; each tool's description states what repeating it does, and tools that replay from an idempotency record require an idempotencyKey. Grams are decimal strings."
           }
         });
       }
@@ -153,7 +162,8 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
           principal,
           rpc.params,
           options.publicOrigin,
-          options.fulfillmentService
+          options.fulfillmentService,
+          pendingCheckouts
         );
         return reply.send({ jsonrpc: "2.0", id, result });
       }
@@ -223,6 +233,36 @@ function mcpToolsForPrincipal(principal: McpPrincipal, fulfillmentAvailable: boo
         annotations: { readOnlyHint: true, destructiveHint: false }
       },
       {
+        name: "soko.get_inbox",
+        description:
+          "Receive the authenticated account's message inbox and one authorized shop's operational notifications. Returns unread items by default for polling agents.",
+        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["shopId"],
+          properties: {
+            shopId: { type: "string", format: "uuid" },
+            includeRead: { type: "boolean" },
+            limit: { type: "integer", minimum: 1, maximum: 100 }
+          }
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+      },
+      {
+        name: "soko.search_marketplace",
+        description:
+          "Search public Soko catalogues and the buyer's connected commerce feed using authoritative prices and product identifiers.",
+        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["query"],
+          properties: { query: { type: "string", minLength: 1, maxLength: 120 } }
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+      },
+      {
         name: "soko.runtime_status",
         description:
           "Resolve a task's Runtime Handoff Protocol state: its current immutable checkpoint, task head, runtime instance health, and whether the runtime has drifted from the task head.",
@@ -270,6 +310,44 @@ function mcpToolsForPrincipal(principal: McpPrincipal, fulfillmentAvailable: boo
             runtimeSessionId: { type: "string", format: "uuid" },
             confirmationToken: { type: "string", minLength: 1 }
           }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true }
+      },
+      {
+        name: "soko.send_message",
+        description:
+          "Send a text message in an existing conversation owned by the authenticated account. Repeating the same idempotencyKey does not duplicate the message.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["conversationId", "text", "idempotencyKey"],
+          properties: {
+            conversationId: { type: "string", format: "uuid" },
+            text: { type: "string", minLength: 1, maxLength: 4000 },
+            idempotencyKey: { type: "string", minLength: 8, maxLength: 120 }
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false }
+      },
+      {
+        name: "soko.prepare_checkout",
+        description:
+          "Stage a buyer's selected marketplace items and return a short-lived confirmation token. This does not create an order; stock and prices are validated during confirmation.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
+        inputSchema: checkoutInputSchema(),
+        annotations: { readOnlyHint: false, destructiveHint: false }
+      },
+      {
+        name: "soko.confirm_checkout",
+        description:
+          "Create the previously prepared buyer checkout after explicit user confirmation. Stock and authoritative prices are revalidated by Soko.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["confirmationToken"],
+          properties: { confirmationToken: { type: "string", format: "uuid" } }
         },
         annotations: { readOnlyHint: false, destructiveHint: true }
       },
@@ -376,7 +454,8 @@ async function callMcpTool(
   principal: McpPrincipal,
   params: unknown,
   publicOrigin: string,
-  fulfillmentService?: FulfillmentService
+  fulfillmentService: FulfillmentService | undefined,
+  pendingCheckouts: Map<string, PendingCheckout>
 ) {
   const record = objectValue(params, "params");
   const name = stringValue(record.name, "name");
@@ -407,6 +486,24 @@ async function callMcpTool(
         businessId: shopId,
         query: stringValue(args.query, "query"),
         ...(limit === undefined ? {} : { limit })
+      });
+    } else if (name === "soko.get_inbox") {
+      requireScope(principal, "mcp:read");
+      const shopId = requiredShop(principal, args.shopId);
+      const limit = optionalIntegerValue(args.limit, "limit");
+      result = store.getInboxForMcp({
+        principal,
+        businessId: shopId,
+        ...(args.includeRead === undefined
+          ? {}
+          : { includeRead: booleanValue(args.includeRead, "includeRead") }),
+        ...(limit === undefined ? {} : { limit })
+      });
+    } else if (name === "soko.search_marketplace") {
+      requireScope(principal, "mcp:read");
+      result = store.searchMarketplaceForMcp({
+        principal,
+        query: stringValue(args.query, "query")
       });
     } else if (name === "soko.runtime_status") {
       requireScope(principal, "mcp:read");
@@ -526,6 +623,54 @@ async function callMcpTool(
         confirmationToken: stringValue(args.confirmationToken, "confirmationToken"),
         message: "Confirm the previously proposed MCP action."
       });
+    } else if (name === "soko.send_message") {
+      requireScope(principal, "mcp:act");
+      result = store.sendMessageForMcp({
+        principal,
+        conversationId: stringValue(args.conversationId, "conversationId"),
+        text: stringValue(args.text, "text"),
+        idempotencyKey: stringValue(args.idempotencyKey, "idempotencyKey")
+      });
+    } else if (name === "soko.prepare_checkout") {
+      requireScope(principal, "mcp:act");
+      const confirmationToken = randomUUID();
+      const items = checkoutItemsValue(args.items);
+      const idempotencyKey = stringValue(args.idempotencyKey, "idempotencyKey");
+      const expiresAt = Date.now() + 10 * 60_000;
+      pendingCheckouts.set(confirmationToken, {
+        tokenId: principal.tokenId,
+        items,
+        idempotencyKey,
+        expiresAt
+      });
+      result = {
+        status: "needs_confirmation",
+        confirmationToken,
+        expiresAt: new Date(expiresAt).toISOString(),
+        items
+      };
+    } else if (name === "soko.confirm_checkout") {
+      requireScope(principal, "mcp:act");
+      const confirmationToken = stringValue(args.confirmationToken, "confirmationToken");
+      const pending = pendingCheckouts.get(confirmationToken);
+      if (
+        pending === undefined ||
+        pending.tokenId !== principal.tokenId ||
+        pending.expiresAt <= Date.now()
+      ) {
+        pendingCheckouts.delete(confirmationToken);
+        throw new Cp2Error(
+          409,
+          "mcp_checkout_confirmation_invalid",
+          "Checkout confirmation is invalid or expired. Prepare the checkout again."
+        );
+      }
+      result = store.createCheckoutForMcp({
+        principal,
+        items: pending.items,
+        idempotencyKey: pending.idempotencyKey
+      });
+      pendingCheckouts.delete(confirmationToken);
     } else {
       throw new Cp2Error(404, "mcp_tool_not_found", "MCP tool was not found.");
     }
@@ -537,6 +682,8 @@ async function callMcpTool(
         name === "soko.list_shops" ||
         name === "soko.get_sync_changes" ||
         name === "soko.query_catalogue" ||
+        name === "soko.get_inbox" ||
+        name === "soko.search_marketplace" ||
         name === "soko.runtime_status";
       const fulfillmentReadTool = fulfillmentTool?.scope === "mcp:read";
       const challenge =
@@ -722,6 +869,89 @@ function optionalIntegerValue(value: unknown, field: string): number | undefined
     throw new Cp2Error(400, "mcp_input_invalid", `${field} must be an integer.`);
   }
   return value as number;
+}
+
+function booleanValue(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Cp2Error(400, "mcp_input_invalid", `${field} must be a boolean.`);
+  }
+  return value;
+}
+
+function checkoutInputSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["items", "idempotencyKey"],
+    properties: {
+      idempotencyKey: { type: "string", minLength: 8, maxLength: 120 },
+      items: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "sourceKind",
+            "sourceId",
+            "sourceLabel",
+            "title",
+            "quantity",
+            "agentId",
+            "productId",
+            "statusBroadcastId",
+            "productCaptureItemId"
+          ],
+          properties: {
+            sourceKind: { enum: ["catalogue", "contact"] },
+            sourceId: { type: "string" },
+            sourceLabel: { type: "string" },
+            title: { type: "string" },
+            quantity: { type: "integer", minimum: 1 },
+            agentId: { type: ["string", "null"] },
+            productId: { type: ["string", "null"] },
+            statusBroadcastId: { type: ["string", "null"] },
+            productCaptureItemId: { type: ["string", "null"] }
+          }
+        }
+      }
+    }
+  };
+}
+
+function checkoutItemsValue(value: unknown): BuyCheckoutItemInput[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 100) {
+    throw new Cp2Error(400, "mcp_input_invalid", "items must contain between 1 and 100 items.");
+  }
+  return value.map((entry, index) => {
+    const item = objectValue(entry, `items[${index}]`);
+    const sourceKind = stringValue(item.sourceKind, `items[${index}].sourceKind`);
+    if (sourceKind !== "catalogue" && sourceKind !== "contact") {
+      throw new Cp2Error(400, "mcp_input_invalid", `items[${index}].sourceKind is invalid.`);
+    }
+    const quantity = optionalIntegerValue(item.quantity, `items[${index}].quantity`);
+    if (quantity === undefined || quantity < 1) {
+      throw new Cp2Error(400, "mcp_input_invalid", `items[${index}].quantity must be positive.`);
+    }
+    return {
+      sourceKind,
+      sourceId: stringValue(item.sourceId, `items[${index}].sourceId`),
+      sourceLabel: stringValue(item.sourceLabel, `items[${index}].sourceLabel`),
+      title: stringValue(item.title, `items[${index}].title`),
+      quantity,
+      agentId: optionalStringValue(item.agentId, `items[${index}].agentId`),
+      productId: optionalStringValue(item.productId, `items[${index}].productId`),
+      statusBroadcastId: optionalStringValue(
+        item.statusBroadcastId,
+        `items[${index}].statusBroadcastId`
+      ),
+      productCaptureItemId: optionalStringValue(
+        item.productCaptureItemId,
+        `items[${index}].productCaptureItemId`
+      )
+    };
+  });
 }
 
 function scopesValue(value: unknown): McpAccessScope[] {

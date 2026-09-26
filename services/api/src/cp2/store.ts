@@ -1189,7 +1189,7 @@ export class Cp2Store {
     this.messagingDomain = new MessagingDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
         this.requireAuthorizedActor(sessionId, businessId, permission, now),
-      requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
+      requirePinVerifiedSession: (sessionId, now) => this.requireMcpAwareSession(sessionId, now),
       recordAuditEvent: (input) => this.recordAuditEvent(input),
       recordSyncChange: (input) => this.recordSyncChange(input),
       requireMembership: (businessId, userId) => this.requireMembership(businessId, userId),
@@ -3360,6 +3360,85 @@ export class Cp2Store {
         businessId: input.businessId,
         query: input.query,
         ...(input.limit === undefined ? {} : { limit: input.limit }),
+        ...(input.now === undefined ? {} : { now: input.now })
+      })
+    );
+  }
+
+  getInboxForMcp(input: {
+    principal: McpPrincipal;
+    businessId: string;
+    includeRead?: boolean;
+    limit?: number;
+    now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+    const limit = Math.min(100, Math.max(1, input.limit ?? 50));
+    return this.mcpPrincipalContext.run(input.principal, () => {
+      const conversations = this.messagingDomain
+        .listConversations({ sessionId: null, now })
+        .filter((conversation) => input.includeRead === true || conversation.unreadCount > 0)
+        .slice(0, limit);
+      const notificationInbox = this.notificationsDomain.listNotifications({
+        sessionId: null,
+        businessId: input.businessId,
+        now
+      });
+      const notifications = notificationInbox.notifications
+        .filter((notification) => input.includeRead === true || notification.status === "unread")
+        .slice(0, limit);
+
+      return {
+        shopId: input.businessId,
+        unreadCount:
+          notificationInbox.summary.unread +
+          conversations.reduce((total, conversation) => total + conversation.unreadCount, 0),
+        conversations,
+        notifications,
+        serverTime: now.toISOString()
+      };
+    });
+  }
+
+  searchMarketplaceForMcp(input: {
+    principal: McpPrincipal;
+    query: string;
+    now?: Date;
+  }) {
+    return this.mcpPrincipalContext.run(input.principal, () =>
+      this.commerce.searchBuyFeed({
+        sessionId: null,
+        query: input.query,
+        ...(input.now === undefined ? {} : { now: input.now })
+      })
+    );
+  }
+
+  createCheckoutForMcp(
+    input: Omit<Parameters<CommerceDomain["createUnifiedCheckout"]>[0], "sessionId"> & {
+      principal: McpPrincipal;
+    }
+  ) {
+    const { principal, ...checkout } = input;
+    return this.mcpPrincipalContext.run(principal, () =>
+      this.commerce.createUnifiedCheckout({ ...checkout, sessionId: null })
+    );
+  }
+
+  sendMessageForMcp(input: {
+    principal: McpPrincipal;
+    conversationId: string;
+    text: string;
+    idempotencyKey: string;
+    now?: Date;
+  }) {
+    return this.mcpPrincipalContext.run(input.principal, () =>
+      this.messagingDomain.createConversationMessage({
+        sessionId: null,
+        conversationId: input.conversationId,
+        clientMessageId: input.idempotencyKey,
+        idempotencyKey: input.idempotencyKey,
+        content: { type: "text", text: input.text },
         ...(input.now === undefined ? {} : { now: input.now })
       })
     );
@@ -9852,6 +9931,17 @@ export class Cp2Store {
     return {
       account: this.accounts.get(principal.accountId)!,
       user: this.users.get(principal.userId)!
+    };
+  }
+
+  private requireMcpAwareSession(sessionId: string | null, now: Date): AuthSessionView {
+    const principal = this.mcpPrincipalContext.getStore();
+    if (principal === undefined) return this.requirePinVerifiedSession(sessionId, now);
+    this.requireIntegrationPrincipal({ ...principal, now });
+    return {
+      account: this.accounts.get(principal.accountId)!,
+      user: this.users.get(principal.userId)!,
+      session: { id: `mcp:${principal.tokenId}`, expiresAt: principal.expiresAt }
     };
   }
 

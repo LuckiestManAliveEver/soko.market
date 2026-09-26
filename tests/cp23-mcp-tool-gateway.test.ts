@@ -236,12 +236,18 @@ describe("CP23 MCP tool gateway", () => {
       { name: "Agent Flour", unit: "bag", quantity: 8, sellingPrice: 210 },
       cookie
     );
+    const conversation = await postJson<{ conversation: { id: string } }>(
+      app,
+      "/v1/conversations",
+      { kind: "personal", activeShopId: null, title: "External agent inbox" },
+      cookie
+    );
     const token = await postJson<McpTokenResponse>(
       app,
       "/v1/mcp/tokens",
       {
         name: "Muse Instinct Claude external agent",
-        scopes: ["mcp:read"],
+        scopes: ["mcp:read", "mcp:act"],
         shopId: shop.business.id
       },
       cookie,
@@ -274,10 +280,65 @@ describe("CP23 MCP tool gateway", () => {
       structuredContent: { id: token.token.accountId }
     });
 
+    const listed = await mcpPost(
+      app,
+      token.accessToken,
+      { jsonrpc: "2.0", id: 3, method: "tools/list", params: {} },
+      sessionId
+    );
+    expect(listed.json().result.tools.map((tool: { name: string }) => tool.name)).toContain(
+      "soko.get_inbox"
+    );
+    expect(listed.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "soko.search_marketplace",
+        "soko.send_message",
+        "soko.prepare_checkout",
+        "soko.confirm_checkout"
+      ])
+    );
+
+    const inbox = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(4, "soko.get_inbox", { shopId: shop.business.id }),
+      sessionId
+    );
+    expect(inbox.json().result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        shopId: shop.business.id,
+        unreadCount: expect.any(Number),
+        conversations: expect.any(Array),
+        notifications: expect.arrayContaining([
+          expect.objectContaining({ status: "unread", title: expect.any(String) })
+        ]),
+        serverTime: expect.any(String)
+      }
+    });
+
+    const sent = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(5, "soko.send_message", {
+        conversationId: conversation.conversation.id,
+        text: "Please reserve two bags for pickup.",
+        idempotencyKey: "external-agent-message-1"
+      }),
+      sessionId
+    );
+    expect(sent.json().result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        conversationId: conversation.conversation.id,
+        content: { type: "text", text: "Please reserve two bags for pickup." }
+      }
+    });
+
     const catalogue = await mcpPost(
       app,
       token.accessToken,
-      toolCall(3, "soko.query_catalogue", {
+      toolCall(6, "soko.query_catalogue", {
         shopId: shop.business.id,
         query: "agent flour"
       }),
@@ -288,6 +349,64 @@ describe("CP23 MCP tool gateway", () => {
       structuredContent: {
         products: [expect.objectContaining({ businessId: shop.business.id, sellingPrice: 210 })]
       }
+    });
+
+    const marketplace = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(7, "soko.search_marketplace", { query: "agent flour" }),
+      sessionId
+    );
+    const buyItem = marketplace.json().result.structuredContent.results[0];
+    expect(buyItem).toMatchObject({
+      title: "Agent Flour",
+      price: 210,
+      sourceKind: "catalogue"
+    });
+
+    const prepared = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(8, "soko.prepare_checkout", {
+        items: [{ ...buyItem, quantity: 2 }],
+        idempotencyKey: "external-buyer-checkout-1"
+      }),
+      sessionId
+    );
+    expect(prepared.json().result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        status: "needs_confirmation",
+        confirmationToken: expect.any(String)
+      }
+    });
+
+    const confirmed = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(9, "soko.confirm_checkout", {
+        confirmationToken: prepared.json().result.structuredContent.confirmationToken
+      }),
+      sessionId
+    );
+    expect(confirmed.json().result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        handoffs: [expect.objectContaining({ kind: "catalogue", status: "requested" })],
+        failures: []
+      }
+    });
+    const repeatedConfirmation = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(10, "soko.confirm_checkout", {
+        confirmationToken: prepared.json().result.structuredContent.confirmationToken
+      }),
+      sessionId
+    );
+    expect(repeatedConfirmation.json().result).toMatchObject({
+      isError: true,
+      structuredContent: { code: "mcp_checkout_confirmation_invalid" }
     });
     await app.close();
   });
@@ -461,9 +580,14 @@ describe("CP23 MCP tool gateway", () => {
       "soko.list_shops",
       "soko.get_sync_changes",
       "soko.query_catalogue",
+      "soko.get_inbox",
+      "soko.search_marketplace",
       "soko.runtime_status",
       "soko.runtime_turn",
       "soko.confirm_runtime_action",
+      "soko.send_message",
+      "soko.prepare_checkout",
+      "soko.confirm_checkout",
       "soko.runtime_checkpoint",
       "soko.runtime_resume",
       "soko.runtime_rollback",
@@ -591,6 +715,8 @@ describe("CP23 MCP tool gateway", () => {
       "soko.list_shops",
       "soko.get_sync_changes",
       "soko.query_catalogue",
+      "soko.get_inbox",
+      "soko.search_marketplace",
       "soko.runtime_status"
     ]);
     const readOnlyAction = await mcpPost(
@@ -665,9 +791,14 @@ describe("CP23 MCP tool gateway", () => {
       "soko.list_shops",
       "soko.get_sync_changes",
       "soko.query_catalogue",
+      "soko.get_inbox",
+      "soko.search_marketplace",
       "soko.runtime_status",
       "soko.runtime_turn",
       "soko.confirm_runtime_action",
+      "soko.send_message",
+      "soko.prepare_checkout",
+      "soko.confirm_checkout",
       "soko.runtime_checkpoint",
       "soko.runtime_resume",
       "soko.runtime_rollback",

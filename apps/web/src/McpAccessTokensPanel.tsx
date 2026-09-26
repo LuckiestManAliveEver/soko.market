@@ -47,7 +47,7 @@ function modelLabSetup(
   if (modelLabId === "external_agent") {
     return {
       instructions:
-        "Use this with any MCP-capable agent UI, including Muse, Instinct, ChatGPT, Claude, or another model app. Paste the URL as the remote MCP server and send the Soko secret as a Bearer credential.",
+        "Use this with any MCP-capable agent UI, including Muse, Instinct, ChatGPT, Claude, or another model app. Paste the URL as the remote MCP server and send the Soko secret as a Bearer credential. With the permissions you grant, the agent can monitor and send messages, handle shop work, browse the marketplace, and prepare purchases for your confirmation.",
       configuration: JSON.stringify(
         {
           transport: "streamable-http",
@@ -246,7 +246,8 @@ export function McpAccessTokensPanel({
         <p>
           Create a shop-bound API connection for any external MCP-capable agent UI or commerce
           system that has the credentials you grant here. Muse, Instinct, ChatGPT, Claude, and other
-          model apps all use the same URL and bearer secret.
+          model apps all use the same URL and bearer secret. They can act as a message inbox, send
+          replies, handle permitted shop work, and help buyers browse and shop with confirmation.
         </p>
       </div>
       <div className="model-lab-grid" aria-label="Supported external agent connections">
