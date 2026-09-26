@@ -9,6 +9,7 @@ interface McpTokenResponse {
   accessToken: string;
   token: {
     id: string;
+    accountId: string;
     shopId: string | null;
     scopes: string[];
     createdAt: string;
@@ -217,6 +218,77 @@ describe("CP23 MCP tool gateway", () => {
     });
     expect(replay.statusCode).toBe(400);
     expect(replay.json()).toMatchObject({ error: "invalid_grant" });
+    await app.close();
+  });
+
+  it("lets any external MCP-capable agent use the app with issued credentials", async () => {
+    const app = buildApi();
+    const cookie = await createSession(app, "254700000240");
+    const shop = await postJson<{ business: { id: string } }>(
+      app,
+      "/businesses",
+      { name: "External Agent Shop", language: "en" },
+      cookie
+    );
+    await postJson(
+      app,
+      `/businesses/${shop.business.id}/products`,
+      { name: "Agent Flour", unit: "bag", quantity: 8, sellingPrice: 210 },
+      cookie
+    );
+    const token = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      {
+        name: "Muse Instinct Claude external agent",
+        scopes: ["mcp:read"],
+        shopId: shop.business.id
+      },
+      cookie,
+      { origin: "http://localhost:5173" }
+    );
+
+    const initialized = await app.inject({
+      method: "POST",
+      url: `/mcp?shopId=${encodeURIComponent(shop.business.id)}`,
+      headers: {
+        authorization: `Bearer ${token.accessToken}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "user-agent": "Muse-or-Instinct-or-Claude-compatible-MCP-client"
+      },
+      payload: JSON.stringify(initializeRequest())
+    });
+    expect(initialized.statusCode).toBe(200);
+    expect(initialized.json().result.serverInfo).toMatchObject({ name: "soko-market" });
+
+    const sessionId = String(initialized.headers["mcp-session-id"]);
+    const profile = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(2, "soko.get_profile", {}),
+      sessionId
+    );
+    expect(profile.json().result).toMatchObject({
+      isError: false,
+      structuredContent: { id: token.token.accountId }
+    });
+
+    const catalogue = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(3, "soko.query_catalogue", {
+        shopId: shop.business.id,
+        query: "agent flour"
+      }),
+      sessionId
+    );
+    expect(catalogue.json().result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        products: [expect.objectContaining({ businessId: shop.business.id, sellingPrice: 210 })]
+      }
+    });
     await app.close();
   });
 

@@ -13,6 +13,7 @@ import { readApiBaseUrl } from "./lib/api";
 
 const modelLabOptions = [
   { id: "business_system", label: "Existing business system" },
+  { id: "external_agent", label: "External agent app" },
   { id: "openai", label: "OpenAI API" },
   { id: "anthropic", label: "Anthropic API" },
   { id: "google", label: "Gemini API" },
@@ -37,6 +38,28 @@ function modelLabSetup(
           orders: { method: "GET", url: `${apiBaseUrl}/orders` },
           updateOrder: { method: "PATCH", url: `${apiBaseUrl}/orders/{orderId}` },
           headers: { Authorization: `Bearer ${accessToken}` }
+        },
+        null,
+        2
+      )
+    };
+  }
+  if (modelLabId === "external_agent") {
+    return {
+      instructions:
+        "Use this with any MCP-capable agent UI, including Muse, Instinct, ChatGPT, Claude, or another model app. Paste the URL as the remote MCP server and send the Soko secret as a Bearer credential.",
+      configuration: JSON.stringify(
+        {
+          transport: "streamable-http",
+          server: {
+            name: "soko_shop",
+            url: shopConnectionUrl,
+            headers: { Authorization: `Bearer ${accessToken}` }
+          },
+          credentials: {
+            type: "bearer",
+            token: accessToken
+          }
         },
         null,
         2
@@ -130,8 +153,8 @@ export function McpAccessTokensPanel({
   copyStorefrontValue
 }: McpAccessTokensPanelProps) {
   const [mcpTokens, setMcpTokens] = useState<McpAccessTokenSummary[]>([]);
-  const [modelLabId, setModelLabId] = useState<ModelLabId>("business_system");
-  const [mcpTokenName, setMcpTokenName] = useState("Existing system shop connection");
+  const [modelLabId, setModelLabId] = useState<ModelLabId>("external_agent");
+  const [mcpTokenName, setMcpTokenName] = useState("External agent shop connection");
   const [mcpReadEnabled, setMcpReadEnabled] = useState(true);
   const [mcpActEnabled, setMcpActEnabled] = useState(false);
   const [mcpPin, setMcpPin] = useState("");
@@ -142,7 +165,7 @@ export function McpAccessTokensPanel({
   function selectModelLab(nextModelLabId: ModelLabId) {
     setModelLabId(nextModelLabId);
     const selected = modelLabOptions.find((option) => option.id === nextModelLabId);
-    setMcpTokenName(`${selected?.label ?? "Cloud AI"} shop connection`);
+    setMcpTokenName(`${selected?.label ?? "External agent"} shop connection`);
     setNewMcpAccessToken("");
     setNewMcpAccessScopes([]);
   }
@@ -180,7 +203,7 @@ export function McpAccessTokensPanel({
       setMcpPin("");
       await loadMcpTokens();
       setProfileMessage(
-        "Cloud AI shop connection created. Copy its API configuration into your model-lab project."
+        "External agent shop connection created. Copy its API configuration into your agent app."
       );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
@@ -219,14 +242,14 @@ export function McpAccessTokensPanel({
     <div className="record-form cloud-model-connection">
       <div className="section-heading">
         <p className="eyebrow">Shop API</p>
-        <h4>Connect your existing system</h4>
+        <h4>Connect an external agent</h4>
         <p>
-          Create a shop-bound API connection for your current commerce system or AI platform. Synced
-          products can be bought through Soko Chat, and confirmed orders are available to your
-          system under the permissions you grant here.
+          Create a shop-bound API connection for any external MCP-capable agent UI or commerce
+          system that has the credentials you grant here. Muse, Instinct, ChatGPT, Claude, and other
+          model apps all use the same URL and bearer secret.
         </p>
       </div>
-      <div className="model-lab-grid" aria-label="Supported cloud AI accounts">
+      <div className="model-lab-grid" aria-label="Supported external agent connections">
         {modelLabOptions.map((option) => (
           <button
             className={modelLabId === option.id ? "selected" : "secondary"}
@@ -323,8 +346,10 @@ export function McpAccessTokensPanel({
           </div>
         </div>
       ) : null}
-      <div className="connected-social-list" aria-label="Cloud AI shop connections">
-        {mcpTokens.length === 0 ? <p className="shell-note">No cloud AI connections yet.</p> : null}
+      <div className="connected-social-list" aria-label="External agent shop connections">
+        {mcpTokens.length === 0 ? (
+          <p className="shell-note">No external agent connections yet.</p>
+        ) : null}
         {mcpTokens.map((token) => (
           <article className="connected-social-card" key={token.id}>
             <div>
@@ -341,7 +366,7 @@ export function McpAccessTokensPanel({
             <div className="connected-social-meta">
               <span>Created: {formatDate(token.createdAt)}</span>
               <span>
-                Last used: {token.lastUsedAt === null ? "—" : formatDate(token.lastUsedAt)}
+                Last used: {token.lastUsedAt === null ? "Never" : formatDate(token.lastUsedAt)}
               </span>
             </div>
             <button
