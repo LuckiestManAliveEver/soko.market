@@ -193,6 +193,7 @@ import type {
   CountryTaxConfigSummary,
   ContactHashSummary,
   ConversationChannelSummary,
+  ConversationMessageContent,
   ConversationMessageSummary,
   MessageDeliveryAttemptSummary,
   ConversationParticipantSummary,
@@ -209,6 +210,7 @@ import type {
   DocumentImportJobSummary,
   DocumentImportSourceSummary,
   E2eeDeviceSummary,
+  E2eePublicKey,
   InventoryMovementSummary,
   InstalledAgentModelSummary,
   InstalledOssAgentManifestSummary,
@@ -3400,11 +3402,7 @@ export class Cp2Store {
     });
   }
 
-  searchMarketplaceForMcp(input: {
-    principal: McpPrincipal;
-    query: string;
-    now?: Date;
-  }) {
+  searchMarketplaceForMcp(input: { principal: McpPrincipal; query: string; now?: Date }) {
     return this.mcpPrincipalContext.run(input.principal, () =>
       this.commerce.searchBuyFeed({
         sessionId: null,
@@ -3439,6 +3437,81 @@ export class Cp2Store {
         clientMessageId: input.idempotencyKey,
         idempotencyKey: input.idempotencyKey,
         content: { type: "text", text: input.text },
+        ...(input.now === undefined ? {} : { now: input.now })
+      })
+    );
+  }
+
+  registerSecureEndpointForMcp(input: {
+    principal: McpPrincipal;
+    deviceId: string;
+    label: string;
+    publicKey: E2eePublicKey;
+    now?: Date;
+  }) {
+    return this.mcpPrincipalContext.run(input.principal, () =>
+      this.messagingDomain.registerE2eeDevice({
+        sessionId: null,
+        deviceId: input.deviceId,
+        label: input.label,
+        publicKey: input.publicKey,
+        ...(input.now === undefined ? {} : { now: input.now })
+      })
+    );
+  }
+
+  createSecureChannelForMcp(input: {
+    principal: McpPrincipal;
+    recipient: string;
+    title?: string | null;
+    runtimeBindingId?: string | null;
+    now?: Date;
+  }) {
+    return this.mcpPrincipalContext.run(input.principal, () =>
+      this.messagingDomain.createConversation({
+        sessionId: null,
+        kind: "personal",
+        activeShopId: null,
+        recipient: input.recipient,
+        ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.runtimeBindingId === undefined
+          ? {}
+          : { runtimeBindingId: input.runtimeBindingId }),
+        ...(input.now === undefined ? {} : { now: input.now })
+      })
+    );
+  }
+
+  getSecureChannelForMcp(input: { principal: McpPrincipal; conversationId: string; now?: Date }) {
+    return this.mcpPrincipalContext.run(input.principal, () => ({
+      conversation: this.messagingDomain.getConversation({
+        sessionId: null,
+        conversationId: input.conversationId,
+        ...(input.now === undefined ? {} : { now: input.now })
+      }),
+      devices: this.messagingDomain.listConversationE2eeDevices({
+        sessionId: null,
+        conversationId: input.conversationId,
+        ...(input.now === undefined ? {} : { now: input.now })
+      })
+    }));
+  }
+
+  sendSecureMessageForMcp(input: {
+    principal: McpPrincipal;
+    conversationId: string;
+    content: Extract<ConversationMessageContent, { type: "encrypted" }>;
+    idempotencyKey: string;
+    now?: Date;
+  }) {
+    return this.mcpPrincipalContext.run(input.principal, () =>
+      this.messagingDomain.createConversationMessage({
+        sessionId: null,
+        conversationId: input.conversationId,
+        clientMessageId: input.idempotencyKey,
+        idempotencyKey: input.idempotencyKey,
+        author: "agent",
+        content: input.content,
         ...(input.now === undefined ? {} : { now: input.now })
       })
     );

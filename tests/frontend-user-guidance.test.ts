@@ -500,7 +500,8 @@ describe("frontend user guidance", () => {
     expect(mcpAccessTokensPanel).toContain(
       'getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")'
     );
-    expect(mcpAccessTokensPanel).toContain("Connect your existing system");
+    expect(mcpAccessTokensPanel).toContain("Connect an external agent");
+    expect(mcpAccessTokensPanel).toContain("end-to-end encrypted agent and model channels");
     expect(mcpAccessTokensPanel).toContain("Existing business system");
     expect(mcpAccessTokensPanel).toContain("/v1/shop-system");
     expect(mcpAccessTokensPanel).toContain("OpenAI API");

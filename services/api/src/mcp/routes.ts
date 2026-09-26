@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { McpAccessScope, McpPrincipal, RuntimeSwapDimension } from "@soko/shared-types";
-import type { BuyCheckoutItemInput } from "@soko/shared-types";
+import type {
+  BuyCheckoutItemInput,
+  ConversationMessageContent,
+  E2eePublicKey,
+  McpAccessScope,
+  McpPrincipal,
+  RuntimeSwapDimension
+} from "@soko/shared-types";
 import { Cp2Error, readSessionCookie, type Cp2Store } from "../cp2/store.js";
 import type { FulfillmentService } from "../cp2/domains/fulfillment/service.js";
 import { mcpOAuthChallenge, mcpSecuritySchemes, registerMcpOAuthRoutes } from "./oauth.js";
@@ -263,6 +269,19 @@ function mcpToolsForPrincipal(principal: McpPrincipal, fulfillmentAvailable: boo
         annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
       },
       {
+        name: "soko.get_secure_channel",
+        description:
+          "Return one authorized conversation and the current public encryption endpoints for every participant. Refresh immediately before encrypting to prevent stale-recipient delivery.",
+        securitySchemes: mcpSecuritySchemes(["mcp:read"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["conversationId"],
+          properties: { conversationId: { type: "string", format: "uuid" } }
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+      },
+      {
         name: "soko.runtime_status",
         description:
           "Resolve a task's Runtime Handoff Protocol state: its current immutable checkpoint, task head, runtime instance health, and whether the runtime has drifted from the task head.",
@@ -326,6 +345,57 @@ function mcpToolsForPrincipal(principal: McpPrincipal, fulfillmentAvailable: boo
             conversationId: { type: "string", format: "uuid" },
             text: { type: "string", minLength: 1, maxLength: 4000 },
             idempotencyKey: { type: "string", minLength: 8, maxLength: 120 }
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false }
+      },
+      {
+        name: "soko.register_secure_endpoint",
+        description:
+          "Register this agent or model runtime's P-256 public encryption endpoint. Private keys must remain in the calling runtime.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["endpointId", "label", "publicKey"],
+          properties: {
+            endpointId: { type: "string", minLength: 8, maxLength: 120 },
+            label: { type: "string", minLength: 1, maxLength: 120 },
+            publicKey: e2eePublicKeySchema()
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false }
+      },
+      {
+        name: "soko.create_secure_channel",
+        description:
+          "Create an authenticated direct channel to another Soko account for agent-to-agent, agent-to-model, or model-to-model communication. Messages require E2EE.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["recipient"],
+          properties: {
+            recipient: { type: "string", minLength: 3, maxLength: 320 },
+            title: { type: "string", maxLength: 200 },
+            runtimeBindingId: { type: "string" }
+          }
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false }
+      },
+      {
+        name: "soko.send_secure_message",
+        description:
+          "Send a replay-safe E2EE message from the authenticated agent or model runtime. Encrypt locally for every endpoint returned by soko.get_secure_channel.",
+        securitySchemes: mcpSecuritySchemes(["mcp:act"]),
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["conversationId", "idempotencyKey", "content"],
+          properties: {
+            conversationId: { type: "string", format: "uuid" },
+            idempotencyKey: { type: "string", minLength: 8, maxLength: 120 },
+            content: encryptedContentSchema()
           }
         },
         annotations: { readOnlyHint: false, destructiveHint: false }
@@ -505,6 +575,12 @@ async function callMcpTool(
         principal,
         query: stringValue(args.query, "query")
       });
+    } else if (name === "soko.get_secure_channel") {
+      requireScope(principal, "mcp:read");
+      result = store.getSecureChannelForMcp({
+        principal,
+        conversationId: stringValue(args.conversationId, "conversationId")
+      });
     } else if (name === "soko.runtime_status") {
       requireScope(principal, "mcp:read");
       result = store.resolveRuntimeHandoffForMcp({
@@ -631,6 +707,32 @@ async function callMcpTool(
         text: stringValue(args.text, "text"),
         idempotencyKey: stringValue(args.idempotencyKey, "idempotencyKey")
       });
+    } else if (name === "soko.register_secure_endpoint") {
+      requireScope(principal, "mcp:act");
+      result = store.registerSecureEndpointForMcp({
+        principal,
+        deviceId: stringValue(args.endpointId, "endpointId"),
+        label: stringValue(args.label, "label"),
+        publicKey: e2eePublicKeyValue(args.publicKey, "publicKey")
+      });
+    } else if (name === "soko.create_secure_channel") {
+      requireScope(principal, "mcp:act");
+      result = store.createSecureChannelForMcp({
+        principal,
+        recipient: stringValue(args.recipient, "recipient"),
+        ...(args.title === undefined ? {} : { title: stringValue(args.title, "title") }),
+        ...(args.runtimeBindingId === undefined
+          ? {}
+          : { runtimeBindingId: stringValue(args.runtimeBindingId, "runtimeBindingId") })
+      });
+    } else if (name === "soko.send_secure_message") {
+      requireScope(principal, "mcp:act");
+      result = store.sendSecureMessageForMcp({
+        principal,
+        conversationId: stringValue(args.conversationId, "conversationId"),
+        idempotencyKey: stringValue(args.idempotencyKey, "idempotencyKey"),
+        content: encryptedContentValue(args.content)
+      });
     } else if (name === "soko.prepare_checkout") {
       requireScope(principal, "mcp:act");
       const confirmationToken = randomUUID();
@@ -684,6 +786,7 @@ async function callMcpTool(
         name === "soko.query_catalogue" ||
         name === "soko.get_inbox" ||
         name === "soko.search_marketplace" ||
+        name === "soko.get_secure_channel" ||
         name === "soko.runtime_status";
       const fulfillmentReadTool = fulfillmentTool?.scope === "mcp:read";
       const challenge =
@@ -876,6 +979,124 @@ function booleanValue(value: unknown, field: string): boolean {
     throw new Cp2Error(400, "mcp_input_invalid", `${field} must be a boolean.`);
   }
   return value;
+}
+
+function e2eePublicKeySchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["kty", "crv", "x", "y"],
+    properties: {
+      kty: { const: "EC" },
+      crv: { const: "P-256" },
+      x: { type: "string" },
+      y: { type: "string" },
+      ext: { type: "boolean" },
+      key_ops: { type: "array", items: { type: "string" } }
+    }
+  };
+}
+
+function encryptedContentSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["type", "envelopes", "attachmentCount", "iv", "ciphertext"],
+    properties: {
+      type: { const: "encrypted" },
+      attachmentCount: { type: "integer", minimum: 0, maximum: 10 },
+      iv: { type: "string" },
+      ciphertext: { type: "string" },
+      envelopes: {
+        type: "array",
+        minItems: 1,
+        maxItems: 64,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "version",
+            "algorithm",
+            "recipientDeviceId",
+            "ephemeralPublicKey",
+            "salt",
+            "iv",
+            "ciphertext"
+          ],
+          properties: {
+            version: { const: 1 },
+            algorithm: { const: "ECDH-P256-HKDF-SHA256-AES-256-GCM" },
+            recipientDeviceId: { type: "string" },
+            ephemeralPublicKey: e2eePublicKeySchema(),
+            salt: { type: "string" },
+            iv: { type: "string" },
+            ciphertext: { type: "string" }
+          }
+        }
+      }
+    }
+  };
+}
+
+function e2eePublicKeyValue(value: unknown, field: string): E2eePublicKey {
+  const key = objectValue(value, field);
+  if (key.kty !== "EC" || key.crv !== "P-256") {
+    throw new Cp2Error(400, "mcp_input_invalid", `${field} must be an EC P-256 public key.`);
+  }
+  return {
+    kty: "EC",
+    crv: "P-256",
+    x: stringValue(key.x, `${field}.x`),
+    y: stringValue(key.y, `${field}.y`),
+    ...(key.ext === undefined ? {} : { ext: booleanValue(key.ext, `${field}.ext`) }),
+    ...(key.key_ops === undefined
+      ? {}
+      : { key_ops: stringArrayValue(key.key_ops, `${field}.key_ops`) })
+  };
+}
+
+function encryptedContentValue(
+  value: unknown
+): Extract<ConversationMessageContent, { type: "encrypted" }> {
+  const content = objectValue(value, "content");
+  if (content.type !== "encrypted" || !Array.isArray(content.envelopes)) {
+    throw new Cp2Error(400, "mcp_input_invalid", "content must be an encrypted message.");
+  }
+  const attachmentCount = optionalIntegerValue(content.attachmentCount, "content.attachmentCount");
+  if (attachmentCount === undefined) {
+    throw new Cp2Error(400, "mcp_input_invalid", "content.attachmentCount must be an integer.");
+  }
+  return {
+    type: "encrypted",
+    attachmentCount,
+    iv: stringValue(content.iv, "content.iv"),
+    ciphertext: stringValue(content.ciphertext, "content.ciphertext"),
+    envelopes: content.envelopes.map((entry, index) => {
+      const envelope = objectValue(entry, `content.envelopes[${index}]`);
+      if (envelope.version !== 1 || envelope.algorithm !== "ECDH-P256-HKDF-SHA256-AES-256-GCM") {
+        throw new Cp2Error(
+          400,
+          "mcp_input_invalid",
+          `content.envelopes[${index}] uses an unsupported encryption format.`
+        );
+      }
+      return {
+        version: 1,
+        algorithm: "ECDH-P256-HKDF-SHA256-AES-256-GCM",
+        recipientDeviceId: stringValue(
+          envelope.recipientDeviceId,
+          `content.envelopes[${index}].recipientDeviceId`
+        ),
+        ephemeralPublicKey: e2eePublicKeyValue(
+          envelope.ephemeralPublicKey,
+          `content.envelopes[${index}].ephemeralPublicKey`
+        ),
+        salt: stringValue(envelope.salt, `content.envelopes[${index}].salt`),
+        iv: stringValue(envelope.iv, `content.envelopes[${index}].iv`),
+        ciphertext: stringValue(envelope.ciphertext, `content.envelopes[${index}].ciphertext`)
+      };
+    })
+  };
 }
 
 function checkoutInputSchema() {
