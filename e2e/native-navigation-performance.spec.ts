@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { buildShopCapabilities } from "../services/api/src/cp2/domains/shop-hub/capabilities";
 
 test.describe.configure({ mode: "serial" });
 
@@ -27,37 +28,39 @@ test("primary navigation remains local while data refreshes slowly", async ({ pa
   const shellId = await page.locator(".app-frame").getAttribute("data-shell-instance");
   const timings: Record<string, number> = {};
 
-  // Workspace cards (opened from the "Workspace" header button, not their own URLs - Soko's
-  // seller workspace navigates locally by swapping which dialog is open over the same /sell URL
-  // and shell instance, rather than pushing a route per destination) each open their own dialog,
-  // titled per apps/web/src/app-shell.ts's quickActions labels, and close back to plain chat.
+  // Shop Hub modules (opened from the "Workspace" header button at /sell/shop) open their
+  // screens locally over the same shell instance, titled per apps/web/src/app-shell.ts's
+  // quickActions labels, and close back to plain chat.
   for (const destination of [
-    { card: "Invoices", dialogTitle: "Invoices" },
-    { card: "Knowledge", dialogTitle: "Purchase receipts" },
-    { card: "Business Summary", dialogTitle: "Reports" }
+    { module: "orders", surface: "Invoices", dialogTitle: "Invoices" },
+    { module: "receipts", surface: "Receipts & files", dialogTitle: "Purchase receipts" },
+    { module: "insights", surface: "Business summary", dialogTitle: "Reports" }
   ]) {
     await workspaceButton.click();
-    await expect(page.getByRole("dialog", { name: "Workspace" })).toBeVisible();
-    const duration = await clickToSecondPaint(page, destination.card);
+    const hub = page.getByRole("dialog", { name: "Your shop" });
+    await expect(hub).toBeVisible();
+    await hub.locator(`.shop-hub-tile[data-module-id="${destination.module}"]`).click();
+    const duration = await clickToSecondPaint(page, destination.surface);
     timings[destination.dialogTitle] = Math.round(duration * 10) / 10;
     await expect(page.getByRole("dialog", { name: destination.dialogTitle })).toBeVisible();
-    expect(duration, `${destination.card} navigation`).toBeLessThan(300);
+    expect(duration, `${destination.surface} navigation`).toBeLessThan(300);
     expect(await page.locator(".app-frame").getAttribute("data-shell-instance")).toBe(shellId);
-    await expect(page).toHaveURL(/\/sell$/);
     await page.getByRole("button", { name: `Close ${destination.dialogTitle}` }).click();
   }
 
   // Catalogue is a nested view inside the same launcher dialog (relabeled "Catalogue" instead of
-  // "Workspace") rather than its own dialog - apps/web/src/ChatSurface.tsx's workspacePanelTitle.
+  // "Your shop") rather than its own dialog - apps/web/src/workspace-panel-title.ts.
   await workspaceButton.click();
-  await expect(page.getByRole("dialog", { name: "Workspace" })).toBeVisible();
-  const catalogueDuration = await clickToSecondPaint(page, "Catalogue");
+  await expect(page.getByRole("dialog", { name: "Your shop" })).toBeVisible();
+  await page.locator('.shop-hub-tile[data-module-id="catalog"]').click();
+  const catalogueDuration = await clickToSecondPaint(page, "Open catalogue");
   timings.catalogue = Math.round(catalogueDuration * 10) / 10;
   await expect(page.getByRole("dialog", { name: "Catalogue" })).toBeVisible();
   expect(catalogueDuration, "Catalogue navigation").toBeLessThan(300);
   expect(await page.locator(".app-frame").getAttribute("data-shell-instance")).toBe(shellId);
-  await expect(page).toHaveURL(/\/sell$/);
+  await expect(page).toHaveURL(/\/sell\/shop$/);
   await page.getByRole("button", { name: "Close Catalogue" }).click();
+  await expect(page).toHaveURL(/\/sell$/);
 
   console.log("[SOKO_NAV_BENCH]", JSON.stringify(timings));
 });
@@ -67,7 +70,7 @@ test("workspace and model settings do not replace the authenticated shell", asyn
   const shellId = await page.locator(".app-frame").getAttribute("data-shell-instance");
 
   await page.getByRole("button", { name: "Workspace", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Workspace" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Your shop" })).toBeVisible();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
@@ -167,6 +170,16 @@ async function installDelayedApi(page: Page): Promise<void> {
       });
     }
     if (url.pathname === "/auth/oauth/providers") return json({ providers: [] });
+    if (url.pathname === "/businesses/performance-shop/capabilities") {
+      return json(
+        buildShopCapabilities({
+          businessId: "performance-shop",
+          role: "owner",
+          setupStates: {},
+          now: new Date("2026-09-26T00:00:00.000Z")
+        })
+      );
+    }
     if (url.pathname === "/v1/marketplace-intro") {
       return json({ completedAt: "2026-07-26T00:00:00.000Z" });
     }

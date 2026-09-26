@@ -17,6 +17,11 @@ export const agentProfileModuleKeys = {
   identitySecurityPanel: "identity-security-panel"
 } as const;
 
+/** Lazy panels inside the owner app's workspace drawer. */
+export const workspaceModuleKeys = {
+  shopHub: "shop-hub"
+} as const;
+
 /** Other top-level lazy routes (apps/web/src/AppRouter.tsx) that share this same mechanism. */
 export const appRouteModuleKeys = {
   ownerApp: "owner-app",

@@ -1,3 +1,4 @@
+import { shopHubCopy } from "./shop-hub-copy";
 import type { SokoMode } from "./app-shell";
 
 // Pulled out of ChatSurface to keep it under the modularity budget
@@ -20,7 +21,7 @@ export function workspaceModuleClassName(view: WorkspaceCardView, mode: SokoMode
 
 export function workspacePanelTitle(view: WorkspaceCardView): string {
   if (view === "cards") {
-    return "Workspace";
+    return shopHubCopy().title;
   }
 
   if (view === "businessDashboard") {

@@ -943,6 +943,13 @@ a domain view from the shell chrome:
   10 of the 15 domain views. Added cards for the 7 it was missing
   (suppliers, sync, runtime, compliance, beta, launch, agent) so every
   destination the tab bar reached stays reachable.
+- **Shop Hub (later)**: those hardcoded cards were replaced by the Shop Hub
+  (`ShopHub.tsx`, "Go to my shop" at `/sell/shop`), rendered from
+  `GET /businesses/:businessId/capabilities` - the canonical tool registry
+  grouped into modules and filtered by role. `shop-hub-surfaces.ts` maps
+  each module to the screens it opens, and
+  `tests/workspace-hub-coverage.test.ts` still requires every navigable
+  ShellView to appear there.
 
 A second change was attempted and reverted: making `navigateToView`
 (and `openProduct`/`openAgentProfile`) call `navigateToOwnerRoute`

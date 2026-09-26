@@ -8380,3 +8380,394 @@ body {
   color: #563b00;
   font-size: 0.875rem;
 }
+
+/* Shop Hub ----------------------------------------------------------
+   "Go to my shop": every registry module as a tile, on the Soko Home tokens. Tiles and skeletons
+   share one min-height so loading never shifts layout; two columns hold down to 280px. */
+.shop-hub {
+  color: var(--soko-ink);
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.shop-hub-icon {
+  display: block;
+  height: 20px;
+  width: 20px;
+}
+
+.shop-hub-header {
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  border-radius: 16px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.shop-hub-identity {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.shop-hub-kiondo {
+  background: var(--soko-accent-soft);
+  border-radius: 12px;
+  color: var(--soko-accent);
+  display: grid;
+  flex: none;
+  height: 44px;
+  place-items: center;
+  width: 44px;
+}
+
+.shop-hub-kiondo .shop-hub-icon {
+  height: 26px;
+  width: 26px;
+}
+
+.shop-hub-identity-text {
+  min-width: 0;
+}
+
+.shop-hub-identity-text h3 {
+  font-family: var(--soko-display-font);
+  font-size: 18px;
+  line-height: 1.2;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.shop-hub-slug {
+  color: var(--soko-ink-faint);
+  font-family: var(--soko-mono-font);
+  font-size: 12px;
+  margin: 2px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shop-hub-actions,
+.shop-hub-surfaces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.shop-hub-action {
+  background: transparent;
+  border: 1px solid var(--soko-line-strong);
+  border-radius: 999px;
+  color: var(--soko-ink);
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 40px;
+  padding: 8px 14px;
+}
+
+.shop-hub-action.primary {
+  background: var(--soko-accent);
+  border-color: var(--soko-accent);
+  color: var(--soko-accent-ink);
+}
+
+.shop-hub-link-notice {
+  color: var(--soko-ink-soft);
+  font-size: 12px;
+  margin: 0;
+  min-height: 1em;
+  overflow-wrap: anywhere;
+}
+
+.shop-hub-link-notice:empty {
+  display: none;
+}
+
+.shop-hub-notice {
+  align-items: center;
+  border: 1px solid var(--soko-line);
+  border-radius: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.shop-hub-notice p,
+.shop-hub-empty {
+  color: var(--soko-ink-soft);
+  font-size: 13px;
+  margin: 0;
+}
+
+.shop-hub-section {
+  display: grid;
+  gap: 8px;
+}
+
+.shop-hub-section-label {
+  color: var(--soko-ink-faint);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 0 0 0 2px;
+  text-transform: uppercase;
+}
+
+.shop-hub-attention ul {
+  background: var(--soko-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--soko-accent) 40%, transparent);
+  border-radius: 14px;
+  list-style: none;
+  margin: 0;
+  padding: 2px 12px;
+}
+
+.shop-hub-attention li {
+  align-items: center;
+  color: var(--soko-ink);
+  display: flex;
+  font-size: 13.5px;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.shop-hub-attention li + li {
+  border-top: 1px solid color-mix(in srgb, var(--soko-accent) 25%, transparent);
+}
+
+.shop-hub-attention li span {
+  flex: 1;
+  min-width: 0;
+}
+
+.shop-hub-fix {
+  background: transparent;
+  border: 1px solid var(--soko-accent);
+  border-radius: 999px;
+  color: var(--soko-accent);
+  flex: none;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 36px;
+  padding: 4px 12px;
+}
+
+.shop-hub-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 132px), 1fr));
+}
+
+@media (max-width: 420px) {
+  .shop-hub-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.shop-hub-tile {
+  align-content: start;
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  border-radius: 14px;
+  color: var(--soko-ink);
+  display: grid;
+  gap: 6px;
+  min-height: 118px;
+  min-width: 0;
+  padding: 12px;
+  text-align: left;
+}
+
+.shop-hub-tile:hover,
+.shop-hub-tile:focus-visible {
+  border-color: var(--soko-line-strong);
+}
+
+.shop-hub-tile strong {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.shop-hub-tile small {
+  color: var(--soko-ink-faint);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.shop-hub-tile-icon {
+  background: var(--soko-paper);
+  border-radius: 10px;
+  color: var(--soko-accent);
+  display: grid;
+  height: 34px;
+  place-items: center;
+  width: 34px;
+}
+
+.shop-hub-badge {
+  align-self: end;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  justify-self: start;
+  padding: 2px 8px;
+}
+
+.shop-hub-badge.needs_setup {
+  background: var(--soko-accent-soft);
+  color: var(--soko-accent);
+}
+
+.shop-hub-badge.unavailable {
+  background: var(--soko-paper);
+  color: var(--soko-ink-faint);
+}
+
+.shop-hub-skeleton {
+  display: grid;
+  gap: 18px;
+}
+
+.shop-hub-skeleton-label {
+  background: var(--soko-line);
+  border-radius: 4px;
+  display: block;
+  height: 10px;
+  width: 96px;
+}
+
+.shop-hub-skeleton-tile {
+  animation: shop-hub-pulse 1.4s ease-in-out infinite;
+  display: block;
+}
+
+@keyframes shop-hub-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shop-hub-skeleton-tile {
+    animation: none;
+  }
+}
+
+.shop-hub-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.shop-hub-detail p {
+  margin: 0;
+}
+
+.shop-hub-detail-description,
+.shop-hub-detail-intro {
+  color: var(--soko-ink-soft);
+  font-size: 13.5px;
+}
+
+.shop-hub-detail-setup {
+  font-size: 13.5px;
+}
+
+.shop-hub-tools {
+  border: 1px solid var(--soko-line);
+  border-radius: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shop-hub-tools li {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.shop-hub-tools li + li {
+  border-top: 1px solid var(--soko-line);
+}
+
+.shop-hub-tools li > span {
+  display: grid;
+  font-size: 13.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.shop-hub-tools small {
+  color: var(--soko-ink-faint);
+  font-size: 11.5px;
+}
+
+.shop-hub-ask {
+  background: transparent;
+  border: 1px solid var(--soko-line-strong);
+  border-radius: 999px;
+  color: var(--soko-accent);
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  min-height: 36px;
+  padding: 4px 10px;
+}
+
+.shop-hub-entry-button {
+  align-items: center;
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  border-radius: 14px;
+  color: var(--soko-ink);
+  display: flex;
+  gap: 12px;
+  max-width: 360px;
+  padding: 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.shop-hub-entry-button > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.shop-hub-entry-button small {
+  color: var(--soko-ink-faint);
+  font-size: 12px;
+}
+
+.shop-hub-detail-heading {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.shop-hub-detail-heading h3 {
+  align-items: center;
+  display: flex;
+  font-family: var(--soko-display-font);
+  font-size: 18px;
+  gap: 10px;
+  margin: 0;
+}
+
+.shop-hub-back {
+  background: transparent;
+  border: 1px solid var(--soko-line-strong);
+  border-radius: 999px;
+  color: var(--soko-ink);
+  font-size: 13px;
+  min-height: 40px;
+  padding: 6px 14px;
+}

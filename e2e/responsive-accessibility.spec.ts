@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { buildShopCapabilities } from "../services/api/src/cp2/domains/shop-hub/capabilities";
 
 const viewportMatrix = [
   { name: "compact 280px phone", width: 280, height: 653 },
@@ -311,22 +312,77 @@ test("offers Gmail contacts as the first network source for a verified Gmail acc
     });
 });
 
-test("workspace dialog traps focus, restores dismissed cards, and closes with Escape", async ({
+test("the Shop Hub opens at /sell/shop, opens modules as drawers, and closes with Escape", async ({
   page
 }) => {
   await page.goto("/sell");
   const workspaceButton = page.getByRole("button", { name: "Workspace", exact: true });
   await workspaceButton.click();
-  const dialog = page.getByRole("dialog", { name: "Workspace" });
+  const dialog = page.getByRole("dialog", { name: "Your shop" });
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "Close Catalogue card" }).click();
-  await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toHaveCount(0);
-  await dialog.getByRole("button", { name: "Restore workspace cards" }).click();
-  await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/sell\/shop$/u);
+  await expect(dialog.getByRole("region", { name: "Needs attention" })).toContainText(
+    "Add your first product so customers can order."
+  );
+
+  await dialog.locator('.shop-hub-tile[data-module-id="catalog"]').click();
+  const moduleView = dialog.locator('.shop-hub-detail[data-module-id="catalog"]');
+  await expect(moduleView).toBeVisible();
+  await expect(
+    moduleView.getByRole("button", { name: "Ask the agent: Add a product", exact: true })
+  ).toBeVisible();
+  await expect(moduleView.getByRole("button", { name: "Back" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(moduleView).toBeHidden();
+  await expect(dialog.locator('.shop-hub-tile[data-module-id="catalog"]')).toBeFocused();
+
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(/\/sell$/u);
   await expect(workspaceButton).toBeFocused();
 });
+
+test("Ask the agent pre-fills the chat with the tool's command", async ({ page }) => {
+  await page.goto("/sell/shop");
+  const dialog = page.getByRole("dialog", { name: "Your shop" });
+  await expect(dialog).toBeVisible();
+  await dialog.locator('.shop-hub-tile[data-module-id="payments"]').click();
+  await page
+    .getByRole("region", { name: "Payments" })
+    .getByRole("button", { name: "Ask the agent: Record a payment" })
+    .click();
+  await expect(page.getByRole("dialog", { name: "Your shop" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("#payment.record ");
+});
+
+for (const locale of ["en-US", "sw-KE"] as const) {
+  test.describe(`Go to my shop at 360px (${locale})`, () => {
+    test.use({ locale });
+
+    test("opens the Shop Hub from the menu without overflow", async ({ page }) => {
+      const sw = locale === "sw-KE";
+      await page.setViewportSize({ width: 360, height: 800 });
+      await page.goto("/sell");
+      await page.getByRole("button", { name: "Open menu" }).click();
+      await page.getByRole("button", { name: "Go to my shop" }).click();
+      const dialog = page.getByRole("dialog", { name: sw ? "Duka lako" : "Your shop" });
+      await expect(dialog).toBeVisible();
+      await expect(page).toHaveURL(/\/sell\/shop$/u);
+      await expect(dialog.locator(".shop-hub-tile").first()).toBeVisible();
+      await expect(dialog).toContainText(sw ? "Njia za mauzo" : "Channels");
+      await expect(dialog).toContainText(sw ? "Yanahitaji kushughulikiwa" : "Needs attention");
+      await expectNoViewportOverflow(page);
+      await expectInteractiveControlsInsideViewport(page, dialog.locator(".shop-hub-header"));
+      const tileBox = await dialog.locator(".shop-hub-tile").first().boundingBox();
+      expect(tileBox?.width ?? 0).toBeGreaterThan(120);
+      const results = await new AxeBuilder({ page })
+        .include(".shop-hub")
+        .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+        .analyze();
+      expect(results.violations, formatViolations(results.violations)).toEqual([]);
+    });
+  });
+}
 
 test("the Business workspace dashboard reflows on a small screen and stays keyboard-reachable", async ({
   page
@@ -337,20 +393,24 @@ test("the Business workspace dashboard reflows on a small screen and stays keybo
   // Tab-trap keydown handler still adapts to the swapped content instead of assuming stale
   // elements, and that the new stats/orders/catalogue layout reflows at a small width.
   // The header "Workspace" launcher is deliberately hidden below 760px (styles.css); on mobile the
-  // dashboard is reached through the inline owner-controls card instead. Open it at desktop width
+  // dashboard is reached through "Go to my shop" in the menu instead. Open it at desktop width
   // first, then shrink the viewport to check the new content's own reflow.
   await page.goto("/sell");
   const workspaceButton = page.getByRole("button", { name: "Workspace", exact: true });
   await workspaceButton.click();
   // Scoped by the Workspace module's own id, not accessible name: the dialog's title (and so its
-  // aria-labelledby text) changes from "Workspace" to "Business workspace" once the dashboard
+  // aria-labelledby text) changes from "Your shop" to "Business workspace" once the dashboard
   // opens, a name-filtered locator would stop matching after that transition, and a bare
   // role="dialog" locator collides with the separate Messages module mounted alongside it.
   const dialog = page.locator('[data-module-id="workspace"] [role="dialog"]');
   await expect(dialog).toBeVisible();
   const closeButton = dialog.locator(".stacked-module-heading button");
 
-  await dialog.getByRole("button", { name: "Business workspace", exact: true }).click();
+  await dialog.locator('.shop-hub-tile[data-module-id="orders"]').click();
+  await page
+    .getByRole("region", { name: "Orders & sales" })
+    .getByRole("button", { name: "Today's dashboard", exact: true })
+    .click();
   const backButton = dialog.getByRole("button", { name: "Back" });
   await expect(backButton).toBeVisible();
   await expect(dialog.getByText("No orders yet.")).toBeVisible();
@@ -382,55 +442,51 @@ test("the Business workspace dashboard reflows on a small screen and stays keybo
   await page.keyboard.press("Shift+Tab");
   await expect(lastSeeAll).toBeFocused();
 
-  // Back is reachable and operable by keyboard alone, returning to the card grid without closing
+  // Back is reachable and operable by keyboard alone, returning to the Shop Hub without closing
   // the dialog. Also proves the pointer-blocking half of the same fix: before it, the Messages
   // module (painted with the same base z-index, later in DOM order) covered this dialog and ate
   // the click - Playwright's actionability check made that failure explicit instead of silently
   // clicking through.
   await backButton.focus();
   await page.keyboard.press("Enter");
-  await expect(
-    dialog.getByRole("button", { name: "Business workspace", exact: true })
-  ).toBeVisible();
-  await dialog.getByRole("button", { name: "Business workspace", exact: true }).click();
+  await expect(dialog.locator('.shop-hub-tile[data-module-id="orders"]')).toBeVisible();
+  await dialog.locator('.shop-hub-tile[data-module-id="orders"]').click();
+  await page
+    .getByRole("region", { name: "Orders & sales" })
+    .getByRole("button", { name: "Today's dashboard", exact: true })
+    .click();
   await expect(dialog.getByText("No orders yet.")).toBeVisible();
 
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 });
 
-test("existing shops keep cards out of the chat until the launcher opens them", async ({
+test("existing shops keep the Shop Hub out of the chat until the launcher opens it", async ({
   page
 }) => {
   await page.goto("/sell");
-  await expect(page.getByLabel("Workspace cards")).toHaveCount(0);
+  await expect(page.locator(".shop-hub")).toHaveCount(0);
 
   const launcher = page.getByRole("button", { name: "Workspace", exact: true });
   await launcher.click();
-  const dialog = page.getByRole("dialog", { name: "Workspace" });
+  const dialog = page.getByRole("dialog", { name: "Your shop" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator("section.generated-card-message")).toHaveCount(1);
+  await expect(dialog.locator(".shop-hub")).toHaveCount(1);
+  // One tile per registry module the owner can see (11 today), rendered from the endpoint.
+  await expect(dialog.locator(".shop-hub-tile")).toHaveCount(11);
 
-  await dialog.getByRole("button", { name: "Close Catalogue card" }).click();
-  await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toHaveCount(0);
-  // 19 workspace cards total (10 original + 8 added when PrimaryNavigation was removed and its
-  // destinations moved into this hub - see docs/frontend/frontend.md's Phase 6 - plus the
-  // "Business workspace" entry for MerchantWorkspaceDashboard, audit A27), minus the one just
-  // closed above.
-  await expect(dialog.locator(".generated-card-close")).toHaveCount(18);
-
-  await dialog.getByRole("button", { name: "Close Workspace" }).click();
-  await expect(page.getByLabel("Workspace cards")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Close Your shop" }).click();
+  await expect(page.locator(".shop-hub")).toHaveCount(0);
   await expect(launcher).toBeFocused();
 
   await launcher.click();
-  await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(1);
+  await expect(page.getByRole("dialog", { name: "Your shop" })).toHaveCount(1);
   await page.keyboard.press("Escape");
 
   const composer = page.getByRole("textbox", { name: "Message" });
-  await composer.fill("Cards are closed and chat still works.");
-  await expect(composer).toHaveValue("Cards are closed and chat still works.");
-  await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(0);
+  await composer.fill("The hub is closed and chat still works.");
+  await expect(composer).toHaveValue("The hub is closed and chat still works.");
+  await expect(page.getByRole("dialog", { name: "Your shop" })).toHaveCount(0);
 });
 
 test("SMS handoff confirms cost, normalizes the recipient, and preserves the draft", async ({
@@ -530,7 +586,7 @@ test("the composer grows to show a wrapped draft instead of clipping it on mobil
   expect(clientHeight).toBeGreaterThanOrEqual(scrollHeight - 4);
 });
 
-test("persisted owner-control cards stay attached to their historical message", async ({
+test("persisted owner-control entry stays attached to its historical message and opens the hub", async ({
   page
 }) => {
   await page.setExtraHTTPHeaders({ "x-soko-test-owner-controls": "true" });
@@ -543,12 +599,10 @@ test("persisted owner-control cards stay attached to their historical message", 
     .filter({ hasText: "Shared owner controls" });
   await expect(historicalMessage).toHaveCount(1, { timeout: 30_000 });
   await expect(historicalMessage.locator("section.generated-card-message")).toHaveCount(1);
-  await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Your shop" })).toHaveCount(0);
 
-  await historicalMessage.getByRole("button", { name: "Close Catalogue card" }).click();
-  await expect(
-    historicalMessage.getByRole("button", { name: "Catalogue", exact: true })
-  ).toHaveCount(0);
+  await historicalMessage.locator(".shop-hub-entry-button").click();
+  await expect(page.getByRole("dialog", { name: "Your shop" })).toBeVisible();
 });
 
 test("account deletion requires DELETE, PIN, acknowledgement, and signs out", async ({ page }) => {
@@ -1126,6 +1180,21 @@ async function installApiMocks(page: Page): Promise<void> {
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
     if (path === "/auth/oauth/providers") return json({ providers: [] });
+    if (path === "/businesses/responsive-certification-shop/capabilities" && method === "GET") {
+      return json(
+        buildShopCapabilities({
+          businessId: "responsive-certification-shop",
+          role: "owner",
+          setupStates: {
+            catalog_products: "needs_setup",
+            channels_linked: "unavailable",
+            agent_runtime: "ready",
+            delivery_corridors: "unavailable"
+          },
+          now: new Date("2026-09-26T00:00:00.000Z")
+        })
+      );
+    }
     if (path === "/session" || path === "/auth/bootstrap") {
       if (accountDeleted) return json({ code: "session_invalid" }, 401);
       return json({
