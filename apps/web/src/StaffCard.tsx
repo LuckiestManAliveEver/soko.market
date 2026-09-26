@@ -13,6 +13,7 @@ import { ApiRequestError } from "./lib/api";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import { PhoneNumberField } from "./PhoneNumberField";
 import { staffCopy } from "./staff-copy";
+import { buildJoinLink, emailLink, smsLink, whatsAppLink } from "./staff-join-link";
 
 // Staff management for the open business (docs/architecture/staff-invitations.md). Owners and
 // managers invite people by phone with a role, see who is waiting and who has joined, change roles
@@ -99,12 +100,29 @@ export default function StaffCard(props: {
               invitations: [{ ...created, needsReinvite: false }, ...current.invitations]
             }
       );
-      setNotice({ kind: "status", text: t.invited(created.inviteeName, created.destination) });
+      setNotice({
+        kind: "status",
+        text: t.invited(created.inviteeName, created.destination, created.channel)
+      });
     });
   }
 
-  async function share(invitation: StaffInvitationSummary) {
-    const text = t.shareText(props.businessName, t.role[invitation.role]);
+  function inviteMessage(invitation: StaffInvitationSummary): string | null {
+    if (invitation.joinToken === undefined) return null;
+    const link = buildJoinLink(window.location.origin, invitation.id, invitation.joinToken);
+    return t.shareText(props.businessName, t.role[invitation.role], link, invitation.channel);
+  }
+
+  /** Copies the invitation (with its link) to the clipboard; the share sheet only as a fallback. */
+  async function copyLink(invitation: StaffInvitationSummary) {
+    const text =
+      inviteMessage(invitation) ??
+      t.shareTextWithoutLink(props.businessName, t.role[invitation.role]);
+    if (navigator.clipboard !== undefined) {
+      await navigator.clipboard.writeText(text);
+      setNotice({ kind: "status", text: t.copied });
+      return;
+    }
     const nav = navigator as Navigator & { share?: (data: { text: string }) => Promise<void> };
     if (typeof nav.share === "function") {
       try {
@@ -114,10 +132,7 @@ export default function StaffCard(props: {
         if (error instanceof DOMException && error.name === "AbortError") return;
         throw error;
       }
-      return;
     }
-    await navigator.clipboard?.writeText(text);
-    setNotice({ kind: "status", text: t.copied });
   }
 
   async function revoke(invitation: StaffInvitationSummary) {
@@ -244,6 +259,7 @@ export default function StaffCard(props: {
                   {member.phone !== null && member.displayName ? ` · ${member.phone}` : ""}
                   {" · "}
                   {t.role[member.role]}
+                  {member.confirmedByLink ? ` · ${t.confirmedByLink}` : ""}
                 </span>
                 {member.manageable ? (
                   <div className="row-actions">
@@ -316,12 +332,48 @@ export default function StaffCard(props: {
                     </small>
                   ) : null}
                   <div className="row-actions">
+                    {(() => {
+                      const message = inviteMessage(invitation);
+                      if (message === null) return null;
+                      // Delivered from the owner's own phone, straight to the invited number.
+                      return invitation.channel === "phone" ? (
+                        <>
+                          <a
+                            className="button-like"
+                            href={smsLink(invitation.destination, message)}
+                          >
+                            {t.sendSms}
+                          </a>
+                          <a
+                            className="button-like"
+                            href={whatsAppLink(invitation.destination, message)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {t.sendWhatsApp}
+                          </a>
+                        </>
+                      ) : (
+                        <a
+                          className="button-like"
+                          href={emailLink(
+                            invitation.destination,
+                            t.emailSubject(props.businessName),
+                            message
+                          )}
+                        >
+                          {t.sendEmail}
+                        </a>
+                      );
+                    })()}
                     <button
                       className="secondary"
                       type="button"
-                      onClick={() => act(`staff-share-${invitation.id}`, () => share(invitation))}
+                      onClick={() =>
+                        act(`staff-share-${invitation.id}`, () => copyLink(invitation))
+                      }
                     >
-                      {t.share}
+                      {invitation.joinToken === undefined ? t.share : t.copyLink}
                     </button>
                     {confirming === `revoke-${invitation.id}` ? (
                       <>

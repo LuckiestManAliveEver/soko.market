@@ -217,6 +217,18 @@ export function parseManifestBody(body: Body) {
   };
 }
 
+/** `{ driverUserId: string | null }`: null unassigns the manifest. */
+export function parseDriverBody(body: Body): { driverUserId: string | null } {
+  if (!("driverUserId" in body)) {
+    throw new Cp2Error(
+      400,
+      "driverUserId_required",
+      "driverUserId is required (null to unassign)."
+    );
+  }
+  return { driverUserId: parseNullableString(body.driverUserId) };
+}
+
 export function parseManifestStatus(value: unknown): ManifestStatus | undefined {
   if (value === undefined || value === null) return undefined;
   if (!manifestStatuses.includes(value as ManifestStatus)) {

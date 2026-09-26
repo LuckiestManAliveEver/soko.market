@@ -2,6 +2,9 @@ import type { AccountShopSummary } from "@soko/shared-types";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { isRedundantAgentErrorMessage } from "./chat-message-plumbing";
 import StaffInvitationsPrompt from "./StaffInvitationsPrompt";
+import { authenticationRoute } from "./routes";
+import { readPendingJoin } from "./staff-join-link";
+import { staffCopy } from "./staff-copy";
 
 // The notices at the top of the app shell: the last action's status line, and invitations to
 // join a business waiting for the signed-in person (docs/architecture/staff-invitations.md).
@@ -12,6 +15,8 @@ export default function ShellNotices(props: {
   working: boolean;
   /** The signed-in account, or null while signing in, bootstrapping or signed out. */
   accountId: string | null;
+  /** Signed out and not on the sign-in screens: where a join-link visitor is asked to sign in. */
+  signedOut: boolean;
   onJoinedShop: (shop: AccountShopSummary) => Promise<void> | void;
 }) {
   return (
@@ -23,6 +28,13 @@ export default function ShellNotices(props: {
           ) : (
             <AuthenticationActionMessage message={props.statusMessage} />
           )}
+        </div>
+      ) : null}
+      {props.signedOut && readPendingJoin(window.localStorage) !== null ? (
+        <div className="app-action-notice staff-join-banner" role="status">
+          <span>{staffCopy().joinBanner}</span>{" "}
+          <a href={authenticationRoute("login")}>{staffCopy().joinBannerLogIn}</a>{" "}
+          <a href={authenticationRoute("signup")}>{staffCopy().joinBannerSignUp}</a>
         </div>
       ) : null}
       {props.accountId === null ? null : (

@@ -93,6 +93,17 @@ const en = {
   noteRequired: "Enter a reason for a failed or skipped delivery.",
   released: "Returned to pool",
   walkIn: "Walk-in customer",
+  myDeliveries: "My deliveries",
+  retry: "Try again",
+  noLogisticsAccess:
+    "Your role in this shop has no delivery work. Ask the owner if that should change.",
+  driversUnavailable: "Could not load the drivers list, so trips cannot be assigned right now.",
+  noAssignedTrips: "No deliveries assigned to you yet.",
+  driver: "Driver",
+  noDriver: "No driver assigned",
+  driverLeft: "Driver no longer in this business",
+  assignDriver: "Assign driver",
+  stopsCount: (count: number) => (count === 1 ? "1 stop" : `${count} stops`),
   setup: "Delivery setup",
   setupHeading: "Set up corridor deliveries",
   setupIntro:
@@ -243,6 +254,18 @@ const sw: FulfillmentCopy = {
   noteRequired: "Andika sababu ya kushindikana au kurukwa.",
   released: "Imerudishwa kusubiri",
   walkIn: "Mteja wa papo hapo",
+  myDeliveries: "Safari zangu",
+  retry: "Jaribu tena",
+  noLogisticsAccess:
+    "Jukumu lako kwenye duka hili halina kazi za usafirishaji. Muulize mmiliki kama hilo linapaswa kubadilika.",
+  driversUnavailable:
+    "Imeshindwa kupakia orodha ya madereva, kwa hiyo safari haziwezi kupewa madereva kwa sasa.",
+  noAssignedTrips: "Bado hujapewa safari yoyote.",
+  driver: "Dereva",
+  noDriver: "Hakuna dereva",
+  driverLeft: "Dereva hayupo tena kwenye biashara hii",
+  assignDriver: "Mpe dereva",
+  stopsCount: (count: number) => (count === 1 ? "kituo 1" : `vituo ${count}`),
   setup: "Mipangilio ya usafirishaji",
   setupHeading: "Andaa usafirishaji kwa njia",
   setupIntro:

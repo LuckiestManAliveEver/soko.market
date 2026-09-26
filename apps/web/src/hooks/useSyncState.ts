@@ -1,5 +1,6 @@
 import { isExplicitOfflineMode, offlineModeEvent, offlineRuntimeEnabled } from "../offline-runtime";
 import { useEffect, useRef, useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import type { SyncMutationPayload, SyncMutationType } from "@soko/shared-types";
 
@@ -166,7 +167,7 @@ export function useSyncState(deps: UseSyncStateDeps) {
       setSyncSummary(response.summary);
       setSyncQueue(response.items);
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 
@@ -176,7 +177,7 @@ export function useSyncState(deps: UseSyncStateDeps) {
         await getJson<OfflineCacheSnapshot>(`/businesses/${businessId}/offline-cache`)
       );
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isExplicitOfflineMode, offlineModeEvent } from "../offline-runtime";
 import { apiFetch } from "../lib/api";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import { dataUrlPayload, getErrorMessage, readFileAsDataUrl } from "../chat-message-plumbing";
 import { deleteJson, getJson, patchJson, postJson } from "../api-helpers";
@@ -79,7 +80,7 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
         )
       );
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 
@@ -98,7 +99,7 @@ export function useSuppliersState(deps: UseSuppliersStateDeps) {
         )
       );
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 

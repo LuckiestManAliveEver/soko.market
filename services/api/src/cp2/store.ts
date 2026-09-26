@@ -1039,7 +1039,21 @@ export class Cp2Store {
       accounts: this.accounts,
       quarantinedBusinessIds: this.quarantinedBusinessIds,
       accountIdentities: () => this.accountIdentities.values(),
-      recordAuditEvent: (input) => this.recordAuditEvent(input)
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      onMembershipChanged: (businessId, userId, change) => {
+        const listener = this.membershipChangedListener;
+        if (listener === null) return;
+        // Fire-and-forget like order intake: the membership change itself never fails on it.
+        void listener({ businessId, userId, ...change }).catch((error: unknown) => {
+          console.error(
+            JSON.stringify({
+              event: "fulfillment.driver_release_failed",
+              businessId,
+              message: error instanceof Error ? error.message : "unknown"
+            })
+          );
+        });
+      }
     });
     this.catalogueSharing = new CatalogueSharingDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -1747,6 +1761,15 @@ export class Cp2Store {
   private readonly agentCatalog = new Map<string, AgentDefinition>();
   private readonly platformOperators = new Map<string, PlatformOperatorGrant>();
   private readonly quarantinedBusinessIds = new Set<string>();
+  private membershipChangedListener:
+    | ((input: {
+        businessId: string;
+        userId: string;
+        previousRole: BusinessRole | null;
+        joined: boolean;
+        at: string;
+      }) => Promise<unknown>)
+    | null = null;
   private fulfillmentIntakeListener:
     | ((input: { businessId: string; invoiceId: string; actorId: string }) => Promise<unknown>)
     | null = null;
@@ -4440,6 +4463,22 @@ export class Cp2Store {
     return { userId: actor.user.id, role: membership.role };
   }
 
+  /**
+   * The members of a business with their role and display name, for fulfillment's driver
+   * assignment. No authorization here: the fulfillment service authorizes the caller first.
+   */
+  listBusinessMembersForFulfillment(
+    businessId: string
+  ): Array<{ userId: string; displayName: string; role: BusinessRole }> {
+    return [...this.memberships.values()]
+      .filter((membership) => membership.businessId === businessId)
+      .map((membership) => ({
+        userId: membership.userId,
+        displayName: this.users.get(membership.userId)?.displayName ?? "",
+        role: membership.role
+      }));
+  }
+
   /** Whether the caller's membership in `businessId` grants `permission` (no throw). */
   hasBusinessPermission(input: {
     sessionId: string | null;
@@ -4510,6 +4549,24 @@ export class Cp2Store {
       })),
       payOnDeliveryAmount: payment.balanceDue > 0 ? payment.balanceDue : null
     };
+  }
+
+  /**
+   * Called after a member leaves a business or their role changes (staff invitations), so
+   * fulfillment can release trips assigned to someone who can no longer deliver them.
+   */
+  setMembershipChangedListener(
+    listener:
+      | ((input: {
+          businessId: string;
+          userId: string;
+          previousRole: BusinessRole | null;
+          joined: boolean;
+          at: string;
+        }) => Promise<unknown>)
+      | null
+  ): void {
+    this.membershipChangedListener = listener;
   }
 
   /**

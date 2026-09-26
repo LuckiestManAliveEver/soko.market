@@ -23,6 +23,7 @@ import {
   parseCorridorBody,
   parseCorridorPatch,
   parseDeliveryBody,
+  parseDriverBody,
   parseManifestBody,
   parseManifestStatus,
   parseExpectedDefault,
@@ -582,6 +583,43 @@ export function registerFulfillmentRoutes(
           ...actor(request),
           manifestId: request.params.manifestId
         });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/fulfillment/manifests/:manifestId/driver",
+    async (request: FastifyRequest<{ Params: ManifestParams; Body: unknown }>, reply) => {
+      try {
+        return await fulfillment.assignManifestDriver({
+          ...actor(request),
+          manifestId: request.params.manifestId,
+          ...parseDriverBody(parseRequestBody(request.body))
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/my-manifests",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return await fulfillment.listMyManifests(actor(request));
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/fulfillment/drivers",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return await fulfillment.listAssignableDrivers(actor(request));
       } catch (error) {
         return sendCp2Error(reply, error);
       }

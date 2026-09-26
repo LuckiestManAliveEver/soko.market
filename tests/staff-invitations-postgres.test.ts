@@ -55,7 +55,7 @@ describePostgres("staff invitations on PostgreSQL", () => {
       [];
     for (const role of ["sales_agent", "cashier", "driver"]) {
       const phone = uniquePhone();
-      const invitation = await ok<{ id: string }>(
+      const invitation = await ok<{ id: string; joinToken: string }>(
         firstApp,
         "POST",
         staffUrl("/invitations"),
@@ -71,7 +71,9 @@ describePostgres("staff invitations on PostgreSQL", () => {
         firstApp,
         "POST",
         `/v1/staff-invitations/${invitation.id}/accept`,
-        person.cookie
+        person.cookie,
+        // The first joiner uses the link sent to their number; the proof must survive a restart.
+        role === "sales_agent" ? { joinToken: invitation.joinToken } : undefined
       );
       joiners.push({ phone, ...person, membershipId: accepted.membership.id });
     }
@@ -153,7 +155,8 @@ describePostgres("staff invitations on PostgreSQL", () => {
       ).body.code
     ).toBe("staff_invitation_recently_declined");
     expect(overview.members.map((member) => member.role)).toEqual(["owner", "manager"]);
-    expect(overview.members[1]?.userId).toBe(promoted.userId);
+    expect(overview.members[1]).toMatchObject({ userId: promoted.userId, confirmedByLink: true });
+    expect(overview.invitations[0]?.joinToken).toMatch(/^[A-Za-z0-9_-]{24}$/u);
     // The promoted manager's access survived the restart; the removed and departed did not.
     expect((await request(restoredApp, "GET", staffUrl(), promoted.cookie)).status).toBe(200);
     for (const gone of [removed, leaver]) {

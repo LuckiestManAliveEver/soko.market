@@ -33,7 +33,8 @@ import {
   type DispatchPolicySummary,
   type ShopLocationStatusSummary,
   type ShopLocationSummary,
-  type VehicleSummary
+  type VehicleSummary,
+  type BusinessRole
 } from "@soko/shared-types";
 import { Cp2Error, assertValid } from "../../cp2-error.js";
 import {
@@ -65,6 +66,10 @@ export interface FulfillmentServiceDeps {
     businessId: string;
     permission: BusinessPermission;
   }) => boolean;
+  /** Members of a business with role and name (driver assignment); caller already authorized. */
+  businessMembers: (
+    businessId: string
+  ) => Array<{ userId: string; displayName: string; role: BusinessRole }>;
   /** Throws 404 unless `customerId` is a shop of `businessId`. */
   requireCustomer: (businessId: string, customerId: string) => { id: string };
   /** Throws 404 for an unknown order and 409 for a draft; returns the confirmed order's shop. */
@@ -95,6 +100,7 @@ export function fulfillmentDepsFromStore(store: Cp2Store): FulfillmentServiceDep
   return {
     authorize: (input) => store.authorizeBusinessPermission(input),
     hasPermission: (input) => store.hasBusinessPermission(input),
+    businessMembers: (businessId) => store.listBusinessMembersForFulfillment(businessId),
     requireCustomer: (businessId, customerId) =>
       store.requireBusinessCustomer(businessId, customerId),
     requireConfirmedOrder: (businessId, invoiceId) =>
@@ -254,6 +260,10 @@ export function createUnavailableFulfillmentService(): FulfillmentService {
     removeOrderFromManifest: unavailable,
     closeManifest: unavailable,
     departManifest: unavailable,
+    assignManifestDriver: unavailable,
+    listMyManifests: unavailable,
+    listAssignableDrivers: unavailable,
+    releaseDriverAssignments: async () => 0,
     cancelManifest: unavailable,
     evaluateDispatch: unavailable,
     listDispatchApprovals: unavailable,
@@ -500,6 +510,7 @@ export function createPostgresFulfillmentService(input: {
     hasPermission: (actor, permission) =>
       deps.hasPermission({ sessionId: actor.sessionId, businessId: actor.businessId, permission }),
     requireConfirmedOrder: deps.requireConfirmedOrder,
+    businessMembers: deps.businessMembers,
     customerName: deps.customerName,
     deliveryDetails: deps.deliveryDetails,
     businessTimezone: deps.businessTimezone,

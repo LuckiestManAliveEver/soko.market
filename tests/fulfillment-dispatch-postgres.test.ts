@@ -26,6 +26,7 @@ import {
   ok,
   request,
   signUp,
+  uniquePhone,
   withMigrationsReversed,
   type TestApp,
   type TestOwner
@@ -133,6 +134,11 @@ describePostgres("corridor fulfillment Phase 1c on PostgreSQL", () => {
       const intake = service.intakeOrder(input);
       pendingIntakes.push(intake);
       return intake;
+    });
+    store.setMembershipChangedListener((input) => {
+      const release = service.releaseDriverAssignments(input);
+      pendingIntakes.push(release);
+      return release;
     });
     app = buildApi({ cp2: { store, fulfillmentService: service } });
   });
@@ -725,16 +731,21 @@ describePostgres("corridor fulfillment Phase 1c on PostgreSQL", () => {
           })
         ).status
       ).toBe(403);
+      const deliveryUrl = url(
+        owner,
+        `manifests/${created.id}/stops/${created.stops[0]?.id}/delivery`
+      );
+      // A driver records deliveries only on a trip assigned to them (§16): before assignment the
+      // manifest is indistinguishable from a missing one...
       expect(
-        (
-          await request(
-            app,
-            "POST",
-            url(owner, `manifests/${created.id}/stops/${created.stops[0]?.id}/delivery`),
-            driver.cookie,
-            { outcome: "DELIVERED" }
-          )
-        ).status
+        (await request(app, "POST", deliveryUrl, driver.cookie, { outcome: "DELIVERED" })).status
+      ).toBe(404);
+      // ...and once the dispatcher assigns it, the same driver records the delivery.
+      await ok(app, "POST", url(owner, `manifests/${created.id}/driver`), owner.cookie, {
+        driverUserId: driver.userId
+      });
+      expect(
+        (await request(app, "POST", deliveryUrl, driver.cookie, { outcome: "DELIVERED" })).status
       ).toBe(200);
       expect((await orderStatus(owner, order.invoiceId)).state).toBe("DELIVERED");
     });
@@ -1416,6 +1427,516 @@ describePostgres("corridor fulfillment Phase 1c on PostgreSQL", () => {
       expect(telegramDeliveries).toContain("Your order has been delivered.");
       expect(product.id).toBeTruthy();
     });
+  });
+
+  describe("driver assignment", () => {
+    it("assigns a trip to one driver, who alone sees and works it", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      const driver = await signUp(app);
+      const otherDriver = await signUp(app);
+      const cashier = await signUp(app);
+      addMember(store, owner.businessId, driver.userId, "driver");
+      addMember(store, owner.businessId, otherDriver.userId, "driver");
+      addMember(store, owner.businessId, cashier.userId, "cashier");
+      const stranger = await signUp(app);
+      const first = await deliveryOrder(owner, 900 * KG, alongX(0.3));
+      await deliveryOrder(owner, 900 * KG, alongX(0.6));
+      const created = await createManifest(owner, { corridorId, vehicleId });
+      expect(created.body.manifest).toMatchObject({ driverUserId: null, driverName: null });
+      const manifestId = created.body.manifest.id;
+      const assignUrl = url(owner, `manifests/${manifestId}/driver`);
+
+      // Only a member whose role can record deliveries may be assigned.
+      const drivers = await ok<Array<{ userId: string; role: string }>>(
+        app,
+        "GET",
+        url(owner, "drivers"),
+        owner.cookie
+      );
+      expect(drivers.map((entry) => entry.userId)).toEqual(
+        expect.arrayContaining([driver.userId, otherDriver.userId, owner.userId])
+      );
+      expect(drivers.map((entry) => entry.userId)).not.toContain(cashier.userId);
+      for (const ineligible of [cashier.userId, stranger.userId]) {
+        expect(
+          await request(app, "POST", assignUrl, owner.cookie, { driverUserId: ineligible })
+        ).toMatchObject({ status: 409, body: { code: "driver_not_eligible" } });
+      }
+      // Drivers cannot assign trips, even to themselves.
+      expect(
+        (await request(app, "POST", assignUrl, driver.cookie, { driverUserId: driver.userId }))
+          .status
+      ).toBe(403);
+
+      const assigned = await ok<ManifestView & { driverUserId: string; driverName: string }>(
+        app,
+        "POST",
+        assignUrl,
+        owner.cookie,
+        { driverUserId: driver.userId },
+        { "idempotency-key": "assign-1" }
+      );
+      expect(assigned).toMatchObject({ driverUserId: driver.userId });
+      const replay = await ok<{ driverUserId: string }>(
+        app,
+        "POST",
+        assignUrl,
+        owner.cookie,
+        { driverUserId: driver.userId },
+        { "idempotency-key": "assign-1" }
+      );
+      expect(replay.driverUserId).toBe(driver.userId);
+      const events = await pool.query<{ count: number }>(
+        "select count(*)::int as count from fulfillment_outbox_events where business_id = $1 and event_type = 'manifest.driver_assigned'",
+        [owner.businessId]
+      );
+      expect(events.rows[0]?.count).toBe(1);
+
+      // The driver sees their trip; the other driver sees nothing, and neither lists all manifests.
+      const mine = await ok<ManifestView[]>(app, "GET", url(owner, "my-manifests"), driver.cookie);
+      expect(mine.map((entry) => entry.id)).toEqual([manifestId]);
+      expect(
+        await ok<unknown[]>(app, "GET", url(owner, "my-manifests"), otherDriver.cookie)
+      ).toEqual([]);
+      expect((await request(app, "GET", url(owner, "manifests"), driver.cookie)).status).toBe(403);
+
+      await ok(app, "POST", url(owner, `manifests/${manifestId}/close`), owner.cookie, {});
+      const stop = mine[0]?.stops.find((entry) => entry.invoiceId === first.invoiceId);
+      // Someone else's trip is indistinguishable from a missing one.
+      for (const path of [`manifests/${manifestId}/depart`]) {
+        expect(await request(app, "POST", url(owner, path), otherDriver.cookie, {})).toMatchObject({
+          status: 404
+        });
+      }
+      expect(
+        await request(
+          app,
+          "POST",
+          url(owner, `manifests/${manifestId}/stops/${stop?.id}/delivery`),
+          otherDriver.cookie,
+          { outcome: "DELIVERED" }
+        )
+      ).toMatchObject({ status: 404 });
+      // The assigned driver starts the route and records the delivery.
+      await ok(app, "POST", url(owner, `manifests/${manifestId}/depart`), driver.cookie, {});
+      await ok(
+        app,
+        "POST",
+        url(owner, `manifests/${manifestId}/stops/${stop?.id}/delivery`),
+        driver.cookie,
+        { outcome: "DELIVERED" }
+      );
+      expect((await orderStatus(owner, first.invoiceId)).state).toBe("DELIVERED");
+
+      // Unassigned: the driver loses the trip at once.
+      await ok(app, "POST", assignUrl, owner.cookie, { driverUserId: null });
+      expect(await ok<unknown[]>(app, "GET", url(owner, "my-manifests"), driver.cookie)).toEqual(
+        []
+      );
+      const secondStop = mine[0]?.stops.find((entry) => entry.invoiceId !== first.invoiceId);
+      expect(
+        await request(
+          app,
+          "POST",
+          url(owner, `manifests/${manifestId}/stops/${secondStop?.id}/delivery`),
+          driver.cookie,
+          { outcome: "DELIVERED" }
+        )
+      ).toMatchObject({ status: 404 });
+      // The owner (a dispatcher) can still work an unassigned trip.
+      await ok(
+        app,
+        "POST",
+        url(owner, `manifests/${manifestId}/stops/${secondStop?.id}/delivery`),
+        owner.cookie,
+        { outcome: "DELIVERED" }
+      );
+      // A completed trip cannot be reassigned.
+      expect(
+        await request(app, "POST", assignUrl, owner.cookie, { driverUserId: driver.userId })
+      ).toMatchObject({ status: 409, body: { code: "manifest_transition_invalid" } });
+    }, 60_000);
+
+    it("releases a removed driver's open trips, and does not give them back on re-invite", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      const driver = await signUp(app);
+      addMember(store, owner.businessId, driver.userId, "driver");
+      await deliveryOrder(owner, 900 * KG, alongX(0.5));
+      const created = await createManifest(owner, { corridorId, vehicleId });
+      const manifestId = created.body.manifest.id;
+      await ok(app, "POST", url(owner, `manifests/${manifestId}/driver`), owner.cookie, {
+        driverUserId: driver.userId
+      });
+      const overview = await ok<{ members: Array<{ userId: string; membershipId: string }> }>(
+        app,
+        "GET",
+        `/businesses/${owner.businessId}/staff`,
+        owner.cookie
+      );
+      const membership = overview.members.find((member) => member.userId === driver.userId);
+      await ok(
+        app,
+        "DELETE",
+        `/businesses/${owner.businessId}/staff/members/${membership?.membershipId}`,
+        owner.cookie
+      );
+      await settleIntakes();
+      // Access ends at once, and the trip goes back to the dispatcher unassigned.
+      expect((await request(app, "GET", url(owner, "my-manifests"), driver.cookie)).status).toBe(
+        403
+      );
+      const view = await ok<{ driverUserId: string | null; driverName: string | null }>(
+        app,
+        "GET",
+        url(owner, `manifests/${manifestId}`),
+        owner.cookie
+      );
+      expect(view).toMatchObject({ driverUserId: null, driverName: null });
+      const released = await pool.query<{ count: number }>(
+        `select count(*)::int as count from fulfillment_outbox_events
+         where business_id = $1 and event_type = 'manifest.driver_assigned'
+           and payload->>'reason' = 'driver_left'`,
+        [owner.businessId]
+      );
+      expect(released.rows[0]?.count).toBe(1);
+      // Brought back later, they start with no trips.
+      addMember(store, owner.businessId, driver.userId, "driver");
+      expect(await ok<unknown[]>(app, "GET", url(owner, "my-manifests"), driver.cookie)).toEqual(
+        []
+      );
+    }, 60_000);
+
+    it("releases trips on a demotion out of delivering, and keeps them when the role still delivers", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      const driver = await signUp(app);
+      const manager = await signUp(app);
+      addMember(store, owner.businessId, driver.userId, "driver");
+      addMember(store, owner.businessId, manager.userId, "manager");
+      await deliveryOrder(owner, 900 * KG, alongX(0.3));
+      const first = await createManifest(owner, { corridorId, vehicleId });
+      await deliveryOrder(owner, 900 * KG, alongX(0.6));
+      const second = await createManifest(owner, { corridorId, vehicleId });
+      await ok(
+        app,
+        "POST",
+        url(owner, `manifests/${first.body.manifest.id}/driver`),
+        owner.cookie,
+        {
+          driverUserId: driver.userId
+        }
+      );
+      await ok(
+        app,
+        "POST",
+        url(owner, `manifests/${second.body.manifest.id}/driver`),
+        owner.cookie,
+        {
+          driverUserId: manager.userId
+        }
+      );
+      const staff = await ok<{ members: Array<{ userId: string; membershipId: string }> }>(
+        app,
+        "GET",
+        `/businesses/${owner.businessId}/staff`,
+        owner.cookie
+      );
+      const membershipOf = (userId: string) =>
+        staff.members.find((member) => member.userId === userId)?.membershipId;
+      // Driver demoted to cashier (cannot record deliveries): their trip is released.
+      await ok(
+        app,
+        "PATCH",
+        `/businesses/${owner.businessId}/staff/members/${membershipOf(driver.userId)}`,
+        owner.cookie,
+        { role: "cashier" }
+      );
+      // Manager moved to driver (still records deliveries): their trip stays.
+      await ok(
+        app,
+        "PATCH",
+        `/businesses/${owner.businessId}/staff/members/${membershipOf(manager.userId)}`,
+        owner.cookie,
+        { role: "driver" }
+      );
+      await settleIntakes();
+      const driverOf = async (manifestId: string) =>
+        (
+          await ok<{ driverUserId: string | null }>(
+            app,
+            "GET",
+            url(owner, `manifests/${manifestId}`),
+            owner.cookie
+          )
+        ).driverUserId;
+      expect(await driverOf(first.body.manifest.id)).toBeNull();
+      expect(await driverOf(second.body.manifest.id)).toBe(manager.userId);
+    }, 60_000);
+
+    it("never leaves a trip assigned to someone removed while the assignment was in flight", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      const driver = await signUp(app);
+      addMember(store, owner.businessId, driver.userId, "driver");
+      await deliveryOrder(owner, 900 * KG, alongX(0.5));
+      const created = await createManifest(owner, { corridorId, vehicleId });
+      const manifestId = created.body.manifest.id;
+      const staff = await ok<{ members: Array<{ userId: string; membershipId: string }> }>(
+        app,
+        "GET",
+        `/businesses/${owner.businessId}/staff`,
+        owner.cookie
+      );
+      const membershipId = staff.members.find(
+        (member) => member.userId === driver.userId
+      )?.membershipId;
+      const blocker = await pool.connect();
+      try {
+        await blocker.query("begin");
+        await blocker.query("select id from fulfillment_manifests where id = $1 for update", [
+          manifestId
+        ]);
+        // The assignment waits on the manifest lock; meanwhile the person is removed.
+        const assign = request(
+          app,
+          "POST",
+          url(owner, `manifests/${manifestId}/driver`),
+          owner.cookie,
+          {
+            driverUserId: driver.userId
+          }
+        );
+        await new Promise((done) => setTimeout(done, 200));
+        const removed = await request(
+          app,
+          "DELETE",
+          `/businesses/${owner.businessId}/staff/members/${membershipId}`,
+          owner.cookie
+        );
+        expect(removed.status).toBe(200);
+        await new Promise((done) => setTimeout(done, 200));
+        await blocker.query("commit");
+        const assigned = await assign;
+        await settleIntakes();
+        // Whichever order the lock gives them, the trip does not end up with the removed person.
+        expect([200, 409]).toContain(assigned.status);
+        const view = await ok<{ driverUserId: string | null }>(
+          app,
+          "GET",
+          url(owner, `manifests/${manifestId}`),
+          owner.cookie
+        );
+        expect(view.driverUserId).toBeNull();
+      } finally {
+        blocker.release();
+      }
+    }, 60_000);
+
+    it("releases an assignment that was still uncommitted when the driver was removed", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      const driver = await signUp(app);
+      addMember(store, owner.businessId, driver.userId, "driver");
+      await deliveryOrder(owner, 900 * KG, alongX(0.5));
+      const created = await createManifest(owner, { corridorId, vehicleId });
+      const manifestId = created.body.manifest.id;
+      const staff = await ok<{ members: Array<{ userId: string; membershipId: string }> }>(
+        app,
+        "GET",
+        `/businesses/${owner.businessId}/staff`,
+        owner.cookie
+      );
+      const membershipId = staff.members.find(
+        (member) => member.userId === driver.userId
+      )?.membershipId;
+      // An assignment that already passed its eligibility check and holds the manifest lock,
+      // not yet committed (what assignManifestDriver looks like mid-transaction).
+      const inFlight = await pool.connect();
+      try {
+        await inFlight.query("begin");
+        await inFlight.query("select id from fulfillment_manifests where id = $1 for update", [
+          manifestId
+        ]);
+        await inFlight.query("update fulfillment_manifests set driver_user_id = $2 where id = $1", [
+          manifestId,
+          driver.userId
+        ]);
+        // The person is removed now; the release must wait for the assignment and then undo it.
+        await ok(
+          app,
+          "DELETE",
+          `/businesses/${owner.businessId}/staff/members/${membershipId}`,
+          owner.cookie
+        );
+        await new Promise((done) => setTimeout(done, 200));
+        await inFlight.query("commit");
+      } finally {
+        inFlight.release();
+      }
+      await settleIntakes();
+      const view = await ok<{ driverUserId: string | null }>(
+        app,
+        "GET",
+        url(owner, `manifests/${manifestId}`),
+        owner.cookie
+      );
+      expect(view.driverUserId).toBeNull();
+    }, 60_000);
+
+    it("clears a returning driver's stale trips on accepting, but keeps trips given after joining", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      const phone = uniquePhone();
+      const firstInvite = await ok<{ id: string }>(
+        app,
+        "POST",
+        `/businesses/${owner.businessId}/staff/invitations`,
+        owner.cookie,
+        { phone: `+${phone}`, role: "driver", name: "Returning" }
+      );
+      const driver = await signUp(app, phone);
+      await ok(app, "POST", `/v1/staff-invitations/${firstInvite.id}/accept`, driver.cookie);
+      await deliveryOrder(owner, 900 * KG, alongX(0.3));
+      const stale = await createManifest(owner, { corridorId, vehicleId });
+      await ok(
+        app,
+        "POST",
+        url(owner, `manifests/${stale.body.manifest.id}/driver`),
+        owner.cookie,
+        {
+          driverUserId: driver.userId
+        }
+      );
+      // Their removal's release does not run (say the process restarted): the stale trip remains.
+      store.setMembershipChangedListener(null);
+      const staff = await ok<{ members: Array<{ userId: string; membershipId: string }> }>(
+        app,
+        "GET",
+        `/businesses/${owner.businessId}/staff`,
+        owner.cookie
+      );
+      const membershipId = staff.members.find(
+        (member) => member.userId === driver.userId
+      )?.membershipId;
+      await ok(
+        app,
+        "DELETE",
+        `/businesses/${owner.businessId}/staff/members/${membershipId}`,
+        owner.cookie
+      );
+      store.setMembershipChangedListener((input) => {
+        const release = service.releaseDriverAssignments(input);
+        pendingIntakes.push(release);
+        return release;
+      });
+      // Invited again and accepting: the stale trip is released, not handed back.
+      const secondInvite = await ok<{ id: string }>(
+        app,
+        "POST",
+        `/businesses/${owner.businessId}/staff/invitations`,
+        owner.cookie,
+        { phone: `+${phone}`, role: "driver", name: "Returning" }
+      );
+      await ok(app, "POST", `/v1/staff-invitations/${secondInvite.id}/accept`, driver.cookie);
+      await settleIntakes();
+      expect(await ok<unknown[]>(app, "GET", url(owner, "my-manifests"), driver.cookie)).toEqual(
+        []
+      );
+      const reasons = await pool.query<{ reason: string }>(
+        `select payload->>'reason' as reason from fulfillment_outbox_events
+         where business_id = $1 and event_type = 'manifest.driver_assigned' and payload->>'reason' is not null`,
+        [owner.businessId]
+      );
+      expect(reasons.rows.map((row) => row.reason)).toEqual(["stale_on_rejoin"]);
+      // A trip assigned after joining is theirs, and a later join-release would not touch it.
+      await deliveryOrder(owner, 900 * KG, alongX(0.6));
+      const fresh = await createManifest(owner, { corridorId, vehicleId });
+      await ok(
+        app,
+        "POST",
+        url(owner, `manifests/${fresh.body.manifest.id}/driver`),
+        owner.cookie,
+        {
+          driverUserId: driver.userId
+        }
+      );
+      expect(
+        await service.releaseDriverAssignments({
+          businessId: owner.businessId,
+          userId: driver.userId,
+          joined: true,
+          at: new Date(Date.now() - 60_000).toISOString()
+        })
+      ).toBe(0);
+      expect(
+        (
+          await ok<Array<{ id: string }>>(app, "GET", url(owner, "my-manifests"), driver.cookie)
+        ).map((entry) => entry.id)
+      ).toEqual([fresh.body.manifest.id]);
+      // A role that never delivered has nothing to release: skipped without touching trips.
+      expect(
+        await service.releaseDriverAssignments({
+          businessId: owner.businessId,
+          userId: driver.userId,
+          previousRole: "cashier",
+          joined: false
+        })
+      ).toBe(0);
+    }, 60_000);
+
+    it("serializes a reassignment racing the assigned driver's delivery", async () => {
+      const { owner, corridorId, vehicleId } = await setupBusiness();
+      const driver = await signUp(app);
+      const other = await signUp(app);
+      addMember(store, owner.businessId, driver.userId, "driver");
+      addMember(store, owner.businessId, other.userId, "driver");
+      // Two stops, so delivering one does not complete (and freeze) the manifest.
+      await deliveryOrder(owner, 900 * KG, alongX(0.3));
+      await deliveryOrder(owner, 900 * KG, alongX(0.6));
+      const created = await createManifest(owner, { corridorId, vehicleId });
+      const manifestId = created.body.manifest.id;
+      await ok(app, "POST", url(owner, `manifests/${manifestId}/driver`), owner.cookie, {
+        driverUserId: driver.userId
+      });
+      await ok(app, "POST", url(owner, `manifests/${manifestId}/close`), owner.cookie, {});
+      const stopId = created.body.manifest.stops[0]?.id;
+      // Hold the manifest row so both requests queue on the same lock, then release it.
+      const blocker = await pool.connect();
+      try {
+        await blocker.query("begin");
+        await blocker.query("select id from fulfillment_manifests where id = $1 for update", [
+          manifestId
+        ]);
+        const reassign = request(
+          app,
+          "POST",
+          url(owner, `manifests/${manifestId}/driver`),
+          owner.cookie,
+          {
+            driverUserId: other.userId
+          }
+        );
+        const deliver = request(
+          app,
+          "POST",
+          url(owner, `manifests/${manifestId}/stops/${stopId}/delivery`),
+          driver.cookie,
+          { outcome: "DELIVERED" }
+        );
+        await new Promise((done) => setTimeout(done, 300));
+        await blocker.query("commit");
+        const [reassigned, delivered] = await Promise.all([reassign, deliver]);
+        expect(reassigned.status).toBe(200);
+        // Either the delivery ran first (while still assigned) or it sees the new assignment and
+        // is refused; never a server error and never recorded by a driver no longer assigned.
+        expect([200, 404]).toContain(delivered.status);
+        const stop = await pool.query<{ delivery_status: string }>(
+          "select delivery_status from fulfillment_manifest_stops where id = $1",
+          [stopId]
+        );
+        expect(stop.rows[0]?.delivery_status).toBe(
+          delivered.status === 200 ? "DELIVERED" : "PENDING"
+        );
+      } finally {
+        blocker.release();
+      }
+    }, 60_000);
   });
 
   describe("MCP fulfillment tools", () => {

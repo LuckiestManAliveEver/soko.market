@@ -19,6 +19,7 @@ import type { Pool, PoolClient } from "pg";
 import {
   allocateAutomatically,
   canTransitionManifest,
+  roleCan,
   computePoolReadiness,
   evaluateDispatchPolicy,
   localDate,
@@ -47,7 +48,9 @@ import {
   type ManifestStopSummary,
   type ManifestSummary,
   type OrderFulfillmentStatusSummary,
-  type ResolveOrderCorridorResultSummary
+  type ResolveOrderCorridorResultSummary,
+  type AssignableDriverSummary,
+  type BusinessRole
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { FulfillmentRecheckConflict } from "./transaction.js";
@@ -96,6 +99,33 @@ export interface DispatchOperations {
   ): Promise<ManifestSummary>;
   closeManifest(input: DispatchActor & { manifestId: string }): Promise<ManifestSummary>;
   departManifest(input: DispatchActor & { manifestId: string }): Promise<ManifestSummary>;
+  /** Assign the trip to a member who can record deliveries, or unassign it (null). */
+  assignManifestDriver(
+    input: DispatchActor & { manifestId: string; driverUserId: string | null }
+  ): Promise<ManifestSummary>;
+  /** A driver's own open and in-progress trips (OPEN, CLOSED, DEPARTED), soonest first. */
+  listMyManifests(input: DispatchActor): Promise<ManifestSummary[]>;
+  /** Members a dispatcher may assign a manifest to. */
+  listAssignableDrivers(input: DispatchActor): Promise<AssignableDriverSummary[]>;
+  /**
+   * System operation (no actor): after a member leaves the business or loses the delivery role,
+   * unassign them from every trip that is not finished, so the dispatcher reassigns it and a
+   * re-invited former driver does not get old trips back.
+   */
+  releaseDriverAssignments(input: {
+    businessId: string;
+    userId: string;
+    /** Their role before the change; a role that never delivered has nothing to release. */
+    previousRole?: BusinessRole | null;
+    /**
+     * Just joined: trips assigned to them before `at` (the join) are stale leftovers of an earlier
+     * membership and are released; anything assigned since the join is kept.
+     */
+    joined?: boolean;
+    /** When the membership change happened (ISO). */
+    at?: string;
+    now?: Date;
+  }): Promise<number>;
   cancelManifest(
     input: DispatchActor & { manifestId: string; reason: string }
   ): Promise<ManifestSummary>;
@@ -152,6 +182,9 @@ export interface DispatchOperationsContext {
   authorize: (actor: DispatchActor, permission: BusinessPermission) => { userId: string };
   hasPermission: (actor: DispatchActor, permission: BusinessPermission) => boolean;
   requireConfirmedOrder: (businessId: string, invoiceId: string) => ConfirmedOrderReference;
+  businessMembers: (
+    businessId: string
+  ) => Array<{ userId: string; displayName: string; role: BusinessRole }>;
   customerName: (businessId: string, customerId: string) => string | null;
   deliveryDetails: (
     businessId: string,
@@ -405,6 +438,13 @@ export function createDispatchOperations(
       createdBy: manifest.created_by,
       createdAt: manifest.created_at.toISOString(),
       updatedAt: manifest.updated_at.toISOString(),
+      driverUserId: manifest.driver_user_id,
+      driverName:
+        manifest.driver_user_id === null
+          ? null
+          : (context
+              .businessMembers(businessId)
+              .find((member) => member.userId === manifest.driver_user_id)?.displayName ?? null),
       stops: stops.rows.map((stop) =>
         stopSummary(stop, context.customerName, context.deliveryDetails)
       )
@@ -1421,10 +1461,13 @@ export function createDispatchOperations(
     },
 
     async departManifest(actor) {
-      const { userId } = context.authorize(actor, "fulfillment:dispatch");
+      // Dispatchers depart any manifest; a driver only the trip assigned to them.
+      const { userId } = context.authorize(actor, "delivery:record");
+      const dispatcher = context.hasPermission(actor, "fulfillment:dispatch");
       const now = actor.now ?? new Date();
       return context.transaction(async (client) => {
         const manifest = await lockManifest(client, actor.businessId, actor.manifestId);
+        if (!dispatcher && manifest.driver_user_id !== userId) throw manifestNotFound();
         if (!canTransitionManifest(manifest.status, "DEPARTED")) {
           throw new Cp2Error(
             409,
@@ -1474,6 +1517,177 @@ export function createDispatchOperations(
           actor.businessId,
           await lockManifest(client, actor.businessId, manifest.id)
         );
+      });
+    },
+
+    async assignManifestDriver(actor) {
+      const { userId } = context.authorize(actor, "fulfillment:dispatch");
+      const now = actor.now ?? new Date();
+      const driverUserId = actor.driverUserId;
+      return context.transaction((client) =>
+        context.idempotent(
+          client,
+          actor,
+          "fulfillment.assignManifestDriver",
+          { manifestId: actor.manifestId, driverUserId },
+          now,
+          async () => {
+            const manifest = await lockManifest(client, actor.businessId, actor.manifestId);
+            // Checked inside the idempotency record (a keyed retry replays its first result even if
+            // the driver has since left) and after the manifest lock, so it serializes with
+            // releaseDriverAssignments, which locks the same rows.
+            if (driverUserId !== null) {
+              const member = context
+                .businessMembers(actor.businessId)
+                .find((entry) => entry.userId === driverUserId);
+              if (member === undefined || !roleCan(member.role, "delivery:record")) {
+                throw new Cp2Error(
+                  409,
+                  "driver_not_eligible",
+                  "Choose someone in this business who can record deliveries.",
+                  false,
+                  { driverUserId }
+                );
+              }
+            }
+            if (manifest.status === "COMPLETED" || manifest.status === "CANCELLED") {
+              throw new Cp2Error(
+                409,
+                "manifest_transition_invalid",
+                `A ${manifest.status} manifest cannot be reassigned.`,
+                false,
+                { status: manifest.status }
+              );
+            }
+            if (manifest.driver_user_id !== driverUserId) {
+              await client.query(
+                "update fulfillment_manifests set driver_user_id = $2, updated_at = $3 where id = $1",
+                [manifest.id, driverUserId, now]
+              );
+              await appendOutbox(client, {
+                businessId: actor.businessId,
+                eventType: "manifest.driver_assigned",
+                eventKey: `manifest.driver_assigned:${manifest.id}:${randomUUID()}`,
+                payload: {
+                  manifestId: manifest.id,
+                  driverUserId,
+                  previousDriverUserId: manifest.driver_user_id
+                },
+                now
+              });
+              context.log("fulfillment.manifest_driver_assigned", {
+                businessId: actor.businessId,
+                manifestId: manifest.id,
+                driverUserId,
+                actorId: userId
+              });
+            }
+            return manifestSummary(
+              client,
+              actor.businessId,
+              await lockManifest(client, actor.businessId, manifest.id)
+            );
+          }
+        )
+      );
+    },
+
+    async listMyManifests(actor) {
+      const { userId } = context.authorize(actor, "delivery:record");
+      const result = await pool.query<ManifestRow>(
+        `
+          select * from fulfillment_manifests
+          where business_id = $1 and driver_user_id = $2 and status in ('OPEN', 'CLOSED', 'DEPARTED')
+          order by planned_departure_at asc nulls last, created_at asc, id
+          limit 50
+        `,
+        [actor.businessId, userId]
+      );
+      return Promise.all(result.rows.map((row) => manifestSummary(pool, actor.businessId, row)));
+    },
+
+    async listAssignableDrivers(actor) {
+      context.authorize(actor, "fulfillment:dispatch");
+      return context
+        .businessMembers(actor.businessId)
+        .filter((member) => roleCan(member.role, "delivery:record"))
+        .map((member) => ({
+          userId: member.userId,
+          displayName: member.displayName,
+          role: member.role
+        }))
+        .sort((left, right) => left.displayName.localeCompare(right.displayName));
+    },
+
+    async releaseDriverAssignments(input) {
+      const now = input.now ?? new Date();
+      if (input.joined !== true) {
+        // A role that could never be assigned trips (a cashier removed, say) has nothing to
+        // release: skip the locks entirely.
+        if (
+          input.previousRole !== undefined &&
+          input.previousRole !== null &&
+          !roleCan(input.previousRole, "delivery:record")
+        ) {
+          return 0;
+        }
+        const stillEligible = context
+          .businessMembers(input.businessId)
+          .some(
+            (member) => member.userId === input.userId && roleCan(member.role, "delivery:record")
+          );
+        if (stillEligible) return 0;
+      }
+      return context.transaction(async (client) => {
+        // Lock the business's unfinished manifests first: an assignment to this person that is in
+        // flight commits before we look, so it is released too instead of slipping past us.
+        await client.query(
+          `
+            select id from fulfillment_manifests
+            where business_id = $1 and status not in ('COMPLETED', 'CANCELLED')
+            order by id
+            for no key update
+          `,
+          [input.businessId]
+        );
+        const released = await client.query<{ id: string }>(
+          `
+            update fulfillment_manifests
+            set driver_user_id = null, updated_at = $3
+            where business_id = $1 and driver_user_id = $2
+              and status not in ('COMPLETED', 'CANCELLED')
+              and ($4::timestamptz is null or updated_at < $4::timestamptz)
+            returning id
+          `,
+          [
+            input.businessId,
+            input.userId,
+            now,
+            input.joined === true ? (input.at ?? now.toISOString()) : null
+          ]
+        );
+        for (const row of released.rows) {
+          await appendOutbox(client, {
+            businessId: input.businessId,
+            eventType: "manifest.driver_assigned",
+            eventKey: `manifest.driver_assigned:${row.id}:${randomUUID()}`,
+            payload: {
+              manifestId: row.id,
+              driverUserId: null,
+              previousDriverUserId: input.userId,
+              reason: input.joined === true ? "stale_on_rejoin" : "driver_left"
+            },
+            now
+          });
+        }
+        if (released.rows.length > 0) {
+          context.log("fulfillment.driver_assignments_released", {
+            businessId: input.businessId,
+            driverUserId: input.userId,
+            manifests: released.rows.length
+          });
+        }
+        return released.rows.length;
       });
     },
 
@@ -1812,6 +2026,8 @@ export function createDispatchOperations(
 
     async recordDelivery(actor) {
       const { userId } = context.authorize(actor, "delivery:record");
+      // Dispatchers record on any manifest; a driver only on the trip assigned to them.
+      const dispatcher = context.hasPermission(actor, "fulfillment:dispatch");
       const now = actor.now ?? new Date();
       const note = actor.note?.trim() || null;
       if ((actor.outcome === "FAILED" || actor.outcome === "SKIPPED") && note === null) {
@@ -1831,6 +2047,7 @@ export function createDispatchOperations(
       if (!isUuid(actor.stopId)) throw new Cp2Error(404, "stop_not_found", "Stop was not found.");
       const outcome = await context.transaction(async (client) => {
         const manifest = await lockManifest(client, actor.businessId, actor.manifestId);
+        if (!dispatcher && manifest.driver_user_id !== userId) throw manifestNotFound();
         if (manifest.status !== "CLOSED" && manifest.status !== "DEPARTED") {
           throw new Cp2Error(
             409,
@@ -2079,6 +2296,7 @@ interface ManifestRow {
   created_by: string;
   created_at: Date;
   updated_at: Date;
+  driver_user_id: string | null;
 }
 
 interface ApprovalRow {

@@ -50,7 +50,8 @@ const overview: StaffOverviewSummary = {
       respondedAt: null,
       acceptedByUserId: null,
       membershipId: null,
-      needsReinvite: false
+      needsReinvite: false,
+      joinToken: "secret-token-abcdefghijkl"
     }
   ],
   members: [
@@ -174,7 +175,7 @@ describe("staff cards", () => {
       country: expect.any(String),
       role: "sales_agent"
     });
-    expect(host.textContent).toContain(t.invited("Achieng", "+254712345678"));
+    expect(host.textContent).toContain(t.invited("Achieng", "+254712345678", "phone"));
     expect(host.textContent).toContain("Achieng · +254712345678");
   });
 
@@ -203,6 +204,140 @@ describe("staff cards", () => {
     });
     await render(<StaffCard businessId="shop-a" businessName="Shop A" viewerRole="owner" />);
     expect(host.textContent).toContain(t.needsReinvite);
+  });
+
+  it("sends the invitation straight to the invited number by SMS or WhatsApp", async () => {
+    fetchFreshJson.mockResolvedValue(overview);
+    await render(<StaffCard businessId="shop-a" businessName="Shop A" viewerRole="owner" />);
+    const link = `${window.location.origin}/?staffInvite=inv-1&t=secret-token-abcdefghijkl`;
+    const text = t.shareText("Shop A", t.role.driver, link);
+    const sms = [...host.querySelectorAll("a")].find((item) => item.textContent === t.sendSms);
+    const whatsapp = [...host.querySelectorAll("a")].find(
+      (item) => item.textContent === t.sendWhatsApp
+    );
+    expect(sms?.getAttribute("href")).toBe(`sms:+254711000111?&body=${encodeURIComponent(text)}`);
+    expect(whatsapp?.getAttribute("href")).toBe(
+      `https://wa.me/254711000111?text=${encodeURIComponent(text)}`
+    );
+    expect(whatsapp?.getAttribute("rel")).toContain("noopener");
+  });
+
+  it("marks members who joined through the link", async () => {
+    fetchFreshJson.mockResolvedValue({
+      ...overview,
+      members: overview.members.map((member) =>
+        member.userId === "wanjiru" ? { ...member, confirmedByLink: true } : member
+      )
+    });
+    await render(<StaffCard businessId="shop-a" businessName="Shop A" viewerRole="owner" />);
+    expect(host.textContent).toContain(
+      `Wanjiru · +254722000222 · ${t.role.sales_agent} · ${t.confirmedByLink}`
+    );
+  });
+
+  it("sends the link's secret when accepting the invitation it was opened for", async () => {
+    window.localStorage.setItem(
+      "soko.staffInvite.pending",
+      JSON.stringify({ invitationId: "inv-1", joinToken: "secret-xyz", savedAt: Date.now() })
+    );
+    fetchFreshJson.mockResolvedValue({
+      invitations: [
+        {
+          id: "inv-1",
+          businessId: "shop-a",
+          businessName: "Shop A",
+          role: "driver",
+          invitedByName: "Julien",
+          expiresAt: at
+        }
+      ]
+    });
+    postJson.mockResolvedValue({
+      invitation: {},
+      business: { id: "shop-a", name: "Shop A", language: "en", sokoId: "soko.shop-a" },
+      membership: { id: "m1", businessId: "shop-a", userId: "me", role: "driver" }
+    });
+    await render(<StaffInvitationsPrompt accountId="me" onJoined={vi.fn()} />);
+    await act(async () => button(host, t.accept).click());
+    await flush();
+    expect(postJson).toHaveBeenCalledWith("/v1/staff-invitations/inv-1/accept", {
+      joinToken: "secret-xyz"
+    });
+    expect(window.localStorage.getItem("soko.staffInvite.pending")).toBeNull();
+  });
+
+  it("says so when the link was sent to a different number", async () => {
+    window.localStorage.setItem(
+      "soko.staffInvite.pending",
+      JSON.stringify({ invitationId: "inv-elsewhere", joinToken: "x", savedAt: Date.now() })
+    );
+    fetchFreshJson.mockResolvedValue({ invitations: [] });
+    await render(<StaffInvitationsPrompt accountId="me" onJoined={vi.fn()} />);
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(t.joinLinkNotForYou);
+    await act(async () => button(host, t.dismiss).click());
+    expect(window.localStorage.getItem("soko.staffInvite.pending")).toBeNull();
+    expect(host.textContent).toBe("");
+  });
+
+  it("asks a signed-out visitor who opened a link to sign up or log in", async () => {
+    window.localStorage.setItem(
+      "soko.staffInvite.pending",
+      JSON.stringify({ invitationId: "inv-1", joinToken: "x", savedAt: Date.now() })
+    );
+    await render(
+      <ShellNotices
+        statusMessage=""
+        working={false}
+        accountId={null}
+        signedOut={true}
+        onJoinedShop={vi.fn()}
+      />
+    );
+    expect(host.textContent).toContain(t.joinBanner);
+    const hrefOf = (label: string) =>
+      [...host.querySelectorAll("a")]
+        .find((item) => item.textContent === label)
+        ?.getAttribute("href");
+    // Both paths: someone who already has an account logs in, a new person signs up.
+    expect(hrefOf(t.joinBannerSignUp)).toBe("/signup");
+    expect(hrefOf(t.joinBannerLogIn)).toBe("/login");
+    window.localStorage.removeItem("soko.staffInvite.pending");
+  });
+
+  it("sends an email invitation by email, worded for email", async () => {
+    const emailInvite = {
+      ...overview.invitations[0]!,
+      id: "inv-mail",
+      channel: "email" as const,
+      destination: "rider@example.com",
+      joinToken: "mail-secret"
+    };
+    fetchFreshJson.mockResolvedValue({ ...overview, invitations: [emailInvite] });
+    await render(<StaffCard businessId="shop-a" businessName="Shop A" viewerRole="owner" />);
+    const link = `${window.location.origin}/?staffInvite=inv-mail&t=mail-secret`;
+    const mail = [...host.querySelectorAll("a")].find((item) => item.textContent === t.sendEmail);
+    expect(mail?.getAttribute("href")).toBe(
+      `mailto:rider@example.com?subject=${encodeURIComponent(t.emailSubject("Shop A"))}&body=${encodeURIComponent(
+        t.shareText("Shop A", t.role.driver, link, "email")
+      )}`
+    );
+    expect(t.shareText("Shop A", t.role.driver, link, "email")).toContain("email address");
+    expect([...host.querySelectorAll("a")].some((item) => item.textContent === t.sendSms)).toBe(
+      false
+    );
+  });
+
+  it("keeps a way to re-send an older invitation that has no link", async () => {
+    const legacy = { ...overview.invitations[0]!, joinToken: undefined };
+    fetchFreshJson.mockResolvedValue({ ...overview, invitations: [legacy] });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    await render(<StaffCard businessId="shop-a" businessName="Shop A" viewerRole="owner" />);
+    await act(async () => button(host, t.share).click());
+    await flush();
+    expect(writeText).toHaveBeenCalledWith(t.shareTextWithoutLink("Shop A", t.role.driver));
+    expect(host.textContent).toContain(t.copied);
+    Reflect.deleteProperty(navigator, "clipboard");
   });
 
   it("revokes a waiting invitation", async () => {
@@ -309,7 +444,13 @@ describe("staff cards", () => {
     expect(fetchFreshJson).not.toHaveBeenCalled();
     act(() => root.unmount());
     await render(
-      <ShellNotices statusMessage="" working={false} accountId="acct-1" onJoinedShop={vi.fn()} />
+      <ShellNotices
+        statusMessage=""
+        working={false}
+        accountId="acct-1"
+        signedOut={false}
+        onJoinedShop={vi.fn()}
+      />
     );
     expect(host.querySelector(".app-action-notice")).toBeNull();
     expect(fetchFreshJson).toHaveBeenCalledWith("/v1/staff-invitations");
@@ -344,9 +485,15 @@ describe("staff cards", () => {
     const share = vi.fn().mockRejectedValue(new DOMException("closed", "AbortError"));
     Object.defineProperty(navigator, "share", { configurable: true, value: share });
     await render(<StaffCard businessId="shop-a" businessName="Shop A" viewerRole="owner" />);
-    await act(async () => button(host, t.share).click());
+    await act(async () => button(host, t.copyLink).click());
     await flush();
-    expect(share).toHaveBeenCalledWith({ text: t.shareText("Shop A", t.role.driver) });
+    expect(share).toHaveBeenCalledWith({
+      text: t.shareText(
+        "Shop A",
+        t.role.driver,
+        `${window.location.origin}/?staffInvite=inv-1&t=secret-token-abcdefghijkl`
+      )
+    });
     expect(host.querySelector('[role="alert"]')).toBeNull();
     Reflect.deleteProperty(navigator, "share");
   });

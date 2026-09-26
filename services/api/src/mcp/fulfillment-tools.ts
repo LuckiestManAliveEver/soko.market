@@ -27,6 +27,7 @@ import {
   parseCorridorBody,
   parseCorridorPatch,
   parseDeliveryBody,
+  parseDriverBody,
   parseManifestBody,
   parseManifestStatus,
   parseOptionalBoolean,
@@ -668,6 +669,38 @@ export const fulfillmentMcpTools: readonly FulfillmentMcpTool[] = [
     required: ["manifestId"],
     run: ({ service, args }, actor) =>
       service.departManifest({ ...actor, manifestId: id(args, "manifestId") })
+  },
+  {
+    name: "fulfillment.assign_manifest_driver",
+    description:
+      "Assign a manifest to a member who can record deliveries (a driver, manager or the owner), or unassign it with null. A driver then sees and works only their own manifests.",
+    scope: "mcp:act",
+    retry: "replay",
+    properties: { manifestId: uuid, driverUserId: { type: ["string", "null"], minLength: 1 } },
+    required: ["manifestId", "driverUserId"],
+    run: ({ service, args }, actor) =>
+      service.assignManifestDriver({
+        ...actor,
+        manifestId: id(args, "manifestId"),
+        ...parseDriverBody(args)
+      })
+  },
+  {
+    name: "fulfillment.list_my_manifests",
+    description:
+      "The calling member's own assigned trips that are open, closed or on the road, with ordered stops.",
+    scope: "mcp:read",
+    properties: {},
+    required: [],
+    run: ({ service }, actor) => service.listMyManifests(actor)
+  },
+  {
+    name: "fulfillment.list_assignable_drivers",
+    description: "Members of the business a manifest can be assigned to.",
+    scope: "mcp:read",
+    properties: {},
+    required: [],
+    run: ({ service }, actor) => service.listAssignableDrivers(actor)
   },
   {
     name: "fulfillment.cancel_manifest",

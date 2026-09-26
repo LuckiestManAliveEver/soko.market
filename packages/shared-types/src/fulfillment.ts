@@ -410,7 +410,18 @@ export interface ManifestSummary {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /** The member this trip is assigned to, or null (dispatchers work it). */
+  driverUserId: string | null;
+  /** The assigned driver's name; null when unassigned or no longer a member of the business. */
+  driverName: string | null;
   stops: ManifestStopSummary[];
+}
+
+/** A member of the business who can be assigned a manifest (their role can record deliveries). */
+export interface AssignableDriverSummary {
+  userId: string;
+  displayName: string;
+  role: string;
 }
 
 export interface CreateManifestResultSummary {

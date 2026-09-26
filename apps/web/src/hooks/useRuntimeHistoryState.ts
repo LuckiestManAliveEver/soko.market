@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { reportBackgroundLoadError } from "../background-load-error";
 
 import { getErrorMessage, runtimeManagerKey } from "../chat-message-plumbing";
 import { getJson, postJson } from "../api-helpers";
@@ -40,7 +41,7 @@ export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
         )
       );
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 
@@ -58,7 +59,7 @@ export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
         setRuntimeTurns([]);
       }
     } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+      reportBackgroundLoadError(deps.setStatusMessage, error);
     }
   }
 
