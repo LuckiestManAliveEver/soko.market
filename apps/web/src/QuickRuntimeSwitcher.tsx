@@ -128,7 +128,10 @@ export function QuickRuntimeSwitcher({
         `/api/agents/${canonicalAgentId}/models/${encodeURIComponent(modelId)}/activate`,
         {
           shopId: business.id,
-          executionTarget: "vercel",
+          // Provider-routed models (OpenAI, Anthropic, Z.ai, Soko Cloud...) run on "backend";
+          // artifact-backed ones on "vercel". The catalog response says which.
+          executionTarget:
+            modelOptions.find((option) => option.id === modelId)?.hostedExecutionTarget ?? "vercel",
           executionMode: "LOCAL_FIRST",
           permissions: { allowInstalledApp: false, allowRemoteShopDevice: false },
           ...(modelId === platformSharedModelId ? {} : { costResponsibility: "merchant" })

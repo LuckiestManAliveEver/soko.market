@@ -98,6 +98,29 @@ export interface Metrics {
    * Rethrows whatever `fn` throws after recording it.
    */
   timeScheduledJob<T>(job: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Records one multi-provider inference attempt (services/api/src/inference/providers):
+   * `inference_requests_total`, `inference_errors_total`, `inference_latency_ms`,
+   * `inference_first_token_ms`, `inference_input_tokens`, `inference_output_tokens`,
+   * `inference_estimated_cost`, `provider_rate_limits`, `provider_fallbacks`. Labels are limited to
+   * provider, model, execution_target and status - never user ids, tenants, prompts, or keys.
+   */
+  recordInference(observation: InferenceMetricObservation): void;
+}
+
+export interface InferenceMetricObservation {
+  provider: string;
+  model: string;
+  executionTarget: string;
+  status: "succeeded" | "failed" | "rejected";
+  errorCode: string | null;
+  latencyMs: number | null;
+  firstTokenMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  estimatedCost: number | null;
+  currency: string | null;
+  fallback: boolean;
 }
 
 export interface CreateMetricsOptions {
@@ -144,6 +167,64 @@ export function createMetrics(options: CreateMetricsOptions): Metrics {
     help: "Model runtime request duration in seconds.",
     labelNames: ["provider", "model", "execution_target", "outcome"],
     buckets: modelRequestDurationBuckets,
+    registers: [registry]
+  });
+
+  const inferenceLabelNames = ["provider", "model", "execution_target", "status"] as const;
+  const inferenceRequests = new Counter({
+    name: "inference_requests_total",
+    help: "Multi-provider inference attempts, by outcome.",
+    labelNames: inferenceLabelNames,
+    registers: [registry]
+  });
+  const inferenceErrors = new Counter({
+    name: "inference_errors_total",
+    help: "Failed or rejected inference attempts, by normalized error code.",
+    labelNames: [...inferenceLabelNames, "code"],
+    registers: [registry]
+  });
+  const inferenceLatency = new Histogram({
+    name: "inference_latency_ms",
+    help: "Inference request latency in milliseconds.",
+    labelNames: inferenceLabelNames,
+    buckets: [50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 20_000, 40_000, 80_000],
+    registers: [registry]
+  });
+  const inferenceFirstToken = new Histogram({
+    name: "inference_first_token_ms",
+    help: "Time to first streamed token in milliseconds.",
+    labelNames: inferenceLabelNames,
+    buckets: [50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 20_000],
+    registers: [registry]
+  });
+  const inferenceInputTokens = new Counter({
+    name: "inference_input_tokens",
+    help: "Input tokens reported by providers.",
+    labelNames: inferenceLabelNames,
+    registers: [registry]
+  });
+  const inferenceOutputTokens = new Counter({
+    name: "inference_output_tokens",
+    help: "Output tokens reported by providers.",
+    labelNames: inferenceLabelNames,
+    registers: [registry]
+  });
+  const inferenceEstimatedCost = new Counter({
+    name: "inference_estimated_cost",
+    help: "Estimated inference cost from catalog pricing, by currency.",
+    labelNames: [...inferenceLabelNames, "currency"],
+    registers: [registry]
+  });
+  const providerRateLimits = new Counter({
+    name: "provider_rate_limits",
+    help: "Requests rejected by a provider rate limit or a Soko budget/rate policy.",
+    labelNames: ["provider", "code"],
+    registers: [registry]
+  });
+  const providerFallbacks = new Counter({
+    name: "provider_fallbacks",
+    help: "Inference attempts made under an explicit fallback policy.",
+    labelNames: ["provider", "model", "execution_target"],
     registers: [registry]
   });
 
@@ -389,6 +470,44 @@ export function createMetrics(options: CreateMetricsOptions): Metrics {
       }
       if (event.type === "opened" || event.type === "closed" || event.type === "half_open_probe") {
         circuitBreakerTransitionCounter.inc({ name: event.name, state: event.type });
+      }
+    },
+
+    recordInference(observation) {
+      const labels = {
+        provider: observation.provider,
+        model: observation.model,
+        execution_target: observation.executionTarget,
+        status: observation.status
+      };
+      inferenceRequests.inc(labels);
+      if (observation.status !== "succeeded") {
+        inferenceErrors.inc({ ...labels, code: observation.errorCode ?? "UNKNOWN" });
+      }
+      if (observation.errorCode === "RATE_LIMITED" || observation.errorCode === "BUDGET_EXCEEDED") {
+        providerRateLimits.inc({ provider: observation.provider, code: observation.errorCode });
+      }
+      if (observation.latencyMs !== null)
+        inferenceLatency.observe(labels, Math.max(0, observation.latencyMs));
+      if (observation.firstTokenMs !== null) {
+        inferenceFirstToken.observe(labels, Math.max(0, observation.firstTokenMs));
+      }
+      if (observation.inputTokens !== null)
+        inferenceInputTokens.inc(labels, observation.inputTokens);
+      if (observation.outputTokens !== null)
+        inferenceOutputTokens.inc(labels, observation.outputTokens);
+      if (observation.estimatedCost !== null && observation.currency !== null) {
+        inferenceEstimatedCost.inc(
+          { ...labels, currency: observation.currency },
+          observation.estimatedCost
+        );
+      }
+      if (observation.fallback) {
+        providerFallbacks.inc({
+          provider: observation.provider,
+          model: observation.model,
+          execution_target: observation.executionTarget
+        });
       }
     },
 

@@ -22,6 +22,13 @@ import {
 } from "./inference/model-runtime.js";
 import { createNeonModelArtifactStore } from "./inference/model-artifact-store.js";
 import { OwnerNodeBroker } from "./inference/owner-node-broker.js";
+import { readInferenceEnvironment } from "./inference/providers/environment.js";
+import { createInferencePlatform } from "./inference/providers/platform.js";
+import {
+  assertInferenceSchema,
+  createPostgresInferenceRepositories
+} from "./inference/providers/postgres-repositories.js";
+import { createMemoryInferenceRepositories } from "./inference/providers/repositories.js";
 import {
   startAccountDeletionRunner,
   type AccountDeletionRunner
@@ -202,11 +209,45 @@ if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databa
 
 const shouldUsePostgresStore =
   cp2StoreMode === "postgres" || (cp2StoreMode !== "memory" && databaseUrl !== "");
+
+// Multi-provider inference router (docs/architecture/multi-provider-inference-implementation.md).
+// Environment variables configure Soko-managed providers/credentials only; BYOK keys, provider
+// overrides, usage telemetry and budgets are Postgres-authoritative on the module's own pool, the
+// same own-pool shape corridor fulfillment uses. No provider is required to boot: with nothing
+// configured, provider-routed models simply report CREDENTIAL_MISSING / unconfigured.
+const inferenceEnvironment = readInferenceEnvironment(process.env);
+let inferencePool: Pool | undefined;
+if (shouldUsePostgresStore) {
+  inferencePool = new Pool(
+    buildPgPoolConfig(config.databaseUrl, {
+      max: positiveIntegerFromEnv("DB_INFERENCE_POOL_MAX", 2)
+    })
+  );
+  metrics.instrumentPgPool(inferencePool, { poolName: "inference" });
+  await assertInferenceSchema(inferencePool);
+}
+const inferencePlatform = createInferencePlatform({
+  environment: inferenceEnvironment,
+  repositories:
+    inferencePool === undefined
+      ? createMemoryInferenceRepositories()
+      : createPostgresInferenceRepositories(inferencePool),
+  metrics,
+  // Callers pass already-redacted fields (inference-router.ts runs redactRecord first).
+  log: (event, fields) => console.log({ event, ...fields })
+});
+await inferencePlatform.refresh().catch((error: unknown) => {
+  console.error({
+    event: "inference.provider_refresh_failed",
+    reason: error instanceof Error ? error.name : "unknown"
+  });
+});
 const cp2StoreOptions = {
   channelGateway,
   emailMailboxProviderClient,
   metrics,
   modelRuntimeAdapterResolver,
+  inferencePlatform,
   platformDefaultRuntime: config.platformDefaultRuntime,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
   messageEmailNotificationSender:
@@ -349,6 +390,7 @@ app.addHook("onClose", async () => {
   await fulfillmentOutboxRunner?.stop();
   await artifactPool?.end();
   await fulfillmentPool?.end();
+  await inferencePool?.end();
   if (isClosableStore(cp2Store)) {
     await cp2Store.close();
   }

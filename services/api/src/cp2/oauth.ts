@@ -1,12 +1,10 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-  timingSafeEqual
-} from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { OAuthProvider } from "@soko/shared-types";
 import { Cp2Error } from "./store.js";
+
+// Moved to secret-box.ts so non-OAuth credential stores (inference provider keys) share the same
+// AES-256-GCM key and envelope format without importing this module's store.ts dependency.
+export { decryptOAuthToken, encryptOAuthToken } from "./secret-box.js";
 
 export interface OAuthProviderConfig {
   id: OAuthProvider;
@@ -380,39 +378,6 @@ export async function fetchOAuthProfile(input: {
   return normalizeProfile(input.provider.id, payload);
 }
 
-export function encryptOAuthToken(token: string): string {
-  const key = getTokenEncryptionKey();
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const encrypted = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
-}
-
-export function decryptOAuthToken(value: string): string {
-  const [version, ivValue, tagValue, encryptedValue] = value.split(":");
-
-  if (
-    version !== "v1" ||
-    ivValue === undefined ||
-    tagValue === undefined ||
-    encryptedValue === undefined
-  ) {
-    throw new Cp2Error(500, "oauth_token_invalid", "Encrypted OAuth token is invalid.");
-  }
-
-  const decipher = createDecipheriv(
-    "aes-256-gcm",
-    getTokenEncryptionKey(),
-    Buffer.from(ivValue, "base64url")
-  );
-  decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
-  return Buffer.concat([
-    decipher.update(Buffer.from(encryptedValue, "base64url")),
-    decipher.final()
-  ]).toString("utf8");
-}
-
 export function hashOAuthSecret(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -474,27 +439,6 @@ function getFirstConfiguredEnv(names: string[]): string {
   }
 
   return "";
-}
-
-function getTokenEncryptionKey(): Buffer {
-  const configured =
-    process.env.AUTH_TOKEN_ENCRYPTION_KEY?.trim() ?? process.env.OAUTH_TOKEN_ENCRYPTION_KEY?.trim();
-  if (
-    (configured === undefined || configured.length < 32) &&
-    process.env.NODE_ENV === "production"
-  ) {
-    throw new Cp2Error(
-      503,
-      "oauth_token_encryption_unconfigured",
-      "OAuth token storage is not configured."
-    );
-  }
-  const source =
-    configured === undefined || configured.length < 32
-      ? "soko-market-local-oauth-token-encryption-key"
-      : configured;
-
-  return createHash("sha256").update(source).digest();
 }
 
 function parseJwtPayload(idToken: string | undefined): Record<string, unknown> {

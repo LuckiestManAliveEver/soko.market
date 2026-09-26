@@ -66,6 +66,7 @@ import { registerCatalogueSharingRoutes } from "./domains/catalogue-sharing/rout
 import { registerCommerceRoutes } from "./domains/commerce/routes.js";
 import { registerOAuthRoutes } from "./domains/oauth/routes.js";
 import { registerExternalConnectionsRoutes } from "./domains/external-connections/routes.js";
+import { registerInferenceProviderRoutes } from "./domains/inference-providers/routes.js";
 import { registerComplianceRoutes } from "./domains/compliance/routes.js";
 import {
   parseInvoiceBody,
@@ -910,6 +911,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   registerOAuthRoutes(app, store, oauthAllowedRedirectOrigins);
 
   registerExternalConnectionsRoutes(app, store, authAttemptsByIp);
+  registerInferenceProviderRoutes(app, store, authAttemptsByIp);
 
   app.post("/auth/pin/setup", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
     try {

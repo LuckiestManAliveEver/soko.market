@@ -133,3 +133,6 @@ actually proves.
 - [provider-neutral-runtime.md](./provider-neutral-runtime.md) - the original provider-neutrality
   design this migration preserves.
 - [native-runtime-bindings.md](./native-runtime-bindings.md) - the native runtime graph schema.
+- [multi-provider-inference-implementation.md](./multi-provider-inference-implementation.md) - the
+  provider router (OpenAI, Anthropic, Z.ai, OpenAI-compatible/llama.cpp) served on the `backend`
+  target through the same `ModelRuntimeAdapter` seam.

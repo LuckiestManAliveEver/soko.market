@@ -36,6 +36,12 @@ export interface ModelRuntimeContext {
    * inside this file - callers that want user-connected billing must resolve and pass it in.
    */
   providerCredential?: { token: string } | null;
+  /**
+   * The account the turn runs for. Only the multi-provider router reads it, to resolve that
+   * account's own (user-scoped) BYOK credential; the business is `shopId`. Never forwarded to any
+   * provider.
+   */
+  accountId?: string;
 }
 
 export interface ModelRuntimeAvailability {
@@ -435,15 +441,27 @@ export function buildInferencePrompt(prompt: RuntimeModelPrompt): string {
   const history = (prompt.conversationHistory ?? [])
     .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.content}`)
     .join("\n");
+  return [
+    buildInferenceInstructions(prompt),
+    ...(history === "" ? [] : [`Recent conversation (oldest first):\n${history}`]),
+    prompt.message
+  ].join("\n");
+}
+
+/**
+ * The system-level part of the runtime prompt (role, output contract, few-shot examples, template
+ * recipe) without history or the user's message. Chat-message providers
+ * (inference/providers/routed-model-adapter.ts) send this as the system message and the history
+ * as real turns; single-string providers get it through buildInferencePrompt above.
+ */
+export function buildInferenceInstructions(prompt: RuntimeModelPrompt): string {
   const fewShotExamples = renderRuntimeModelFewShotExamples(prompt.allowedTools);
   const templateRecipe = renderModelTemplateRecipe(prompt);
   return [
     "You are the model behind the Soko agent runtime.",
     renderRuntimeModelOutputInstructions(prompt.allowedTools),
     ...(fewShotExamples === "" ? [] : [fewShotExamples]),
-    ...(templateRecipe === "" ? [] : [templateRecipe]),
-    ...(history === "" ? [] : [`Recent conversation (oldest first):\n${history}`]),
-    prompt.message
+    ...(templateRecipe === "" ? [] : [templateRecipe])
   ].join("\n");
 }
 
@@ -517,7 +535,7 @@ function normalizeBaseUrl(value: string, name: string): URL {
   return url;
 }
 
-function normalizeModelText(content: string): string {
+export function normalizeModelText(content: string): string {
   if (content.trim() === "") return "";
   try {
     const parsed = JSON.parse(content) as Record<string, unknown>;

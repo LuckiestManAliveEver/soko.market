@@ -163,6 +163,13 @@ import type {
   AgentContextSource,
   AgentDefinition,
   AiModelSummary,
+  InferenceExecutionTarget,
+  InferenceModelCapabilities,
+  InferenceModelPricing,
+  InferenceProviderConnectionScope,
+  InferenceProviderConnectionSummary,
+  InferenceProviderConnectionTestResult,
+  InferenceProviderSummary,
   AgentEvaluationEvent,
   AgentOwnerCorrection,
   AgentRuntimeVersion,
@@ -326,6 +333,11 @@ import {
   type ComputerRuntimeSnapshot
 } from "./domains/computer-runtime/store.js";
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
+import {
+  createInferencePlatform,
+  type InferencePlatform
+} from "../inference/providers/platform.js";
+import { ProviderConnectionError } from "../inference/providers/connections.js";
 import {
   globalDefaultRuntimeBindingId,
   NativeRuntimeBindingStore
@@ -787,6 +799,14 @@ export interface Cp2StoreOptions {
     shopId: string;
   }) => ModelRuntimeAdapter | undefined;
   agentRuntimeAdapterResolver?: (adapterId: string) => AgentRuntimeAdapter | undefined;
+  /**
+   * Multi-provider inference router (services/api/src/inference/providers). When supplied, its
+   * router-backed adapters serve provider-routed catalog models on the "backend" target, after
+   * any adapter `modelRuntimeAdapterResolver` returns. When omitted, an unconfigured in-memory
+   * platform still backs the provider-connection API, but no adapter resolution is added - so
+   * stores built without either option keep their exact prior (adapter-less) behavior.
+   */
+  inferencePlatform?: InferencePlatform;
   platformDefaultRuntime?: PlatformDefaultRuntimePolicy;
   pushNotificationSender?: PushNotificationSender;
   messageEmailNotificationSender?: MessageEmailNotificationSender;
@@ -911,7 +931,23 @@ export class Cp2Store {
   private readonly defaultAgentRuntimeAdapters = createDefaultAgentRuntimeAdapterRegistry();
   private readonly computerRuntimeDomain: ComputerRuntimeDomain;
 
+  private readonly inferencePlatform: InferencePlatform;
+  private readonly modelRuntimeAdapterResolver: Cp2StoreOptions["modelRuntimeAdapterResolver"];
+
   constructor(private readonly options: Cp2StoreOptions = {}) {
+    this.inferencePlatform = options.inferencePlatform ?? createInferencePlatform();
+    this.inferencePlatform.setModelCatalog(() => this.listModelCatalog());
+    const explicitAdapterResolver = options.modelRuntimeAdapterResolver;
+    const routedPlatform = options.inferencePlatform;
+    this.modelRuntimeAdapterResolver =
+      explicitAdapterResolver === undefined && routedPlatform === undefined
+        ? undefined
+        : (input) =>
+            explicitAdapterResolver?.(input) ??
+            routedPlatform?.adapterFor({
+              modelId: input.modelId,
+              executionTarget: input.executionTarget
+            });
     this.nativeRuntimeBindings = new NativeRuntimeBindingStore(
       options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy
     );
@@ -1555,9 +1591,9 @@ export class Cp2Store {
         return bindingId;
       },
       setBindingBillingMode: (input) => this.nativeRuntimeBindings.setBindingBillingMode(input),
-      ...(this.options.modelRuntimeAdapterResolver === undefined
+      ...(this.modelRuntimeAdapterResolver === undefined
         ? {}
-        : { modelRuntimeAdapterResolver: this.options.modelRuntimeAdapterResolver }),
+        : { modelRuntimeAdapterResolver: this.modelRuntimeAdapterResolver }),
       agentRuntimeAdapterResolver:
         this.options.agentRuntimeAdapterResolver ??
         ((adapterId) => this.defaultAgentRuntimeAdapters.resolve(adapterId)),
@@ -3884,7 +3920,7 @@ export class Cp2Store {
           this.options.agentRuntimeAdapterResolver?.(runtimeAdapterIdForAgent(agent)) ??
           this.defaultAgentRuntimeAdapters.resolve(runtimeAdapterIdForAgent(agent));
         const model = isModelExecutionTarget(host.type)
-          ? this.options.modelRuntimeAdapterResolver?.({
+          ? this.modelRuntimeAdapterResolver?.({
               modelId: checkpoint.runtime.modelId,
               executionTarget: host.type,
               agentId: agent.id,
@@ -8500,6 +8536,201 @@ export class Cp2Store {
     return this.listModelCatalog();
   }
 
+  // --- Multi-provider inference: providers, provider-routed models, BYOK connections ----------
+  // (docs/architecture/multi-provider-inference-implementation.md §13). Every method authorizes
+  // first and returns only redacted summaries; secrets never cross this boundary.
+
+  listInferenceProviders(sessionId: string | null, now = new Date()): InferenceProviderSummary[] {
+    this.requirePinVerifiedSession(sessionId, now);
+    return this.inferencePlatform.registry.views();
+  }
+
+  /** Provider-routed catalog models, in the router's normalized shape. Same registry as /v1/ai-models. */
+  listInferenceModels(
+    sessionId: string | null,
+    now = new Date()
+  ): Array<{
+    id: string;
+    displayName: string;
+    providerId: string;
+    executionTarget: InferenceExecutionTarget;
+    capabilities: InferenceModelCapabilities;
+    contextWindow: number | null;
+    maxOutputTokens: number | null;
+    enabled: boolean;
+    pricing: InferenceModelPricing | null;
+  }> {
+    this.requirePinVerifiedSession(sessionId, now);
+    return this.listModelCatalog().flatMap((summary) => {
+      const model = this.inferencePlatform.resolveModelDefinition(summary.id);
+      if (model === null) return [];
+      return [
+        {
+          id: model.id,
+          displayName: model.displayName,
+          providerId: model.providerId,
+          executionTarget: model.executionTarget,
+          capabilities: { ...model.capabilities },
+          contextWindow: model.contextWindow ?? null,
+          maxOutputTokens: model.maxOutputTokens ?? null,
+          enabled:
+            model.enabled &&
+            this.inferencePlatform.registry.get(model.providerId)?.config.enabled === true,
+          pricing: model.pricing ?? null
+        }
+      ];
+    });
+  }
+
+  async listInferenceProviderConnections(input: {
+    sessionId: string | null;
+    businessId?: string;
+    now?: Date;
+  }): Promise<InferenceProviderConnectionSummary[]> {
+    const now = input.now ?? new Date();
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    let tenantId: string | undefined;
+    if (input.businessId !== undefined) {
+      this.requireBrowserAuthorizedSession(
+        input.sessionId,
+        input.businessId,
+        "membership:manage",
+        now
+      );
+      tenantId = input.businessId;
+    }
+    return this.inferencePlatform.connections.list({
+      userId: session.account.id,
+      ...(tenantId === undefined ? {} : { tenantId })
+    });
+  }
+
+  async connectInferenceProvider(input: {
+    sessionId: string | null;
+    providerId: string;
+    apiKey: string;
+    scope: InferenceProviderConnectionScope;
+    businessId?: string;
+    baseUrl?: string | null;
+    now?: Date;
+  }): Promise<InferenceProviderConnectionSummary> {
+    const now = input.now ?? new Date();
+    const session =
+      input.scope === "tenant"
+        ? this.requireBrowserAuthorizedSession(
+            input.sessionId,
+            input.businessId ?? "",
+            "membership:manage",
+            now
+          )
+        : this.requirePinVerifiedSession(input.sessionId, now);
+    const connection = await this.withProviderConnectionErrors(() =>
+      this.inferencePlatform.connections.connect({
+        scope: input.scope,
+        tenantId: input.scope === "tenant" ? (input.businessId ?? null) : null,
+        userId: session.account.id,
+        actorId: session.user.id,
+        providerId: input.providerId,
+        apiKey: input.apiKey,
+        ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl })
+      })
+    );
+    this.recordAuditEvent({
+      type: "inference_provider.connected",
+      aggregateType: "inference_provider_connection",
+      aggregateId: connection.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        providerId: connection.providerId,
+        scope: connection.scope,
+        businessId: connection.businessId
+      }
+    });
+    return connection;
+  }
+
+  async testInferenceProviderConnection(input: {
+    sessionId: string | null;
+    id: string;
+    now?: Date;
+  }): Promise<InferenceProviderConnectionTestResult> {
+    const { record } = await this.requireInferenceConnectionOwner(
+      input.sessionId,
+      input.id,
+      input.now
+    );
+    return this.withProviderConnectionErrors(() => this.inferencePlatform.connections.test(record));
+  }
+
+  async disconnectInferenceProviderConnection(input: {
+    sessionId: string | null;
+    id: string;
+    now?: Date;
+  }): Promise<{ disconnected: true; id: string }> {
+    const now = input.now ?? new Date();
+    const { record, session } = await this.requireInferenceConnectionOwner(
+      input.sessionId,
+      input.id,
+      now
+    );
+    const result = await this.inferencePlatform.connections.disconnect(record);
+    this.recordAuditEvent({
+      type: "inference_provider.disconnected",
+      aggregateType: "inference_provider_connection",
+      aggregateId: record.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { providerId: record.providerId, scope: record.scope, businessId: record.tenantId }
+    });
+    return result;
+  }
+
+  /**
+   * Tenant isolation for connection ids: a user-scoped key is visible only to its own account; a
+   * shop key only to members allowed to manage that shop. Anything else is indistinguishable from
+   * a missing id (404), so ids cannot be probed across tenants.
+   */
+  private async requireInferenceConnectionOwner(
+    sessionId: string | null,
+    id: string,
+    now = new Date()
+  ) {
+    const session = this.requirePinVerifiedSession(sessionId, now);
+    const record = await this.inferencePlatform.connections.get(id);
+    const notFound = new Cp2Error(
+      404,
+      "inference_connection_not_found",
+      "Connection was not found."
+    );
+    if (record === undefined || record.scope === "platform") throw notFound;
+    if (record.scope === "user" && record.userId !== session.account.id) throw notFound;
+    if (record.scope === "tenant") {
+      try {
+        this.requireBrowserAuthorizedSession(
+          sessionId,
+          record.tenantId ?? "",
+          "membership:manage",
+          now
+        );
+      } catch {
+        throw notFound;
+      }
+    }
+    return { record, session };
+  }
+
+  private async withProviderConnectionErrors<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof ProviderConnectionError) {
+        throw new Cp2Error(error.statusCode, error.code, error.message);
+      }
+      throw error;
+    }
+  }
+
   private effectiveCatalogModel(model: AiModelSummary): AiModelSummary {
     return {
       ...cloneModelCatalogEntry(model),
@@ -11211,6 +11442,12 @@ export class Cp2Store {
   }
 
   private deleteShopOwnedData(businessId: string, accountId: string, now: Date): void {
+    void this.inferencePlatform.purgeOwner({ tenantId: businessId }).catch((error: unknown) => {
+      console.error({
+        event: "inference.owner_purge_failed",
+        reason: error instanceof Error ? error.name : "unknown"
+      });
+    });
     this.modelTemplatesDomain.deleteBusinessData(businessId);
     this.vocabularyDomain.deleteBusinessData(businessId);
     this.recordSyncChange({
@@ -11466,6 +11703,20 @@ export class Cp2Store {
     deletedRecordCount += this.messagingDomain.deleteConversationAttachmentsForAccount(
       request.accountId
     );
+    // Provider credentials and inference telemetry live in their own tables (not this snapshot).
+    // Purge them for the account and every shop it exclusively owned; a failure is logged, never
+    // allowed to block the rest of the deletion.
+    for (const owner of [
+      { userId: request.accountId },
+      ...[...exclusivelyOwnedBusinessIds].map((tenantId) => ({ tenantId }))
+    ]) {
+      void this.inferencePlatform.purgeOwner(owner).catch((error: unknown) => {
+        console.error({
+          event: "inference.owner_purge_failed",
+          reason: error instanceof Error ? error.name : "unknown"
+        });
+      });
+    }
 
     while (previousScopeSize !== scope.size) {
       previousScopeSize = scope.size;

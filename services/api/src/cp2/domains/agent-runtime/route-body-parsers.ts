@@ -28,6 +28,7 @@ import {
   type OssAgentSummary,
   type RuntimeToolName
 } from "@soko/shared-types";
+import type { AiModelInferenceRouting } from "@soko/shared-types";
 import { runtimeToolRegistry } from "@soko/tool-core";
 import { Cp2Error } from "../../cp2-error.js";
 import { isSupportedLanguage } from "../../store.js";
@@ -325,7 +326,110 @@ export function parseModelCatalogEntry(value: unknown, expectedId: string): AiMo
     fileSizeBytes: parseNullableNumber(record.fileSizeBytes, "fileSizeBytes"),
     minimumMemoryGb: parseNullableNumber(record.minimumMemoryGb, "minimumMemoryGb"),
     recommended: parseBoolean(record.recommended, "recommended"),
-    contextWindow: parseNullableNumber(record.contextWindow, "contextWindow")
+    contextWindow: parseNullableNumber(record.contextWindow, "contextWindow"),
+    ...(typeof record.canonicalModelId === "string"
+      ? { canonicalModelId: record.canonicalModelId }
+      : {}),
+    ...(typeof record.supportsToolCalling === "boolean"
+      ? { supportsToolCalling: record.supportsToolCalling }
+      : {}),
+    ...(typeof record.supportsStructuredOutput === "boolean"
+      ? { supportsStructuredOutput: record.supportsStructuredOutput }
+      : {}),
+    ...(record.inference === undefined || record.inference === null
+      ? {}
+      : { inference: parseModelInferenceRouting(record.inference) })
+  };
+}
+
+const inferenceExecutionTargetValues = new Set([
+  "browser-local",
+  "installed-app",
+  "remote-inference",
+  "remote-shop-device"
+]);
+
+/**
+ * The catalog row's provider-routing block (multi-provider inference router). Validated here so a
+ * malformed operator edit is rejected at write time instead of silently dropping the model from
+ * routing at read time. It names a provider *id* and the provider's own model id - never a URL or
+ * a credential; those belong to provider configuration.
+ */
+function parseModelInferenceRouting(value: unknown): AiModelInferenceRouting {
+  const record = parseRequestBody(value);
+  const providerId = parseString(record.providerId, "inference.providerId");
+  if (!/^[a-z0-9][a-z0-9:._-]{0,99}$/u.test(providerId)) {
+    throw new Cp2Error(400, "model_catalog_entry_invalid", "inference.providerId is invalid.");
+  }
+  const providerModelId = parseString(record.providerModelId, "inference.providerModelId");
+  if (providerModelId.length > 200) {
+    throw new Cp2Error(
+      400,
+      "model_catalog_entry_invalid",
+      "inference.providerModelId is too long."
+    );
+  }
+  const executionTarget = record.executionTarget;
+  if (typeof executionTarget !== "string" || !inferenceExecutionTargetValues.has(executionTarget)) {
+    throw new Cp2Error(400, "model_catalog_entry_invalid", "inference.executionTarget is invalid.");
+  }
+  const capabilities = parseRequestBody(record.capabilities);
+  const capabilityFlags: AiModelInferenceRouting["capabilities"] = {
+    text: capabilities.text === true
+  };
+  for (const key of ["vision", "tools", "structuredOutput", "reasoning", "streaming"] as const) {
+    const flag = capabilities[key];
+    if (flag !== undefined && typeof flag !== "boolean") {
+      throw new Cp2Error(
+        400,
+        "model_catalog_entry_invalid",
+        `inference.capabilities.${key} must be boolean.`
+      );
+    }
+    if (typeof flag === "boolean") capabilityFlags[key] = flag;
+  }
+  const maxOutputTokens = parseNullableNumber(
+    record.maxOutputTokens ?? null,
+    "inference.maxOutputTokens"
+  );
+  if (
+    maxOutputTokens !== null &&
+    (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0)
+  ) {
+    throw new Cp2Error(400, "model_catalog_entry_invalid", "inference.maxOutputTokens is invalid.");
+  }
+  let pricing: AiModelInferenceRouting["pricing"] = null;
+  if (record.pricing !== undefined && record.pricing !== null) {
+    const raw = parseRequestBody(record.pricing);
+    pricing = {};
+    for (const key of [
+      "inputPerMillionTokens",
+      "cachedInputPerMillionTokens",
+      "outputPerMillionTokens"
+    ] as const) {
+      const amount = raw[key];
+      if (amount === undefined || amount === null) continue;
+      if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+        throw new Cp2Error(
+          400,
+          "model_catalog_entry_invalid",
+          `inference.pricing.${key} is invalid.`
+        );
+      }
+      pricing[key] = amount;
+    }
+    if (typeof raw.currency === "string" && /^[A-Za-z]{3}$/u.test(raw.currency)) {
+      pricing.currency = raw.currency.toUpperCase();
+    }
+  }
+  return {
+    providerId,
+    providerModelId,
+    executionTarget: executionTarget as AiModelInferenceRouting["executionTarget"],
+    capabilities: capabilityFlags,
+    maxOutputTokens,
+    enabled: parseBoolean(record.enabled, "inference.enabled"),
+    pricing
   };
 }
 

@@ -1013,6 +1013,111 @@ export interface AiModelSummary {
   supportsToolCalling?: boolean;
   /** Verified support for a constrained/structured (e.g. `response_format: json_object`) response. */
   supportsStructuredOutput?: boolean;
+  /**
+   * Provider routing for models served by the multi-provider inference router
+   * (docs/architecture/multi-provider-inference-implementation.md). Absent on every catalog entry
+   * that predates the router, which keep their existing Vercel/owner-node execution unchanged. An
+   * operator registers a provider-backed model by adding this block through the existing catalog
+   * API - there is no second model registry.
+   */
+  inference?: AiModelInferenceRouting;
+  /**
+   * The native execution target a configured adapter actually serves this model on, computed per
+   * request by GET /v1/ai-models. Clients activate with this value instead of assuming one.
+   */
+  hostedExecutionTarget?: ModelExecutionTarget;
+}
+
+/**
+ * Where inference runs from the provider layer's point of view. Separate from
+ * ModelExecutionTarget on purpose: "browser-local"/"installed-app" are client-executed and never
+ * materialize a native execution host (ADR-device-independent-runtime-and-registry-discovery.md).
+ * "remote-inference" is served by the native "backend" target.
+ */
+export type InferenceExecutionTarget =
+  "browser-local" | "installed-app" | "remote-inference" | "remote-shop-device";
+
+export interface InferenceModelCapabilities {
+  text: boolean;
+  vision?: boolean;
+  tools?: boolean;
+  structuredOutput?: boolean;
+  reasoning?: boolean;
+  streaming?: boolean;
+}
+
+export interface InferenceModelPricing {
+  inputPerMillionTokens?: number;
+  cachedInputPerMillionTokens?: number;
+  outputPerMillionTokens?: number;
+  currency?: string;
+}
+
+export interface AiModelInferenceRouting {
+  /** Configured provider instance id (e.g. "openai", "anthropic", "zai-general", "soko-llama"). */
+  providerId: string;
+  /** The id sent to the provider API; distinct from the catalog id so hosting can move. */
+  providerModelId: string;
+  executionTarget: InferenceExecutionTarget;
+  capabilities: InferenceModelCapabilities;
+  maxOutputTokens?: number | null;
+  enabled: boolean;
+  pricing?: InferenceModelPricing | null;
+}
+
+export type InferenceProviderHealthStatus =
+  | "AVAILABLE"
+  | "DEGRADED"
+  | "UNAVAILABLE"
+  | "MISCONFIGURED"
+  | "RATE_LIMITED"
+  | "CREDENTIAL_INVALID";
+
+/** Public projection of a configured inference provider. Never carries credential material. */
+export interface InferenceProviderSummary {
+  id: string;
+  displayName: string;
+  type: "openai" | "anthropic" | "zai" | "openai-compatible" | "local";
+  executionTarget: InferenceExecutionTarget;
+  enabled: boolean;
+  /** Soko-funded credential is configured server-side (the key itself is never exposed). */
+  managedCredentialConfigured: boolean;
+  byokAllowed: boolean;
+  allowCredentialEndpoint: boolean;
+  billingProduct: string | null;
+}
+
+export type InferenceProviderConnectionScope = "tenant" | "user";
+export type InferenceProviderConnectionStatus = "ACTIVE" | "INVALID" | "REVOKED";
+
+/**
+ * Public projection of a BYOK provider credential. The encrypted secret never leaves the server;
+ * `secretHint` is at most the last four characters, and only for keys long enough to hint safely.
+ */
+export interface InferenceProviderConnectionSummary {
+  id: string;
+  providerId: string;
+  scope: InferenceProviderConnectionScope;
+  businessId: string | null;
+  connected: boolean;
+  status: InferenceProviderConnectionStatus;
+  secretHint: string | null;
+  customEndpoint: string | null;
+  lastVerifiedAt: string | null;
+  lastVerificationStatus: "passed" | "failed" | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InferenceProviderConnectionTestResult {
+  connection: InferenceProviderConnectionSummary;
+  health: {
+    status: InferenceProviderHealthStatus;
+    checkedAt: string;
+    latencyMs: number | null;
+    errorCode: string | null;
+    message: string | null;
+  };
 }
 
 export interface ActiveAiModelSummary {
@@ -3752,6 +3857,12 @@ export type RuntimeInferenceErrorCategory =
   | "AUTHENTICATION_FAILED"
   | "PROVIDER_ERROR"
   | "ABORTED"
+  /**
+   * A deliberate policy decision, not a fault: a budget or rate ceiling, a client-executed (local)
+   * model, a forbidden endpoint, an unsupported capability. Never retryable - moving to another
+   * runtime candidate would route around the policy (e.g. onto a more expensive model).
+   */
+  | "POLICY_REJECTED"
   | "UNKNOWN";
 
 /**
@@ -3794,6 +3905,23 @@ const inferenceErrorCategoryByCode: Record<string, RuntimeInferenceErrorCategory
   CLOUD_SPENDING_LIMIT_REACHED: "RATE_LIMITED",
   CLOUD_CIRCUIT_OPEN: "ENGINE_UNREACHABLE",
   CLOUD_REQUEST_FAILED: "PROVIDER_ERROR",
+  // services/api/src/inference/providers/errors.ts (multi-provider inference router)
+  PROVIDER_UNAVAILABLE: "ENGINE_UNREACHABLE",
+  PROVIDER_MISCONFIGURED: "MODEL_UNAVAILABLE",
+  MODEL_UNAVAILABLE: "MODEL_UNAVAILABLE",
+  INVALID_CREDENTIAL: "AUTHENTICATION_FAILED",
+  CREDENTIAL_MISSING: "AUTHENTICATION_FAILED",
+  RATE_LIMITED: "RATE_LIMITED",
+  CONTEXT_TOO_LARGE: "CONTEXT_WINDOW_EXCEEDED",
+  REQUEST_TIMEOUT: "TIMEOUT",
+  REQUEST_CANCELLED: "ABORTED",
+  CAPABILITY_UNSUPPORTED: "POLICY_REJECTED",
+  BUDGET_EXCEEDED: "POLICY_REJECTED",
+  CONTENT_REJECTED: "POLICY_REJECTED",
+  INFERENCE_FAILED: "PROVIDER_ERROR",
+  ENDPOINT_FORBIDDEN: "POLICY_REJECTED",
+  LOCAL_EXECUTION_REQUIRED: "POLICY_REJECTED",
+  INVALID_PROVIDER_RESPONSE: "INVALID_RESPONSE",
   // Historical: the retired browser-local inference architecture's error codes (see this type's
   // own docblock above) - no surface in this repository produces these anymore.
   WEBGPU_UNAVAILABLE: "ENGINE_UNREACHABLE",

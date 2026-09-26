@@ -5,6 +5,7 @@ import type {
   AgentModelBindingRemovalResult,
   AgentModelBindingSummary,
   EffectiveRuntimeSummary,
+  ModelExecutionTarget,
   ModelRuntimeHealthSummary
 } from "@soko/shared-types";
 
@@ -349,7 +350,7 @@ export function AgentModelPanel({
         )}/models/${encodeURIComponent(model.id)}/test`,
         {
           shopId: business.id,
-          executionTarget: "vercel"
+          executionTarget: hostedExecutionTarget(model)
         },
         { timeoutMs: backendModelProbeRequestTimeoutMs }
       );
@@ -409,7 +410,7 @@ export function AgentModelPanel({
         )}/models/${encodeURIComponent(model.id)}/activate`,
         {
           shopId: business.id,
-          executionTarget: "vercel",
+          executionTarget: hostedExecutionTarget(model),
           executionMode: "LOCAL_FIRST",
           permissions: {
             allowInstalledApp: false,
@@ -919,4 +920,13 @@ export function normalizeModelDownloadUrl(downloadUrl: string | null): string | 
   } catch {
     return downloadUrl.split("?")[0]?.toLowerCase() ?? null;
   }
+}
+
+/**
+ * The target the backend says a configured adapter serves this model on (GET /v1/ai-models ->
+ * hostedExecutionTarget): "vercel" for artifact-backed models, "backend" for models routed through
+ * the multi-provider inference router. Falls back to the hosted default for older API responses.
+ */
+function hostedExecutionTarget(model: AiModelSummary): ModelExecutionTarget {
+  return model.hostedExecutionTarget ?? "vercel";
 }
