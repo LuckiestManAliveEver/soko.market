@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const importsRuntimeTools = {
   "document_import.confirm": {
     name: "document_import.confirm",
+    hub: { module: "receipts", label: { en: "Confirm an import", sw: "Thibitisha uingizaji" } },
     description: "Confirm a pending document import job (product catalogue or supplier list).",
     risk: "high",
     requiresConfirmation: true,

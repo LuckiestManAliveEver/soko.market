@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const commerceRuntimeTools = {
   "commerce.search": {
     name: "commerce.search",
+    hub: null,
     description: "Search the canonical unified buy feed across catalogues and contact statuses.",
     risk: "low",
     requiresConfirmation: false,
@@ -18,6 +19,7 @@ export const commerceRuntimeTools = {
   },
   "commerce.checkout": {
     name: "commerce.checkout",
+    hub: null,
     description: "Create canonical requested-order handoffs for structured unified-cart items.",
     risk: "high",
     requiresConfirmation: true,

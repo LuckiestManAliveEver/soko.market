@@ -4847,3 +4847,52 @@ export interface ActiveNativeAgentBinding {
   role: NativeRuntimeBindingModelSummary;
   executionTarget: ModelExecutionTarget;
 }
+
+/** Merchant-facing copy in every language the owner app ships. */
+export interface ShopHubText {
+  en: string;
+  sw: string;
+}
+
+export type ShopCapabilitySetupState = "ready" | "needs_setup" | "unavailable";
+
+export interface ShopCapabilityTool {
+  name: string;
+  label: ShopHubText;
+  readOnly: boolean;
+  requiresConfirmation: boolean;
+  risk: "low" | "medium" | "high" | "critical";
+}
+
+export interface ShopCapabilityModule {
+  id: string;
+  icon: string;
+  label: ShopHubText;
+  description: ShopHubText;
+  setup: {
+    state: ShopCapabilitySetupState;
+    /** Null when ready. */
+    reason: ShopHubText | null;
+  };
+  /** Only the tools the caller's role may invoke. */
+  tools: ShopCapabilityTool[];
+}
+
+export interface ShopCapabilityCategory {
+  id: string;
+  label: ShopHubText;
+  modules: ShopCapabilityModule[];
+}
+
+/**
+ * GET /businesses/:businessId/capabilities - the Shop Hub, projected from the canonical tool and
+ * module registries in @soko/tool-core and filtered by the caller's role in this business.
+ */
+export interface ShopCapabilitiesSummary {
+  businessId: string;
+  role: BusinessRole;
+  categories: ShopCapabilityCategory[];
+  /** Modules in `needs_setup`, in hub order - the needs-attention strip. */
+  needsAttention: Array<{ moduleId: string; label: ShopHubText; reason: ShopHubText }>;
+  checkedAt: string;
+}

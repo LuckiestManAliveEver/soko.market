@@ -13,6 +13,9 @@ export const routes = {
   chat: "/chat",
   marketplace: "/marketplace",
   sell: "/sell",
+  // The owner's Shop Hub. Deliberately under /sell: /shop/:id is a public storefront alias
+  // (AppRouter's readStorefrontRoute) and /s/:slug is the API's universal short link.
+  shopHub: "/sell/shop",
   workspace: "/workspace",
   conversation: (conversationId: string, mode: SokoMode = "marketplace") =>
     `${mode === "seller" ? "/workspace" : routes.marketplace}/conversations/${routeId(conversationId)}`,
@@ -93,6 +96,8 @@ export interface OwnerRoute {
   conversationId?: string;
   productId?: string;
   agentId?: string;
+  /** An owner panel opened over the view; only the Shop Hub is routable today. */
+  panel?: "shop-hub";
 }
 
 export function pathForOwnerView(view: ShellView, mode: SokoMode): string {
@@ -112,6 +117,9 @@ export function pathForOwnerRoute(route: OwnerRoute): string {
   if (route.agentId !== undefined) {
     return routes.agent(route.agentId);
   }
+  if (route.panel === "shop-hub") {
+    return routes.shopHub;
+  }
   return pathForOwnerView(route.view, route.mode);
 }
 
@@ -122,6 +130,9 @@ export function readOwnerRoute(pathname: string): OwnerRoute | null {
   }
   if (path === routes.sell || path === routes.workspace) {
     return { mode: "seller", view: "chat" };
+  }
+  if (path === routes.shopHub) {
+    return { mode: "seller", view: "chat", panel: "shop-hub" };
   }
 
   const conversationMatch = path.match(/^\/(marketplace|workspace|sell)\/conversations\/([^/]+)$/);

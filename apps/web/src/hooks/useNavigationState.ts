@@ -4,6 +4,7 @@ import type { ChatMessage, ShellView, SokoMode } from "../app-shell";
 import {
   navigateToBrowserUrl,
   navigateToOwnerRoute,
+  readCurrentOwnerRoute,
   readSokoHistoryState
 } from "../browser-navigation";
 import { getErrorMessage } from "../chat-message-plumbing";
@@ -230,6 +231,23 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     ]);
   }
 
+  /** "Go to my shop": the Shop Hub at /sell/shop, over seller chat. Back closes it again. */
+  function openShopHub() {
+    if (business === null) {
+      switchMode("seller");
+      return;
+    }
+    navigateToOwnerRoute({ mode: "seller", view: "chat", panel: "shop-hub" });
+    setIsWorkspacePanelOpen(true);
+  }
+
+  function closeShopHub() {
+    setIsWorkspacePanelOpen(false);
+    if (readCurrentOwnerRoute()?.panel === "shop-hub") {
+      navigateToOwnerRoute({ mode: "seller", view: "chat" }, { replace: true });
+    }
+  }
+
   function updateShopPresenceStatus(nextStatus: ShopPresenceStatus) {
     if (business === null) return;
 
@@ -269,6 +287,8 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     openAuth,
     browseAsGuest,
     switchMode,
+    openShopHub,
+    closeShopHub,
     updateShopPresenceStatus
   };
 }

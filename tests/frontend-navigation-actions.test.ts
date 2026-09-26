@@ -31,6 +31,14 @@ describe("frontend navigation and action contracts", () => {
     expect(readOwnerRoute("/sell/")).toEqual({ mode: "seller", view: "chat" });
     expect(readOwnerRoute("/catalogue")).toEqual({ mode: "seller", view: "products" });
     expect(readOwnerRoute("/workspace")).toEqual({ mode: "seller", view: "chat" });
+    expect(readOwnerRoute("/sell/shop")).toEqual({
+      mode: "seller",
+      view: "chat",
+      panel: "shop-hub"
+    });
+    expect(pathForOwnerRoute({ mode: "seller", view: "chat", panel: "shop-hub" })).toBe(
+      "/sell/shop"
+    );
     expect(readOwnerRoute("/products/product-1")).toEqual({
       mode: "seller",
       view: "products",

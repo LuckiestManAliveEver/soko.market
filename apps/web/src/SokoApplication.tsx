@@ -239,7 +239,9 @@ export function OwnerApp() {
   const domainResetRegistry = useDomainResetRegistry();
   const { allRefreshers, registerRefresh, refreshersFor } = useViewRefreshRegistry();
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
-  const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
+  const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(
+    initialOwnerRoute?.panel === "shop-hub"
+  );
   const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
   // Purely local, ephemeral display state: which capability a card in this session's own thread
   // came from (Soko Home's "trace" affordance). Never sent to the server and not worth surviving
@@ -420,6 +422,8 @@ export function OwnerApp() {
     openAuth,
     browseAsGuest,
     switchMode,
+    openShopHub,
+    closeShopHub,
     updateShopPresenceStatus
   } = useNavigationState({
     business,
@@ -948,7 +952,7 @@ export function OwnerApp() {
       setRoutedProductId(route.productId ?? null);
       setActiveConversationId(route.conversationId ?? null);
       setReplyToMessageId(null);
-      setIsWorkspacePanelOpen(false);
+      setIsWorkspacePanelOpen(route.panel === "shop-hub");
       setIsMarketplaceShortcutOpen(false);
       markNavigationCommitted(measurement);
       const historyState = readSokoHistoryState(window.history.state);
@@ -1687,7 +1691,7 @@ export function OwnerApp() {
               }}
               onGoToShop={() => {
                 setIsMenuDrawerOpen(false);
-                switchMode("seller");
+                openShopHub();
               }}
               onShopSettings={() => {
                 setIsMenuDrawerOpen(false);
@@ -1798,7 +1802,7 @@ export function OwnerApp() {
                   <button
                     className="header-action-button workspace"
                     type="button"
-                    onClick={() => setIsWorkspacePanelOpen(true)}
+                    onClick={openShopHub}
                     aria-haspopup="dialog"
                   >
                     Workspace
@@ -1901,8 +1905,6 @@ export function OwnerApp() {
                     .find((message) => message.provider === "email" && message.subject)?.subject ??
                   ""
                 }
-                customerCount={customers.length}
-                invoiceCount={invoices.length}
                 invoices={invoices}
                 messages={chatMessages}
                 conversations={conversationInbox}
@@ -1923,7 +1925,6 @@ export function OwnerApp() {
                 }
                 replyToMessageId={replyToMessageId}
                 networkGraph={networkGraph}
-                notificationCount={notificationInbox.summary.unread}
                 oauthProviders={oauthProviders}
                 oauthProvidersLoaded={oauthProvidersLoaded}
                 pendingAttachments={pendingAttachments}
@@ -1933,10 +1934,8 @@ export function OwnerApp() {
                 products={products}
                 publicStorefronts={publicStorefronts}
                 publicStorefrontsLoading={publicStorefrontsLoading}
-                report={reportSummary}
                 shopPresenceStatus={shopPresenceStatus}
                 workspaceOpen={isWorkspacePanelOpen}
-                syncSummary={syncSummary}
                 buyFeed={buyFeed}
                 isSearchingBuyFeed={isPending("buy-search")}
                 buyCart={buyCart}
@@ -2020,8 +2019,8 @@ export function OwnerApp() {
                   void runAction("message-forward", () => forwardMessage(messageId, conversationId))
                 }
                 onRetryMessages={() => void runAction("message-retry", retryQueuedMessages)}
-                onCloseWorkspace={() => setIsWorkspacePanelOpen(false)}
-                onOpenWorkspace={() => setIsWorkspacePanelOpen(true)}
+                onCloseWorkspace={closeShopHub}
+                onOpenWorkspace={openShopHub}
                 onNavigate={navigateToView}
                 onModeChange={switchMode}
                 onProductEdit={(product) => {

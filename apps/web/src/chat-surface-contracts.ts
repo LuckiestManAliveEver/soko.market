@@ -13,7 +13,6 @@ import type {
 
 import type { ChatAttachment, ChatMessage, ShellView, SokoMode } from "./app-shell";
 import type {
-  BusinessReportSummary,
   BuyCartItem,
   ContactPickerContact,
   InvoiceSummary,
@@ -24,8 +23,7 @@ import type {
   ProductSummary,
   PublicStorefrontSummary,
   ShopPresenceStatus,
-  SocialSignupProvider,
-  SyncQueueSummary
+  SocialSignupProvider
 } from "./soko-application-shared";
 
 export interface ChatSurfaceProps {
@@ -35,8 +33,6 @@ export interface ChatSurfaceProps {
   channelEndpoints: ChannelEndpointSummary[];
   children: ReactNode;
   conversations: ConversationInboxItem[];
-  customerCount: number;
-  invoiceCount: number;
   invoices: InvoiceSummary[];
   messages: ChatMessage[];
   isInboxOpen: boolean;
@@ -49,7 +45,6 @@ export interface ChatSurfaceProps {
   marketplaceIntroComplete: boolean;
   marketplaceShortcutOpen: boolean;
   networkGraph: NetworkGraphSummary | null;
-  notificationCount: number;
   oauthProviders: OAuthProviderSummary[];
   oauthProvidersLoaded: boolean;
   pendingAttachments: ChatAttachment[];
@@ -59,9 +54,7 @@ export interface ChatSurfaceProps {
   products: ProductSummary[];
   publicStorefronts: PublicStorefrontSummary[];
   publicStorefrontsLoading: boolean;
-  report: BusinessReportSummary | null;
   shopPresenceStatus: ShopPresenceStatus;
-  syncSummary: SyncQueueSummary;
   workspaceOpen: boolean;
   buyFeed: BuyFeedSummary | null;
   isSearchingBuyFeed: boolean;

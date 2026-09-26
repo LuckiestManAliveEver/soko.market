@@ -3,6 +3,10 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const logisticsRuntimeTools = {
   "logistics.update_status": {
     name: "logistics.update_status",
+    hub: {
+      module: "delivery",
+      label: { en: "Update delivery status", sw: "Sasisha hali ya usafirishaji" }
+    },
     description: "Update a delivery or pickup record's fulfillment status.",
     risk: "high",
     requiresConfirmation: true,

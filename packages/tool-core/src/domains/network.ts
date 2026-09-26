@@ -3,6 +3,10 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const networkRuntimeTools = {
   "network.route": {
     name: "network.route",
+    hub: {
+      module: "network",
+      label: { en: "Route to another shop", sw: "Elekeza kwa duka jingine" }
+    },
     description: "Request an agent-mediated route to a matching second-degree network contact.",
     risk: "medium",
     requiresConfirmation: false,
@@ -26,6 +30,10 @@ export const networkRuntimeTools = {
   },
   "network.contacts.resolve": {
     name: "network.contacts.resolve",
+    hub: {
+      module: "network",
+      label: { en: "Find a contact on Soko", sw: "Tafuta mawasiliano kwenye Soko" }
+    },
     description: "Resolve a name, phone, email, or handle against the owner's own phonebook.",
     risk: "low",
     requiresConfirmation: false,
@@ -45,6 +53,10 @@ export const networkRuntimeTools = {
   },
   "network.identity.list": {
     name: "network.identity.list",
+    hub: {
+      module: "network",
+      label: { en: "Review contact matches", sw: "Kagua mechi za mawasiliano" }
+    },
     description: "List pending identity candidates awaiting the owner's confirmation.",
     risk: "low",
     requiresConfirmation: false,
@@ -55,6 +67,10 @@ export const networkRuntimeTools = {
   },
   "network.identity.propose": {
     name: "network.identity.propose",
+    hub: {
+      module: "network",
+      label: { en: "Suggest a contact match", sw: "Pendekeza mechi ya mawasiliano" }
+    },
     description:
       "Record a candidate identity seen while completing another task (e.g. a browsing " +
       "observation) as pending - never attaches it to the phonebook until the owner confirms it.",
@@ -88,6 +104,10 @@ export const networkRuntimeTools = {
   },
   "network.identity.confirm": {
     name: "network.identity.confirm",
+    hub: {
+      module: "network",
+      label: { en: "Confirm a contact match", sw: "Thibitisha mechi ya mawasiliano" }
+    },
     description:
       "Confirm a pending identity candidate, attaching it to an existing contact or a new one.",
     risk: "medium",
@@ -112,6 +132,10 @@ export const networkRuntimeTools = {
   },
   "network.identity.reject": {
     name: "network.identity.reject",
+    hub: {
+      module: "network",
+      label: { en: "Reject a contact match", sw: "Kataa mechi ya mawasiliano" }
+    },
     description: "Reject a pending identity candidate - it is discarded, never attached.",
     risk: "low",
     requiresConfirmation: false,
@@ -127,6 +151,7 @@ export const networkRuntimeTools = {
   },
   "network.identity.unlink": {
     name: "network.identity.unlink",
+    hub: { module: "network", label: { en: "Unlink a contact", sw: "Tenganisha mawasiliano" } },
     description: "Remove a previously confirmed identity from a contact.",
     risk: "medium",
     requiresConfirmation: false,
@@ -147,6 +172,10 @@ export const networkRuntimeTools = {
   },
   "network.identity.add": {
     name: "network.identity.add",
+    hub: {
+      module: "network",
+      label: { en: "Link a contact yourself", sw: "Unganisha mawasiliano mwenyewe" }
+    },
     description: "Directly add an owner-authored identity (e.g. a known handle) to a contact.",
     risk: "low",
     requiresConfirmation: false,

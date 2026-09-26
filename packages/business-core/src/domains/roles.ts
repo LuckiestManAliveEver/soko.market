@@ -63,6 +63,10 @@ export const businessRoles = [
 export type BusinessPermission =
   | "business:create"
   | "business:read"
+  // Agent-driven changes to the business's own operating surface: linking and unlinking network
+  // identities, and isolated computer sessions (packages/tool-core registry). Held by the roles
+  // with authority over the business - owner and manager.
+  | "business:write"
   | "membership:read"
   | "membership:manage"
   // Staff invitations (docs/architecture/staff-invitations.md): invite people into the business
@@ -120,6 +124,7 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
   owner: new Set([
     "business:create",
     "business:read",
+    "business:write",
     "membership:read",
     "membership:manage",
     "membership:invite",
@@ -168,6 +173,7 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
   ]),
   manager: new Set([
     "business:read",
+    "business:write",
     "membership:read",
     "membership:invite",
     "product:read",

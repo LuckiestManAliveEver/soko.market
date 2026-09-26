@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const productsRuntimeTools = {
   "product.create": {
     name: "product.create",
+    hub: { module: "catalog", label: { en: "Add a product", sw: "Ongeza bidhaa" } },
     description: "Create a new catalogue product with a name, unit, and starting quantity.",
     risk: "high",
     // Auto-accepted: creating a product is trivially reversible (edit or delete it after), and
@@ -27,6 +28,7 @@ export const productsRuntimeTools = {
   },
   "product.update": {
     name: "product.update",
+    hub: { module: "catalog", label: { en: "Edit a product", sw: "Hariri bidhaa" } },
     description: "Update an existing catalogue product's details.",
     risk: "high",
     requiresConfirmation: true,
@@ -45,6 +47,7 @@ export const productsRuntimeTools = {
   },
   "product.delete": {
     name: "product.delete",
+    hub: { module: "catalog", label: { en: "Remove a product", sw: "Ondoa bidhaa" } },
     description: "Permanently delete a catalogue product.",
     risk: "critical",
     requiresConfirmation: true,
@@ -60,6 +63,7 @@ export const productsRuntimeTools = {
   },
   "product.stock_adjust": {
     name: "product.stock_adjust",
+    hub: { module: "catalog", label: { en: "Adjust stock", sw: "Rekebisha stoki" } },
     description: "Adjust a catalogue product's on-hand stock quantity.",
     risk: "high",
     // Auto-accepted: a stock quantity is easily corrected with another adjustment if wrong, and
@@ -82,6 +86,7 @@ export const productsRuntimeTools = {
   },
   "product.field.add": {
     name: "product.field.add",
+    hub: { module: "catalog", label: { en: "Add a product field", sw: "Ongeza sehemu ya bidhaa" } },
     description: "Add a custom field to the product schema.",
     risk: "medium",
     requiresConfirmation: true,
@@ -106,6 +111,10 @@ export const productsRuntimeTools = {
   },
   "product.field.remove": {
     name: "product.field.remove",
+    hub: {
+      module: "catalog",
+      label: { en: "Remove a product field", sw: "Ondoa sehemu ya bidhaa" }
+    },
     description: "Remove a custom field from the product schema.",
     risk: "high",
     requiresConfirmation: true,

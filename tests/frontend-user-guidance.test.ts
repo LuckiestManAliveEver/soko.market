@@ -72,10 +72,7 @@ describe("frontend user guidance", () => {
 
   it("keeps Messages beside Marketplace as a pill and labels the network card My Network", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
-    const contextualBusinessCards = readFileSync(
-      "apps/web/src/ContextualBusinessCards.tsx",
-      "utf8"
-    );
+    const shopHubCopy = readFileSync("apps/web/src/shop-hub-copy.ts", "utf8");
     const styles = readFileSync("apps/web/src/styles.css", "utf8");
     const marketplaceIndex = application.indexOf('data-testid="marketplace-button"');
     const messagesIndex = application.indexOf('data-testid="messages-button"');
@@ -83,7 +80,7 @@ describe("frontend user guidance", () => {
     expect(marketplaceIndex).toBeGreaterThan(-1);
     expect(messagesIndex).toBeGreaterThan(marketplaceIndex);
     expect(styles).toContain(".header-action-button.messages");
-    expect(contextualBusinessCards).toContain('title: "My Network"');
+    expect(shopHubCopy).toContain('networkSync: "My network"');
   });
 
   it("refreshes the active owner view on a bounded foreground schedule", () => {
@@ -167,19 +164,19 @@ describe("frontend user guidance", () => {
     expect(existsSync("apps/web/src/ai-model-manager.ts")).toBe(false);
   });
 
-  it("keeps primary seller destinations reachable through the Workspace hub and changes modes without animation delay", () => {
+  it("keeps primary seller destinations reachable through the Shop Hub and changes modes without animation delay", () => {
     // The permanent PrimaryNavigation tab bar was removed so the sessions list is the only fixed
     // shell nav (per the mockup's "nothing is a route" thesis) - the same destinations it used to
-    // expose (Stock/Sales/Docs/Settings) now live as cards in the Workspace hub instead.
+    // expose (Stock/Sales/Docs/Settings) now open from Shop Hub modules instead.
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
-    const workspaceHub = readFileSync("apps/web/src/ContextualBusinessCards.tsx", "utf8");
+    const workspaceHub = readFileSync("apps/web/src/shop-hub-surfaces.ts", "utf8");
     const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
     expect(existsSync("apps/web/src/PrimaryNavigation.tsx")).toBe(false);
-    expect(workspaceHub).toContain('title: "Catalogue"');
-    expect(workspaceHub).toContain('title: "Make a Sale"');
-    expect(workspaceHub).toContain('title: "Knowledge"');
-    expect(workspaceHub).toContain('title: "Agent & Settings"');
+    expect(workspaceHub).toContain('view: "catalogue"');
+    expect(workspaceHub).toContain('view: "pos"');
+    expect(workspaceHub).toContain('view: "imports"');
+    expect(workspaceHub).toContain('view: "agent"');
     expect(application).not.toContain("runViewTransition");
     expect(application).toContain("markNavigationCommitted(measurement)");
     expect(styles).not.toContain(".primary-navigation");

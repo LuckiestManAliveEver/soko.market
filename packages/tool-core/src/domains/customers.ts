@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const customersRuntimeTools = {
   "customer.create": {
     name: "customer.create",
+    hub: { module: "customers", label: { en: "Add a customer", sw: "Ongeza mteja" } },
     description: "Create a new customer record.",
     risk: "high",
     requiresConfirmation: true,
@@ -19,6 +20,7 @@ export const customersRuntimeTools = {
   },
   "customer.update": {
     name: "customer.update",
+    hub: { module: "customers", label: { en: "Edit a customer", sw: "Hariri mteja" } },
     description: "Update an existing customer's details.",
     risk: "high",
     requiresConfirmation: true,

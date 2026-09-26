@@ -1,4 +1,4 @@
-import { Fragment, Suspense, useEffect, useRef, useState } from "react";
+import { Fragment, Suspense, lazy, useEffect, useRef, useState } from "react";
 
 import type { CountryCode } from "libphonenumber-js";
 import type { Scope } from "@soko/offline-runtime";
@@ -35,7 +35,11 @@ import { ShopPresenceButtons } from "./ShopPresenceButtons";
 
 import { MarketplaceModeCard } from "./MarketplaceModeCard";
 import { StorefrontPreviewCard } from "./StorefrontPreviewCard";
-import { ContextualBusinessCards } from "./ContextualBusinessCards";
+import { ShopHubEntryCard, ShopHubSkeleton } from "./ShopHubEntryCard";
+import { LazyModuleErrorBoundary } from "./LazyModuleErrorBoundary";
+import { loadLazyModuleWithRecovery, workspaceModuleKeys } from "./lazy-module-recovery";
+import { shopHubCopy } from "./shop-hub-copy";
+import type { ShopHubSurface } from "./shop-hub-surfaces";
 import { workspaceModuleClassName, workspacePanelTitle } from "./workspace-panel-title";
 import { MerchantWorkspaceDashboard } from "./MerchantWorkspaceDashboard";
 import { NetworkSyncNestedCard } from "./NetworkSyncNestedCard";
@@ -44,6 +48,12 @@ import { StackedModule } from "./StackedModule";
 import type { ChatSurfaceProps } from "./chat-surface-contracts";
 import { ComputerRuntimeCard } from "./ComputerRuntimeCard";
 export type { ChatSurfaceProps } from "./chat-surface-contracts";
+
+const ShopHub = lazy(() =>
+  loadLazyModuleWithRecovery(workspaceModuleKeys.shopHub, () => import("./ShopHub")).then(
+    (module) => ({ default: module.ShopHub })
+  )
+);
 
 // Soko Home's "trace" affordance (hidden by default, toggled by the header's capability-trace
 // button): names the real capability that produced a generated card, instead of the mockup's
@@ -76,8 +86,6 @@ export function ChatSurface({
   channelEndpoints,
   children,
   conversations,
-  customerCount,
-  invoiceCount,
   invoices,
   messages,
   isInboxOpen,
@@ -90,7 +98,6 @@ export function ChatSurface({
   marketplaceIntroComplete,
   marketplaceShortcutOpen,
   networkGraph,
-  notificationCount,
   oauthProviders,
   oauthProvidersLoaded,
   pendingAttachments,
@@ -100,9 +107,7 @@ export function ChatSurface({
   products,
   publicStorefronts,
   publicStorefrontsLoading,
-  report,
   shopPresenceStatus,
-  syncSummary,
   workspaceOpen,
   buyFeed,
   isSearchingBuyFeed,
@@ -254,6 +259,18 @@ export function ChatSurface({
   function openBusinessDashboard() {
     setWorkspaceCardView("businessDashboard");
     onRefreshInvoices();
+  }
+  function openShopHubSurface(surface: ShopHubSurface) {
+    if (surface.kind === "view") {
+      // Close first: leaving /sell/shop restores the plain seller route, and the view change must
+      // land after that restore rather than be reset by it.
+      onCloseWorkspace();
+      onNavigate(surface.view);
+    } else if (surface.view === "businessDashboard") {
+      openBusinessDashboard();
+    } else {
+      setWorkspaceCardView(surface.view);
+    }
   }
   const showMessageThread = true;
   const activeModuleView = activeView === "chat" || activeView === "home" ? null : activeView;
@@ -595,31 +612,7 @@ export function ChatSurface({
                 ) : null}
                 {message.content?.type === "owner-controls" &&
                 message.content.shopId === businessId ? (
-                  <ContextualBusinessCards
-                    productCount={productCount}
-                    customerCount={customerCount}
-                    invoiceCount={invoiceCount}
-                    notificationCount={notificationCount}
-                    report={report}
-                    syncSummary={syncSummary}
-                    onOpenCatalogue={() => {
-                      setWorkspaceCardView("catalogue");
-                      onOpenWorkspace();
-                    }}
-                    onOpenNetworkSync={() => {
-                      setWorkspaceCardView("networkSync");
-                      onOpenWorkspace();
-                    }}
-                    onPreviewStorefront={() => {
-                      setWorkspaceCardView("storefrontPreview");
-                      onOpenWorkspace();
-                    }}
-                    onOpenBusinessDashboard={() => {
-                      openBusinessDashboard();
-                      onOpenWorkspace();
-                    }}
-                    onNavigate={onNavigate}
-                  />
+                  <ShopHubEntryCard onOpen={onOpenWorkspace} />
                 ) : null}
                 {renderGeneratedSurface(message.content, {
                   businessId,
@@ -913,22 +906,25 @@ export function ChatSurface({
           onClose={onCloseWorkspace}
         >
           {workspaceCardView === "cards" ? (
-            <ContextualBusinessCards
-              productCount={productCount}
-              customerCount={customerCount}
-              invoiceCount={invoiceCount}
-              notificationCount={notificationCount}
-              report={report}
-              syncSummary={syncSummary}
-              onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
-              onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
-              onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
-              onOpenBusinessDashboard={openBusinessDashboard}
-              onNavigate={(nextView) => {
-                onNavigate(nextView);
-                onCloseWorkspace();
-              }}
-            />
+            businessId !== null ? (
+              <LazyModuleErrorBoundary
+                moduleKey={workspaceModuleKeys.shopHub}
+                label={shopHubCopy().title}
+              >
+                <Suspense fallback={<ShopHubSkeleton label={shopHubCopy().loading} />}>
+                  <ShopHub
+                    businessId={businessId}
+                    businessName={businessName}
+                    sokoId={sokoId}
+                    onOpenSurface={openShopHubSurface}
+                    onAskAgent={(draft) => {
+                      commitDraft(draft);
+                      onCloseWorkspace();
+                    }}
+                  />
+                </Suspense>
+              </LazyModuleErrorBoundary>
+            ) : null
           ) : workspaceCardView === "businessDashboard" ? (
             <MerchantWorkspaceDashboard
               businessName={businessName}
