@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const suppliersRuntimeTools = {
   "supplier.create": {
     name: "supplier.create",
+    hub: { module: "suppliers", label: { en: "Add a supplier", sw: "Ongeza msambazaji" } },
     description: "Create a new supplier contact.",
     risk: "high",
     requiresConfirmation: true,
@@ -19,6 +20,7 @@ export const suppliersRuntimeTools = {
   },
   "supplier.update": {
     name: "supplier.update",
+    hub: { module: "suppliers", label: { en: "Edit a supplier", sw: "Hariri msambazaji" } },
     description: "Update an existing supplier contact's details.",
     risk: "high",
     requiresConfirmation: true,

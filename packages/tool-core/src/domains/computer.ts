@@ -38,6 +38,8 @@ function computerTool(
 ): RuntimeToolDefinition {
   return {
     name,
+    // Agent-internal: a merchant never drives the isolated browser from the Shop Hub.
+    hub: null,
     description,
     risk: options.risk,
     requiresConfirmation: options.requiresConfirmation,

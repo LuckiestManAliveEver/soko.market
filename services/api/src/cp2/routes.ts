@@ -80,6 +80,7 @@ import { registerComputerRuntimeRoutes } from "./domains/computer-runtime/routes
 import { registerMessagingRoutes } from "./domains/messaging/routes.js";
 import { registerOtpRoutes } from "./domains/otp/routes.js";
 import { registerStaffRoutes } from "./domains/staff/routes.js";
+import { registerShopHubRoutes } from "./domains/shop-hub/routes.js";
 import { registerDeviceBootstrapRoutes } from "./domains/device-bootstrap/routes.js";
 import { registerModelTemplateRoutes } from "./domains/model-templates/routes.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
@@ -1917,11 +1918,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   registerLogisticsRoutes(app, store);
   registerCommercialRecordsRoutes(app, store);
-  registerFulfillmentRoutes(
-    app,
-    store,
-    options.fulfillmentService ?? createUnavailableFulfillmentService()
-  );
+  const fulfillmentService = options.fulfillmentService ?? createUnavailableFulfillmentService();
+  registerFulfillmentRoutes(app, store, fulfillmentService);
+  registerShopHubRoutes(app, store, fulfillmentService);
 
   app.get(
     "/businesses/:businessId/reports/summary",

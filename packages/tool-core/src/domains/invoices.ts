@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const invoicesRuntimeTools = {
   "invoice.draft": {
     name: "invoice.draft",
+    hub: { module: "orders", label: { en: "Draft an invoice", sw: "Andaa ankara" } },
     description: "Draft a new invoice for a customer.",
     risk: "high",
     requiresConfirmation: true,

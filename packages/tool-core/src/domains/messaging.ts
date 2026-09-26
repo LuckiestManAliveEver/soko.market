@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const messagingRuntimeTools = {
   "messaging.send": {
     name: "messaging.send",
+    hub: { module: "customers", label: { en: "Message a customer", sw: "Mtumie mteja ujumbe" } },
     description: "Send a message to a customer over a connected channel.",
     risk: "high",
     requiresConfirmation: true,

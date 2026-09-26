@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const sharedRuntimeTools = {
   "unknown.clarify": {
     name: "unknown.clarify",
+    hub: null,
     description: "No actionable tool was identified; ask the user a clarifying question.",
     risk: "low",
     requiresConfirmation: false,

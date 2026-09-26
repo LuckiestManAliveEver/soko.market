@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const complianceRuntimeTools = {
   "compliance.review": {
     name: "compliance.review",
+    hub: { module: "insights", label: { en: "Security review", sw: "Ukaguzi wa usalama" } },
     description: "Read the active business's canonical security and compliance review.",
     risk: "low",
     requiresConfirmation: false,

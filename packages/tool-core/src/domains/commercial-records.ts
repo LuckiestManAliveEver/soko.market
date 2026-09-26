@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const commercialRecordsRuntimeTools = {
   "contacts.search": tool(
     "contacts.search",
+    { module: "customers", label: { en: "Search contacts", sw: "Tafuta mawasiliano" } },
     "Search permissioned canonical contacts.",
     "customer:read",
     true,
@@ -11,6 +12,10 @@ export const commercialRecordsRuntimeTools = {
   ),
   "supplier.contact.attach": tool(
     "supplier.contact.attach",
+    {
+      module: "suppliers",
+      label: { en: "Link a supplier contact", sw: "Unganisha mawasiliano ya msambazaji" }
+    },
     "Attach a canonical contact to a supplier with a business role.",
     "supplier:write",
     false,
@@ -28,6 +33,7 @@ export const commercialRecordsRuntimeTools = {
   ),
   "purchase.record": tool(
     "purchase.record",
+    { module: "suppliers", label: { en: "Record a purchase", sw: "Rekodi ununuzi" } },
     "Record an immutable supplier purchase and its buying price.",
     "import:write",
     false,
@@ -46,6 +52,7 @@ export const commercialRecordsRuntimeTools = {
   ),
   "purchase.price.change": tool(
     "purchase.price.change",
+    { module: "catalog", label: { en: "Change a buying price", sw: "Badilisha bei ya kununua" } },
     "Append a new effective buying-price record while preserving previous prices.",
     "product:write",
     false,
@@ -61,6 +68,7 @@ export const commercialRecordsRuntimeTools = {
   ),
   "purchase.history": tool(
     "purchase.history",
+    { module: "suppliers", label: { en: "Purchase history", sw: "Historia ya ununuzi" } },
     "Retrieve immutable purchase history.",
     "import:read",
     true,
@@ -72,6 +80,7 @@ export const commercialRecordsRuntimeTools = {
   ),
   "sale.record": tool(
     "sale.record",
+    { module: "orders", label: { en: "Record a sale", sw: "Rekodi mauzo" } },
     "Record and confirm an immutable customer sale.",
     "invoice:confirm",
     false,
@@ -88,6 +97,7 @@ export const commercialRecordsRuntimeTools = {
   ),
   "sales.history": tool(
     "sales.history",
+    { module: "orders", label: { en: "Sales history", sw: "Historia ya mauzo" } },
     "Retrieve immutable sales history.",
     "invoice:read",
     true,
@@ -99,6 +109,10 @@ export const commercialRecordsRuntimeTools = {
   ),
   "route.record": tool(
     "route.record",
+    {
+      module: "delivery",
+      label: { en: "Record a delivery route", sw: "Rekodi njia ya usafirishaji" }
+    },
     "Record a provider-neutral delivery route with origin, destination, and stops.",
     "logistics:write",
     false,
@@ -113,6 +127,7 @@ export const commercialRecordsRuntimeTools = {
   ),
   "route.history": tool(
     "route.history",
+    { module: "delivery", label: { en: "Delivery routes", sw: "Njia za usafirishaji" } },
     "Retrieve immutable delivery route history.",
     "logistics:read",
     true,
@@ -130,6 +145,7 @@ function field(
 }
 function tool(
   name: RuntimeToolName,
+  hub: RuntimeToolDefinition["hub"],
   description: string,
   requiredPermission: string,
   readOnly: boolean,
@@ -138,6 +154,7 @@ function tool(
 ): RuntimeToolDefinition {
   return {
     name,
+    hub,
     description,
     risk: readOnly ? "low" : "high",
     requiresConfirmation,

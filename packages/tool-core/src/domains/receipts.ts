@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const receiptsRuntimeTools = {
   "receipt.scan": {
     name: "receipt.scan",
+    hub: { module: "receipts", label: { en: "Scan a receipt", sw: "Changanua risiti" } },
     description: "Start OCR scanning of an uploaded purchase receipt.",
     risk: "medium",
     requiresConfirmation: true,
@@ -24,6 +25,10 @@ export const receiptsRuntimeTools = {
   },
   "receipt.review": {
     name: "receipt.review",
+    hub: {
+      module: "receipts",
+      label: { en: "Review scanned receipts", sw: "Kagua risiti zilizochanganuliwa" }
+    },
     description: "Review previously scanned purchase receipts pending confirmation.",
     risk: "low",
     requiresConfirmation: false,
@@ -34,6 +39,7 @@ export const receiptsRuntimeTools = {
   },
   "receipt.confirm": {
     name: "receipt.confirm",
+    hub: { module: "receipts", label: { en: "Confirm a receipt", sw: "Thibitisha risiti" } },
     description: "Confirm a reviewed purchase receipt, writing it into purchase history.",
     risk: "high",
     requiresConfirmation: true,
@@ -59,6 +65,7 @@ export const receiptsRuntimeTools = {
   },
   "receipt.correct": {
     name: "receipt.correct",
+    hub: { module: "receipts", label: { en: "Correct a receipt", sw: "Sahihisha risiti" } },
     description: "Correct a previously confirmed purchase receipt.",
     risk: "high",
     requiresConfirmation: true,
@@ -83,6 +90,7 @@ export const receiptsRuntimeTools = {
   },
   "receipt.cancel": {
     name: "receipt.cancel",
+    hub: { module: "receipts", label: { en: "Cancel a receipt", sw: "Ghairi risiti" } },
     description: "Cancel a pending purchase receipt scan.",
     risk: "medium",
     requiresConfirmation: true,
@@ -98,6 +106,7 @@ export const receiptsRuntimeTools = {
   },
   "receipt.lookup": {
     name: "receipt.lookup",
+    hub: { module: "receipts", label: { en: "Find a receipt", sw: "Tafuta risiti" } },
     description: "Look up purchase receipts by supplier or item name.",
     risk: "low",
     requiresConfirmation: false,
@@ -114,6 +123,7 @@ export const receiptsRuntimeTools = {
   },
   "receipt.list": {
     name: "receipt.list",
+    hub: { module: "receipts", label: { en: "Purchase receipts", sw: "Risiti za ununuzi" } },
     description: "List all purchase receipts for the active business.",
     risk: "low",
     requiresConfirmation: false,

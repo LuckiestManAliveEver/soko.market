@@ -184,9 +184,44 @@ export interface RuntimeToolInputSchema {
   properties: Record<string, RuntimeToolInputFieldSchema>;
 }
 
+/** Merchant-facing copy in every language the owner app ships (English and Swahili). */
+export interface LocalizedText {
+  en: string;
+  sw: string;
+}
+
+/**
+ * The Shop Hub modules a tool can surface under (registry/modules.ts owns their display
+ * metadata). A module is the tile a merchant taps; a tool is one action inside it.
+ */
+export type ShopModuleId =
+  | "catalog"
+  | "suppliers"
+  | "receipts"
+  | "orders"
+  | "customers"
+  | "network"
+  | "payments"
+  | "delivery"
+  | "channels"
+  | "agent"
+  | "insights";
+
+export interface RuntimeToolHubMetadata {
+  module: ShopModuleId;
+  /** Short merchant-facing action name ("Add a product"); `description` stays model-facing. */
+  label: LocalizedText;
+}
+
 export interface RuntimeToolDefinition {
   name: RuntimeToolName;
   description: string;
+  /**
+   * Where this tool appears in the Shop Hub (GET /businesses/:businessId/capabilities), or null
+   * for agent-internal and buyer-side tools a merchant never operates directly. Required so every
+   * newly registered tool makes that choice explicitly.
+   */
+  hub: RuntimeToolHubMetadata | null;
   risk: RuntimeToolRisk;
   requiresConfirmation: boolean;
   readOnly: boolean;

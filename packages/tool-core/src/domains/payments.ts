@@ -3,6 +3,7 @@ import type { RuntimeToolDefinition, RuntimeToolName } from "../contracts/runtim
 export const paymentsRuntimeTools = {
   "payments.debtors": {
     name: "payments.debtors",
+    hub: { module: "payments", label: { en: "Customer balances", sw: "Madeni ya wateja" } },
     description: "List customers with outstanding balances for the active business.",
     risk: "low",
     requiresConfirmation: false,
@@ -13,6 +14,7 @@ export const paymentsRuntimeTools = {
   },
   "payment.record": {
     name: "payment.record",
+    hub: { module: "payments", label: { en: "Record a payment", sw: "Rekodi malipo" } },
     description: "Record a payment against an invoice or customer balance.",
     risk: "high",
     requiresConfirmation: true,

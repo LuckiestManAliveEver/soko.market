@@ -4562,6 +4562,17 @@ export class Cp2Store {
   ): ReturnType<MessagingDomain["setConversationTyping"]> {
     return this.messagingDomain.setConversationTyping(...args);
   }
+  /** The caller's role in this business, for role-filtered read models like the Shop Hub. */
+  getViewerRole(input: { sessionId: string | null; businessId: string; now?: Date }): BusinessRole {
+    const actor = this.requireAuthorizedActor(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now
+    );
+    return this.requireMembership(input.businessId, actor.user.id).role;
+  }
+
   checkRole(input: {
     sessionId: string | null;
     businessId: string;
