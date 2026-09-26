@@ -24,13 +24,18 @@ describe("merchant workspace dashboard refreshes invoices on open (audit A27/A28
     expect(fnBody).toContain('setWorkspaceCardView("businessDashboard")');
     expect(fnBody).toContain("onRefreshInvoices();");
 
-    // Both real entry points (the workspace hub card, and the inline owner-controls chat card)
-    // route through it instead of duplicating the open+refresh logic.
-    const openCallSites = [...chatSurface.matchAll(/onOpenBusinessDashboard=\{([^}]*)\}/gu)];
-    expect(openCallSites.length).toBeGreaterThanOrEqual(2);
-    for (const [, handler] of openCallSites) {
-      expect(handler).toMatch(/openBusinessDashboard/u);
-    }
+    // The Shop Hub's "Today's dashboard" surface is the entry point; it routes through the shared
+    // function instead of duplicating the open+refresh logic, and nothing else opens the view.
+    const surfaceStart = chatSurface.indexOf("function openShopHubSurface(");
+    expect(surfaceStart).toBeGreaterThan(-1);
+    const surfaceBody = chatSurface.slice(
+      surfaceStart,
+      chatSurface.indexOf("\n  }\n", surfaceStart)
+    );
+    expect(surfaceBody).toMatch(
+      /surface\.view === "businessDashboard"\) \{\s*openBusinessDashboard\(\);/u
+    );
+    expect(chatSurface.split('setWorkspaceCardView("businessDashboard")').length - 1).toBe(1);
   });
 
   it("wires onRefreshInvoices to the real loadInvoices for the current business, not a no-op", () => {
