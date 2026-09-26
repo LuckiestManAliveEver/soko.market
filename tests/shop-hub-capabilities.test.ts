@@ -72,15 +72,16 @@ describe("GET /businesses/:businessId/capabilities", () => {
       owner.cookie
     );
 
-    // Every hub tool the owner can invoke through the agent. network.identity.* declare
-    // `business:write`, which no role holds today, so the agent refuses them and the hub agrees.
-    const ownerPermissions: string[] = permissionsForRole("owner");
+    // The owner holds every permission a hub tool needs, so every hub tool appears.
     const expected = Object.values(runtimeToolRegistry)
-      .filter((tool) => tool.hub !== null && ownerPermissions.includes(tool.requiredPermission))
+      .filter((tool) => tool.hub !== null)
       .map((tool) => tool.name)
       .sort();
     expect(toolNames(hub).sort()).toEqual(expected);
-    expect(expected.length).toBeGreaterThanOrEqual(40);
+    const ownerPermissions: string[] = permissionsForRole("owner");
+    for (const tool of Object.values(runtimeToolRegistry)) {
+      expect(ownerPermissions, tool.name).toContain(tool.requiredPermission);
+    }
     expect(hub.role).toBe("owner");
     expect(moduleIds(hub).sort()).toEqual(Object.keys(shopModuleRegistry).sort());
     for (const category of hub.categories) {
@@ -171,6 +172,13 @@ describe("GET /businesses/:businessId/capabilities", () => {
       "products.list"
     ]);
     expect(moduleIds(viewOnly)).not.toContain("payments");
+
+    // `business:write` (network identity changes) belongs to the roles with authority only.
+    const manager = await hubFor("manager");
+    expect(toolNames(manager)).toContain("network.identity.confirm");
+    for (const role of ["sales_agent", "cashier", "view_only"] as const) {
+      expect(toolNames(await hubFor(role))).not.toContain("network.identity.confirm");
+    }
 
     const driver = await hubFor("driver");
     expect(moduleIds(driver)).not.toContain("catalog");
