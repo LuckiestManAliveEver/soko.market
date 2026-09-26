@@ -199,6 +199,11 @@ export interface InferenceExecutionContext {
   credential: ResolvedCredential | null;
   timeoutMs: number;
   signal?: AbortSignal;
+  /**
+   * Who the request runs for. Only the device-local provider reads it (to hand generation to that
+   * member's own device); hosted providers never forward it anywhere.
+   */
+  caller?: { tenantId: string | null; userId: string | null; turnId: string | null };
 }
 
 export interface ProviderHealthContext {

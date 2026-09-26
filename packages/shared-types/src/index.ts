@@ -1109,6 +1109,60 @@ export interface InferenceProviderConnectionSummary {
   updatedAt: string;
 }
 
+/** Which on-device runtime a claiming device offers (see DeviceInferenceJob). */
+export type DeviceInferenceRuntime = "browser-local" | "installed-app";
+
+/**
+ * One generation the server delegates to the requesting member's own device. The prompt was built
+ * by the server exactly as for a hosted model; the device only generates. Returned only to
+ * authenticated sessions of the account the turn belongs to.
+ */
+export interface DeviceInferenceJob {
+  id: string;
+  /** One-time token required to submit this job's result. */
+  token: string;
+  turnId: string | null;
+  modelId: string;
+  /** The on-device engine's model id (a WebLLM prebuilt model id). */
+  providerModelId: string;
+  executionTarget: DeviceInferenceRuntime;
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  generation: { maxOutputTokens: number; temperature: number; jsonOutput: boolean };
+  expiresAt: string;
+}
+
+export interface DeviceInferenceResultInput {
+  token: string;
+  text: string;
+  usage?: { inputTokens?: number; outputTokens?: number };
+  latencyMs?: number;
+  firstTokenMs?: number;
+}
+
+/** Events on the per-turn reply stream (GET /v1/ai/turn-stream/:turnId). */
+export type AgentTurnStreamEvent =
+  | { type: "text"; text: string }
+  | { type: "reset" }
+  | { type: "device"; modelId: string }
+  | { type: "done" };
+
+export type InferenceFallbackPolicyMode = "NONE" | "SAME_PROVIDER" | "APPROVED_PROVIDERS";
+
+/** A shop's (or a person's, or the platform's) inference usage policy. */
+export interface InferencePolicySummary {
+  scope: "global" | "tenant" | "user";
+  businessId: string | null;
+  currency: string;
+  dailyBudget: number | null;
+  providerMonthlyCeilings: Record<string, number>;
+  maxRequestsPerMinute: number | null;
+  maxTokensPerRequest: number | null;
+  fallbackPolicy: InferenceFallbackPolicyMode;
+  approvedProviderIds: string[];
+  fallbackModelIds: string[];
+  updatedAt: string | null;
+}
+
 export interface InferenceProviderConnectionTestResult {
   connection: InferenceProviderConnectionSummary;
   health: {
@@ -1163,20 +1217,34 @@ export type AgentModelBindingStatus =
   "inactive" | "verifying" | "active" | "failed" | "unavailable";
 
 /**
- * "backend": Soko-operated inference infrastructure (the normal, zero-setup default).
- * "remote-shop-device": a shop-owned machine registered as an execution host (e.g. a
- * merchant's laptop running Ollama, added via native-runtime execution hosts). This is
- * distinct from -- and replaces -- the retired "browser-local"/"installed-app" targets,
- * which meant "run privately on whichever device/browser happens to be open right now."
- * A client device never needs a private model copy to use normal agent chat.
+ * "vercel": Soko's hosted inference deployment (the platform default).
+ * "backend": Soko-operated server-side execution; the multi-provider inference router (OpenAI,
+ *   Anthropic, Z.ai, Soko-hosted llama.cpp, other OpenAI-compatible servers) runs here.
+ * "remote-shop-device": a shop-owned machine registered as an execution host (e.g. a merchant's
+ *   laptop running Ollama), brokered by the owner-node protocol.
+ * "browser-local" / "installed-app": the model runs on the chatting member's own device (WebLLM in
+ *   the browser, or the installed app). Reinstated by ADR-explicit-device-local-models.md as an
+ *   explicit, labeled per-shop choice - never a silent fallback. The server still builds the
+ *   prompt and owns tools and approvals; only generation is delegated to the device
+ *   (services/api/src/inference/device-inference-broker.ts).
  */
-export type ModelExecutionTarget = "vercel" | "backend" | "remote-shop-device";
+export type ModelExecutionTarget =
+  "vercel" | "backend" | "remote-shop-device" | "browser-local" | "installed-app";
 
 export const modelExecutionTargets = [
   "vercel",
   "backend",
-  "remote-shop-device"
+  "remote-shop-device",
+  "browser-local",
+  "installed-app"
 ] as const satisfies readonly ModelExecutionTarget[];
+
+/** Targets whose generation runs on the member's own device rather than a server-reachable host. */
+export function isDeviceExecutionTarget(
+  target: ModelExecutionTarget
+): target is "browser-local" | "installed-app" {
+  return target === "browser-local" || target === "installed-app";
+}
 
 export function isModelExecutionTarget(value: unknown): value is ModelExecutionTarget {
   return (modelExecutionTargets as readonly unknown[]).includes(value);
@@ -3921,6 +3989,7 @@ const inferenceErrorCategoryByCode: Record<string, RuntimeInferenceErrorCategory
   INFERENCE_FAILED: "PROVIDER_ERROR",
   ENDPOINT_FORBIDDEN: "POLICY_REJECTED",
   LOCAL_EXECUTION_REQUIRED: "POLICY_REJECTED",
+  LOCAL_DEVICE_UNAVAILABLE: "ENGINE_UNREACHABLE",
   INVALID_PROVIDER_RESPONSE: "INVALID_RESPONSE",
   // Historical: the retired browser-local inference architecture's error codes (see this type's
   // own docblock above) - no surface in this repository produces these anymore.

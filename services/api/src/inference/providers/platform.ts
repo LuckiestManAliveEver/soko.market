@@ -1,9 +1,15 @@
 import type { AiModelSummary, ModelExecutionTarget } from "@soko/shared-types";
 
+import { DeviceInferenceBroker } from "../device-inference-broker.js";
 import type { ModelRuntimeAdapter } from "../model-runtime.js";
 import { ProviderConnectionService } from "./connections.js";
 import type { InferenceProvider, ModelDefinition } from "./contract.js";
-import { CredentialResolver, secretBoxCipher, type SecretCipher } from "./credentials.js";
+import {
+  createKeyringCipher,
+  CredentialResolver,
+  rotateCredentialKeys,
+  type SecretCipher
+} from "./credentials.js";
 import type { EndpointPolicy } from "./endpoint-policy.js";
 import { readInferenceEnvironment, type InferenceEnvironment } from "./environment.js";
 import {
@@ -20,7 +26,7 @@ import { modelDefinitionFromCatalog, nativeExecutionTargetFor } from "./model-de
 import { InferenceProviderRegistry } from "./provider-registry.js";
 import { createMemoryInferenceRepositories, type InferenceRepositories } from "./repositories.js";
 import { createRoutedModelRuntimeAdapter } from "./routed-model-adapter.js";
-import { InferenceUsageGuard } from "./usage-policy.js";
+import { InferenceUsageGuard, type RequestRateLimiter } from "./usage-policy.js";
 
 /**
  * Everything the multi-provider layer needs, assembled once per process. Cp2Store owns the only
@@ -34,6 +40,8 @@ export interface InferencePlatform {
   readonly credentials: CredentialResolver;
   readonly connections: ProviderConnectionService;
   readonly repositories: InferenceRepositories;
+  /** Delivers device-local generations to members' own devices. */
+  readonly deviceBroker: DeviceInferenceBroker;
   /** Late-bound catalog source (the store's own cp2_model_catalog view). */
   setModelCatalog(source: () => readonly AiModelSummary[]): void;
   resolveModelDefinition(modelId: string): ModelDefinition | null;
@@ -45,6 +53,11 @@ export interface InferencePlatform {
   /** Native target a configured, enabled provider serves this model on, if any. */
   hostedExecutionTargetFor(modelId: string): ModelExecutionTarget | undefined;
   refresh(): Promise<void>;
+  /**
+   * Re-encrypts stored credentials still on an older key version (INFERENCE_CREDENTIAL_KEYS).
+   * Idempotent; run at boot.
+   */
+  rotateCredentialKeys(): Promise<{ rotated: number; failed: number }>;
   /** Hard-deletes credentials and usage rows owned by a deleted account or shop. */
   purgeOwner(input: { tenantId?: string; userId?: string }): Promise<void>;
 }
@@ -60,6 +73,9 @@ export interface CreateInferencePlatformOptions {
   log?: InferenceLogger;
   providerOverrides?: ReadonlyMap<string, InferenceProvider>;
   now?: () => number;
+  deviceBroker?: DeviceInferenceBroker;
+  /** Shared (Redis) request counter; defaults to in-process. */
+  rateLimiter?: RequestRateLimiter;
 }
 
 export function createInferencePlatform(
@@ -67,13 +83,15 @@ export function createInferencePlatform(
 ): InferencePlatform {
   const environment = options.environment ?? readInferenceEnvironment({});
   const repositories = options.repositories ?? createMemoryInferenceRepositories();
-  const cipher = options.cipher ?? secretBoxCipher;
+  const keyring = createKeyringCipher(environment.credentialKeys);
+  const cipher = options.cipher ?? keyring;
   const transportFor =
     options.transportFor ??
     (options.fetchImpl === undefined
       ? (policy: EndpointPolicy) => createGuardedTransport(policy)
       : (policy: EndpointPolicy) => transportFromFetch(options.fetchImpl as typeof fetch, policy));
   let catalogSource: () => readonly AiModelSummary[] = () => [];
+  const deviceBroker = options.deviceBroker ?? new DeviceInferenceBroker();
 
   const resolveModelDefinition = (modelId: string): ModelDefinition | null => {
     const summary = catalogSource().find((model) => model.id === modelId);
@@ -83,7 +101,11 @@ export function createInferencePlatform(
   const registry = new InferenceProviderRegistry({
     environmentProviders: environment.providers,
     repository: repositories.providers,
-    adapterDeps: { transportFor, ...(options.now === undefined ? {} : { now: options.now }) },
+    adapterDeps: {
+      transportFor,
+      deviceBroker,
+      ...(options.now === undefined ? {} : { now: options.now })
+    },
     ...(options.providerOverrides === undefined
       ? {}
       : { providerOverrides: options.providerOverrides })
@@ -99,6 +121,7 @@ export function createInferencePlatform(
     runs: repositories.runs,
     policies: repositories.policies,
     environment: environment.budgets,
+    ...(options.rateLimiter === undefined ? {} : { limiter: options.rateLimiter }),
     ...(options.now === undefined ? {} : { now: () => new Date((options.now as () => number)()) })
   });
   const router = new InferenceRouter({
@@ -132,7 +155,9 @@ export function createInferencePlatform(
   const servedTarget = (model: ModelDefinition): ModelExecutionTarget | undefined => {
     const registered = registry.get(model.providerId);
     if (registered === undefined || !registered.config.enabled || !model.enabled) return undefined;
-    return nativeExecutionTargetFor(model.executionTarget) ?? undefined;
+    const target = nativeExecutionTargetFor(model.executionTarget);
+    // remote-shop-device models keep the owner-node broker; this router serves the rest.
+    return target === "remote-shop-device" ? undefined : target;
   };
 
   return {
@@ -142,26 +167,28 @@ export function createInferencePlatform(
     credentials,
     connections,
     repositories,
+    deviceBroker,
     setModelCatalog(source) {
       catalogSource = source;
     },
     resolveModelDefinition,
     adapterFor(input) {
       const model = resolveModelDefinition(input.modelId);
-      if (model === null || servedTarget(model) !== input.executionTarget) return undefined;
-      // Only the "backend" target is served by this router; remote-shop-device models keep the
-      // owner-node broker, and client-executed models never get a server adapter.
-      if (input.executionTarget !== "backend") return undefined;
-      return createRoutedModelRuntimeAdapter({ router, model });
+      if (model === null) return undefined;
+      const target = servedTarget(model);
+      if (target === undefined || target !== input.executionTarget) return undefined;
+      return createRoutedModelRuntimeAdapter({ router, model, executionTarget: target });
     },
     hostedExecutionTargetFor(modelId) {
       const model = resolveModelDefinition(modelId);
-      if (model === null) return undefined;
-      const target = servedTarget(model);
-      return target === "backend" ? target : undefined;
+      return model === null ? undefined : servedTarget(model);
     },
     async refresh() {
       await registry.refresh();
+    },
+    async rotateCredentialKeys() {
+      if (options.cipher !== undefined) return { rotated: 0, failed: 0 };
+      return rotateCredentialKeys({ repository: repositories.credentials, cipher: keyring });
     },
     async purgeOwner(input) {
       await repositories.credentials.deleteForOwner(input);

@@ -23,6 +23,7 @@ export type InferenceErrorCode =
   | "INFERENCE_FAILED"
   | "ENDPOINT_FORBIDDEN"
   | "LOCAL_EXECUTION_REQUIRED"
+  | "LOCAL_DEVICE_UNAVAILABLE"
   | "INVALID_PROVIDER_RESPONSE";
 
 const retryableCodes: ReadonlySet<InferenceErrorCode> = new Set([
@@ -30,7 +31,10 @@ const retryableCodes: ReadonlySet<InferenceErrorCode> = new Set([
   "RATE_LIMITED",
   "REQUEST_TIMEOUT",
   "INFERENCE_FAILED",
-  "INVALID_PROVIDER_RESPONSE"
+  "INVALID_PROVIDER_RESPONSE",
+  // Retryable only in the sense that an *explicit* fallback policy may move on; the device-local
+  // provider is never behind a circuit breaker (availability is per account, not per provider).
+  "LOCAL_DEVICE_UNAVAILABLE"
 ]);
 
 const safeMessages: Record<InferenceErrorCode, string> = {
@@ -49,6 +53,8 @@ const safeMessages: Record<InferenceErrorCode, string> = {
   INFERENCE_FAILED: "The model could not complete this request.",
   ENDPOINT_FORBIDDEN: "This provider endpoint is not allowed.",
   LOCAL_EXECUTION_REQUIRED: "This model runs on your device and cannot be run by the server.",
+  LOCAL_DEVICE_UNAVAILABLE:
+    "No device with this on-device model is online. Open Soko on a device where the model is installed.",
   INVALID_PROVIDER_RESPONSE: "The model provider returned an unexpected response."
 };
 

@@ -229,11 +229,18 @@ describe("fresh shop, first AI message: hosted-first with no client model state"
       await sendChatDraft!("Hello, what can you help me with today?");
     });
 
-    expect(fetchedPaths).toEqual(["/v1/messages"]);
+    // The only other request is the optional live-preview stream for this turn - never a
+    // device, model, or owner-node fetch (no on-device model is installed here).
+    expect(fetchedPaths.filter((path) => !path.startsWith("/v1/ai/turn-stream/"))).toEqual([
+      "/v1/messages"
+    ]);
     expect(fetchedPaths.some((path) => path.includes("owner-node"))).toBe(false);
     expect(fetchedPaths.some((path) => path.includes("device"))).toBe(false);
 
-    const [, requestInit] = fetchMock.mock.calls[0] as [unknown, RequestInit | undefined];
+    const messagesCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).includes("/v1/messages")
+    ) as unknown as [unknown, RequestInit | undefined];
+    const [, requestInit] = messagesCall;
     const body = JSON.parse(String(requestInit?.body)) as {
       agent?: { businessId: string; message: string };
     };

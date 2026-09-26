@@ -58,19 +58,19 @@ export function modelDefinitionFromCatalog(summary: AiModelSummary): ModelDefini
 }
 
 /**
- * Maps a provider-layer execution target onto the native runtime graph. Client-executed targets
- * map to null: they never become a native host, binding role, or server adapter key.
+ * Maps a provider-layer execution target onto the native runtime graph. Device-local targets map
+ * to themselves (ADR-explicit-device-local-models.md): the binding records that the model runs on
+ * the member's own device, and the device-inference broker delivers each generation there.
  */
-export function nativeExecutionTargetFor(
-  target: InferenceExecutionTarget
-): ModelExecutionTarget | null {
+export function nativeExecutionTargetFor(target: InferenceExecutionTarget): ModelExecutionTarget {
   switch (target) {
     case "remote-inference":
       return "backend";
     case "remote-shop-device":
       return "remote-shop-device";
     case "browser-local":
+      return "browser-local";
     case "installed-app":
-      return null;
+      return "installed-app";
   }
 }

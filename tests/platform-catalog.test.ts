@@ -22,7 +22,13 @@ describe("DB-hosted platform model/agent catalog", () => {
         "qwen2.5-1.5b-android",
         "qwen3-4b",
         "sokoclaw-local",
-        "llama-cpp-configured"
+        "llama-cpp-configured",
+        // Multi-provider router seeds (migration 102): three on-device models and a disabled
+        // Soko Cloud entry.
+        "smollm2-360m-device",
+        "qwen2.5-0.5b-device",
+        "qwen3-1.7b-device",
+        "qwen3-4b-soko-cloud"
       ].sort()
     );
     expect(

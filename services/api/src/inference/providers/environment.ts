@@ -1,3 +1,4 @@
+import { parseCredentialKeyring } from "./credentials.js";
 import type { InferenceProviderConfig } from "./provider-config.js";
 
 /**
@@ -10,6 +11,8 @@ export interface InferenceEnvironment {
   providers: InferenceProviderConfig[];
   /** Managed secrets by env var name, read once at boot. Values never leave the credential resolver. */
   managedSecrets: ReadonlyMap<string, string>;
+  /** INFERENCE_CREDENTIAL_KEYS: versioned keys for BYOK credential encryption (see credentials.ts). */
+  credentialKeys: ReadonlyMap<number, string>;
   defaultProviderId: string | null;
   defaultModelId: string | null;
   requestTimeoutMs: number;
@@ -183,6 +186,7 @@ export function readInferenceEnvironment(env: Env = process.env): InferenceEnvir
   return {
     providers,
     managedSecrets,
+    credentialKeys: parseCredentialKeyring(env.INFERENCE_CREDENTIAL_KEYS),
     defaultProviderId: optionalId(env.INFERENCE_DEFAULT_PROVIDER),
     defaultModelId: optionalId(env.INFERENCE_DEFAULT_MODEL),
     requestTimeoutMs: positiveInteger(env, "INFERENCE_REQUEST_TIMEOUT_MS", 60_000),

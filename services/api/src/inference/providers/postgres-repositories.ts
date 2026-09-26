@@ -30,6 +30,48 @@ export function createPostgresInferenceRepositories(pool: Pool): InferenceReposi
           const config = providerFromRow(row);
           return config === null ? [] : [config];
         });
+      },
+      async upsert(config) {
+        await pool.query(
+          `insert into inference_providers (
+             id, display_name, provider_type, base_url, execution_target, enabled, capabilities,
+             credential_ref, byok_allowed, allow_credential_endpoint, allow_private_network,
+             allow_http, billing_product, verification, options, updated_at
+           ) values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14,$15::jsonb, now())
+           on conflict (id) do update set
+             display_name = excluded.display_name, provider_type = excluded.provider_type,
+             base_url = excluded.base_url, execution_target = excluded.execution_target,
+             enabled = excluded.enabled, capabilities = excluded.capabilities,
+             credential_ref = excluded.credential_ref, byok_allowed = excluded.byok_allowed,
+             allow_credential_endpoint = excluded.allow_credential_endpoint,
+             allow_private_network = excluded.allow_private_network,
+             allow_http = excluded.allow_http, billing_product = excluded.billing_product,
+             verification = excluded.verification, options = excluded.options,
+             updated_at = now()`,
+          [
+            config.id,
+            config.displayName,
+            config.type,
+            config.baseUrl,
+            config.executionTarget,
+            config.enabled,
+            JSON.stringify(config.capabilities),
+            config.credentialRef,
+            config.byokAllowed,
+            config.allowCredentialEndpoint,
+            config.allowPrivateNetwork,
+            config.allowHttp,
+            config.billingProduct,
+            config.verification,
+            JSON.stringify(config.options)
+          ]
+        );
+      },
+      async remove(providerId) {
+        const result = await pool.query("delete from inference_providers where id = $1", [
+          providerId
+        ]);
+        return (result.rowCount ?? 0) > 0;
       }
     },
     credentials: {
@@ -83,6 +125,13 @@ export function createPostgresInferenceRepositories(pool: Pool): InferenceReposi
         );
         return result.rows.map(credentialFromRow);
       },
+      async listNeedingRotation(currentVersion) {
+        const result = await pool.query<CredentialRow>(
+          `${selectCredentials} where encrypted_secret is not null and key_version <> $1 order by id`,
+          [currentVersion]
+        );
+        return result.rows.map(credentialFromRow);
+      },
       async deleteForOwner(input) {
         const result = await pool.query(
           `delete from inference_provider_credentials
@@ -111,13 +160,15 @@ export function createPostgresInferenceRepositories(pool: Pool): InferenceReposi
             where created_at >= $1 and currency = $2
               and ($3::text is null or tenant_id = $3)
               and ($4::text is null or user_id = $4)
-              and ($5::text is null or provider_id = $5)`,
+              and ($5::text is null or provider_id = $5)
+              and ($6::text is null or credential_scope = $6)`,
           [
             input.since,
             input.currency,
             input.tenantId ?? null,
             input.userId ?? null,
-            input.providerId ?? null
+            input.providerId ?? null,
+            input.credentialScope ?? null
           ]
         );
         return Number(result.rows[0]?.total ?? 0);

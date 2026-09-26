@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { RuntimeModelPrompt, RuntimeToolName } from "@soko/shared-types";
+import type { ModelExecutionTarget, RuntimeModelPrompt, RuntimeToolName } from "@soko/shared-types";
 import { runtimeToolRegistry } from "@soko/tool-core";
 
 import {
@@ -18,10 +18,12 @@ import type {
 } from "./contract.js";
 import { InferenceError } from "./errors.js";
 import type { InferenceRouter } from "./inference-router.js";
+import { currentTurnId, turnStreamHub } from "../turn-stream.js";
 
 /**
  * Exposes the inference router to the existing agent runtime as an ordinary ModelRuntimeAdapter,
- * registered under `backend:<modelId>`. This is the only integration point: agents, the turn
+ * registered under `backend:<modelId>` for server-reachable providers and under
+ * `browser-local:<modelId>` / `installed-app:<modelId>` for device-local models. This is the only integration point: agents, the turn
  * pipeline, runtime handoff, tool execution and approvals are unchanged, and none of them learn
  * which provider served a turn.
  *
@@ -34,11 +36,13 @@ import type { InferenceRouter } from "./inference-router.js";
 export function createRoutedModelRuntimeAdapter(input: {
   router: InferenceRouter;
   model: ModelDefinition;
+  executionTarget: ModelExecutionTarget;
 }): ModelRuntimeAdapter {
-  const { router, model } = input;
+  const { router, model, executionTarget } = input;
+  const deviceLocal = executionTarget === "browser-local" || executionTarget === "installed-app";
   return {
     provider: model.providerId,
-    executionTarget: "backend",
+    executionTarget,
 
     async canRun(context) {
       if (context.modelId !== model.id) {
@@ -53,7 +57,9 @@ export function createRoutedModelRuntimeAdapter(input: {
           agentId: context.agentId,
           modelId: model.id,
           tenantId: context.shopId,
-          userId: context.accountId ?? null
+          userId: context.accountId ?? null,
+          // Configuration check only; the device itself is found at generation time.
+          allowDeviceExecution: deviceLocal
         });
         return { available: true, errorCode: null, message: null };
       } catch (error) {
@@ -71,9 +77,24 @@ export function createRoutedModelRuntimeAdapter(input: {
           ...availability,
           modelId: context.modelId,
           provider: model.providerId,
-          executionTarget: "backend",
+          executionTarget,
           latencyMs: Date.now() - startedAt,
           responsePreview: null,
+          retryable: false
+        };
+      }
+      if (deviceLocal) {
+        // The server cannot probe a member's device. The model is verified on each device when
+        // it is installed there, and each turn fails clearly if no such device is online.
+        return {
+          available: true,
+          errorCode: null,
+          message: null,
+          modelId: context.modelId,
+          provider: model.providerId,
+          executionTarget,
+          latencyMs: Date.now() - startedAt,
+          responsePreview: "DEVICE_EXECUTED",
           retryable: false
         };
       }
@@ -91,7 +112,7 @@ export function createRoutedModelRuntimeAdapter(input: {
         message: ok ? null : (health.message ?? "The model provider is unavailable."),
         modelId: context.modelId,
         provider: model.providerId,
-        executionTarget: "backend",
+        executionTarget,
         latencyMs: health.latencyMs ?? Date.now() - startedAt,
         responsePreview: ok ? "SOKO_MODEL_OK" : null,
         retryable: health.status === "UNAVAILABLE" || health.status === "RATE_LIMITED"
@@ -100,7 +121,13 @@ export function createRoutedModelRuntimeAdapter(input: {
 
     async generate({ context, prompt }) {
       const request = inferenceRequestFromPrompt(prompt, model, context);
+      const turnId = currentTurnId();
+      const publisher = turnStreamHub.replyPublisher(context.accountId, turnId);
+      if (deviceLocal) publisher?.event({ type: "device", modelId: model.id });
       const response = await router.generate(request, {
+        ...(turnId === undefined ? {} : { turnId }),
+        // Device-local text is rendered by the device itself as it generates.
+        ...(publisher === null || deviceLocal ? {} : { onText: publisher }),
         agentId: context.agentId,
         tenantId: context.shopId,
         userId: context.accountId ?? null,
@@ -122,7 +149,7 @@ export function createRoutedModelRuntimeAdapter(input: {
         text,
         modelId: response.modelId,
         provider: response.providerId,
-        executionTarget: "backend",
+        executionTarget,
         ...(response.usage?.inputTokens === undefined
           ? {}
           : { promptTokens: response.usage.inputTokens }),

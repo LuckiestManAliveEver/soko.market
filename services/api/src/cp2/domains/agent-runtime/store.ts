@@ -444,14 +444,16 @@ export class AgentRuntimeDomain {
   }
 
   /**
-   * The live hosted default target first (Vercel today), then "backend", where provider-routed
-   * catalog models (the multi-provider inference router) are served. Never guesses: a target is
+   * The live hosted default target first (Vercel today), then the router's targets: "backend" for
+   * provider-routed models, "browser-local"/"installed-app" for device-local models. Never guesses: a target is
    * returned only when an adapter is actually registered for it.
    */
   private hostedExecutionTargetFor(model: AiModelSummary): ModelExecutionTarget | undefined {
     const candidates = [
       this.deps.platformDefaultRuntime.executionTarget,
-      ...(model.inference === undefined ? [] : (["backend"] as const))
+      ...(model.inference === undefined
+        ? []
+        : (["backend", "browser-local", "installed-app"] as const))
     ];
     return candidates.find(
       (executionTarget) =>

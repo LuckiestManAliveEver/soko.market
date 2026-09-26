@@ -736,10 +736,9 @@ describe("agent model activation runtime", () => {
     expect(unconfiguredBackend.statusCode).toBe(503);
     expect(unconfiguredBackend.json()).toMatchObject({ code: "RUNTIME_NOT_CONFIGURED" });
 
-    // "browser-local" and "installed-app" were retired execution targets (private on-device/
-    // browser model assignment); the API now rejects them as plain invalid input rather than
-    // routing them to a disabled-runtime or absent-bridge error, since no such runtime concept
-    // exists anymore.
+    // "browser-local" and "installed-app" are on-device targets again
+    // (ADR-explicit-device-local-models.md), but only for catalog models declared as on-device -
+    // a hosted/server model can never be switched onto a member's device.
     for (const executionTarget of ["browser-local", "installed-app"]) {
       const response = await app.inject({
         method: "POST",
@@ -750,8 +749,8 @@ describe("agent model activation runtime", () => {
           executionTarget
         })
       });
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({ code: "execution_target_invalid" });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: "MODEL_RUNTIME_INCOMPATIBLE" });
     }
 
     await app.close();

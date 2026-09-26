@@ -8,6 +8,7 @@ import {
 } from "@soko/shared-types";
 
 import { getJson, postJson, putJson } from "./api-helpers";
+import { isDeviceInferenceSupported, listInstalledDeviceModels } from "./device-models";
 import { getErrorMessage } from "./chat-message-plumbing";
 import { buildAgentProfileUpdate } from "./agent-profile-payload";
 import { agentSettingsFromBusinessProfile } from "./owner-app-bootstrap";
@@ -63,6 +64,13 @@ export function QuickRuntimeSwitcher({
   const [pendingCostConfirmationModelId, setPendingCostConfirmationModelId] = useState<
     string | null
   >(null);
+  // An on-device model needs a one-time download on this device before it can be activated; the
+  // merchant confirms that (with its size) instead of a billing confirmation.
+  const [pendingDeviceModel, setPendingDeviceModel] = useState<{
+    modelId: string;
+    downloadBytes: number | null;
+  } | null>(null);
+  const deviceSupported = isDeviceInferenceSupported();
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +115,18 @@ export function QuickRuntimeSwitcher({
    */
   function requestModelChange(modelId: string) {
     if (busy || modelId === "" || modelId === selectedModelId) return;
+    const option = modelOptions.find((candidate) => candidate.id === modelId);
+    if (option !== undefined && isOnDeviceModel(option)) {
+      if (!deviceSupported) {
+        setMessage("This device's browser cannot run on-device models (WebGPU is not available).");
+        return;
+      }
+      const providerModelId = option.inference?.providerModelId ?? "";
+      void import("./device-model-engine")
+        .then(({ deviceModelDownloadBytes }) => deviceModelDownloadBytes(providerModelId))
+        .then((downloadBytes) => setPendingDeviceModel({ modelId, downloadBytes }));
+      return;
+    }
     const isMerchantFunded = modelId !== platformSharedModelId;
     if (!isMerchantFunded) {
       void activateModel(modelId);
@@ -117,6 +137,29 @@ export function QuickRuntimeSwitcher({
 
   function cancelCostConfirmation() {
     setPendingCostConfirmationModelId(null);
+  }
+
+  async function installAndActivateDeviceModel(modelId: string) {
+    const option = modelOptions.find((candidate) => candidate.id === modelId);
+    const providerModelId = option?.inference?.providerModelId;
+    if (option === undefined || providerModelId === undefined || busy) return;
+    setPendingDeviceModel(null);
+    if (!listInstalledDeviceModels().includes(providerModelId)) {
+      setBusy(true);
+      try {
+        setMessage(`Downloading ${option.label} to this device…`);
+        const { installDeviceModel } = await import("./device-model-engine");
+        await installDeviceModel(providerModelId, (fraction) =>
+          setMessage(`Downloading ${option.label} to this device… ${Math.round(fraction * 100)}%`)
+        );
+      } catch (error) {
+        setMessage(getErrorMessage(error));
+        return;
+      } finally {
+        setBusy(false);
+      }
+    }
+    await activateModel(modelId);
   }
 
   async function activateModel(modelId: string) {
@@ -132,7 +175,9 @@ export function QuickRuntimeSwitcher({
           // artifact-backed ones on "vercel". The catalog response says which.
           executionTarget:
             modelOptions.find((option) => option.id === modelId)?.hostedExecutionTarget ?? "vercel",
-          executionMode: "LOCAL_FIRST",
+          executionMode: isOnDeviceModel(modelOptions.find((option) => option.id === modelId))
+            ? "LOCAL_ONLY"
+            : "LOCAL_FIRST",
           permissions: { allowInstalledApp: false, allowRemoteShopDevice: false },
           ...(modelId === platformSharedModelId ? {} : { costResponsibility: "merchant" })
         }
@@ -229,9 +274,15 @@ export function QuickRuntimeSwitcher({
               <option value="">No executable backend model</option>
             ) : null}
             {modelOptions.map((option) => (
-              <option key={option.id} value={option.id} title={modelOptionTitle(option)}>
+              <option
+                key={option.id}
+                value={option.id}
+                title={modelOptionTitle(option)}
+                disabled={isOnDeviceModel(option) && !deviceSupported}
+              >
                 {option.label}
                 {option.id === platformSharedModelId ? " (platform default)" : ""}
+                {isOnDeviceModel(option) && !deviceSupported ? " - not supported here" : ""}
               </option>
             ))}
           </select>
@@ -241,13 +292,49 @@ export function QuickRuntimeSwitcher({
         const activeModel = modelOptions.find((option) => option.id === selectedModelId);
         return activeModel === undefined ? null : (
           <p className="shell-note quick-runtime-model-detail">
-            Provider: {activeModel.provider}. Billing:{" "}
-            {activeModel.id === platformSharedModelId
-              ? "included with the platform, no extra charge."
-              : "merchant-funded - your business is billed for usage."}
+            {isOnDeviceModel(activeModel)
+              ? "Runs privately on each team member's own device. Free - nothing is sent to a cloud model. Members need the model installed on the device they chat from."
+              : `Provider: ${activeModel.provider}. Billing: ${
+                  activeModel.id === platformSharedModelId
+                    ? "included with the platform, no extra charge."
+                    : "merchant-funded - your business is billed for usage."
+                }`}
           </p>
         );
       })()}
+      {pendingDeviceModel !== null ? (
+        <div className="shell-note quick-runtime-cost-confirmation" role="alertdialog">
+          <p>
+            {modelOptions.find((option) => option.id === pendingDeviceModel.modelId)?.label ??
+              pendingDeviceModel.modelId}{" "}
+            runs privately on this device - your messages never go to a cloud model.
+            {listInstalledDeviceModels().includes(
+              modelOptions.find((option) => option.id === pendingDeviceModel.modelId)?.inference
+                ?.providerModelId ?? ""
+            )
+              ? " It is already installed here."
+              : ` It downloads about ${formatMegabytes(pendingDeviceModel.downloadBytes)} once to this device.`}{" "}
+            Other devices need it installed too before they can chat with it. Switch now?
+          </p>
+          <div className="quick-runtime-cost-confirmation-actions">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void installAndActivateDeviceModel(pendingDeviceModel.modelId)}
+            >
+              Download and switch
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => setPendingDeviceModel(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
       {pendingCostConfirmationModelId !== null ? (
         <div className="shell-note quick-runtime-cost-confirmation" role="alertdialog">
           <p>
@@ -282,7 +369,19 @@ export function QuickRuntimeSwitcher({
   );
 }
 
+function isOnDeviceModel(option: AiModelSummary | undefined): boolean {
+  return (
+    option?.hostedExecutionTarget === "browser-local" ||
+    option?.hostedExecutionTarget === "installed-app"
+  );
+}
+
+function formatMegabytes(bytes: number | null): string {
+  return bytes === null ? "a few hundred MB" : `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
 function modelOptionTitle(option: AiModelSummary): string {
+  if (isOnDeviceModel(option)) return "on this device · free";
   const billing =
     option.id === platformSharedModelId
       ? "platform-included"

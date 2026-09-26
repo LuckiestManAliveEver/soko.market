@@ -19,6 +19,7 @@ import {
 } from "@soko/resource-control";
 
 import type { ModelArtifactStore } from "./model-artifact-store.js";
+import { currentTurnId, turnStreamHub } from "./turn-stream.js";
 
 export interface ModelRuntimeContext {
   agentId: string;
@@ -281,6 +282,7 @@ export function createVercelModelAdapter(input: {
           )
         : undefined;
       const requestId = randomUUID();
+      const publisher = turnStreamHub.replyPublisher(context.accountId, currentTurnId());
       const result = await input.client.infer(
         {
           requestId,
@@ -299,7 +301,11 @@ export function createVercelModelAdapter(input: {
             ? {}
             : { providerCredential: context.providerCredential })
         },
-        { ...(context.signal === undefined ? {} : { signal: context.signal }) }
+        {
+          ...(context.signal === undefined ? {} : { signal: context.signal }),
+          // Live reply preview for a watching client (see inference/turn-stream.ts).
+          ...(publisher === null ? {} : { onDelta: (delta: string) => publisher.raw(delta) })
+        }
       );
       const text = normalizeModelText(result.text);
       if (text === "")

@@ -326,13 +326,17 @@ set it.
 - **Cost** is `estimateCost()`: uncached input tokens at the input rate, cached input tokens at the
   cached rate (or the input rate if none is set), and output tokens at the output rate, all from
   catalog pricing.
-- **Budgets:**
-  - tenant daily and user daily budgets (UTC day);
-  - provider monthly ceilings (UTC month);
-  - a per-minute request limit (in-memory sliding window per tenant and user, which is sound for
-    the single-writer API deployment);
-  - a per-request token ceiling, clamped to the strictest of the request, the model, the policy and
-    `INFERENCE_MAX_OUTPUT_TOKENS`.
+- **Budgets** come in two independent kinds; both must pass:
+  - **Soko's caps** (environment and the global policy row): a daily budget per shop and per
+    person, and provider monthly ceilings. They apply only to Soko-funded requests, measured
+    against Soko-funded spend. A shop paying with its own key is not limited by them.
+  - **A shop's or person's own caps** (their policy row, set in Settings): a daily budget over all
+    of their spend, including their own keys.
+  - A per-minute request limit per shop and person: the strictest defined value wins. It is
+    shared across API instances through Redis, falling back to in-process counters if Redis is
+    down.
+  - A per-request token ceiling, clamped to the strictest of the request, the model, the policies
+    and `INFERENCE_MAX_OUTPUT_TOKENS`.
 
   Exceeding a limit rejects the request with `BUDGET_EXCEEDED` or `RATE_LIMITED`. It never
   reroutes to another model.
@@ -398,24 +402,20 @@ DATABASE_URL=... CP2_STORE=postgres node services/api/dist/index.js  # GET /heal
 
 ## 16. Unresolved issues and follow-ups
 
-- **Token streaming to the chat UI.** `InferenceRouter.stream` produces canonical chunks, but the
-  existing chat turn pipeline is request/response for every adapter (Vercel included). Wiring
-  streamed deltas to the client is a pipeline change for all models, not a provider concern, and
-  was left out of scope.
-- **Operator UI for policies.** `inference_policies` (budgets and fallback policy) and
-  `inference_providers` are operator-managed by SQL or scripts, like `cp2_platform_operators`.
-  No merchant-facing API writes them yet.
-- **Local models in the composer switcher.** Client-executed models (`browser-local`) are
-  registered and reported. The router refuses to forward them, and the Settings card shows device
-  availability. They still run through the existing opt-in offline runtime, not the composer's
-  server activation, because the ADR forbids server-side device model assignment.
-- **Seeded catalog entries.** The migration seeds no vendor model ids, because vendor ids and
-  prices change and must be verified. Operators register them with the catalog PUT shown in §7.
-- **Rate-limit state** is per API process, which matches the documented single-writer deployment.
-  A multi-writer deployment would need Redis-backed counters.
-- **Key rotation.** `key_version` is stored, but a re-encryption job is not implemented.
-- **Z.ai verification** uses a 1-token completion (minimal cost) because no free key-verification
-  endpoint is relied on.
+Every follow-up from the first iteration is resolved in §20. What remains:
+
+- **Z.ai verification** still uses a 1-token completion (minimal cost), because no free
+  key-verification endpoint is relied on.
+- **Commercial vendor models are not seeded.** Vendor ids and prices change and must be verified
+  by the operator (§7). The on-device models and a disabled Soko Cloud entry are seeded
+  (migration 102).
+- **The device broker and turn streams are in-process,** like the owner-node broker, which
+  matches the single-writer API deployment. A multi-writer deployment would need Redis pub/sub for
+  both. Rate limits are already shared.
+- **Public storefront replies cannot use an on-device model** (there is no member device to
+  delegate to). Shops that want storefront replies keep a hosted model.
+- **The chat composer shows a live preview.** The validated reply from the turn response replaces
+  it. Tool proposals are never previewed.
 
 ## 17. Deployment and environment variables
 
@@ -431,10 +431,11 @@ DATABASE_URL=... CP2_STORE=postgres node services/api/dist/index.js  # GET /heal
 | `INFERENCE_REQUEST_TIMEOUT_MS` (60000), `INFERENCE_MAX_OUTPUT_TOKENS` (1024)                                                                                                                                | Request deadline and global output ceiling                                                      |
 | `INFERENCE_BUDGET_CURRENCY`, `INFERENCE_TENANT_DAILY_BUDGET`, `INFERENCE_USER_DAILY_BUDGET`, `INFERENCE_PROVIDER_MONTHLY_CEILINGS`, `INFERENCE_MAX_REQUESTS_PER_MINUTE`, `INFERENCE_MAX_TOKENS_PER_REQUEST` | Cost controls. Blank means unlimited.                                                           |
 | `DB_INFERENCE_POOL_MAX` (2)                                                                                                                                                                                 | Size of the inference module's own Postgres pool                                                |
+| `INFERENCE_CREDENTIAL_KEYS`                                                                                                                                                                                 | Versioned BYOK encryption keys (`2:<secret>,3:<secret>`); rotated at boot                       |
 
 Deploy order:
 
-1. `pnpm db:migrate`, which applies 101. The API asserts the tables exist at boot, like
+1. `pnpm db:migrate`, which applies 101 and 102 (catalog seeds). The API asserts the tables exist at boot, like
    fulfillment does.
 2. Deploy the API and web.
 3. Set whichever keys you want Soko to fund.
@@ -501,3 +502,134 @@ With no keys set, providers are BYOK-only and nothing else changes.
 - `.env.example`, `render.yaml`.
 - `docs/architecture/provider-neutral-runtime.md`, `docs/architecture/inference-runtime.md`:
   cross-links.
+
+## 20. Follow-up: device-local models and closed gaps
+
+### 20.1 Device-local models are an option again
+
+Decided in [ADR-explicit-device-local-models.md](../adr/ADR-explicit-device-local-models.md).
+
+```text
+member's chat ──POST /v1/messages (x-soko-turn-id)──► Soko API: binding → router → local provider
+      │                                                       │ builds prompt, then waits
+      │ GET /v1/ai/device-inference/jobs/next?turnId=… ◄──────┘ DeviceInferenceBroker
+      ▼
+ WebLLM on this device (origin-pinned) ──POST …/jobs/:id/result {one-time token, text}──► API
+                                                                     parse · validate · confirm
+```
+
+- `ModelExecutionTarget` again includes `browser-local` and `installed-app`. Catalog models with
+  those targets are served by the `local` provider through `browser-local:<id>` /
+  `installed-app:<id>` adapters. Activation accepts them only for models declared on-device
+  (`MODEL_RUNTIME_INCOMPATIBLE` otherwise), and never together with `CLOUD_ONLY`.
+- **Where it shows in the UI:**
+  - The composer's model switcher lists the seeded on-device models (SmolLM2 360M, Qwen2.5 0.5B,
+    Qwen3 1.7B), marks them "on this device · free", and disables them where WebGPU is missing.
+  - Choosing one confirms the one-time download size, downloads, then activates.
+  - Settings → AI providers → On-device models downloads or removes models on this device.
+- **Safety properties** (all tested):
+  - jobs are account-scoped, model-scoped, runtime-scoped and turn-scoped;
+  - results need a one-time token and are capped at 64 KB;
+  - there is no fallback when no device answers (`LOCAL_DEVICE_UNAVAILABLE` after 20 s);
+  - a device model's tool proposals still stop at confirmation;
+  - anonymous callers are refused;
+  - nothing is sent to any cloud provider;
+  - usage is recorded at zero cost.
+
+### 20.2 Streaming to the chat UI
+
+Every hosted model now streams reply text to the chat: the router (via the provider's native
+stream) and the Vercel adapter.
+
+1. The client names its turn with `x-soko-turn-id`.
+2. `app.ts` runs the request inside an `AsyncLocalStorage` turn context.
+3. Adapters publish to `TurnStreamHub`, keyed by account and turn.
+4. `GET /v1/ai/turn-stream/:turnId` serves server-sent events.
+
+`createRuntimeReplyTextStream` (`@soko/tool-core`) streams only the `message` text of a JSON reply.
+It never streams JSON syntax or a tool proposal. On an explicit-policy fallback, the preview is
+reset so two models' output is never spliced together.
+
+The chat hook wraps its three agent-turn calls with `withAgentTurnPreview`. That shows a live
+bubble while the turn runs and runs this device's on-device job for the turn. The validated reply
+replaces the bubble.
+
+### 20.3 Policy and provider management APIs and UI
+
+| Route                                      | Who                                   |
+| ------------------------------------------ | ------------------------------------- |
+| `GET/PUT /v1/ai/policies/shop/:businessId` | owners/managers (`membership:manage`) |
+| `GET/PUT /v1/ai/policies/me`               | any signed-in person                  |
+| `GET/PUT /v1/platform/ai/policy`           | platform operators                    |
+| `GET /v1/platform/ai/providers`            | platform operators                    |
+| `PUT/DELETE /v1/platform/ai/providers/:id` | platform operators                    |
+
+Inputs are validated:
+
+- a shop cannot set provider ceilings, since those cap Soko-funded spend;
+- fallback models must be router models, and approved providers must exist;
+- provider URLs go through the SSRF policy at save time;
+- `credentialRef` must be `env:` or `secret://`, never a key.
+
+Settings → AI providers gains a **Spending and fallback** card with a daily budget, a
+messages-per-minute limit, and the fallback mode with its approved providers and ordered fallback
+models.
+
+### 20.4 Shared rate limits
+
+`createRedisRequestRateLimiter` keeps fixed-window counters in the API's existing Redis, so every
+instance shares one limit. On a Redis error it falls back to in-process counters, the same
+skip-on-error stance as the HTTP rate limiter.
+
+### 20.5 Credential key rotation
+
+- `INFERENCE_CREDENTIAL_KEYS` adds versioned keys. Version 1 remains the shared envelope key.
+- New credentials use the highest version.
+- `rotateCredentialKeys()` runs at every boot, off the startup path. It re-encrypts rows on older
+  versions and reports `{rotated, failed}`, so an operator knows when an old key can be removed.
+- The envelope helpers moved to `encryptSecretEnvelope` / `decryptSecretEnvelope`. OAuth tokens
+  are unchanged.
+
+### 20.6 Also fixed along the way
+
+- **Budget precedence.** A shop's policy row can no longer _raise_ Soko's daily budget. The two
+  kinds of budget are now independent (§12).
+- **SSE header flush.** Node sends no headers until the first write, so the turn stream sends an
+  initial comment frame. Without it a client would see nothing until the first token.
+- **Migration quoting.** The 102 seed escapes apostrophes. Real PostgreSQL caught this.
+
+### 20.7 Verification results (this iteration)
+
+- `pnpm lint`, `prettier --check`, `pnpm typecheck`: pass.
+- `pnpm build:production`, including every guard script: pass.
+- Web bundle budgets: pass. The owner route is 168.9 KiB of 170 KiB; the baseline before this
+  work was 167.6 KiB. The companion and the on-device engine load lazily.
+- `pnpm test`: 317 files, 1918 tests passed, 123 skipped, 1 failed. The failure is the same
+  environmental Playwright browser test as before (the container has Chromium build 1194; the repo
+  pins 1228).
+- PostgreSQL 16:
+  - migrations 000–102 apply;
+  - 102 re-applies safely, and rolls back and re-applies cleanly;
+  - `db:verify-schema` passes;
+  - the Postgres suite passes, 12 files and 135 tests.
+- The compiled API boots with `INFERENCE_CREDENTIAL_KEYS` set: `/health/ready` returns 200, and
+  anonymous `/v1/ai/turn-stream` returns 401.
+
+### 20.7 Tests added in this iteration
+
+| File                                                      | Covers                                                                                                                                                                               |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tests/device-inference-and-streaming.test.ts`            | Broker scoping, tokens, timeouts and cancel; reply extractor across chunk splits; hub isolation; Redis limiter and fallback; key rotation                                            |
+| `tests/device-local-and-policy-integration.test.ts`       | Real chat → device job → reply; confirmation gate for device tool calls; no-device failure; live SSE over real HTTP; policy API and validation; operator provider API; budget scopes |
+| `tests/agent-turn-companion.test.ts`                      | Client preview, device job run/result/failure, no claims without installed models                                                                                                    |
+| `tests/inference-router.test.ts` (updated)                | Device execution only for identified members                                                                                                                                         |
+| `tests/inference-postgres-repositories.test.ts` (updated) | Provider upsert/remove, rotation listing, spend by payer, migration 102 seeds                                                                                                        |
+
+Existing tests updated because the product decision changed:
+
+- `model-activation-runtime`: device targets are now 409 for hosted models instead of 400;
+- `native-runtime-execution-target-resolution`: five targets;
+- `platform-catalog`: the seeded ids;
+- `retired-device-model-references`: the engine file is permitted;
+- `fresh-shop-hosted-first-chat` and `local-runtime-boundary`: the turn-stream request and the
+  preview wrapper.

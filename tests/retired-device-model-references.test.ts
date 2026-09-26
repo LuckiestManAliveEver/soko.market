@@ -37,7 +37,7 @@ describe("retired device model reference gate", () => {
     ]);
   });
 
-  it("permits WebLLM only in the two explicit offline runtime adapters", () => {
+  it("permits WebLLM only in the offline runtime adapters and the on-device model engine", () => {
     const workspace = createWorkspace({
       "apps/web/package.json": JSON.stringify({
         dependencies: { [permittedOfflineInferencePackage]: "0.2.85" }
@@ -47,7 +47,11 @@ describe("retired device model reference gate", () => {
     });
 
     expect(checkRetiredDeviceModelReferences({ rootDirectory: workspace })).toEqual([]);
-    expect([...permittedWebLlmFiles]).toHaveLength(2);
+    expect([...permittedWebLlmFiles].sort()).toEqual([
+      "apps/web/src/device-model-engine.ts",
+      "apps/web/src/webllm-model-manifest.ts",
+      "apps/web/src/webllm-runtime.ts"
+    ]);
   });
 
   it("rejects a WebLLM reference anywhere else in production web source", () => {

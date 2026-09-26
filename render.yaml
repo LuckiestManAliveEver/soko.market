@@ -188,6 +188,8 @@ services:
         value: "60000"
       - key: INFERENCE_MAX_OUTPUT_TOKENS
         value: "1024"
+      - key: INFERENCE_CREDENTIAL_KEYS
+        sync: false
       - key: INFERENCE_OWNER_NODE_ENABLED
         value: "true"
       - key: INFERENCE_MAX_FALLBACKS

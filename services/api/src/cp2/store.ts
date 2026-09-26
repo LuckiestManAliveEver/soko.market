@@ -114,6 +114,7 @@ import { createDefaultAgentRuntimeAdapterRegistry } from "../agent-harness/defau
 import type { AgentRuntimeAdapter } from "../agent-harness/agent-runtime-adapter.js";
 import {
   aiModelRegistry,
+  inferenceRouterSeedModels,
   computeModelAvailability,
   defaultAiModelId,
   buildRuntimeModelPrompt,
@@ -163,6 +164,11 @@ import type {
   AgentContextSource,
   AgentDefinition,
   AiModelSummary,
+  AgentTurnStreamEvent,
+  DeviceInferenceJob,
+  DeviceInferenceResultInput,
+  DeviceInferenceRuntime,
+  InferencePolicySummary,
   InferenceExecutionTarget,
   InferenceModelCapabilities,
   InferenceModelPricing,
@@ -338,6 +344,14 @@ import {
   type InferencePlatform
 } from "../inference/providers/platform.js";
 import { ProviderConnectionError } from "../inference/providers/connections.js";
+import { DeviceInferenceBrokerError } from "../inference/device-inference-broker.js";
+import { turnStreamHub } from "../inference/turn-stream.js";
+import {
+  parsePolicyInput,
+  parseProviderInput,
+  policySummary
+} from "../inference/providers/management-input.js";
+import type { InferenceProviderConfig } from "../inference/providers/provider-config.js";
 import {
   globalDefaultRuntimeBindingId,
   NativeRuntimeBindingStore
@@ -8487,7 +8501,7 @@ export class Cp2Store {
 
   private seedCatalogDefaultsIfEmpty(): void {
     if (this.modelCatalog.size === 0) {
-      for (const model of aiModelRegistry) {
+      for (const model of [...aiModelRegistry, ...inferenceRouterSeedModels]) {
         this.modelCatalog.set(model.id, cloneModelCatalogEntry(model));
       }
     }
@@ -8553,6 +8567,7 @@ export class Cp2Store {
     id: string;
     displayName: string;
     providerId: string;
+    providerModelId: string;
     executionTarget: InferenceExecutionTarget;
     capabilities: InferenceModelCapabilities;
     contextWindow: number | null;
@@ -8569,6 +8584,7 @@ export class Cp2Store {
           id: model.id,
           displayName: model.displayName,
           providerId: model.providerId,
+          providerModelId: model.providerModelId,
           executionTarget: model.executionTarget,
           capabilities: { ...model.capabilities },
           contextWindow: model.contextWindow ?? null,
@@ -8684,6 +8700,217 @@ export class Cp2Store {
       payload: { providerId: record.providerId, scope: record.scope, businessId: record.tenantId }
     });
     return result;
+  }
+
+  // --- Device-local inference (ADR-explicit-device-local-models.md) ------------------------
+  // A device claims generations for its own account only, and only for models it has installed.
+
+  async claimDeviceInferenceJob(input: {
+    sessionId: string | null;
+    runtime: DeviceInferenceRuntime;
+    availableModelIds: string[];
+    turnId?: string;
+    waitMs: number;
+    signal?: AbortSignal;
+    now?: Date;
+  }): Promise<DeviceInferenceJob | null> {
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    return this.inferencePlatform.deviceBroker.claim({
+      accountId: session.account.id,
+      runtime: input.runtime,
+      availableModelIds: new Set(input.availableModelIds),
+      waitMs: input.waitMs,
+      ...(input.turnId === undefined ? {} : { turnId: input.turnId }),
+      ...(input.signal === undefined ? {} : { signal: input.signal })
+    });
+  }
+
+  completeDeviceInferenceJob(input: {
+    sessionId: string | null;
+    jobId: string;
+    result: DeviceInferenceResultInput;
+    now?: Date;
+  }): { accepted: true } {
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    this.withBrokerErrors(() =>
+      this.inferencePlatform.deviceBroker.complete(session.account.id, input.jobId, input.result)
+    );
+    return { accepted: true };
+  }
+
+  failDeviceInferenceJob(input: {
+    sessionId: string | null;
+    jobId: string;
+    token: string;
+    now?: Date;
+  }): { accepted: true } {
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    this.withBrokerErrors(() =>
+      this.inferencePlatform.deviceBroker.fail(session.account.id, input.jobId, input.token)
+    );
+    return { accepted: true };
+  }
+
+  /** Live reply preview for one of the caller's own turns (see inference/turn-stream.ts). */
+  subscribeAgentTurnStream(input: {
+    sessionId: string | null;
+    turnId: string;
+    listener: (event: AgentTurnStreamEvent) => void;
+    now?: Date;
+  }): () => void {
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    return turnStreamHub.subscribe(session.account.id, input.turnId, input.listener);
+  }
+
+  private withBrokerErrors<T>(run: () => T): T {
+    try {
+      return run();
+    } catch (error) {
+      if (error instanceof DeviceInferenceBrokerError) {
+        throw new Cp2Error(error.statusCode, error.code, error.message);
+      }
+      throw error;
+    }
+  }
+
+  // --- Inference usage policies (budgets, rate limits, explicit fallback) -------------------
+
+  async getInferencePolicy(input: {
+    sessionId: string | null;
+    scope: "tenant" | "user" | "global";
+    businessId?: string;
+    now?: Date;
+  }): Promise<InferencePolicySummary> {
+    const owner = this.requireInferencePolicyOwner(input);
+    const policy = await this.inferencePlatform.repositories.policies.get({
+      scope: owner.scope,
+      ...(owner.tenantId === null ? {} : { tenantId: owner.tenantId }),
+      ...(owner.userId === null ? {} : { userId: owner.userId })
+    });
+    return policySummary(policy, owner);
+  }
+
+  async updateInferencePolicy(input: {
+    sessionId: string | null;
+    scope: "tenant" | "user" | "global";
+    businessId?: string;
+    body: unknown;
+    now?: Date;
+  }): Promise<InferencePolicySummary> {
+    const now = input.now ?? new Date();
+    const owner = this.requireInferencePolicyOwner(input);
+    const record = await this.withProviderConnectionErrors(async () =>
+      parsePolicyInput(input.body, owner, {
+        providerExists: (providerId) =>
+          this.inferencePlatform.registry.get(providerId) !== undefined,
+        routedModel: (modelId) => this.inferencePlatform.resolveModelDefinition(modelId),
+        now
+      })
+    );
+    await this.inferencePlatform.repositories.policies.upsert(record);
+    this.recordAuditEvent({
+      type: "inference_policy.updated",
+      aggregateType: "inference_policy",
+      aggregateId: owner.tenantId ?? owner.userId ?? "global",
+      actorId: owner.actorId,
+      occurredAt: now.toISOString(),
+      payload: {
+        scope: owner.scope,
+        dailyBudget: record.dailyBudget,
+        fallbackPolicy: record.fallbackPolicy
+      }
+    });
+    return policySummary(record, owner);
+  }
+
+  private requireInferencePolicyOwner(input: {
+    sessionId: string | null;
+    scope: "tenant" | "user" | "global";
+    businessId?: string;
+    now?: Date;
+  }): {
+    scope: "tenant" | "user" | "global";
+    tenantId: string | null;
+    userId: string | null;
+    actorId: string;
+  } {
+    const now = input.now ?? new Date();
+    if (input.scope === "global") {
+      const session = this.requirePlatformOperator(input.sessionId, now);
+      return { scope: "global", tenantId: null, userId: null, actorId: session.account.id };
+    }
+    if (input.scope === "tenant") {
+      const session = this.requireBrowserAuthorizedSession(
+        input.sessionId,
+        input.businessId ?? "",
+        "membership:manage",
+        now
+      );
+      return {
+        scope: "tenant",
+        tenantId: input.businessId ?? "",
+        userId: null,
+        actorId: session.user.id
+      };
+    }
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    return { scope: "user", tenantId: null, userId: session.account.id, actorId: session.user.id };
+  }
+
+  // --- Platform-operator provider management -------------------------------------------------
+
+  async listPlatformInferenceProviders(
+    sessionId: string | null,
+    now = new Date()
+  ): Promise<InferenceProviderConfig[]> {
+    this.requirePlatformOperator(sessionId, now);
+    return this.inferencePlatform.registry.list().map(({ config }) => ({ ...config }));
+  }
+
+  async upsertPlatformInferenceProvider(input: {
+    sessionId: string | null;
+    id: string;
+    body: unknown;
+    now?: Date;
+  }): Promise<InferenceProviderConfig> {
+    const now = input.now ?? new Date();
+    const session = this.requirePlatformOperator(input.sessionId, now);
+    const config = await this.withProviderConnectionErrors(async () =>
+      parseProviderInput(input.body, input.id)
+    );
+    await this.inferencePlatform.repositories.providers.upsert(config);
+    await this.inferencePlatform.refresh();
+    this.recordAuditEvent({
+      type: "inference_provider.configured",
+      aggregateType: "inference_provider",
+      aggregateId: config.id,
+      actorId: session.account.id,
+      occurredAt: now.toISOString(),
+      payload: { type: config.type, enabled: config.enabled, baseUrl: config.baseUrl }
+    });
+    return this.inferencePlatform.registry.get(config.id)?.config ?? config;
+  }
+
+  async removePlatformInferenceProvider(input: {
+    sessionId: string | null;
+    id: string;
+    now?: Date;
+  }): Promise<{ removed: true; id: string }> {
+    const now = input.now ?? new Date();
+    const session = this.requirePlatformOperator(input.sessionId, now);
+    if (!(await this.inferencePlatform.repositories.providers.remove(input.id))) {
+      throw new Cp2Error(404, "inference_provider_not_found", "Provider override was not found.");
+    }
+    await this.inferencePlatform.refresh();
+    this.recordAuditEvent({
+      type: "inference_provider.removed",
+      aggregateType: "inference_provider",
+      aggregateId: input.id,
+      actorId: session.account.id,
+      occurredAt: now.toISOString(),
+      payload: {}
+    });
+    return { removed: true, id: input.id };
   }
 
   /**

@@ -49,6 +49,8 @@ export interface ProviderCredentialRepository {
   listForOwner(input: { tenantId?: string; userId?: string }): Promise<ProviderCredentialRecord[]>;
   /** Hard delete on account/business deletion. Returns the number of rows removed. */
   deleteForOwner(input: { tenantId?: string; userId?: string }): Promise<number>;
+  /** Rows still holding a secret under a key version other than `currentVersion`. */
+  listNeedingRotation(currentVersion: number): Promise<ProviderCredentialRecord[]>;
 }
 
 export type InferenceRunStatus = "succeeded" | "failed" | "rejected";
@@ -86,6 +88,8 @@ export interface InferenceRunRepository {
     tenantId?: string;
     userId?: string;
     providerId?: string;
+    /** Only runs paid for from this credential source. */
+    credentialScope?: CredentialScope;
     currency: string;
   }): Promise<number>;
   deleteForOwner(input: { tenantId?: string; userId?: string }): Promise<number>;
@@ -121,6 +125,9 @@ export interface InferencePolicyRepository {
 
 export interface ProviderConfigRepository {
   list(): Promise<InferenceProviderConfig[]>;
+  /** Operator-only (platform-operator routes). */
+  upsert(config: InferenceProviderConfig): Promise<void>;
+  remove(providerId: string): Promise<boolean>;
 }
 
 export interface InferenceRepositories {
@@ -133,6 +140,9 @@ export interface InferenceRepositories {
 export function createMemoryInferenceRepositories(
   seed: { providers?: InferenceProviderConfig[]; policies?: InferencePolicyRecord[] } = {}
 ): InferenceRepositories & { runsSnapshot(): InferenceRunRecord[] } {
+  const providers = new Map<string, InferenceProviderConfig>(
+    (seed.providers ?? []).map((provider) => [provider.id, structuredClone(provider)])
+  );
   const credentials = new Map<string, ProviderCredentialRecord>();
   const runs: InferenceRunRecord[] = [];
   const policies = new Map<string, InferencePolicyRecord>();
@@ -151,7 +161,13 @@ export function createMemoryInferenceRepositories(
   return {
     providers: {
       async list() {
-        return (seed.providers ?? []).map((provider) => ({ ...provider }));
+        return [...providers.values()].map((provider) => structuredClone(provider));
+      },
+      async upsert(config) {
+        providers.set(config.id, structuredClone({ ...config, source: "database" }));
+      },
+      async remove(providerId) {
+        return providers.delete(providerId);
       }
     },
     credentials: {
@@ -185,6 +201,13 @@ export function createMemoryInferenceRepositories(
           .filter((record) => ownerMatches(record, input))
           .map((record) => ({ ...record }));
       },
+      async listNeedingRotation(currentVersion) {
+        return [...credentials.values()]
+          .filter(
+            (record) => record.encryptedSecret !== null && record.keyVersion !== currentVersion
+          )
+          .map((record) => ({ ...record }));
+      },
       async deleteForOwner(input) {
         let removed = 0;
         for (const [id, record] of credentials) {
@@ -208,7 +231,8 @@ export function createMemoryInferenceRepositories(
               run.currency === input.currency &&
               (input.tenantId === undefined || run.tenantId === input.tenantId) &&
               (input.userId === undefined || run.userId === input.userId) &&
-              (input.providerId === undefined || run.providerId === input.providerId)
+              (input.providerId === undefined || run.providerId === input.providerId) &&
+              (input.credentialScope === undefined || run.credentialScope === input.credentialScope)
           )
           .reduce((total, run) => total + (run.estimatedCost ?? 0), 0);
       },

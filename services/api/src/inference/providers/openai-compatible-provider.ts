@@ -24,6 +24,7 @@ import {
   inferenceErrorFromHttp,
   toInferenceError
 } from "./errors.js";
+import type { DeviceInferenceBroker } from "../device-inference-broker.js";
 import type { ProviderTransport } from "./http-transport.js";
 import { createDeadline, readBodyText, withProviderDeadline } from "./provider-call.js";
 import type { InferenceProviderConfig } from "./provider-config.js";
@@ -34,6 +35,8 @@ export interface ProviderAdapterDeps {
   /** Returns a transport enforcing the given endpoint policy (see http-transport.ts). */
   transportFor: (policy: EndpointPolicy) => ProviderTransport;
   now?: () => number;
+  /** Hands device-local generation to members' devices (local provider only). */
+  deviceBroker?: DeviceInferenceBroker;
 }
 
 /**

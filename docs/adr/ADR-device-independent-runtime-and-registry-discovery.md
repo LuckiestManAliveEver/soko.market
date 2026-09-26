@@ -1,5 +1,10 @@
 # ADR: Device-independent runtime execution, plus connected GitHub/Hugging Face discovery
 
+> **Partially superseded** by [ADR-explicit-device-local-models.md](./ADR-explicit-device-local-models.md):
+> `browser-local` / `installed-app` are execution targets again, as an explicit per-shop model
+> choice. Generation is delegated to the member's own device; the server keeps prompt, tools and
+> approvals, and there is no silent fallback.
+
 ## Context
 
 Soko's hosted-first zero-setup runtime (ADR-hosted-first-zero-setup-ai.md, ADR-default-runtime-pi-smollm.md)

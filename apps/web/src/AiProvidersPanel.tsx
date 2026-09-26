@@ -8,6 +8,8 @@ import type {
 
 import { deleteJson, fetchFreshJson, postJson } from "./api-helpers";
 import { getErrorMessage } from "./chat-message-plumbing";
+import { InferencePolicyCard } from "./InferencePolicyCard";
+import { OnDeviceModelsCard } from "./OnDeviceModelsCard";
 import { isDeviceLocalInferenceAvailable, maskedKey, providerCardState } from "./ai-providers-view";
 
 export interface AiProvidersPanelProps {
@@ -263,6 +265,8 @@ export function AiProvidersPanel({ businessId }: AiProvidersPanelProps) {
           })}
         </div>
       )}
+      <OnDeviceModelsCard />
+      {loading ? null : <InferencePolicyCard businessId={businessId} providers={providers} />}
     </div>
   );
 }

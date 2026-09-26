@@ -513,6 +513,7 @@ export {
   documentUploadContextScript,
   defaultBusinessAgentContextScripts,
   aiModelRegistry,
+  inferenceRouterSeedModels,
   computeModelAvailability,
   defaultContextCharacterBudget,
   contextWindowCharacterShare,
@@ -1257,6 +1258,24 @@ export function validateAgentModelBindingConfiguration(
       "MODEL_CONFIGURATION_INVALID",
       "Cloud-only execution requires a server-reachable execution target."
     );
+  }
+  if (input.executionTarget === "browser-local" || input.executionTarget === "installed-app") {
+    // Device-local execution is an explicit property of the catalog model (its inference block),
+    // never something a hosted model can be switched onto (ADR-explicit-device-local-models.md).
+    if (model.inference?.executionTarget !== input.executionTarget) {
+      throw new Cp2Error(
+        409,
+        "MODEL_RUNTIME_INCOMPATIBLE",
+        "This model does not run on-device. Choose one of the on-device models instead."
+      );
+    }
+    if (input.executionMode === "CLOUD_ONLY") {
+      throw new Cp2Error(
+        400,
+        "MODEL_CONFIGURATION_INVALID",
+        "Cloud-only execution cannot use an on-device model."
+      );
+    }
   }
   if (input.executionTarget === "remote-shop-device" && !input.permissions.allowRemoteShopDevice) {
     throw new Cp2Error(

@@ -29,7 +29,11 @@ const providerFactories: Record<InferenceProviderType, ProviderFactory> = {
   anthropic: createAnthropicProvider,
   zai: createZaiProvider,
   "openai-compatible": createOpenAiCompatibleProvider,
-  local: (config) => createLocalInferenceProvider(config)
+  local: (config, deps) =>
+    createLocalInferenceProvider(config, {
+      ...(deps.deviceBroker === undefined ? {} : { broker: deps.deviceBroker }),
+      ...(deps.now === undefined ? {} : { now: deps.now })
+    })
 };
 
 export interface RegisteredProvider {

@@ -2,6 +2,10 @@ export * from "./contracts/runtime.js";
 export { runtimeToolRegistry } from "./registry/index.js";
 export { parseRuntimeModelOutput } from "./parsers/model-output.js";
 export {
+  createRuntimeReplyTextStream,
+  type RuntimeReplyTextStream
+} from "./parsers/model-output-stream.js";
+export {
   parseRuntimeHashtagInvocation,
   runtimeHashtagCapabilities,
   runtimeHashtagQuery,

@@ -236,4 +236,86 @@ describePostgres("inference repositories on PostgreSQL", () => {
       await pool.query("delete from inference_providers where id in ('test-gateway', 'bad-ref')");
     }
   });
+
+  it("manages operator provider rows, lists rows needing key rotation, and filters spend by payer", async () => {
+    try {
+      await repositories.providers.upsert({
+        id: "pg-gateway",
+        displayName: "PG gateway",
+        type: "openai-compatible",
+        baseUrl: "https://gateway.example.com/v1",
+        executionTarget: "remote-inference",
+        enabled: true,
+        capabilities: { tools: false },
+        credentialRef: "env:PG_GATEWAY_KEY",
+        byokAllowed: false,
+        allowCredentialEndpoint: false,
+        allowPrivateNetwork: false,
+        allowHttp: false,
+        billingProduct: "gateway",
+        verification: "models-endpoint",
+        options: { maxTokensParameter: "max_tokens" },
+        source: "database"
+      });
+      await repositories.providers.upsert({
+        ...(await repositories.providers.list()).find((provider) => provider.id === "pg-gateway")!,
+        enabled: false
+      });
+      expect(
+        (await repositories.providers.list()).find((provider) => provider.id === "pg-gateway")
+      ).toMatchObject({
+        enabled: false,
+        capabilities: { tools: false },
+        options: { maxTokensParameter: "max_tokens" }
+      });
+      expect(await repositories.providers.remove("pg-gateway")).toBe(true);
+      expect(await repositories.providers.remove("pg-gateway")).toBe(false);
+    } finally {
+      await pool.query("delete from inference_providers where id = 'pg-gateway'");
+    }
+
+    const tenantId = `tenant-${randomUUID()}`;
+    const old = credential({ tenantId, keyVersion: 1 });
+    await repositories.credentials.insert(old);
+    try {
+      const needing = await repositories.credentials.listNeedingRotation(2);
+      expect(needing.map((record) => record.id)).toContain(old.id);
+      expect(
+        (await repositories.credentials.listNeedingRotation(1)).map((record) => record.id)
+      ).not.toContain(old.id);
+    } finally {
+      await repositories.credentials.deleteForOwner({ tenantId });
+    }
+
+    await repositories.runs.insert(
+      run({ tenantId, credentialScope: "platform", estimatedCost: 1 })
+    );
+    await repositories.runs.insert(run({ tenantId, credentialScope: "tenant", estimatedCost: 2 }));
+    const since = new Date(Date.now() - 60_000).toISOString();
+    expect(await repositories.runs.sumCost({ since, tenantId, currency: "USD" })).toBeCloseTo(3);
+    expect(
+      await repositories.runs.sumCost({
+        since,
+        tenantId,
+        currency: "USD",
+        credentialScope: "platform"
+      })
+    ).toBeCloseTo(1);
+    await repositories.runs.deleteForOwner({ tenantId });
+  });
+
+  it("seeds the on-device and Soko Cloud catalog models (migration 102)", async () => {
+    const result = await pool.query<{ entity_id: string; target: string | null }>(
+      `select entity_id, record -> 'inference' ->> 'executionTarget' as target
+         from cp2_model_catalog
+        where entity_id in ('smollm2-360m-device', 'qwen2.5-0.5b-device', 'qwen3-1.7b-device', 'qwen3-4b-soko-cloud')
+        order by entity_id`
+    );
+    expect(result.rows).toEqual([
+      { entity_id: "qwen2.5-0.5b-device", target: "browser-local" },
+      { entity_id: "qwen3-1.7b-device", target: "browser-local" },
+      { entity_id: "qwen3-4b-soko-cloud", target: "remote-inference" },
+      { entity_id: "smollm2-360m-device", target: "browser-local" }
+    ]);
+  });
 });

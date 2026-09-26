@@ -5,7 +5,12 @@ import { getCachedJson, invalidateApiCacheForMutation } from "./api-request-cach
 export async function postJson<TResponse>(
   path: string,
   body: Record<string, unknown>,
-  options: { signal?: AbortSignal; timeoutMs?: number; idempotencyKey?: string } = {}
+  options: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    idempotencyKey?: string;
+    headers?: Record<string, string>;
+  } = {}
 ): Promise<TResponse> {
   const response = await apiFetch<TResponse>(path, { method: "POST", body, ...options });
   await invalidateApiCacheForMutation(path);

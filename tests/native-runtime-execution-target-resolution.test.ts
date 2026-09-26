@@ -76,8 +76,16 @@ describe("resolveExecutionTarget - the single authoritative execution-target res
     );
   });
 
-  it("exposes exactly the three provider-neutral targets and rejects provider names", () => {
-    expect(modelExecutionTargets).toEqual(["vercel", "backend", "remote-shop-device"]);
+  it("exposes exactly the provider-neutral targets and rejects provider names", () => {
+    // browser-local / installed-app are location targets (ADR-explicit-device-local-models.md),
+    // not providers.
+    expect(modelExecutionTargets).toEqual([
+      "vercel",
+      "backend",
+      "remote-shop-device",
+      "browser-local",
+      "installed-app"
+    ]);
     expect(isModelExecutionTarget("openai")).toBe(false);
     expect(isModelExecutionTarget("anthropic")).toBe(false);
 

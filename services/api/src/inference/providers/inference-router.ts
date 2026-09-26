@@ -41,6 +41,13 @@ export interface InferenceCallContext {
   /** Narrows credential resolution to exactly one source (brief §11 "explicit request scope"). */
   explicitCredentialScope?: Exclude<CredentialScope, "explicit">;
   signal?: AbortSignal;
+  /** The client-visible turn id (x-soko-turn-id), used to route device jobs and reply streams. */
+  turnId?: string | null;
+  /**
+   * Receives raw model text as it is generated, when the model streams. The router resets it
+   * before an explicit-policy fallback attempt so a preview never splices two models' output.
+   */
+  onText?: { raw(chunk: string): void; reset(): void };
 }
 
 export interface ResolvedInferenceTarget {
@@ -131,6 +138,12 @@ export class InferenceRouter {
     userId: string | null;
     request?: InferenceRequest;
     explicitCredentialScope?: Exclude<CredentialScope, "explicit">;
+    /**
+     * Device-local models may run only when an identified member's own device can execute them
+     * (the router hands the job to that member). Anything else - an anonymous caller, a probe -
+     * gets LOCAL_EXECUTION_REQUIRED and nothing is sent anywhere.
+     */
+    allowDeviceExecution?: boolean;
   }): Promise<ResolvedInferenceTarget> {
     if (input.agentId.trim() === "") {
       throw new InferenceError(
@@ -175,11 +188,22 @@ export class InferenceRouter {
       });
     }
 
-    // Step 9 before step 8: a client-executed model never needs (or gets) a server credential.
-    if (
-      isClientExecutedTarget(model.executionTarget) ||
-      nativeExecutionTargetFor(model.executionTarget) === null
-    ) {
+    // Step 9 before step 8: a device-local model never needs (or gets) a server credential, and
+    // is never sent to a server-side provider - only to the requesting member's own device.
+    if (isClientExecutedTarget(model.executionTarget)) {
+      if (input.allowDeviceExecution !== true || config.type !== "local") {
+        throw new InferenceError("LOCAL_EXECUTION_REQUIRED", { providerId: config.id, modelId });
+      }
+      return {
+        model,
+        providerConfig: config,
+        provider,
+        credential: null,
+        executionTarget: model.executionTarget
+      };
+    }
+    if (nativeExecutionTargetFor(model.executionTarget) === "remote-shop-device") {
+      // Shop-owned machines are served by the owner-node broker, not this router.
       throw new InferenceError("LOCAL_EXECUTION_REQUIRED", { providerId: config.id, modelId });
     }
 
@@ -237,6 +261,7 @@ export class InferenceRouter {
           tenantId: context.tenantId,
           userId: context.userId,
           request: attemptRequest,
+          allowDeviceExecution: context.userId !== null,
           ...(context.explicitCredentialScope === undefined
             ? {}
             : { explicitCredentialScope: context.explicitCredentialScope })
@@ -248,20 +273,21 @@ export class InferenceRouter {
           tenantId: context.tenantId,
           userId: context.userId,
           providerId: target.providerConfig.id,
+          credentialScope: target.credential?.scope ?? null,
           policy
         });
         const resolvedTarget = target;
-        const response = await this.runWithBreaker(resolvedTarget.providerConfig.id, () =>
-          resolvedTarget.provider.generate(
+        if (index > 0) context.onText?.reset();
+        const call = () =>
+          this.executeAttempt(
+            resolvedTarget,
             this.applyLimits(attemptRequest, resolvedTarget.model, policy),
-            {
-              model: resolvedTarget.model,
-              credential: resolvedTarget.credential,
-              timeoutMs: this.deps.defaults.timeoutMs,
-              ...(context.signal === undefined ? {} : { signal: context.signal })
-            }
-          )
-        );
+            context
+          );
+        const response =
+          resolvedTarget.providerConfig.type === "local"
+            ? await call()
+            : await this.runWithBreaker(resolvedTarget.providerConfig.id, call);
         const finalized = this.finalize(
           response,
           resolvedTarget,
@@ -329,6 +355,7 @@ export class InferenceRouter {
         tenantId: context.tenantId,
         userId: context.userId,
         request: attemptRequest,
+        allowDeviceExecution: context.userId !== null,
         ...(context.explicitCredentialScope === undefined
           ? {}
           : { explicitCredentialScope: context.explicitCredentialScope })
@@ -337,14 +364,10 @@ export class InferenceRouter {
         tenantId: context.tenantId,
         userId: context.userId,
         providerId: target.providerConfig.id,
+        credentialScope: target.credential?.scope ?? null,
         policy
       });
-      const executionContext = {
-        model: target.model,
-        credential: target.credential,
-        timeoutMs: this.deps.defaults.timeoutMs,
-        ...(context.signal === undefined ? {} : { signal: context.signal })
-      };
+      const executionContext = this.executionContext(target, context);
       const limited = this.applyLimits(attemptRequest, target.model, policy);
       const chunks =
         target.provider.stream === undefined || target.model.capabilities.streaming !== true
@@ -430,6 +453,63 @@ export class InferenceRouter {
       timeoutMs: Math.min(this.deps.defaults.timeoutMs, 15_000),
       ...(input.probeModelId === undefined ? {} : { probeModelId: input.probeModelId }),
       ...(input.signal === undefined ? {} : { signal: input.signal })
+    });
+  }
+
+  private executionContext(target: ResolvedInferenceTarget, context: InferenceCallContext) {
+    return {
+      model: target.model,
+      credential: target.credential,
+      // A device may need to download/load the model before its first token.
+      timeoutMs:
+        target.providerConfig.type === "local"
+          ? Math.max(this.deps.defaults.timeoutMs, 240_000)
+          : this.deps.defaults.timeoutMs,
+      caller: {
+        tenantId: context.tenantId,
+        userId: context.userId,
+        turnId: context.turnId ?? null
+      },
+      ...(context.signal === undefined ? {} : { signal: context.signal })
+    };
+  }
+
+  /**
+   * One provider call. When the caller wants live text and the model declares streaming, the
+   * provider's stream is consumed here (text forwarded as it arrives) and folded back into one
+   * canonical response, so fallback, admission and recording stay identical to generate().
+   */
+  private async executeAttempt(
+    target: ResolvedInferenceTarget,
+    request: InferenceRequest,
+    context: InferenceCallContext
+  ): Promise<InferenceResponse> {
+    const executionContext = this.executionContext(target, context);
+    const sink = context.onText;
+    if (
+      sink === undefined ||
+      target.provider.stream === undefined ||
+      target.model.capabilities.streaming !== true
+    ) {
+      const response = await target.provider.generate(request, executionContext);
+      if (sink !== undefined && response.output.text !== "") sink.raw(response.output.text);
+      return response;
+    }
+    for await (const chunk of target.provider.stream(request, executionContext)) {
+      if (chunk.type === "text-delta") sink.raw(chunk.text);
+      if (chunk.type === "completed") return chunk.response;
+      if (chunk.type === "error") {
+        throw new InferenceError("INFERENCE_FAILED", {
+          providerId: target.providerConfig.id,
+          modelId: target.model.id,
+          diagnostic: chunk.code
+        });
+      }
+    }
+    throw new InferenceError("INVALID_PROVIDER_RESPONSE", {
+      providerId: target.providerConfig.id,
+      modelId: target.model.id,
+      diagnostic: "Stream ended without completion."
     });
   }
 

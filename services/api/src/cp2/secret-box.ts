@@ -12,15 +12,26 @@ import { Cp2Error } from "./cp2-error.js";
 export const secretEnvelopeKeyVersion = 1;
 
 export function encryptOAuthToken(token: string): string {
-  const key = getTokenEncryptionKey();
+  return encryptSecretEnvelope(token, getTokenEncryptionKey());
+}
+
+export function decryptOAuthToken(value: string): string {
+  return decryptSecretEnvelope(value, getTokenEncryptionKey());
+}
+
+/**
+ * The envelope itself, for a caller that manages its own key (the inference credential keyring,
+ * which rotates independently of OAuth tokens). Same format and algorithm as above.
+ */
+export function encryptSecretEnvelope(plaintext: string, key: Buffer): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const encrypted = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
 }
 
-export function decryptOAuthToken(value: string): string {
+export function decryptSecretEnvelope(value: string, key: Buffer): string {
   const [version, ivValue, tagValue, encryptedValue] = value.split(":");
 
   if (
@@ -32,16 +43,17 @@ export function decryptOAuthToken(value: string): string {
     throw new Cp2Error(500, "oauth_token_invalid", "Encrypted OAuth token is invalid.");
   }
 
-  const decipher = createDecipheriv(
-    "aes-256-gcm",
-    getTokenEncryptionKey(),
-    Buffer.from(ivValue, "base64url")
-  );
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivValue, "base64url"));
   decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
   return Buffer.concat([
     decipher.update(Buffer.from(encryptedValue, "base64url")),
     decipher.final()
   ]).toString("utf8");
+}
+
+/** Derives a 256-bit envelope key from an operator-supplied secret string. */
+export function deriveSecretEnvelopeKey(secret: string): Buffer {
+  return createHash("sha256").update(secret).digest();
 }
 
 function getTokenEncryptionKey(): Buffer {

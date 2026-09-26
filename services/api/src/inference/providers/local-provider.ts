@@ -1,17 +1,22 @@
+import type { DeviceInferenceBroker } from "../device-inference-broker.js";
 import type { InferenceProvider, ModelDefinition } from "./contract.js";
-import { isClientExecutedTarget } from "./contract.js";
+import { isClientExecutedTarget, messageText } from "./contract.js";
 import { InferenceError } from "./errors.js";
 import type { InferenceProviderConfig } from "./provider-config.js";
 
 /**
- * Server-side stand-in for browser/device-local models. It exists so a local model is a normal,
- * registry-described model the router can resolve and report on - but the server never executes
- * it and never forwards it anywhere: generate() always refuses with LOCAL_EXECUTION_REQUIRED
- * (non-retryable, so no runtime fallback loop picks a cloud model instead). Execution happens on
- * the client through the existing opt-in offline runtime (apps/web/src/webllm-runtime.ts), which
- * returns the same normalized shape via apps/web/src/inference/local-inference-response.ts.
+ * Device-local models (browser-local / installed-app). The server never runs them and never sends
+ * them to a cloud provider: generate() hands the already-built prompt to the requesting member's
+ * own device through the DeviceInferenceBroker and waits for that device's output
+ * (ADR-explicit-device-local-models.md). Without a broker, or without an identified member (a
+ * public storefront visitor, an MCP token with no account), it refuses with
+ * LOCAL_EXECUTION_REQUIRED.
  */
-export function createLocalInferenceProvider(config: InferenceProviderConfig): InferenceProvider {
+export function createLocalInferenceProvider(
+  config: InferenceProviderConfig,
+  deps: { broker?: DeviceInferenceBroker; now?: () => number } = {}
+): InferenceProvider {
+  const now = deps.now ?? Date.now;
   return {
     id: config.id,
     async supports(model: ModelDefinition) {
@@ -26,15 +31,66 @@ export function createLocalInferenceProvider(config: InferenceProviderConfig): I
       return {
         providerId: config.id,
         status: config.enabled ? "AVAILABLE" : "UNAVAILABLE",
-        checkedAt: new Date().toISOString(),
-        message: "Runs on the user's device; availability is decided by the client."
+        checkedAt: new Date(now()).toISOString(),
+        message: "Runs on the member's own device; each device reports its own availability."
       };
     },
-    async generate(request) {
-      throw new InferenceError("LOCAL_EXECUTION_REQUIRED", {
-        providerId: config.id,
-        modelId: request.modelId
+    async generate(request, context) {
+      const userId = context.caller?.userId ?? null;
+      if (deps.broker === undefined || userId === null) {
+        throw new InferenceError("LOCAL_EXECUTION_REQUIRED", {
+          providerId: config.id,
+          modelId: request.modelId
+        });
+      }
+      const target = context.model.executionTarget;
+      if (target !== "browser-local" && target !== "installed-app") {
+        throw new InferenceError("LOCAL_EXECUTION_REQUIRED", {
+          providerId: config.id,
+          modelId: request.modelId
+        });
+      }
+      const startedAt = now();
+      const outcome = await deps.broker.dispatch({
+        accountId: userId,
+        turnId: context.caller?.turnId ?? null,
+        modelId: context.model.id,
+        providerModelId: context.model.providerModelId,
+        executionTarget: target,
+        messages: request.messages.map((message) => ({
+          // On-device models get the same prompt; tool results (unused here) are folded into user turns.
+          role: message.role === "tool" ? "user" : message.role,
+          content: messageText(message.content)
+        })),
+        generation: {
+          maxOutputTokens: request.generation?.maxOutputTokens ?? 512,
+          temperature: request.generation?.temperature ?? 0.2,
+          jsonOutput: request.responseFormat !== undefined && request.responseFormat.type !== "text"
+        },
+        ...(context.signal === undefined ? {} : { signal: context.signal })
       });
+      return {
+        requestId: request.requestId,
+        providerId: config.id,
+        modelId: request.modelId,
+        output: { text: outcome.text, toolCalls: [] },
+        finishReason: "stop",
+        ...(outcome.usage === undefined
+          ? {}
+          : {
+              usage: {
+                ...outcome.usage,
+                ...(outcome.usage.inputTokens !== undefined &&
+                outcome.usage.outputTokens !== undefined
+                  ? { totalTokens: outcome.usage.inputTokens + outcome.usage.outputTokens }
+                  : {})
+              }
+            }),
+        latency: {
+          totalMs: outcome.latencyMs ?? now() - startedAt,
+          ...(outcome.firstTokenMs === undefined ? {} : { firstTokenMs: outcome.firstTokenMs })
+        }
+      };
     }
   };
 }

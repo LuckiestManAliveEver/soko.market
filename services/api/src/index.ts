@@ -29,6 +29,7 @@ import {
   createPostgresInferenceRepositories
 } from "./inference/providers/postgres-repositories.js";
 import { createMemoryInferenceRepositories } from "./inference/providers/repositories.js";
+import { createRedisRequestRateLimiter } from "./inference/providers/usage-policy.js";
 import {
   startAccountDeletionRunner,
   type AccountDeletionRunner
@@ -233,9 +234,26 @@ const inferencePlatform = createInferencePlatform({
       ? createMemoryInferenceRepositories()
       : createPostgresInferenceRepositories(inferencePool),
   metrics,
+  // Shared per-minute counters across API instances; falls back to in-process on Redis errors.
+  rateLimiter: createRedisRequestRateLimiter(rateLimitRedisClient),
   // Callers pass already-redacted fields (inference-router.ts runs redactRecord first).
   log: (event, fields) => console.log({ event, ...fields })
 });
+// Re-encrypt BYOK credentials still on an older INFERENCE_CREDENTIAL_KEYS version. Idempotent and
+// off the boot path: a slow or failing rotation never delays or blocks startup.
+void inferencePlatform
+  .rotateCredentialKeys()
+  .then((result) => {
+    if (result.rotated > 0 || result.failed > 0) {
+      console.log({ event: "inference.credential_keys_rotated", ...result });
+    }
+  })
+  .catch((error: unknown) => {
+    console.error({
+      event: "inference.credential_key_rotation_failed",
+      reason: error instanceof Error ? error.name : "unknown"
+    });
+  });
 await inferencePlatform.refresh().catch((error: unknown) => {
   console.error({
     event: "inference.provider_refresh_failed",

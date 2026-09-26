@@ -34,7 +34,10 @@ export const retiredBrowserInferencePackages = ["@huggingface/transformers", "@w
 export const permittedOfflineInferencePackage = "@mlc-ai/web-llm";
 export const permittedWebLlmFiles = new Set([
   "apps/web/src/webllm-runtime.ts",
-  "apps/web/src/webllm-model-manifest.ts"
+  "apps/web/src/webllm-model-manifest.ts",
+  // Device-local models reinstated by ADR-explicit-device-local-models.md: server-delegated,
+  // explicitly chosen, origin-pinned generation. The only other file allowed to load webllm.
+  "apps/web/src/device-model-engine.ts"
 ]);
 
 export const productionScanRoots = [

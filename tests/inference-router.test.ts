@@ -6,6 +6,7 @@ import { InferenceError } from "../services/api/src/inference/providers/errors";
 import type { InferenceObservation } from "../services/api/src/inference/providers/inference-router";
 import type { InferencePolicyRecord } from "../services/api/src/inference/providers/repositories";
 import { estimateCost } from "../services/api/src/inference/providers/usage-policy";
+import { DeviceInferenceBroker } from "../services/api/src/inference/device-inference-broker";
 import {
   anthropicMessage,
   catalogModel,
@@ -41,7 +42,8 @@ const catalog = [
     id: "smollm-local",
     providerId: "local",
     providerModelId: "smollm2-360m",
-    executionTarget: "browser-local"
+    executionTarget: "browser-local",
+    pricing: { inputPerMillionTokens: 0, outputPerMillionTokens: 0 }
   }),
   catalogModel({ id: "disabled-test", providerId: "openai", providerModelId: "x", enabled: false }),
   catalogModel({ id: "orphan-test", providerId: "no-such-provider", providerModelId: "x" }),
@@ -169,22 +171,87 @@ describe("inference router: model and provider resolution", () => {
     expect(withDefault.platform.router.resolveModelId(undefined)).toBe("glm-test");
   });
 
-  it("keeps browser-local models on the device: nothing is sent to any provider", async () => {
+  it("never sends a device-local model anywhere but the requesting member's own device", async () => {
     const { fetch, requests } = vendorFetch();
-    const { platform } = createTestPlatform({ catalog, fetch });
+    const { platform, repositories } = createTestPlatform({ catalog, fetch });
+    // An anonymous caller (no member to hand the job to) is refused outright.
+    await expect(
+      platform.router.generate(request("smollm-local"), { ...callContext, userId: null })
+    ).rejects.toMatchObject({ code: "LOCAL_EXECUTION_REQUIRED", retryable: false });
+
+    // An identified member: the prompt goes to that member's device, never to a provider.
+    const pending = platform.router.generate(request("smollm-local"), {
+      ...callContext,
+      turnId: "turn-local-0001"
+    });
+    const otherAccount = await platform.deviceBroker.claim({
+      accountId: "account-b",
+      runtime: "browser-local",
+      availableModelIds: new Set(["smollm2-360m"]),
+      waitMs: 10
+    });
+    expect(otherAccount).toBeNull();
+    const withoutModel = await platform.deviceBroker.claim({
+      accountId: "account-a",
+      runtime: "browser-local",
+      availableModelIds: new Set(["some-other-model"]),
+      waitMs: 10
+    });
+    expect(withoutModel).toBeNull();
+    const job = await platform.deviceBroker.claim({
+      accountId: "account-a",
+      runtime: "browser-local",
+      availableModelIds: new Set(["smollm2-360m"]),
+      turnId: "turn-local-0001",
+      waitMs: 1_000
+    });
+    expect(job).toMatchObject({
+      modelId: "smollm-local",
+      providerModelId: "smollm2-360m",
+      executionTarget: "browser-local",
+      turnId: "turn-local-0001"
+    });
+    expect(job?.messages.at(-1)?.content).toContain("SECRET-PROMPT-CONTENT");
+    expect(() =>
+      platform.deviceBroker.complete("account-a", job!.id, { token: "forged", text: "x" })
+    ).toThrow();
+    platform.deviceBroker.complete("account-a", job!.id, {
+      token: job!.token,
+      text: '{"type":"response","message":"from the device"}',
+      usage: { inputTokens: 40, outputTokens: 8 }
+    });
+    const response = await pending;
+    expect(response).toMatchObject({
+      providerId: "local",
+      output: { text: '{"type":"response","message":"from the device"}' },
+      usage: { inputTokens: 40, outputTokens: 8 },
+      cost: { estimatedAmount: 0 }
+    });
+    expect(requests).toHaveLength(0);
+    expect(repositories.runsSnapshot().at(-1)).toMatchObject({
+      providerId: "local",
+      executionTarget: "browser-local",
+      credentialScope: null,
+      status: "succeeded"
+    });
+  });
+
+  it("fails clearly, without switching models, when no device with the model is online", async () => {
+    const { fetch, requests } = vendorFetch();
+    const { platform } = createTestPlatform({
+      catalog,
+      fetch,
+      options: { deviceBroker: new DeviceInferenceBroker({ claimTimeoutMs: 20 }) }
+    });
     await expect(
       platform.router.generate(request("smollm-local"), callContext)
     ).rejects.toMatchObject({
-      code: "LOCAL_EXECUTION_REQUIRED",
-      retryable: false
+      code: "LOCAL_DEVICE_UNAVAILABLE"
     });
     expect(requests).toHaveLength(0);
-    expect(
-      platform.adapterFor({ modelId: "smollm-local", executionTarget: "backend" })
-    ).toBeUndefined();
   });
 
-  it("exposes provider-routed models to the agent runtime only on the backend target", () => {
+  it("exposes each routed model to the agent runtime only on its own target", () => {
     const { fetch } = vendorFetch();
     const { platform } = createTestPlatform({ catalog, fetch });
     expect(
@@ -197,7 +264,14 @@ describe("inference router: model and provider resolution", () => {
       platform.adapterFor({ modelId: "orphan-test", executionTarget: "backend" })
     ).toBeUndefined();
     expect(platform.hostedExecutionTargetFor("glm-test")).toBe("backend");
-    expect(platform.hostedExecutionTargetFor("smollm-local")).toBeUndefined();
+    expect(platform.hostedExecutionTargetFor("smollm-local")).toBe("browser-local");
+    expect(
+      platform.adapterFor({ modelId: "smollm-local", executionTarget: "browser-local" })
+        ?.executionTarget
+    ).toBe("browser-local");
+    expect(
+      platform.adapterFor({ modelId: "smollm-local", executionTarget: "backend" })
+    ).toBeUndefined();
   });
 });
 
@@ -673,7 +747,10 @@ describe("inference router: health isolation and streaming", () => {
     expect(repositories.runsSnapshot()).toHaveLength(1);
 
     const failures = [];
-    for await (const chunk of platform.router.stream(request("smollm-local"), callContext))
+    for await (const chunk of platform.router.stream(request("smollm-local"), {
+      ...callContext,
+      userId: null
+    }))
       failures.push(chunk);
     expect(failures).toEqual([
       {

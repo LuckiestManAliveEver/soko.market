@@ -1,4 +1,4 @@
-import type { InferenceUsage, ModelPricing } from "./contract.js";
+import type { CredentialScope, InferenceUsage, ModelPricing } from "./contract.js";
 import type { InferenceEnvironment } from "./environment.js";
 import { InferenceError } from "./errors.js";
 import type {
@@ -38,9 +38,16 @@ export function estimateCost(
 
 export interface EffectiveUsagePolicy {
   currency: string;
-  tenantDailyBudget: number | null;
-  userDailyBudget: number | null;
+  /**
+   * Soko's own spend caps (environment / global row). They apply only to Soko-funded requests,
+   * measured against Soko-funded spend - a shop paying with its own key is not limited by them.
+   */
+  platformTenantDailyBudget: number | null;
+  platformUserDailyBudget: number | null;
   providerMonthlyCeilings: ReadonlyMap<string, number>;
+  /** A shop's / person's own caps (their policy row). They apply to all of their spend. */
+  ownTenantDailyBudget: number | null;
+  ownUserDailyBudget: number | null;
   maxRequestsPerMinute: number | null;
   maxTokensPerRequest: number | null;
   fallbackPolicy: InferenceFallbackPolicy;
@@ -49,13 +56,90 @@ export interface EffectiveUsagePolicy {
 }
 
 /**
- * Budgets, per-request token ceilings, rate limits and the explicit fallback policy. Precedence for
- * each field: user row / tenant row (most specific wins) -> global row -> environment default.
- * Rate limits and token ceilings take the *strictest* defined value so a tenant row cannot loosen a
- * platform-wide ceiling.
+ * Counts requests in a fixed window. The default is in-process; with Redis configured the API uses
+ * createRedisRequestRateLimiter so every API instance shares the same counters.
+ */
+export interface RequestRateLimiter {
+  hit(
+    key: string,
+    limit: number,
+    windowMs: number
+  ): Promise<{ allowed: boolean; retryAfterMs: number }>;
+}
+
+export function createMemoryRequestRateLimiter(now: () => number = Date.now): RequestRateLimiter {
+  const windows = new Map<string, number[]>();
+  return {
+    async hit(key, limit, windowMs) {
+      const at = now();
+      const recent = (windows.get(key) ?? []).filter((time) => time > at - windowMs);
+      if (recent.length >= limit) {
+        windows.set(key, recent);
+        return { allowed: false, retryAfterMs: Math.max(0, (recent[0] ?? at) + windowMs - at) };
+      }
+      recent.push(at);
+      windows.set(key, recent);
+      return { allowed: true, retryAfterMs: 0 };
+    }
+  };
+}
+
+/** Minimal slice of an ioredis client, so tests can fake it. */
+export interface RateLimitRedisPipeline {
+  incr(key: string): RateLimitRedisPipeline;
+  pexpire(key: string, ms: number): RateLimitRedisPipeline;
+  exec(): Promise<Array<[Error | null, unknown]> | null>;
+}
+
+export interface RateLimitRedis {
+  multi(): RateLimitRedisPipeline;
+}
+
+/**
+ * Shared fixed-window counter in Redis (one key per window). If Redis is unreachable the request is
+ * admitted by the in-process fallback, matching how the API's HTTP rate limiter skips on Redis
+ * errors instead of taking the API down.
+ */
+export function createRedisRequestRateLimiter(
+  redis: RateLimitRedis,
+  options: { now?: () => number; fallback?: RequestRateLimiter } = {}
+): RequestRateLimiter {
+  const now = options.now ?? Date.now;
+  const fallback = options.fallback ?? createMemoryRequestRateLimiter(now);
+  return {
+    async hit(key, limit, windowMs) {
+      const at = now();
+      const window = Math.floor(at / windowMs);
+      const redisKey = `soko:inference:rate:${key}:${window}`;
+      try {
+        const result = await redis
+          .multi()
+          .incr(redisKey)
+          .pexpire(redisKey, windowMs * 2)
+          .exec();
+        const count = Number(result?.[0]?.[1]);
+        if (!Number.isFinite(count)) throw new Error("Unexpected Redis reply.");
+        return count > limit
+          ? { allowed: false, retryAfterMs: (window + 1) * windowMs - at }
+          : { allowed: true, retryAfterMs: 0 };
+      } catch {
+        return fallback.hit(key, limit, windowMs);
+      }
+    }
+  };
+}
+
+/**
+ * Budgets, per-request token ceilings, rate limits and the explicit fallback policy.
+ *
+ * - Rate limits and token ceilings: the strictest defined value across environment, global,
+ *   tenant and user rows - no row can loosen a stricter one.
+ * - Budgets come in two kinds that are checked independently (both must pass): Soko's own caps
+ *   on Soko-funded spend, and a shop's/person's own caps on all of their spend.
+ * - Fallback policy: the most specific row that sets one (tenant, then user, then global).
  */
 export class InferenceUsageGuard {
-  private readonly recentRequests = new Map<string, number[]>();
+  private readonly limiter: RequestRateLimiter;
 
   constructor(
     private readonly deps: {
@@ -63,8 +147,12 @@ export class InferenceUsageGuard {
       policies: InferencePolicyRepository;
       environment: InferenceEnvironment["budgets"];
       now?: () => Date;
+      limiter?: RequestRateLimiter;
     }
-  ) {}
+  ) {
+    this.limiter =
+      deps.limiter ?? createMemoryRequestRateLimiter(() => (deps.now?.() ?? new Date()).getTime());
+  }
 
   async effectivePolicy(owner: {
     tenantId: string | null;
@@ -86,10 +174,12 @@ export class InferenceUsageGuard {
     }
     const fallbackSource: InferencePolicyRecord | undefined = tenant ?? user ?? global;
     return {
-      currency: (tenant?.currency ?? global?.currency ?? env.currency).toUpperCase(),
-      tenantDailyBudget: tenant?.dailyBudget ?? global?.dailyBudget ?? env.tenantDailyBudget,
-      userDailyBudget: user?.dailyBudget ?? env.userDailyBudget,
+      currency: (global?.currency ?? env.currency).toUpperCase(),
+      platformTenantDailyBudget: global?.dailyBudget ?? env.tenantDailyBudget,
+      platformUserDailyBudget: env.userDailyBudget,
       providerMonthlyCeilings: ceilings,
+      ownTenantDailyBudget: tenant?.dailyBudget ?? null,
+      ownUserDailyBudget: user?.dailyBudget ?? null,
       maxRequestsPerMinute: strictest(
         env.maxRequestsPerMinute,
         global?.maxRequestsPerMinute,
@@ -117,52 +207,85 @@ export class InferenceUsageGuard {
     tenantId: string | null;
     userId: string | null;
     providerId: string;
+    /** Who pays for this request: Soko's caps apply only when it is "platform". */
+    credentialScope: CredentialScope | null;
     policy: EffectiveUsagePolicy;
   }): Promise<void> {
     const now = this.deps.now?.() ?? new Date();
     const { policy } = input;
     if (policy.maxRequestsPerMinute !== null) {
-      const key = `${input.tenantId ?? "-"}|${input.userId ?? "-"}`;
-      const windowStart = now.getTime() - 60_000;
-      const recent = (this.recentRequests.get(key) ?? []).filter((at) => at > windowStart);
-      if (recent.length >= policy.maxRequestsPerMinute) {
-        this.recentRequests.set(key, recent);
+      const verdict = await this.limiter.hit(
+        `${input.tenantId ?? "-"}|${input.userId ?? "-"}`,
+        policy.maxRequestsPerMinute,
+        60_000
+      );
+      if (!verdict.allowed) {
         throw new InferenceError("RATE_LIMITED", {
           providerId: input.providerId,
-          retryAfterMs: Math.max(0, (recent[0] ?? now.getTime()) + 60_000 - now.getTime()),
+          retryAfterMs: verdict.retryAfterMs,
           diagnostic: "Soko per-minute request limit reached."
         });
       }
-      recent.push(now.getTime());
-      this.recentRequests.set(key, recent);
     }
     const dayStart = startOfUtcDay(now);
-    if (policy.tenantDailyBudget !== null && input.tenantId !== null) {
-      const spent = await this.deps.runs.sumCost({
-        since: dayStart,
-        tenantId: input.tenantId,
-        currency: policy.currency
+    const spent = (filter: {
+      tenantId?: string;
+      userId?: string;
+      providerId?: string;
+      platformOnly: boolean;
+      since: string;
+    }) =>
+      this.deps.runs.sumCost({
+        since: filter.since,
+        currency: policy.currency,
+        ...(filter.tenantId === undefined ? {} : { tenantId: filter.tenantId }),
+        ...(filter.userId === undefined ? {} : { userId: filter.userId }),
+        ...(filter.providerId === undefined ? {} : { providerId: filter.providerId }),
+        ...(filter.platformOnly ? { credentialScope: "platform" as const } : {})
       });
-      if (spent >= policy.tenantDailyBudget)
-        throw budgetExceeded(input.providerId, "tenant daily budget");
+    const platformFunded = input.credentialScope === "platform";
+    if (input.tenantId !== null) {
+      if (
+        policy.ownTenantDailyBudget !== null &&
+        (await spent({ since: dayStart, tenantId: input.tenantId, platformOnly: false })) >=
+          policy.ownTenantDailyBudget
+      ) {
+        throw budgetExceeded(input.providerId, "shop daily budget");
+      }
+      if (
+        platformFunded &&
+        policy.platformTenantDailyBudget !== null &&
+        (await spent({ since: dayStart, tenantId: input.tenantId, platformOnly: true })) >=
+          policy.platformTenantDailyBudget
+      ) {
+        throw budgetExceeded(input.providerId, "platform daily budget for this shop");
+      }
     }
-    if (policy.userDailyBudget !== null && input.userId !== null) {
-      const spent = await this.deps.runs.sumCost({
-        since: dayStart,
-        userId: input.userId,
-        currency: policy.currency
-      });
-      if (spent >= policy.userDailyBudget)
-        throw budgetExceeded(input.providerId, "user daily budget");
+    if (input.userId !== null) {
+      if (
+        policy.ownUserDailyBudget !== null &&
+        (await spent({ since: dayStart, userId: input.userId, platformOnly: false })) >=
+          policy.ownUserDailyBudget
+      ) {
+        throw budgetExceeded(input.providerId, "personal daily budget");
+      }
+      if (
+        platformFunded &&
+        policy.platformUserDailyBudget !== null &&
+        (await spent({ since: dayStart, userId: input.userId, platformOnly: true })) >=
+          policy.platformUserDailyBudget
+      ) {
+        throw budgetExceeded(input.providerId, "platform daily budget for this person");
+      }
     }
     const ceiling = policy.providerMonthlyCeilings.get(input.providerId);
-    if (ceiling !== undefined) {
-      const spent = await this.deps.runs.sumCost({
+    if (platformFunded && ceiling !== undefined) {
+      const total = await spent({
         since: startOfUtcMonth(now),
         providerId: input.providerId,
-        currency: policy.currency
+        platformOnly: true
       });
-      if (spent >= ceiling) throw budgetExceeded(input.providerId, "provider monthly ceiling");
+      if (total >= ceiling) throw budgetExceeded(input.providerId, "provider monthly ceiling");
     }
   }
 }
