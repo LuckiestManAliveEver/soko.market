@@ -60,6 +60,8 @@ import {
   defaultAgentDefinitionId,
   piAgentDefinition,
   piAgentDefinitionId,
+  sokoEngineAgentDefinition,
+  sokoEngineAgentDefinitionId,
   isAccountSyncCollection,
   isAgentDefinitionId,
   repositoryDefaultRuntimePolicy
@@ -111,6 +113,10 @@ import {
 } from "./domains/messaging/shared.js";
 import { AgentRuntimeDomain } from "./domains/agent-runtime/store.js";
 import { createDefaultAgentRuntimeAdapterRegistry } from "../agent-harness/default-agent-runtime-adapters.js";
+import {
+  connectedAgentRuntimeAdapterId,
+  type ZeroClawGatewayConfig
+} from "../agent-harness/zeroclaw-agent-runtime-adapter.js";
 import type { AgentRuntimeAdapter } from "../agent-harness/agent-runtime-adapter.js";
 import {
   aiModelRegistry,
@@ -821,6 +827,8 @@ export interface Cp2StoreOptions {
    * stores built without either option keep their exact prior (adapter-less) behavior.
    */
   inferencePlatform?: InferencePlatform;
+  /** ZeroClaw gateway (agent-harness/zeroclaw-agent-runtime-adapter.ts); null/omitted = not connected. */
+  zeroClawGateway?: ZeroClawGatewayConfig | null;
   platformDefaultRuntime?: PlatformDefaultRuntimePolicy;
   pushNotificationSender?: PushNotificationSender;
   messageEmailNotificationSender?: MessageEmailNotificationSender;
@@ -942,15 +950,35 @@ export class Cp2Store {
   private readonly conversationAttachmentBlobStore: ConversationAttachmentBlobStore;
   private readonly accountAiAssetStore: AccountAiAssetStore;
   private readonly mcpPrincipalContext = new AsyncLocalStorage<McpPrincipal>();
-  private readonly defaultAgentRuntimeAdapters = createDefaultAgentRuntimeAdapterRegistry();
+  private readonly defaultAgentRuntimeAdapters: ReturnType<
+    typeof createDefaultAgentRuntimeAdapterRegistry
+  >;
   private readonly computerRuntimeDomain: ComputerRuntimeDomain;
 
   private readonly inferencePlatform: InferencePlatform;
+  /** The deployment's default runtime, with its engine resolved to one this deployment runs. */
+  private readonly platformDefaultRuntime: PlatformDefaultRuntimePolicy;
+  private readonly zeroClawConnected: boolean;
   private readonly modelRuntimeAdapterResolver: Cp2StoreOptions["modelRuntimeAdapterResolver"];
 
   constructor(private readonly options: Cp2StoreOptions = {}) {
     this.inferencePlatform = options.inferencePlatform ?? createInferencePlatform();
     this.inferencePlatform.setModelCatalog(() => this.listModelCatalog());
+    this.zeroClawConnected = (options.zeroClawGateway ?? null) !== null;
+    const configuredDefault = options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy;
+    this.platformDefaultRuntime = {
+      ...configuredDefault,
+      agentRuntimeAdapterId: connectedAgentRuntimeAdapterId(
+        configuredDefault.agentRuntimeAdapterId,
+        this.zeroClawConnected
+      )
+    };
+    this.defaultAgentRuntimeAdapters = createDefaultAgentRuntimeAdapterRegistry({
+      zeroclaw: {
+        gateway: options.zeroClawGateway ?? null,
+        inference: () => this.inferencePlatform
+      }
+    });
     const explicitAdapterResolver = options.modelRuntimeAdapterResolver;
     const routedPlatform = options.inferencePlatform;
     this.modelRuntimeAdapterResolver =
@@ -962,9 +990,7 @@ export class Cp2Store {
               modelId: input.modelId,
               executionTarget: input.executionTarget
             });
-    this.nativeRuntimeBindings = new NativeRuntimeBindingStore(
-      options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy
-    );
+    this.nativeRuntimeBindings = new NativeRuntimeBindingStore(this.platformDefaultRuntime);
     this.channelGateway = options.channelGateway ?? createChannelGatewayFromEnvironment({});
     this.emailMailboxProviderClient =
       options.emailMailboxProviderClient ?? createEmailMailboxProviderClient({});
@@ -1404,11 +1430,21 @@ export class Cp2Store {
       activeRuntimeCheckpoint: (taskId) => this.runtimeHandoffDomain.activeCheckpoint(taskId),
       appendRuntimeExecutionEvent: (...args) =>
         this.runtimeHandoffDomain.appendExecutionEvent(...args),
-      platformDefaultRuntime: this.options.platformDefaultRuntime ?? repositoryDefaultRuntimePolicy,
+      platformDefaultRuntime: this.platformDefaultRuntime,
       listModelCatalog: () => this.listModelCatalog(),
       resolveCatalogModel: (modelId) => this.resolveCatalogModel(modelId),
-      resolveAgentCatalogEntry: (agentDefinitionId) =>
-        cloneAgentCatalogEntry(this.agentCatalog.get(agentDefinitionId) ?? defaultAgentDefinition),
+      resolveAgentCatalogEntry: (agentDefinitionId) => {
+        const entry = cloneAgentCatalogEntry(
+          this.agentCatalog.get(agentDefinitionId) ?? defaultAgentDefinition
+        );
+        return {
+          ...entry,
+          runtimeAdapterId: connectedAgentRuntimeAdapterId(
+            entry.runtimeAdapterId,
+            this.zeroClawConnected
+          )
+        };
+      },
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
         this.requireAuthorizedActor(sessionId, businessId, permission, now),
       requirePinVerifiedSession: (sessionId, now) => this.requireAuthenticatedActor(sessionId, now),
@@ -8515,6 +8551,10 @@ export class Cp2Store {
       // of the default to run on Pi,
       // rather than toggling a separate engine field on the same agent.
       this.agentCatalog.set(piAgentDefinitionId, cloneAgentCatalogEntry(piAgentDefinition));
+      this.agentCatalog.set(
+        sokoEngineAgentDefinitionId,
+        cloneAgentCatalogEntry(sokoEngineAgentDefinition)
+      );
     }
   }
 

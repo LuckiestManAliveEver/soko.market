@@ -8,16 +8,18 @@ import {
   type ModelRuntimeAdapter
 } from "../services/api/src/inference/model-runtime";
 
-const primaryModelId = "smollm2-360m";
+const primaryModelId = "gpt-6-luna";
 const fallbackModelId = "qwen2.5-0.5b-android";
 
 describe("zero-setup native runtime", () => {
   it("completes a brand-new user's first /v1/messages chat without a download or activation", async () => {
-    const generate = vi.fn(async () => generation(primaryModelId, "Welcome to Soko AI.", "vercel"));
+    const generate = vi.fn(async () =>
+      generation(primaryModelId, "Welcome to Soko AI.", "backend")
+    );
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
-        modelId === primaryModelId && executionTarget === "vercel"
-          ? adapter(modelId, generate, "vercel")
+        modelId === primaryModelId && executionTarget === "backend"
+          ? adapter(modelId, generate, "backend")
           : undefined
     });
     const app = buildApi({ cp2: { store } });
@@ -44,9 +46,9 @@ describe("zero-setup native runtime", () => {
             model: {
               status: "available",
               modelId: primaryModelId,
-              executionTarget: "vercel",
+              executionTarget: "backend",
               agentId: actor.businessId,
-              agentAdapterId: "pi"
+              agentAdapterId: "soko"
             }
           }
         },
@@ -57,8 +59,8 @@ describe("zero-setup native runtime", () => {
       expect(
         store.snapshot().nativeRuntimeAgents.find((agent) => agent.id === actor.businessId)
       ).toMatchObject({
-        provider: "pi",
-        configuration: { runtimeAdapterId: "pi", requiredModelCapabilities: ["chat"] }
+        provider: "soko-business-agent",
+        configuration: { runtimeAdapterId: "soko", requiredModelCapabilities: ["chat"] }
       });
       // There is no legacy cp2_agent_model_bindings representation left to duplicate this into -
       // the native runtime graph checked above is the sole source of truth for a first chat.
@@ -78,7 +80,7 @@ describe("zero-setup native runtime", () => {
     store.activateGlobalDefaultModel({
       model: {
         id: primaryModelId,
-        label: "SmolLM2 360M Instruct Q4_0",
+        label: "GPT-6 Luna",
         provider: "local",
         description: "Default hosted runtime model.",
         capabilities: ["chat", "english", "instruction-following"],
@@ -109,7 +111,7 @@ describe("zero-setup native runtime", () => {
       });
       expect(effectiveRuntime.statusCode).toBe(200);
       expect(effectiveRuntime.json()).toMatchObject({
-        agent: { id: "builtin:shopkeeper", runtimeAdapterId: "pi" },
+        agent: { id: "builtin:shopkeeper", runtimeAdapterId: "soko" },
         model: { id: primaryModelId },
         execution: { type: "backend", ready: true },
         source: "default",
@@ -131,7 +133,7 @@ describe("zero-setup native runtime", () => {
             status: "available",
             modelId: primaryModelId,
             executionTarget: "backend",
-            agentAdapterId: "pi"
+            agentAdapterId: "soko"
           }
         }
       });
@@ -142,7 +144,7 @@ describe("zero-setup native runtime", () => {
     }
   });
 
-  it("resolves a swapped platform default agent through the exact same first-chat path as Pi", async () => {
+  it("resolves a swapped platform default agent through the exact same first-chat path as the built-in default", async () => {
     const betaExecute = vi.fn(async (input: Parameters<AgentRuntimeAdapter["execute"]>[0]) => ({
       completion: await input.model.complete(input.prompt, input.signal),
       eventTypes: ["beta.turn_start", "beta.turn_end"]
@@ -218,13 +220,13 @@ describe("zero-setup native runtime", () => {
       throw new ModelRuntimeError("INFERENCE_SERVICE_UNREACHABLE", "offline", true);
     });
     const fallbackGenerate = vi.fn(async () =>
-      generation(fallbackModelId, "Fallback ready.", "vercel")
+      generation(fallbackModelId, "Fallback ready.", "backend")
     );
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId, executionTarget }) => {
-        if (executionTarget !== "vercel") return undefined;
-        if (modelId === primaryModelId) return adapter(modelId, primaryGenerate, "vercel");
-        if (modelId === fallbackModelId) return adapter(modelId, fallbackGenerate, "vercel");
+        if (executionTarget !== "backend") return undefined;
+        if (modelId === primaryModelId) return adapter(modelId, primaryGenerate, "backend");
+        if (modelId === fallbackModelId) return adapter(modelId, fallbackGenerate, "backend");
         return undefined;
       }
     });
@@ -242,7 +244,7 @@ describe("zero-setup native runtime", () => {
           response: "Fallback ready.",
           model: {
             modelId: fallbackModelId,
-            executionTarget: "vercel",
+            executionTarget: "backend",
             fallbackIndex: 1,
             status: "available"
           }
@@ -476,11 +478,7 @@ function adapter(
   };
 }
 
-function generation(
-  modelId: string,
-  message: string,
-  executionTarget: "backend" | "vercel" = "backend"
-) {
+function generation(modelId: string, message: string, executionTarget: "backend" = "backend") {
   return {
     text: JSON.stringify({ type: "response", message }),
     modelId,

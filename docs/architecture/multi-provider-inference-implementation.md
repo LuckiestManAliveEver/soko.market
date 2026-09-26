@@ -615,7 +615,7 @@ skip-on-error stance as the HTTP rate limiter.
 - The compiled API boots with `INFERENCE_CREDENTIAL_KEYS` set: `/health/ready` returns 200, and
   anonymous `/v1/ai/turn-stream` returns 401.
 
-### 20.7 Tests added in this iteration
+### 20.8 Tests added in this iteration
 
 | File                                                      | Covers                                                                                                                                                                               |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -633,3 +633,46 @@ Existing tests updated because the product decision changed:
 - `retired-device-model-references`: the engine file is permitted;
 - `fresh-shop-hosted-first-chat` and `local-runtime-boundary`: the turn-stream request and the
   preview wrapper.
+
+## 21. Follow-up: Shopkeeper on ZeroClaw with GPT-6 Luna as the platform default
+
+Decision record: [ADR-zeroclaw-default-agent-runtime.md](../adr/ADR-zeroclaw-default-agent-runtime.md).
+
+- **Default runtime.** `repositoryDefaultRuntimePolicy` is now
+  `builtin:shopkeeper:v1` / `Shopkeeper` / engine `zeroclaw` / `gpt-6-luna` / target `backend`.
+  `platformSharedModelId` is `gpt-6-luna`: it is the only platform-included model, and every other
+  model is merchant-funded. Migration 103 (with rollback) makes these changes in existing
+  databases:
+  - seeds the catalog row;
+  - switches the `builtin:shopkeeper` definition to ZeroClaw;
+  - adds `builtin:shopkeeper-soko` (Shopkeeper on Soko's engine);
+  - rewrites the global default binding slot in place.
+- **ZeroClaw engine.** `agent-harness/zeroclaw-agent-runtime-adapter.ts` is always registered.
+  - It calls the ZeroClaw gateway's `POST /webhook` with one fresh session per turn.
+  - It rejects replies from any model other than the bound one.
+  - It returns plain text, which Soko parses and approval-gates like any other model output.
+- **Delegated runs.** `InferenceRouter.delegate` covers a model call made by an external runtime
+  that holds Soko's platform key. It resolves the model (without a credential lookup), admits the
+  call against budgets and rate limits, and runs it behind its own `delegated:<provider>` circuit.
+  It records a `credentialScope: "platform"` run, with token counts estimated from text length
+  because the gateway reports none.
+- **No gateway.** ZeroClaw is resolved to the `soko` engine once, at configuration time. This
+  covers both the default policy and any agent definition that names `zeroclaw`, and it is logged
+  as `runtime.default_engine_resolved`.
+- **Fixed along the way.** The zero-setup repair no longer attaches a hosted fallback behind an
+  on-device primary model. With a cloud default, that fallback would have sent on-device
+  conversations to the cloud when no device was online.
+- **Deployment.** `render.yaml` adds the private `soko-market-zeroclaw` service:
+  - image `ghcr.io/zeroclaw-labs/zeroclaw:v0.8.5`;
+  - `readonly` risk profile with all tools denied, and no session persistence;
+  - generated webhook secret shared with the API.
+    It also points the API's `PLATFORM_DEFAULT_*` variables at the new default. Set `OPENAI_API_KEY`
+    on the API and `ZEROCLAW_providers__models__openai__default__api_key` on the ZeroClaw service.
+- **Tests.** `tests/zeroclaw-agent-runtime.test.ts` covers:
+  - the webhook contract;
+  - model identity checks;
+  - error mapping;
+  - budget admission;
+  - configuration parsing;
+  - resolution to the `soko` engine.
+    Existing zero-setup, effective-runtime, catalog and switcher tests now assert the new default.

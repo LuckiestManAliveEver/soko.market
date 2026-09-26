@@ -8,6 +8,7 @@ import type {
   ModelExecutionTarget,
   ModelRuntimeHealthSummary
 } from "@soko/shared-types";
+import { platformSharedModelId } from "@soko/shared-types";
 
 import {
   readClientInferencePreferences,
@@ -385,7 +386,7 @@ export function AgentModelPanel({
   }
 
   function requestActivateServerBackendModel(model: AiModelSummary) {
-    if (model.id !== "smollm2-360m") {
+    if (model.id !== platformSharedModelId) {
       setPendingCostConfirmationModelId(model.id);
       return;
     }
@@ -416,7 +417,7 @@ export function AgentModelPanel({
             allowInstalledApp: false,
             allowRemoteShopDevice: inferencePreferences.ownerNodeAllowed
           },
-          ...(model.id === "smollm2-360m" ? {} : { costResponsibility: "merchant" })
+          ...(model.id === platformSharedModelId ? {} : { costResponsibility: "merchant" })
         },
         { timeoutMs: backendModelProbeRequestTimeoutMs }
       );

@@ -133,16 +133,34 @@ services:
       # inference-runtime.md). The browser never receives the inference service token, the Neon
       # object-storage credentials, or a signed artifact URL directly - Render mints those and
       # proxies the inference stream back to the client.
+      # Platform default before any swap: the Shopkeeper agent on the ZeroClaw agent runtime with
+      # OpenAI's GPT-6 Luna, Soko-funded (docs/adr/ADR-zeroclaw-default-agent-runtime.md). Needs
+      # OPENAI_API_KEY below; without a ZeroClaw gateway Shopkeeper runs on Soko's own engine.
       - key: PLATFORM_DEFAULT_AGENT_ID
-        value: builtin:pi:v1
+        value: builtin:shopkeeper:v1
       - key: PLATFORM_DEFAULT_AGENT_NAME
-        value: Pi
+        value: Shopkeeper
       - key: PLATFORM_DEFAULT_AGENT_ADAPTER_ID
-        value: pi
+        value: zeroclaw
       - key: PLATFORM_DEFAULT_MODEL_ID
-        value: smollm2-360m
+        value: gpt-6-luna
       - key: PLATFORM_DEFAULT_EXECUTION_TARGET
-        value: vercel
+        value: backend
+      # ZeroClaw gateway (soko-market-zeroclaw below), reached over Render's private network.
+      - key: ZEROCLAW_GATEWAY_URL
+        fromService:
+          name: soko-market-zeroclaw
+          type: pserv
+          property: hostport
+      - key: ZEROCLAW_ALLOW_PRIVATE_NETWORK
+        value: "true"
+      - key: ZEROCLAW_WEBHOOK_SECRET
+        fromService:
+          name: soko-market-zeroclaw
+          type: pserv
+          envVarKey: ZEROCLAW_gateway__webhook_secret
+      - key: ZEROCLAW_TIMEOUT_MS
+        value: "120000"
       - key: VERCEL_INFERENCE_URL
         sync: false
       - key: VERCEL_INFERENCE_TIMEOUT_MS
@@ -304,6 +322,45 @@ services:
         value: "5"
       - key: OCR_CONCURRENCY
         value: "1"
+
+  # ZeroClaw agent runtime (https://github.com/zeroclaw-labs/zeroclaw, MIT OR Apache-2.0) - the
+  # default engine for the Shopkeeper agent (docs/adr/ADR-zeroclaw-default-agent-runtime.md).
+  # Private: only soko-market reaches its gateway. It runs no model itself; it calls OpenAI's
+  # GPT-6 Luna with Soko's key. Locked down: read-only risk profile with every ZeroClaw tool
+  # denied, so it can only produce text, which Soko then parses and approval-gates like any model
+  # output. No pairing tokens; the generated webhook secret is shared with soko-market above.
+  - type: pserv
+    name: soko-market-zeroclaw
+    runtime: image
+    image:
+      url: ghcr.io/zeroclaw-labs/zeroclaw:v0.8.5
+    plan: starter
+    region: oregon
+    envVars:
+      - key: ZEROCLAW_gateway__host
+        value: 0.0.0.0
+      - key: ZEROCLAW_gateway__allow_public_bind
+        value: "true"
+      - key: ZEROCLAW_gateway__port
+        value: "42617"
+      - key: ZEROCLAW_gateway__require_pairing
+        value: "false"
+      - key: ZEROCLAW_gateway__webhook_secret
+        generateValue: true
+      - key: ZEROCLAW_gateway__session_persistence
+        value: "false"
+      - key: ZEROCLAW_gateway__request_timeout_secs
+        value: "120"
+      - key: ZEROCLAW_providers__models__openai__default__model
+        value: gpt-6-luna
+      - key: ZEROCLAW_providers__models__openai__default__api_key
+        sync: false
+      - key: ZEROCLAW_risk_profiles__default__level
+        value: readonly
+      - key: ZEROCLAW_risk_profiles__default__deny_all_tools
+        value: "true"
+      - key: ZEROCLAW_risk_profiles__default__workspace_only
+        value: "true"
 
   - type: web
     name: soko-market-web-staging

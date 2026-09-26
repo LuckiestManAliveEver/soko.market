@@ -123,13 +123,46 @@ describe("Render Blueprint", () => {
     expect(api).toContain("key: NEON_MODEL_STORAGE_ACCESS_KEY_ID");
     expect(api).toContain("key: NEON_MODEL_STORAGE_SECRET_ACCESS_KEY");
     expect(api).toContain('INFERENCE_REQUIRED\n        value: "true"');
-    expect(api).toContain("PLATFORM_DEFAULT_EXECUTION_TARGET\n        value: vercel");
+    // The default model (GPT-6 Luna) is provider-routed on the backend target; Vercel still hosts
+    // the self-hosted models a shop can choose.
+    expect(api).toContain("PLATFORM_DEFAULT_EXECUTION_TARGET\n        value: backend");
+    expect(api).toContain("PLATFORM_DEFAULT_MODEL_ID\n        value: gpt-6-luna");
+    expect(api).toContain("PLATFORM_DEFAULT_AGENT_ADAPTER_ID\n        value: zeroclaw");
 
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(blueprint).not.toContain("INFERENCE_CLOUD_FALLBACK_ENABLED");
     expect(blueprint).toContain("INFERENCE_JOB_SIGNING_SECRET\n        generateValue: true");
     expect(production).toContain('VITE_INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(production).toContain('VITE_INFERENCE_MAX_FALLBACKS\n        value: "3"');
+  });
+
+  it("deploys ZeroClaw as a locked-down private agent runtime wired to the API", async () => {
+    const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
+    const api = blueprint.slice(
+      blueprint.indexOf("name: soko-market"),
+      blueprint.indexOf("name: soko-market-rate-limit-cache")
+    );
+    const zeroclaw = blueprint.slice(
+      blueprint.indexOf("name: soko-market-zeroclaw\n"),
+      blueprint.indexOf("name: soko-market-web-staging")
+    );
+    expect(blueprint).toMatch(/type: pserv\n\s+name: soko-market-zeroclaw\n/u);
+    expect(zeroclaw).toContain("url: ghcr.io/zeroclaw-labs/zeroclaw:v0.8.5");
+    // Text only: no ZeroClaw tools, read-only, no cross-turn session memory.
+    expect(zeroclaw).toContain("ZEROCLAW_risk_profiles__default__level\n        value: readonly");
+    expect(zeroclaw).toContain(
+      'ZEROCLAW_risk_profiles__default__deny_all_tools\n        value: "true"'
+    );
+    expect(zeroclaw).toContain('ZEROCLAW_gateway__session_persistence\n        value: "false"');
+    expect(zeroclaw).toContain("ZEROCLAW_gateway__webhook_secret\n        generateValue: true");
+    expect(zeroclaw).toContain(
+      "ZEROCLAW_providers__models__openai__default__model\n        value: gpt-6-luna"
+    );
+    expect(zeroclaw).toContain(
+      "ZEROCLAW_providers__models__openai__default__api_key\n        sync: false"
+    );
+    expect(api).toContain("envVarKey: ZEROCLAW_gateway__webhook_secret");
+    expect(api).toMatch(/ZEROCLAW_GATEWAY_URL\n\s+fromService:\n\s+name: soko-market-zeroclaw/u);
   });
 
   it("deploys the OCR worker as a private service and wires the API to it", async () => {

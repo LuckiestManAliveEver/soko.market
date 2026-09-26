@@ -56,6 +56,20 @@ export interface ResolvedInferenceTarget {
   provider: InferenceProvider;
   credential: ResolvedCredential | null;
   executionTarget: InferenceExecutionTarget;
+  /**
+   * Set only for delegated runs (see InferenceRouter.delegate): the external agent runtime holds
+   * the credential, so Soko resolves none but still knows who pays.
+   */
+  delegatedScope?: CredentialScope;
+}
+
+function fundingScope(target: ResolvedInferenceTarget): CredentialScope | null {
+  return target.credential?.scope ?? target.delegatedScope ?? null;
+}
+
+/** Rough token count (4 characters per token) for runtimes that do not report usage. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
 }
 
 /** Low-cardinality observation for metrics. No user ids, prompts, or keys - by construction. */
@@ -144,6 +158,11 @@ export class InferenceRouter {
      * gets LOCAL_EXECUTION_REQUIRED and nothing is sent anywhere.
      */
     allowDeviceExecution?: boolean;
+    /**
+     * Delegated runs only: an external agent runtime makes the provider call with Soko's own
+     * platform credential, which it holds itself. Step 8 is skipped and the run is platform-funded.
+     */
+    credentialHeldByDelegate?: boolean;
   }): Promise<ResolvedInferenceTarget> {
     if (input.agentId.trim() === "") {
       throw new InferenceError(
@@ -205,6 +224,29 @@ export class InferenceRouter {
     if (nativeExecutionTargetFor(model.executionTarget) === "remote-shop-device") {
       // Shop-owned machines are served by the owner-node broker, not this router.
       throw new InferenceError("LOCAL_EXECUTION_REQUIRED", { providerId: config.id, modelId });
+    }
+
+    if (input.credentialHeldByDelegate === true) {
+      if (config.type === "local") {
+        throw new InferenceError("LOCAL_EXECUTION_REQUIRED", { providerId: config.id, modelId });
+      }
+      // Delegated runs have their own circuit: an agent-runtime outage must not take the
+      // provider offline for Soko's direct calls, and vice versa.
+      if (this.breakerFor(`delegated:${config.id}`).state() === "open") {
+        throw new InferenceError("PROVIDER_UNAVAILABLE", {
+          providerId: config.id,
+          modelId,
+          diagnostic: "Delegated runtime circuit is open after repeated failures."
+        });
+      }
+      return {
+        model,
+        providerConfig: config,
+        provider,
+        credential: null,
+        executionTarget: model.executionTarget,
+        delegatedScope: "platform"
+      };
     }
 
     const credential = await this.deps.credentials.resolve({
@@ -273,7 +315,7 @@ export class InferenceRouter {
           tenantId: context.tenantId,
           userId: context.userId,
           providerId: target.providerConfig.id,
-          credentialScope: target.credential?.scope ?? null,
+          credentialScope: fundingScope(target),
           policy
         });
         const resolvedTarget = target;
@@ -331,6 +373,90 @@ export class InferenceRouter {
   }
 
   /**
+   * One generation whose provider call is made by an external agent runtime (ZeroClaw) rather
+   * than by Soko. Everything Soko owns still applies: the model must be in the catalog and
+   * enabled, its provider enabled and not tripped, budgets and rate limits are admitted before the
+   * call, and the run is recorded (platform-funded) afterwards. No fallback: a delegated run is
+   * never moved to another model or runtime.
+   *
+   * `execute` receives the already-limited request and must return the runtime's output for
+   * exactly this model. Usage the runtime does not report is estimated from text length.
+   */
+  async delegate(
+    request: InferenceRequest,
+    context: InferenceCallContext,
+    execute: (input: {
+      model: ModelDefinition;
+      request: InferenceRequest;
+    }) => Promise<Pick<InferenceResponse, "output"> & Partial<InferenceResponse>>
+  ): Promise<InferenceResponse> {
+    const policy = await this.deps.usage.effectivePolicy({
+      tenantId: context.tenantId,
+      userId: context.userId
+    });
+    const startedAt = this.now();
+    const modelId = this.resolveModelId(request.modelId);
+    let target: ResolvedInferenceTarget | undefined;
+    try {
+      target = await this.resolveInferenceTarget({
+        agentId: context.agentId,
+        modelId,
+        tenantId: context.tenantId,
+        userId: context.userId,
+        request: { ...request, modelId },
+        credentialHeldByDelegate: true
+      });
+      await this.deps.usage.admit({
+        tenantId: context.tenantId,
+        userId: context.userId,
+        providerId: target.providerConfig.id,
+        credentialScope: fundingScope(target),
+        policy
+      });
+      const resolved = target;
+      const limited = this.applyLimits({ ...request, modelId }, resolved.model, policy);
+      const result = await this.runWithBreaker(`delegated:${resolved.providerConfig.id}`, () =>
+        execute({ model: resolved.model, request: limited })
+      );
+      const promptText = limited.messages.map((message) => message.content).join("\n");
+      const response: InferenceResponse = {
+        requestId: request.requestId,
+        providerId: resolved.providerConfig.id,
+        modelId: resolved.model.id,
+        ...result,
+        output: result.output,
+        usage: {
+          inputTokens: result.usage?.inputTokens ?? estimateTokens(promptText),
+          outputTokens: result.usage?.outputTokens ?? estimateTokens(result.output.text),
+          ...(result.usage?.cachedInputTokens === undefined
+            ? {}
+            : { cachedInputTokens: result.usage.cachedInputTokens })
+        },
+        latency: { totalMs: result.latency?.totalMs ?? this.now() - startedAt }
+      };
+      const finalized = this.finalize(response, resolved, request.requestId, policy, undefined);
+      await this.record(finalized, resolved, context, "succeeded", null, startedAt, undefined);
+      return finalized;
+    } catch (error) {
+      const normalized = toInferenceError(error, {
+        providerId: target?.providerConfig.id ?? "unresolved",
+        modelId,
+        secrets: secretsOf(target)
+      });
+      await this.recordFailure(
+        normalized,
+        target,
+        modelId,
+        context,
+        startedAt,
+        undefined,
+        request.requestId
+      );
+      throw normalized;
+    }
+  }
+
+  /**
    * Streaming variant. Same resolution, admission, and recording; no mid-stream fallback (once
    * tokens have reached the client, switching models would splice two models' output together).
    * Native streaming is used only when the catalog declares the model streaming-capable; anything
@@ -364,7 +490,7 @@ export class InferenceRouter {
         tenantId: context.tenantId,
         userId: context.userId,
         providerId: target.providerConfig.id,
-        credentialScope: target.credential?.scope ?? null,
+        credentialScope: fundingScope(target),
         policy
       });
       const executionContext = this.executionContext(target, context);
@@ -621,7 +747,7 @@ export class InferenceRouter {
       userId: context.userId,
       modelId: target.model.id,
       providerId: target.providerConfig.id,
-      credentialScope: target.credential?.scope ?? null,
+      credentialScope: fundingScope(target),
       executionTarget: target.executionTarget,
       inputTokens: response.usage?.inputTokens ?? null,
       outputTokens: response.usage?.outputTokens ?? null,
@@ -663,7 +789,7 @@ export class InferenceRouter {
       userId: context.userId,
       modelId: target?.model.id ?? modelId,
       providerId: target?.providerConfig.id ?? error.providerId ?? "unresolved",
-      credentialScope: target?.credential?.scope ?? null,
+      credentialScope: target === undefined ? null : fundingScope(target),
       executionTarget:
         target?.executionTarget ??
         this.deps.resolveModel(modelId)?.executionTarget ??

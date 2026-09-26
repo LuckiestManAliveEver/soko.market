@@ -28,7 +28,9 @@ describe("DB-hosted platform model/agent catalog", () => {
         "smollm2-360m-device",
         "qwen2.5-0.5b-device",
         "qwen3-1.7b-device",
-        "qwen3-4b-soko-cloud"
+        "qwen3-4b-soko-cloud",
+        // The Soko-funded platform default (migration 103).
+        "gpt-6-luna"
       ].sort()
     );
     expect(
@@ -36,7 +38,7 @@ describe("DB-hosted platform model/agent catalog", () => {
         .listAgentCatalog()
         .map((agent) => agent.id)
         .sort()
-    ).toEqual(["builtin:pi-assistant", "builtin:shopkeeper"].sort());
+    ).toEqual(["builtin:pi-assistant", "builtin:shopkeeper", "builtin:shopkeeper-soko"].sort());
   });
 
   it("lets an operator disable the hosted profile without bypassing deployment readiness gates", () => {
@@ -142,7 +144,7 @@ describe("DB-hosted platform model/agent catalog", () => {
 
       const removeDefaultModel = await app.inject({
         method: "DELETE",
-        url: "/v1/platform/model-catalog/smollm2-360m",
+        url: "/v1/platform/model-catalog/gpt-6-luna",
         headers: { cookie: operator.cookie }
       });
       expect(removeDefaultModel.statusCode).toBe(409);
@@ -201,7 +203,12 @@ describe("DB-hosted platform model/agent catalog", () => {
       });
       const agents = listed.json<{ agents: Array<{ id: string }> }>().agents;
       expect(agents.map((agent) => agent.id).sort()).toEqual(
-        ["builtin:pi-assistant", "builtin:receptionist", "builtin:shopkeeper"].sort()
+        [
+          "builtin:pi-assistant",
+          "builtin:receptionist",
+          "builtin:shopkeeper",
+          "builtin:shopkeeper-soko"
+        ].sort()
       );
     } finally {
       await app.close();

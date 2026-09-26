@@ -25,6 +25,11 @@ import { OwnerNodeBroker } from "./inference/owner-node-broker.js";
 import { readInferenceEnvironment } from "./inference/providers/environment.js";
 import { createInferencePlatform } from "./inference/providers/platform.js";
 import {
+  readZeroClawGatewayConfig,
+  zeroClawAgentRuntimeAdapterId,
+  zeroClawUnconnectedFallbackAdapterId
+} from "./agent-harness/zeroclaw-agent-runtime-adapter.js";
+import {
   assertInferenceSchema,
   createPostgresInferenceRepositories
 } from "./inference/providers/postgres-repositories.js";
@@ -260,8 +265,29 @@ await inferencePlatform.refresh().catch((error: unknown) => {
     reason: error instanceof Error ? error.name : "unknown"
   });
 });
+// Provider-routed default (GPT-6 Luna on the backend target): health and readiness probe the same
+// router-backed adapter the default runtime uses, when no Vercel model already claimed the slot.
+primaryInferenceAdapter ??= inferencePlatform.adapterFor({
+  modelId: config.platformDefaultRuntime.modelId,
+  executionTarget: config.platformDefaultRuntime.executionTarget
+});
+// ZeroClaw agent runtime (agent-harness/zeroclaw-agent-runtime-adapter.ts). Optional: without a
+// gateway the default Shopkeeper agent runs on Soko's built-in engine, and the boot log says so.
+const zeroClawGateway = readZeroClawGatewayConfig(process.env);
+if (
+  zeroClawGateway === null &&
+  config.platformDefaultRuntime.agentRuntimeAdapterId === zeroClawAgentRuntimeAdapterId
+) {
+  console.log({
+    event: "runtime.default_engine_resolved",
+    configured: zeroClawAgentRuntimeAdapterId,
+    effective: zeroClawUnconnectedFallbackAdapterId,
+    reason: "ZEROCLAW_GATEWAY_URL is not set"
+  });
+}
 const cp2StoreOptions = {
   channelGateway,
+  zeroClawGateway,
   emailMailboxProviderClient,
   metrics,
   modelRuntimeAdapterResolver,

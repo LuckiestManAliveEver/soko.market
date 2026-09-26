@@ -56,12 +56,17 @@ export interface PlatformDefaultRuntimePolicy {
   executionTarget: ModelExecutionTarget;
 }
 
+/**
+ * Before a shop swaps anything it runs the Shopkeeper agent on the ZeroClaw agent runtime with
+ * OpenAI's GPT-6 Luna, paid for by Soko (docs/adr/ADR-zeroclaw-default-agent-runtime.md). A
+ * deployment without a ZeroClaw gateway runs Shopkeeper on Soko's built-in engine instead.
+ */
 export const repositoryDefaultRuntimePolicy: PlatformDefaultRuntimePolicy = {
-  agentId: "builtin:pi:v1",
-  agentName: "Pi",
-  agentRuntimeAdapterId: "pi",
-  modelId: "smollm2-360m",
-  executionTarget: "vercel"
+  agentId: "builtin:shopkeeper:v1",
+  agentName: "Shopkeeper",
+  agentRuntimeAdapterId: "zeroclaw",
+  modelId: "gpt-6-luna",
+  executionTarget: "backend"
 };
 
 export type InferenceRuntime =
@@ -966,7 +971,8 @@ export interface MarketplaceIntroStateSummary {
 
 /** Stable provider-registry key. Providers are runtime extensions, not a closed platform enum. */
 export type ModelProviderId = string;
-export const platformSharedModelId = "smollm2-360m" as const;
+/** The Soko-funded default model: platform-included, every other model is merchant-funded. */
+export const platformSharedModelId = "gpt-6-luna" as const;
 export type ModelCostResponsibility = "platform-included" | "merchant";
 
 export interface AiModelSummary {
@@ -4278,7 +4284,8 @@ export const defaultAgentDefinition: AgentDefinition = {
   id: defaultAgentDefinitionId,
   displayName: "Shopkeeper",
   role: "General shopkeeper and storefront attendant",
-  description: "Safe offline fallback while the open-source agent catalogue is unavailable.",
+  description:
+    "Soko's default shop assistant, running on the ZeroClaw agent runtime. Also the safe fallback while the open-source agent catalogue is unavailable.",
   operatingPattern: "Focused operator",
   workloadClass: "focused",
   minimumDeviceTier: "low",
@@ -4301,6 +4308,19 @@ export const defaultAgentDefinition: AgentDefinition = {
     "Workspace delivery"
   ],
   skillIds: [],
+  runtimeAdapterId: "zeroclaw"
+};
+
+/**
+ * Same built-in shopkeeper behavior as defaultAgentDefinition, running on Soko's built-in engine
+ * instead of ZeroClaw. Choosing it is how a shop swaps off ZeroClaw.
+ */
+export const sokoEngineAgentDefinitionId: AgentDefinitionId = "builtin:shopkeeper-soko";
+export const sokoEngineAgentDefinition: AgentDefinition = {
+  ...defaultAgentDefinition,
+  id: sokoEngineAgentDefinitionId,
+  displayName: "Shopkeeper (Soko engine)",
+  description: "Same shopkeeper behavior, running on Soko's built-in agent engine.",
   runtimeAdapterId: "soko"
 };
 

@@ -4,32 +4,39 @@ import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 import type { ModelRuntimeAdapter } from "../services/api/src/inference/model-runtime";
 
-const modelId = "smollm2-360m";
+const modelId = "gpt-6-luna";
 
 describe("engine choice travels with the agent definition, not an independent axis", () => {
   it("an explicit model activation surfaces the agent definition's own declared engine", async () => {
-    const store = createCp2Store({ modelRuntimeAdapterResolver: () => adapter() });
+    // With a ZeroClaw gateway connected, Shopkeeper runs on ZeroClaw both as the zero-setup
+    // default and after an explicit activation (its own declared engine).
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: () => adapter(),
+      zeroClawGateway: {
+        url: new URL("https://zeroclaw.example.test"),
+        token: "test-token",
+        webhookSecret: "",
+        agentAlias: "",
+        timeoutMs: 5_000
+      }
+    });
     const app = buildApi({ cp2: { store } });
     try {
       const actor = await createActorAndShop(app, "+254700009301", "Untouched Shop");
 
-      // Before any explicit action, the hosted-first zero-setup default (Pi) is what's running -
-      // a deployment-wide bootstrap convenience, not Shopkeeper's own declared engine.
       const beforeActivation = await effective(app, actor);
       expect(beforeActivation.agent).toMatchObject({
         id: "builtin:shopkeeper",
-        runtimeAdapterId: "pi"
+        runtimeAdapterId: "zeroclaw"
       });
 
-      // Explicitly activating a model (no agent change at all) surfaces the agent definition's own
-      // declared engine ("soko" for Shopkeeper) rather than perpetuating the zero-setup shim.
       const activated = await app.inject({
         method: "POST",
         url: `/api/agents/${actor.businessId}/models/${modelId}/activate`,
         headers: { "content-type": "application/json", cookie: actor.cookie },
         payload: JSON.stringify({
           shopId: actor.businessId,
-          executionTarget: "vercel",
+          executionTarget: "backend",
           executionMode: "LOCAL_FIRST",
           permissions: { allowRemoteShopDevice: false }
         })
@@ -38,6 +45,36 @@ describe("engine choice travels with the agent definition, not an independent ax
 
       const afterActivation = await effective(app, actor);
       expect(afterActivation.agent).toMatchObject({
+        id: "builtin:shopkeeper",
+        runtimeAdapterId: "zeroclaw"
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("runs Shopkeeper on Soko's built-in engine where no ZeroClaw gateway is connected", async () => {
+    const store = createCp2Store({ modelRuntimeAdapterResolver: () => adapter() });
+    const app = buildApi({ cp2: { store } });
+    try {
+      const actor = await createActorAndShop(app, "+254700009304", "No Gateway Shop");
+      expect((await effective(app, actor)).agent).toMatchObject({
+        id: "builtin:shopkeeper",
+        runtimeAdapterId: "soko"
+      });
+      const activated = await app.inject({
+        method: "POST",
+        url: `/api/agents/${actor.businessId}/models/${modelId}/activate`,
+        headers: { "content-type": "application/json", cookie: actor.cookie },
+        payload: JSON.stringify({
+          shopId: actor.businessId,
+          executionTarget: "backend",
+          executionMode: "LOCAL_FIRST",
+          permissions: { allowRemoteShopDevice: false }
+        })
+      });
+      expect(activated.statusCode).toBe(200);
+      expect((await effective(app, actor)).agent).toMatchObject({
         id: "builtin:shopkeeper",
         runtimeAdapterId: "soko"
       });
@@ -74,7 +111,7 @@ describe("engine choice travels with the agent definition, not an independent ax
         headers: { "content-type": "application/json", cookie: actor.cookie },
         payload: JSON.stringify({
           shopId: actor.businessId,
-          executionTarget: "vercel",
+          executionTarget: "backend",
           executionMode: "LOCAL_FIRST",
           permissions: { allowRemoteShopDevice: false }
         })
@@ -131,13 +168,13 @@ describe("engine choice travels with the agent definition, not an independent ax
 function adapter(): ModelRuntimeAdapter {
   return {
     provider: "test-vercel",
-    executionTarget: "vercel",
+    executionTarget: "backend",
     canRun: async () => ({ available: true, errorCode: null, message: null }),
     healthCheck: async () => ({
       available: true,
       modelId,
       provider: "test-vercel",
-      executionTarget: "vercel",
+      executionTarget: "backend",
       latencyMs: 1,
       responsePreview: "SOKO_MODEL_OK",
       errorCode: null,
@@ -148,7 +185,7 @@ function adapter(): ModelRuntimeAdapter {
       text: JSON.stringify({ type: "response", message: "ok" }),
       modelId,
       provider: "test-vercel",
-      executionTarget: "vercel",
+      executionTarget: "backend",
       latencyMs: 1
     })
   };

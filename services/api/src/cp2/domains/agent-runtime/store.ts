@@ -3191,6 +3191,13 @@ export class AgentRuntimeDomain {
             this.deps.platformDefaultRuntime.executionTarget
       );
     if (hasHostedRuntime) return;
+    // A member who chose an on-device model chose to keep conversations on their device: never
+    // attach a hosted (possibly cloud) fallback behind it (ADR-explicit-device-local-models.md).
+    // If no device is online the turn fails with LOCAL_DEVICE_UNAVAILABLE instead.
+    const primaryTarget =
+      nativeResolution?.primary.host?.type ??
+      nativeResolution?.primary.model.configuration.executionTarget;
+    if (primaryTarget === "browser-local" || primaryTarget === "installed-app") return;
     const modelRuntimeAdapterResolver = this.deps.modelRuntimeAdapterResolver;
     if (modelRuntimeAdapterResolver === undefined) return;
 

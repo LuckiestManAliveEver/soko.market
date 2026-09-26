@@ -77,7 +77,8 @@ export function computeModelAvailability(modelId: string, storedAvailable: boole
 
 /**
  * On-device (browser-local) and Soko Cloud router models - also seeded into existing databases by
- * infra/db/migrations/102_inference_catalog_seeds.sql, which must stay in step with this list.
+ * infra/db/migrations/102_inference_catalog_seeds.sql and 103_shopkeeper_zeroclaw_default.sql,
+ * which must stay in step with this list.
  */
 export const inferenceRouterSeedModels: AiModelSummary[] = [
   {
@@ -236,6 +237,51 @@ export const inferenceRouterSeedModels: AiModelSummary[] = [
       enabled: false,
       pricing: null
     }
+  },
+  {
+    // The platform default model (repositoryDefaultRuntimePolicy): Soko-funded, run by the
+    // Shopkeeper agent on the ZeroClaw runtime (ADR-zeroclaw-default-agent-runtime.md). Pricing is
+    // OpenAI's published short-context rate at seeding time; operators re-verify it through
+    // PUT /v1/platform/model-catalog/gpt-6-luna when it changes.
+    id: "gpt-6-luna",
+    label: "GPT-6 Luna",
+    provider: "openai",
+    description:
+      "OpenAI's efficient model for focused, high-volume tasks. Included with Soko: the platform pays for it within Soko's usage limits.",
+    capabilities: ["chat", "multilingual", "reasoning", "instruction-following"],
+    available: true,
+    source: "hosted",
+    format: "remote",
+    license: null,
+    licenseUrl: null,
+    modelCardUrl: "https://developers.openai.com/api/docs/models/gpt-6-luna",
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: true,
+    contextWindow: 1050000,
+    canonicalModelId: "gpt-6-luna",
+    supportsToolCalling: true,
+    supportsStructuredOutput: true,
+    inference: {
+      providerId: "openai",
+      providerModelId: "gpt-6-luna",
+      executionTarget: "remote-inference",
+      capabilities: {
+        text: true,
+        structuredOutput: true,
+        streaming: true,
+        reasoning: true
+      },
+      maxOutputTokens: 1024,
+      enabled: true,
+      pricing: {
+        inputPerMillionTokens: 0.1,
+        outputPerMillionTokens: 0.5,
+        currency: "USD"
+      }
+    }
   }
 ];
 
@@ -337,10 +383,10 @@ export const aiModelRegistry: AiModelSummary[] = [
     contextWindow: 2_048
   },
   {
-    id: defaultAiModelId,
+    id: "smollm2-360m",
     label: "SmolLM2 360M Instruct Q4_0",
     provider: "local",
-    description: "Small Apache-2.0 instruction model used by the default hosted runtime.",
+    description: "Small Apache-2.0 instruction model served by Soko's Vercel inference host.",
     capabilities: ["chat", "english", "instruction-following"],
     available: true,
     source: "hosted",

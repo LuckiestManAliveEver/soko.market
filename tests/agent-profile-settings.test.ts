@@ -41,7 +41,7 @@ describe("business agent settings", () => {
     expect(defaultProfile).toMatchObject({
       agentDefinitionId: "builtin:shopkeeper",
       businessId,
-      modelId: "smollm2-360m",
+      modelId: "gpt-6-luna",
       status: "active"
     });
     expect(defaultProfile.contextScripts).toEqual(
