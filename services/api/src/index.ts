@@ -265,12 +265,6 @@ await inferencePlatform.refresh().catch((error: unknown) => {
     reason: error instanceof Error ? error.name : "unknown"
   });
 });
-// Provider-routed default (GPT-6 Luna on the backend target): health and readiness probe the same
-// router-backed adapter the default runtime uses, when no Vercel model already claimed the slot.
-primaryInferenceAdapter ??= inferencePlatform.adapterFor({
-  modelId: config.platformDefaultRuntime.modelId,
-  executionTarget: config.platformDefaultRuntime.executionTarget
-});
 // ZeroClaw agent runtime (agent-harness/zeroclaw-agent-runtime-adapter.ts). Optional: without a
 // gateway the default Shopkeeper agent runs on Soko's built-in engine, and the boot log says so.
 const zeroClawGateway = readZeroClawGatewayConfig(process.env);
@@ -307,6 +301,13 @@ const cp2StoreOptions = {
 // zero-setup AI set INFERENCE_REQUIRED=true, making /health/ready fail unless the configured
 // Vercel execution host can reach the selected model artifact.
 const cp2Store = await createCp2StoreOrExplainSchemaFailure();
+// Cp2Store attaches its database-backed model catalog to the provider router during construction.
+// Resolve the default only after that late binding, otherwise a provider-routed default appears
+// disabled to readiness even though both its catalog model and provider are configured.
+primaryInferenceAdapter ??= inferencePlatform.adapterFor({
+  modelId: config.platformDefaultRuntime.modelId,
+  executionTarget: config.platformDefaultRuntime.executionTarget
+});
 // Corridor fulfillment is Postgres-authoritative (docs/architecture/corridor-fulfillment.md §5):
 // its own instrumented pool, per-request transactions, and no participation in the in-memory
 // snapshot. Memory mode gets no service, so its routes answer 503 fulfillment_requires_postgres.
