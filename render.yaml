@@ -201,7 +201,7 @@ services:
       - key: SOKO_LLAMA_API_KEY
         sync: false
       - key: INFERENCE_DEFAULT_MODEL
-        sync: false
+        value: gpt-6-luna
       - key: INFERENCE_REQUEST_TIMEOUT_MS
         value: "60000"
       - key: INFERENCE_MAX_OUTPUT_TOKENS

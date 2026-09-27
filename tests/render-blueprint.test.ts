@@ -127,6 +127,7 @@ describe("Render Blueprint", () => {
     // the self-hosted models a shop can choose.
     expect(api).toContain("PLATFORM_DEFAULT_EXECUTION_TARGET\n        value: backend");
     expect(api).toContain("PLATFORM_DEFAULT_MODEL_ID\n        value: gpt-6-luna");
+    expect(api).toContain("INFERENCE_DEFAULT_MODEL\n        value: gpt-6-luna");
     expect(api).toContain("PLATFORM_DEFAULT_AGENT_ADAPTER_ID\n        value: zeroclaw");
 
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
