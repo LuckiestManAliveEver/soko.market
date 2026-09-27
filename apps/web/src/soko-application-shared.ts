@@ -3,6 +3,7 @@ import { type PublicKeyCredentialCreationOptionsJSON } from "@simplewebauthn/bro
 import type { CountryCode } from "libphonenumber-js";
 
 import type {
+  NetworkConnectionSummary,
   AgentDefinitionId,
   AgentEvaluationPolicy,
   AgentInstructions,
@@ -512,10 +513,17 @@ export interface NetworkGraphSummary {
   sources: NetworkSyncSourceSummary[];
   routes: AgentRouteSummary[];
   identityLinks?: SokoIdentityLinkSummary[];
+  connections?: NetworkConnectionSummary[];
+  /** Only on a phonebook sync response; see the shared NetworkGraphSummary. */
+  syncedContactNodeIds?: Array<string | null>;
 }
 
 export interface NetworkInvitesResponse {
   invites: Array<{ id: string; status: "queued" | "sent" | "failed" }>;
+  /** Selected contacts skipped because they are already on Soko. */
+  alreadyOnSokoCount?: number;
+  /** Selected contacts skipped because neither their number nor email could be read. */
+  invalidCount?: number;
 }
 
 export interface ContactPickerNavigator extends Navigator {

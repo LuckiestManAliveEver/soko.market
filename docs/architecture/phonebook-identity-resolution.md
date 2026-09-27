@@ -91,6 +91,158 @@ All are user-scoped (`requirePinVerifiedSession`, no `businessId`), matching eve
 contact can accumulate a phone, an email, an Instagram handle, a WhatsApp number, and a linked Soko
 account without becoming multiple phonebook entries.
 
+## Phonebook sync, discovery and connections
+
+Connecting a phonebook does three things: sync the contacts, show which of them are already on
+Soko so the owner can connect with them, and invite the rest. Contacts never become a second store:
+they stay `networkNodes` in `NetworkDomain`, and connections are one new collection next to them.
+
+### Sync modes
+
+`POST /network/sync/contacts` takes `mode`:
+
+- `replace` (default, unchanged behavior): the input is the whole phonebook. The previous phone
+  source and every node imported through it are dropped first.
+- `merge`: adds to the active phone source. The web app uses this, because the browser Contact
+  Picker returns only the contacts the owner selected: picking A and B, then C, leaves A, B and C.
+
+In both modes a contact whose phone or email hash is already in the source updates that node
+(new name, extra hashes) instead of duplicating it, and a name-only contact that later arrives
+with a number is upgraded in place.
+
+Each contact may carry every number and email it has (`phones`, `emails`, up to 10 each, in
+addition to `phone`/`email`), so someone is found by whichever number they use on Soko.
+Phonebook entries are messy, so each number is first cleaned (`cleanPhonebookNumber`: Unicode
+NFKC for full-width digits, any script's decimal digits (Arabic-Indic, Devanagari, ...) mapped to
+ASCII, every dash and minus sign read as a hyphen, invisible direction marks removed, `tel:` prefixes, extensions and
+labels such as "(mobile)" dropped, and of a field holding two numbers ("a / b", "a | b", "a or
+b") only the first is kept; a bare "/" is part of the number, as in "030/1234567"). Phonebooks store numbers in national format ("0712 345 678"),
+so they are read in the owner's country (`ownerPhoneCountry`): the stored phone country, else the
+country of the owner's own number, else the device's region, which the web app sends as
+`defaultCountry` (for owners who signed in by email or device and have no number of their own).
+Numbers with an international prefix parse on their own. A number or email that still does not
+parse is dropped from that contact; it never fails the sync.
+
+The response is the graph plus `syncedContactNodeIds`: the node each submitted contact landed on,
+in submission order. The server stores only hashes, so the device keeps the raw numbers it needs
+for invites (`apps/web/src/phonebook-device-cache.ts`, per user, cleared on logout) and uses these
+ids to pair its contacts with server-side discovery. Where the picker is unavailable (iOS Safari,
+desktop), the card imports a vCard/CSV export through the same merge sync; a vCard keeps every
+number and email on each card. The older "Sync contacts" action that seeds My Network from the
+shop's customers also merges, so it never wipes contacts picked from the phonebook.
+
+Limits (all in `services/api/src/cp2/domains/network/store.ts`):
+
+| Limit                        | Value          | Why                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Contacts per request         | 5,000          | Request size. The web app sends larger phonebooks in 5,000-contact merge batches.                                                                                                                                                                                                                                                                                                                                                 |
+| Contacts per phonebook       | 20,000         | Checked before any write, counting only contacts that would be new (a re-synced contact is an update), so a sync is never half applied. Applies to the phone source only: social sources are separate sources and do not count toward it (what they discover is still charged to the budget below).                                                                                                                               |
+| Numbers asked about per user | 25,000 per day | Every sync, social profile list (client-submitted or a provider fetch such as Google Contacts, whose contents the owner controls) and invite request reveals which numbers are on Soko. Charged per number or email the owner has not asked about before, so re-syncing a phonebook is free; only requests that succeed are charged. Kept in API process memory, so each API instance has its own window and a restart resets it. |
+| Unanswered requests          | 100 per user   | Spam. Applies to a new request, re-asking after a cancel, and asking back after the other side cancelled.                                                                                                                                                                                                                                                                                                                         |
+
+Every request does a fixed number of passes over the shared maps, never one pass per contact:
+one discovery pass (accounts, users and memberships, `discoveryPass`), one scan of the owner's
+second-degree edges to dedupe nested connections (at most 50 per contact and 5,000 per request),
+and one pass over identity links to replace the links of contacts whose Soko account changed.
+Values are hashed without re-parsing once they are canonical (`hashCanonicalContact`). Gate tests
+in `tests/network-phonebook-domain.test.ts` count these passes, so a per-contact scan fails CI.
+
+Measured on the in-memory store:
+
+| Scenario                                                                  | Time    |
+| ------------------------------------------------------------------------- | ------- |
+| Sync 5,000 national-format contacts, 20,000 users each with a shop        | ~0.8 s  |
+| Graph load, 5,000 linked contacts, 20,000 users with shops                | ~0.1 s  |
+| First graph load after 3,000 contacts joined Soko, 100,000 identity links | ~0.1 s  |
+| Merge sync relinking 1,000 contacts, 100,000 identity links               | ~0.15 s |
+| Sync with 200 contacts × 10 nested connections, 50,000 other edges        | ~0.1 s  |
+| 100 invites against 20,000 existing invites                               | ~50 ms  |
+
+### Discovery
+
+`NetworkDomain.sokoDiscoveryIndex` maps `phone:<hash>` / `email:<hash>` (the same hash as
+`ContactHashSummary`) to a Soko user for every active account: its primary login destination, plus
+the user's verified phone and verified email, so a device-first account with a verified phone is
+found too. Suspended, locked, pending-deletion and deleted accounts are not discoverable.
+The owner's own number is never linked.
+
+Discovery re-runs on every sync, every `GET /network`, and every connection request
+(`refreshSokoDiscovery`). A contact who signs up after being synced turns into a `soko_user` node
+without another sync, and a contact whose account is gone, or who no longer holds that number, is
+unlinked again.
+
+The hashes are unsalted SHA-256 of canonical numbers. They keep raw numbers out of the database
+and its backups, but phone numbers have little entropy, so they are not secret against someone
+with database access. The card says only what is true: Soko keeps a fingerprint and the last few
+digits of each number (`displayHint`), never the full number.
+
+Discovery reveals that a number belongs to someone on Soko, not which shop they run. The graph,
+`network.contacts.resolve`, the supplier phonebook search, the identity endpoints
+(`network.identity.add`, `.confirm`, `.unlink`) and identity links return `sokoBusinessId`/`sokoAgentId` (and
+`linkedBusinessId`/`linkedAgentId`) only for people the owner is connected with; a connection
+summary names the other side's shop only once connected, or when they asked the owner (they chose
+to be seen).
+
+### Connections
+
+`NetworkConnectionRecord` (`cp2_network_connections`, migration 105, unique per pair of users)
+holds one record per pair of Soko users; whoever asked first is the requester. Rules live in
+`services/api/src/cp2/domains/network/connections.ts`:
+
+| Endpoint                                   | Rule                                                                                                                                                                          |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /network/connections {nodeId}`       | The node must be the caller's own direct contact and discovered as another Soko user. Asking again returns the same record. If the other side already asked, this accepts it. |
+| `POST /network/connections/:id/respond`    | Recipient only. `accept: true` connects; `false` declines.                                                                                                                    |
+| `DELETE /network/connections/:id`          | Requester: cancels (withdraws) an unanswered request. Recipient: declines a pending one. Either side: removes an accepted connection.                                         |
+| `GET /network/connections`, `GET /network` | Viewer-relative `NetworkConnectionSummary` (`direction`, counterpart name, shop). The owner's own phonebook name for the person wins over their Soko display name.            |
+
+A decline is private. Nothing the requester can read changes: status stays `pending`, and
+`updatedAt` and `respondedAt` do not move. The recipient no longer sees the request, and can still
+connect later by asking, which accepts it.
+
+Cancelling does not delete an unanswered request; it marks it withdrawn (`requesterWithdrawnAt`),
+hidden from both sides. Asking again un-hides the same record. So cancel-and-ask cannot put a
+declined request in front of the recipient a second time, and it behaves identically whether or
+not the recipient had declined, so it cannot be used to detect a decline either. Once a request is
+withdrawn, the other side asking starts a fresh request in their direction rather than accepting
+one the first person took back.
+
+Connections survive a phonebook `replace` (they reference users, not nodes) and are deleted when
+either account is purged. Purging an account does not delete other owners' contacts for that
+person: `detachPurgedUsers` unlinks them back to plain contacts (and drops their identity links)
+before the purge sweep runs.
+
+The recipient sees waiting requests in the app shell (`ConnectionRequestsPrompt`, next to staff
+invitations, rechecked when the app returns to the foreground) and in Phone Contacts, and can
+accept or decline from either.
+
+Audit events: `network.connection_requested`, `network.connection_accepted` (`via: response` or
+`mutual`), `network.connection_declined`, `network.connection_removed`, and
+`network.invite_skipped_existing`.
+
+### Invites
+
+`POST /businesses/:businessId/network/invites` cleans and reads numbers the same way as sync
+(owner's country, else `defaultCountry`), charges each number and email it checks to the
+discovery budget above (it answers "is this person on Soko" just like a sync does), except a
+value that is itself the destination of an open invite from this shop (re-sending an invite
+asks nothing new; any other number or email on that contact is still charged), then skips any contact whose phone or email belongs to a
+Soko user and reports how many in `alreadyOnSokoCount`; they are connected with, not invited. A
+contact whose number and email both fail to parse is skipped and reported in `invalidCount`:
+nothing is sent to a value nobody can check. Invites dedupe on the normalized number, so
+"+254 722 000 101" and "0722000101" are one invite, including against older invites stored as
+typed, and new invites store E.164. The server takes 100 contacts per request; the web app sends
+larger selections in batches of 100. The card lists only non-users under "Invite to Soko" and
+marks contacts already invited. Without a shop, the web app offers the device share sheet with a
+Soko link instead (and reports nothing shared if the sheet is cancelled).
+
+### The device copy
+
+The web app lists a contact under "Invite to Soko" only while its server node still exists: a
+contact whose node is gone (the phonebook was disconnected, or replaced from another device) is
+not known to be off Soko, so it is not offered. Disconnecting the phonebook also clears the device
+copy, and logging out clears it for every user.
+
 ## What this deliberately does not do
 
 - It does not silently merge two people because their names are similar. `findBestNodeMatchForCandidate`
@@ -101,3 +253,7 @@ account without becoming multiple phonebook entries.
   phone from day one.
 - It does not give ComputerRuntime provider code, or any `computer.*` tool call, a direct write
   path into `networkNodes`/`externalIdentities`.
+- It does not store raw phone numbers or emails from a phonebook sync on the server, and it does not
+  read the whole phonebook in the background: the browser only exposes the contacts the owner
+  picks. The Android node app is SMS-only today and has no contacts permission.
+- It does not let anyone connect to a person whose number or email they do not already have.

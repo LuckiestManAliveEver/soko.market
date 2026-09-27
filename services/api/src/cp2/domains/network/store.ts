@@ -42,6 +42,8 @@ import type {
   IdentityCandidateSummary,
   IdentityProvenance,
   MembershipSummary,
+  NetworkConnectionRecord,
+  NetworkConnectionSummary,
   NetworkConsentStatus,
   NetworkEdgeSourceType,
   NetworkEdgeSummary,
@@ -59,13 +61,40 @@ import { Cp2Error } from "../../cp2-error.js";
 import {
   createContactDisplayHint,
   createContactHash,
+  hashCanonicalContact,
+  hashStoredDestination,
   normalizeNetworkConnectionInput,
   normalizeSocialRelationship,
+  ownerPhoneCountry,
   providerDisplayName,
   sanitizeNetworkNode,
+  type NormalizedNetworkConnection,
   type PhoneContactNetworkInput,
   type SocialProfileNetworkInput
 } from "./shared.js";
+import {
+  primaryBusinessByUser,
+  listNetworkConnections,
+  removeNetworkConnection,
+  requestNetworkConnection,
+  respondToNetworkConnection,
+  type NetworkConnectionDeps
+} from "./connections.js";
+
+/** Upper bound for one phonebook sync request; a device syncs a larger phonebook in batches. */
+export const maxPhonebookSyncContacts = 5000;
+/** Direct contacts one owner's phone source may hold. */
+export const maxPhonebookContacts = 20000;
+/**
+ * Contacts one user may submit for sync per rolling day. Every sync tells the caller which of the
+ * submitted numbers are on Soko, so this bounds how fast one account can probe numbers it does not
+ * actually know, while leaving room to re-sync a typical phonebook (a few thousand contacts)
+ * several times a day. Refused syncs are not charged.
+ */
+export const phonebookSyncDailyBudget = 25000;
+const phonebookSyncWindowMs = 24 * 60 * 60 * 1000;
+
+export type PhonebookSyncMode = "replace" | "merge";
 
 export interface NetworkDomainDeps {
   requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthenticatedActorView;
@@ -74,6 +103,15 @@ export interface NetworkDomainDeps {
   memberships: Map<string, MembershipSummary>;
   businesses: Map<string, BusinessSummary>;
   userIdentities: Map<string, UserIdentitySummary>;
+  users: Map<string, UserSummary>;
+  recordAuditEvent?: NetworkConnectionDeps["recordAuditEvent"];
+  /** Overrides for the abuse limits below; production uses the defaults. */
+  limits?: {
+    maxPhonebookSyncContacts?: number;
+    phonebookSyncDailyBudget?: number;
+    maxPhonebookContacts?: number;
+    maxPendingOutgoingConnections?: number;
+  };
 }
 
 export class NetworkDomain {
@@ -88,6 +126,12 @@ export class NetworkDomain {
   private readonly externalIdentityIdBySubject = new Map<string, string>();
   private readonly sokoIdentityLinks = new Map<string, SokoIdentityLinkSummary>();
   private readonly identityCandidates = new Map<string, IdentityCandidateSummary>();
+  private readonly networkConnections = new Map<string, NetworkConnectionRecord>();
+  // `${channel}:${destination}` -> discovery key. Accounts rarely change their destination, so
+  // hashing each one once keeps late-joiner discovery on every graph load cheap.
+  private readonly discoveryKeyMemo = new Map<string, string | null>();
+  // userId -> recent syncs. In memory on purpose: a restart resetting the window is harmless.
+  private readonly phonebookSyncLog = new Map<string, Array<{ at: number; count: number }>>();
 
   constructor(private readonly deps: NetworkDomainDeps) {}
 
@@ -135,6 +179,10 @@ export class NetworkDomain {
     return this.identityCandidates;
   }
 
+  get networkConnectionsMap(): Map<string, NetworkConnectionRecord> {
+    return this.networkConnections;
+  }
+
   clear(): void {
     this.networkNodes.clear();
     this.networkEdges.clear();
@@ -147,6 +195,8 @@ export class NetworkDomain {
     this.externalIdentityIdBySubject.clear();
     this.sokoIdentityLinks.clear();
     this.identityCandidates.clear();
+    this.networkConnections.clear();
+    this.discoveryKeyMemo.clear();
   }
 
   rebuildDerivedIndexes(): void {
@@ -167,87 +217,135 @@ export class NetworkDomain {
     }
   }
 
+  /**
+   * Syncs the owner's phonebook. `replace` (the default) treats the input as the whole phonebook:
+   * the previous phone source and everything imported through it is dropped first. `merge` adds to
+   * the active phone source instead, which is what a device picker that returns only the contacts
+   * the owner selected needs: picking A and B, then C, leaves A, B and C. In both modes a contact
+   * whose phone or email is already in the source updates that contact instead of duplicating it.
+   *
+   * Every sync, and every graph load, re-runs Soko discovery, so a contact who joins after being
+   * synced shows up as a Soko user without another sync.
+   */
   syncPhoneContacts(input: {
     sessionId: string | null;
     contacts: PhoneContactNetworkInput[];
     sourceName?: string;
+    mode?: PhonebookSyncMode;
+    /** The device's region, for owners whose own country is unknown (email or device login). */
+    defaultCountry?: string | null;
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
     const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const perRequest = this.deps.limits?.maxPhonebookSyncContacts ?? maxPhonebookSyncContacts;
+
+    if (input.contacts.length > perRequest) {
+      throw new Cp2Error(
+        400,
+        "network_contacts_too_many",
+        `Sync at most ${perRequest} contacts per request.`
+      );
+    }
+    assertNestedConnectionLimit(input.contacts, perRequest);
+
+    const country = ownerPhoneCountry(session, input.defaultCountry ?? null);
     const importedContacts = input.contacts.map((contact, index) =>
-      normalizeNetworkConnectionInput(contact, `contacts.${index}`)
+      normalizeNetworkConnectionInput(contact, `contacts.${index}`, country)
     );
-    this.disconnectActiveNetworkSources(session.user.id, "phone", now);
-    const source = this.createNetworkSource({
-      ownerUserId: session.user.id,
-      sourceType: "phone_contact",
-      sourcePlatform: "phone",
-      displayName: input.sourceName?.trim() || "Phone contacts",
-      importedCount: importedContacts.length,
-      now
-    });
+    // Charged per number/email probed, not per contact (one contact can carry ten numbers), and
+    // only for numbers new to this owner: re-syncing a phonebook reveals nothing new.
+    const probes = this.countNewDiscoveryProbes(session.user.id, importedContacts);
+    this.assertPhonebookSyncBudget(session.user.id, probes, now);
+    const ownerUserId = session.user.id;
+    const sourceName = input.sourceName?.trim() || undefined;
+    const activeSource =
+      input.mode === "merge"
+        ? ([...this.networkSources.values()].find(
+            (source) =>
+              source.ownerUserId === ownerUserId &&
+              source.sourcePlatform === "phone" &&
+              source.status === "active"
+          ) ?? null)
+        : null;
+
+    // Checked before any write: a sync that would push the phonebook past the cap is refused
+    // whole instead of being half applied. Contacts already in the phonebook are updates, not new.
+    const contactLimit = this.deps.limits?.maxPhonebookContacts ?? maxPhonebookContacts;
+    const activeIndex =
+      activeSource === null ? null : this.phonebookSourceIndex(ownerUserId, activeSource.id);
+    if (
+      activeSource !== null &&
+      activeIndex !== null &&
+      activeSource.directCount +
+        this.countNewPhonebookContacts(ownerUserId, importedContacts, activeIndex) >
+        contactLimit
+    ) {
+      throw new Cp2Error(
+        400,
+        "network_contacts_limit",
+        `A phonebook can hold at most ${contactLimit} contacts on Soko.`
+      );
+    }
+
+    if (activeSource === null) {
+      this.disconnectActiveNetworkSources(ownerUserId, "phone", now);
+    }
+
+    const source =
+      activeSource ??
+      this.createNetworkSource({
+        ownerUserId,
+        sourceType: "phone_contact",
+        sourcePlatform: "phone",
+        displayName: sourceName ?? "Phone contacts",
+        importedCount: 0,
+        now
+      });
+
+    if (activeSource !== null && sourceName !== undefined) {
+      this.networkSources.set(source.id, { ...source, displayName: sourceName });
+    }
+
     const ownerNode = this.ensureOwnerNetworkNode(session.user, now);
+    const index = activeIndex ?? this.phonebookSourceIndex(ownerUserId, source.id);
+    const syncedContactNodeIds: Array<string | null> = [];
 
     for (const contact of importedContacts) {
-      const directNode = this.createImportedNetworkNode({
-        ownerUserId: session.user.id,
+      const directNode = this.upsertPhonebookContact({
+        ownerUserId,
         sourceId: source.id,
-        sourceType: "phone_contact",
-        sourcePlatform: "phone",
-        displayName: contact.name,
-        degree: 1,
-        kind: "external_contact",
-        phone: contact.phone,
-        email: contact.email,
+        ownerNodeId: ownerNode.id,
+        contact,
+        index,
         now
       });
-      this.createNetworkEdge({
-        ownerUserId: session.user.id,
-        sourceType: "phone_contact",
-        sourcePlatform: "phone",
-        fromNodeId: ownerNode.id,
-        toNodeId: directNode.id,
-        degree: 1,
-        trustWeight: 0.8,
-        interactionWeight: 0.3,
-        visibilityStatus: "direct",
-        consentStatus: "pending",
-        now
-      });
+      syncedContactNodeIds.push(directNode.id);
 
       for (const connection of contact.connections ?? []) {
-        const normalizedConnection = normalizeNetworkConnectionInput(connection, "connection");
-        const extendedNode = this.createImportedNetworkNode({
-          ownerUserId: session.user.id,
+        this.upsertExtendedPhonebookContact({
+          ownerUserId,
           sourceId: source.id,
-          sourceType: "phone_contact",
-          sourcePlatform: "phone",
-          displayName: normalizedConnection.name,
-          degree: 2,
-          kind: "external_contact",
-          phone: null,
-          email: null,
-          now
-        });
-        this.createNetworkEdge({
-          ownerUserId: session.user.id,
-          sourceType: "agent_route",
-          sourcePlatform: "phone",
-          fromNodeId: directNode.id,
-          toNodeId: extendedNode.id,
-          degree: 2,
-          trustWeight: 0.45,
-          interactionWeight: 0.15,
-          visibilityStatus: "agent_mediated",
-          consentStatus: "agent_required",
+          directNode,
+          connection: normalizeNetworkConnectionInput(connection, "connection"),
+          index,
           now
         });
       }
     }
 
     this.refreshNetworkSourceCounts(source.id, now);
-    return this.getNetworkGraph({ sessionId: input.sessionId, now });
+    const counted = this.networkSources.get(source.id)!;
+
+    this.networkSources.set(source.id, {
+      ...counted,
+      importedCount: counted.directCount
+    } as NetworkSyncSourceSummary);
+    this.recordPhonebookSync(ownerUserId, probes, now);
+    return {
+      ...this.getNetworkGraph({ sessionId: input.sessionId, now }),
+      syncedContactNodeIds
+    };
   }
 
   syncSocialNetwork(input: {
@@ -260,9 +358,27 @@ export class NetworkDomain {
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
     const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    // Profiles reveal which of their numbers are on Soko exactly like a phonebook sync, so they
+    // get the same limits.
+    const clientSubmitted = (input.provenance ?? "imported") !== "verified";
+    const perRequest = this.deps.limits?.maxPhonebookSyncContacts ?? maxPhonebookSyncContacts;
+    // A provider fetch (Google Contacts) arrives whole in one request, so it has no per-request
+    // cap, but the owner controls what is in it: it is charged to the discovery budget like any
+    // other sync.
+    if (clientSubmitted && input.profiles.length > perRequest) {
+      throw new Cp2Error(
+        400,
+        "network_contacts_too_many",
+        `Sync at most ${perRequest} contacts per request.`
+      );
+    }
+    if (clientSubmitted) assertNestedConnectionLimit(input.profiles, perRequest);
+    const country = ownerPhoneCountry(session);
     const profiles = input.profiles.map((profile, index) =>
-      normalizeNetworkConnectionInput(profile, `profiles.${index}`)
+      normalizeNetworkConnectionInput(profile, `profiles.${index}`, country)
     );
+    const probes = this.countNewDiscoveryProbes(session.user.id, profiles);
+    this.assertPhonebookSyncBudget(session.user.id, probes, now);
     this.disconnectActiveNetworkSources(session.user.id, input.provider, now);
     const source = this.createNetworkSource({
       ownerUserId: session.user.id,
@@ -274,6 +390,7 @@ export class NetworkDomain {
     });
     const ownerNode = this.ensureOwnerNetworkNode(session.user, now);
     const provenance = input.provenance ?? "imported";
+    const discovery = this.discoveryPass();
 
     for (const profile of profiles) {
       const relationship = normalizeSocialRelationship(profile.relationship);
@@ -287,9 +404,12 @@ export class NetworkDomain {
         kind: "external_social",
         phone: profile.phone,
         email: profile.email,
+        phones: profile.phones,
+        emails: profile.emails,
         providerSubject: profile.providerSubject ?? profile.handle ?? profile.name,
         handle: profile.handle,
         provenance,
+        discovery,
         now
       });
       this.createNetworkEdge({
@@ -328,6 +448,7 @@ export class NetworkDomain {
             normalizedConnection.name,
           handle: normalizedConnection.handle,
           provenance,
+          discovery,
           now
         });
         this.createNetworkEdge({
@@ -347,6 +468,7 @@ export class NetworkDomain {
     }
 
     this.refreshNetworkSourceCounts(source.id, now);
+    this.recordPhonebookSync(session.user.id, probes, now);
     return this.getNetworkGraph({ sessionId: input.sessionId, now });
   }
 
@@ -384,7 +506,115 @@ export class NetworkDomain {
     const now = input.now ?? new Date();
     const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
     this.ensureOwnerNetworkNode(session.user, now);
+    this.refreshSokoDiscovery(session.user.id, now);
     return this.networkGraphForUser(session.user.id, now);
+  }
+
+  listConnections(input: { sessionId: string | null; now?: Date }): NetworkConnectionSummary[] {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    return listNetworkConnections(this.connectionDeps(), session.user.id);
+  }
+
+  /** Ask a phonebook contact who is on Soko to connect. See connections.ts for the rules. */
+  requestConnection(input: {
+    sessionId: string | null;
+    nodeId: string;
+    now?: Date;
+  }): NetworkConnectionSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    // Discovery first, so a contact who joined since the last graph load can be connected to.
+    this.refreshSokoDiscovery(session.user.id, now);
+    return requestNetworkConnection(this.connectionDeps(), {
+      userId: session.user.id,
+      nodeId: input.nodeId,
+      now
+    });
+  }
+
+  respondToConnection(input: {
+    sessionId: string | null;
+    connectionId: string;
+    accept: boolean;
+    now?: Date;
+  }): NetworkConnectionSummary | null {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    return respondToNetworkConnection(this.connectionDeps(), {
+      userId: session.user.id,
+      connectionId: input.connectionId,
+      accept: input.accept,
+      now
+    });
+  }
+
+  removeConnection(input: { sessionId: string | null; connectionId: string; now?: Date }): void {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    removeNetworkConnection(this.connectionDeps(), {
+      userId: session.user.id,
+      connectionId: input.connectionId,
+      now
+    });
+  }
+
+  /**
+   * A lookup of which Soko user a canonical phone number or email belongs to, for keeping invites
+   * away from people already on Soko. Every lookup tells the caller whether a number is on Soko,
+   * so `probes` is charged to the same daily budget as phonebook syncs (refused up front, recorded
+   * on `commit`). The index is built once per lookup, not once per number.
+   */
+  createDiscoveryLookup(input: {
+    userId: string;
+    values: Array<{ channel: "phone" | "email"; value: string }>;
+    now: Date;
+  }): {
+    find: (channel: "phone" | "email", canonicalValue: string) => string | null;
+    commit: () => void;
+  } {
+    const probes = input.values.filter(
+      ({ channel, value }) => !this.ownerKnowsDestination(input.userId, channel, value)
+    ).length;
+    this.assertPhonebookSyncBudget(input.userId, probes, input.now);
+    const { index } = this.discoveryPass();
+    return {
+      find: (channel, canonicalValue) =>
+        index.get(`${channel}:${hashCanonicalContact(channel, canonicalValue)}`) ?? null,
+      commit: () => this.recordPhonebookSync(input.userId, probes, input.now)
+    };
+  }
+
+  /** Whether this number/email is already in the owner's phonebook hashes (asked about before). */
+  private ownerKnowsDestination(
+    ownerUserId: string,
+    channel: "phone" | "email",
+    canonicalValue: string
+  ): boolean {
+    return this.contactHashIdByValue.has(
+      `${ownerUserId}:${channel}:${hashCanonicalContact(channel, canonicalValue)}`
+    );
+  }
+
+  /** Numbers and emails a sync asks about that this owner has not asked about before. */
+  private countNewDiscoveryProbes(
+    ownerUserId: string,
+    contacts: NormalizedNetworkConnection[]
+  ): number {
+    const seen = new Set<string>();
+    for (const contact of contacts) {
+      for (const [channel, values] of [
+        ["phone", contact.phones],
+        ["email", contact.emails]
+      ] as const) {
+        for (const value of values) {
+          if (!this.ownerKnowsDestination(ownerUserId, channel, value)) {
+            seen.add(`${channel}:${value}`);
+          }
+        }
+      }
+    }
+    return seen.size;
   }
 
   getDirectNetwork(input: { sessionId: string | null; now?: Date }): NetworkNodeSummary[] {
@@ -597,10 +827,11 @@ export class NetworkDomain {
       }
     }
 
+    const connected = this.connectedUserIds(session.user.id);
     return {
       query,
       matches: [...bestByNode.values()]
-        .map((match) => ({ ...match, node: sanitizeNetworkNode(match.node) }))
+        .map((match) => ({ ...match, node: this.nodeView(match.node, connected) }))
         .sort((left, right) => right.confidence - left.confidence)
     };
   }
@@ -749,7 +980,7 @@ export class NetworkDomain {
       resolvedAt: now.toISOString()
     });
 
-    return targetNode;
+    return this.phonebookNodeView(session.user.id, targetNode);
   }
 
   rejectIdentityCandidate(input: {
@@ -804,7 +1035,10 @@ export class NetworkDomain {
       },
       "user_entered"
     );
-    return this.attachExternalIdentityToNode(node, identity.id, now);
+    return this.phonebookNodeView(
+      session.user.id,
+      this.attachExternalIdentityToNode(node, identity.id, now)
+    );
   }
 
   unlinkIdentity(input: {
@@ -831,7 +1065,7 @@ export class NetworkDomain {
       updatedAt: now.toISOString()
     };
     this.networkNodes.set(node.id, updated);
-    return updated;
+    return this.phonebookNodeView(session.user.id, updated);
   }
 
   private ensureOwnerNetworkNode(user: UserSummary, now: Date): NetworkNodeSummary {
@@ -972,36 +1206,23 @@ export class NetworkDomain {
     kind: "external_contact" | "external_social";
     phone?: string | null | undefined;
     email?: string | null | undefined;
+    phones?: string[] | undefined;
+    emails?: string[] | undefined;
     providerSubject?: string | null | undefined;
     handle?: string | null | undefined;
     provenance?: IdentityProvenance;
+    discovery?: DiscoveryPass;
     now: Date;
   }): NetworkNodeSummary {
-    const contactHashIds: string[] = [];
-
-    if (input.degree === 1) {
-      if (input.phone !== undefined && input.phone !== null) {
-        contactHashIds.push(
-          this.ensureContactHash({
+    const contactHashIds =
+      input.degree === 1
+        ? this.contactHashIdsFor({
             ownerUserId: input.ownerUserId,
-            hashType: "phone",
-            rawValue: input.phone,
+            phones: [input.phone, ...(input.phones ?? [])],
+            emails: [input.email, ...(input.emails ?? [])],
             now: input.now
-          }).id
-        );
-      }
-
-      if (input.email !== undefined && input.email !== null) {
-        contactHashIds.push(
-          this.ensureContactHash({
-            ownerUserId: input.ownerUserId,
-            hashType: "email",
-            rawValue: input.email,
-            now: input.now
-          }).id
-        );
-      }
-    }
+          })
+        : [];
 
     const externalIdentityId =
       input.kind === "external_social"
@@ -1020,7 +1241,8 @@ export class NetworkDomain {
     const sokoLink = this.findSokoIdentityLink({
       ownerUserId: input.ownerUserId,
       contactHashIds,
-      now: input.now
+      now: input.now,
+      ...(input.discovery === undefined ? {} : { discovery: input.discovery })
     });
     const node: NetworkNodeSummary = {
       id: randomUUID(),
@@ -1091,7 +1313,11 @@ export class NetworkDomain {
     rawValue: string;
     now: Date;
   }): ContactHashSummary {
-    const hashValue = createContactHash(input.hashType, input.rawValue);
+    // Every caller passes a value normalizeNetworkConnectionInput already made canonical.
+    const hashValue =
+      input.hashType === "social"
+        ? createContactHash("social", input.rawValue)
+        : hashCanonicalContact(input.hashType, input.rawValue);
     const mapKey = `${input.ownerUserId}:${input.hashType}:${hashValue}`;
     const existingId = this.contactHashIdByValue.get(mapKey);
 
@@ -1153,29 +1379,27 @@ export class NetworkDomain {
     ownerUserId: string;
     contactHashIds: string[];
     now: Date;
+    discovery?: DiscoveryPass;
   }): SokoIdentityLinkSummary | null {
+    // Nothing to match (e.g. a second-degree contact): do not build the account index for it.
+    if (input.contactHashIds.length === 0) return null;
+    const { index, businessByUser } = input.discovery ?? this.discoveryPass();
+
     for (const hashId of input.contactHashIds) {
       const contactHash = this.contactHashes.get(hashId);
 
-      if (contactHash === undefined) {
+      if (contactHash === undefined || contactHash.hashType === "social") {
         continue;
       }
 
-      const channel = contactHash.hashType === "email" ? "email" : "phone";
-      const matchingAccount = [...this.deps.accounts.values()].find((account) => {
-        if (account.primaryAuthChannel !== channel) return false;
-        return createContactHash(channel, account.primaryAuthDestination) === contactHash.hashValue;
-      });
+      const linkedUserId = index.get(`${contactHash.hashType}:${contactHash.hashValue}`);
 
-      if (matchingAccount === undefined) {
+      // The owner's own number in their own phonebook is not a contact to connect with.
+      if (linkedUserId === undefined || linkedUserId === input.ownerUserId) {
         continue;
       }
 
-      const linkedUserId = this.deps.userByAccount.get(matchingAccount.id) ?? null;
-      const linkedBusiness = [...this.deps.memberships.values()]
-        .filter((membership) => membership.userId === linkedUserId)
-        .map((membership) => this.deps.businesses.get(membership.businessId))
-        .find((business): business is BusinessSummary => business !== undefined);
+      const linkedBusiness = businessByUser.get(linkedUserId);
 
       return {
         id: randomUUID(),
@@ -1191,6 +1415,373 @@ export class NetworkDomain {
     }
 
     return null;
+  }
+
+  /**
+   * Discovery key (`phone:<hash>` / `email:<hash>`) -> Soko user id for every active account: its
+   * primary login destination, plus the user's verified phone and verified email (a device-first
+   * account has no phone login but can still have a verified phone). Same hash as ContactHash, so
+   * phonebook hashes look up directly and raw numbers never need to be compared.
+   */
+  private discoveryPass(): DiscoveryPass {
+    return { index: this.sokoDiscoveryIndex(), businessByUser: primaryBusinessByUser(this.deps) };
+  }
+
+  private sokoDiscoveryIndex(): Map<string, string> {
+    const index = new Map<string, string>();
+    const add = (
+      channel: "phone" | "email",
+      destination: string | null | undefined,
+      userId: string
+    ) => {
+      if (destination === null || destination === undefined || destination.trim() === "") return;
+      const key = this.discoveryKey(channel, destination);
+      if (key !== null && !index.has(key)) index.set(key, userId);
+    };
+
+    for (const account of this.deps.accounts.values()) {
+      if (account.status !== undefined && account.status !== "active") continue;
+      const userId = this.deps.userByAccount.get(account.id);
+      if (userId === undefined) continue;
+      if (account.primaryAuthChannel === "phone" || account.primaryAuthChannel === "email") {
+        add(account.primaryAuthChannel, account.primaryAuthDestination, userId);
+      }
+      const user = this.deps.users.get(userId);
+      if (user?.phoneVerificationStatus === "verified") add("phone", user.phoneNumberE164, userId);
+      if (user?.emailVerificationStatus === "verified") add("email", user.emailAddress, userId);
+    }
+
+    return index;
+  }
+
+  private discoveryKey(channel: "phone" | "email", destination: string): string | null {
+    const memoKey = `${channel}:${destination}`;
+    const memoized = this.discoveryKeyMemo.get(memoKey);
+
+    if (memoized !== undefined) {
+      return memoized;
+    }
+
+    let key: string | null;
+    try {
+      key = `${channel}:${hashStoredDestination(channel, destination)}`;
+    } catch {
+      key = null;
+    }
+    this.discoveryKeyMemo.set(memoKey, key);
+    return key;
+  }
+
+  /**
+   * Re-links every direct contact of this owner to the Soko user its phone/email belongs to right
+   * now: links contacts who joined after they were synced, and unlinks contacts whose account is
+   * gone or no longer holds that number.
+   */
+  private refreshSokoDiscovery(ownerUserId: string, now: Date): void {
+    const discovery = this.discoveryPass();
+    // Contacts whose link changed, with their new link (or null). Their old links are replaced in
+    // one pass over identity links after the loop, never one pass per contact.
+    const relinked = new Map<string, SokoIdentityLinkSummary | null>();
+
+    for (const node of [...this.networkNodes.values()]) {
+      if (node.ownerUserId !== ownerUserId || node.degree !== 1) continue;
+      if (node.contactHashIds.length === 0 && node.sokoUserId === null) continue;
+
+      const link = this.findSokoIdentityLink({
+        ownerUserId,
+        contactHashIds: node.contactHashIds,
+        now,
+        discovery
+      });
+      const linkedUserId = link?.linkedUserId ?? null;
+
+      if (
+        linkedUserId === node.sokoUserId &&
+        (link?.linkedBusinessId ?? null) === node.sokoBusinessId
+      ) {
+        continue;
+      }
+
+      relinked.set(node.id, link);
+      this.networkNodes.set(node.id, {
+        ...node,
+        kind:
+          link !== null
+            ? "soko_user"
+            : node.sourceType === "social"
+              ? "external_social"
+              : "external_contact",
+        sokoUserId: linkedUserId,
+        sokoBusinessId: link?.linkedBusinessId ?? null,
+        sokoAgentId: link?.linkedAgentId ?? null,
+        updatedAt: now.toISOString()
+      });
+    }
+
+    if (relinked.size === 0) return;
+
+    for (const [id, existing] of [...this.sokoIdentityLinks.entries()]) {
+      if (existing.ownerUserId === ownerUserId && relinked.has(existing.nodeId)) {
+        this.sokoIdentityLinks.delete(id);
+      }
+    }
+
+    for (const [nodeId, link] of relinked) {
+      if (link !== null) this.sokoIdentityLinks.set(link.id, { ...link, nodeId });
+    }
+  }
+
+  /**
+   * "directNodeId:lowercase name" for the owner's existing second-degree contacts, built on first
+   * use and kept on the sync's index, so deduping N nested connections is one scan of edges, not N.
+   */
+  private extendedConnectionKeys(ownerUserId: string, index: PhonebookSourceIndex): Set<string> {
+    if (index.extendedKeys === null) {
+      index.extendedKeys = new Set();
+      for (const edge of this.networkEdges.values()) {
+        if (edge.ownerUserId !== ownerUserId || edge.degree !== 2) continue;
+        const name = this.networkNodes.get(edge.toNodeId)?.displayName.toLowerCase();
+        if (name !== undefined) index.extendedKeys.add(`${edge.fromNodeId}:${name}`);
+      }
+    }
+    return index.extendedKeys;
+  }
+
+  private phonebookSourceIndex(ownerUserId: string, sourceId: string): PhonebookSourceIndex {
+    const index: PhonebookSourceIndex = {
+      byHashId: new Map(),
+      byBareName: new Map(),
+      discovery: this.discoveryPass(),
+      extendedKeys: null
+    };
+
+    for (const node of this.networkNodes.values()) {
+      if (node.ownerUserId === ownerUserId && node.sourceId === sourceId && node.degree === 1) {
+        indexPhonebookNode(index, node);
+      }
+    }
+
+    return index;
+  }
+
+  private upsertPhonebookContact(input: {
+    ownerUserId: string;
+    sourceId: string;
+    ownerNodeId: string;
+    contact: NormalizedNetworkConnection;
+    index: PhonebookSourceIndex;
+    now: Date;
+  }): NetworkNodeSummary {
+    const hashIds = this.contactHashIdsFor({
+      ownerUserId: input.ownerUserId,
+      phones: input.contact.phones,
+      emails: input.contact.emails,
+      now: input.now
+    });
+
+    // A phone/email match wins; a name-only contact that now arrives with a number is upgraded.
+    const existing =
+      hashIds
+        .map((hashId) => input.index.byHashId.get(hashId))
+        .find((node) => node !== undefined) ??
+      input.index.byBareName.get(input.contact.name.toLowerCase());
+
+    if (existing !== undefined) {
+      const current = this.networkNodes.get(existing.id) ?? existing;
+      // A number already on another contact stays there: one number, one contact.
+      const added = hashIds.filter((hashId) => {
+        const owner = input.index.byHashId.get(hashId);
+        return owner === undefined || owner.id === current.id;
+      });
+      const updated: NetworkNodeSummary = {
+        ...current,
+        displayName: input.contact.name,
+        contactHashIds: [...new Set([...current.contactHashIds, ...added])],
+        updatedAt: input.now.toISOString()
+      };
+      this.networkNodes.set(updated.id, updated);
+      indexPhonebookNode(input.index, updated, current);
+      return updated;
+    }
+
+    const node = this.createImportedNetworkNode({
+      ownerUserId: input.ownerUserId,
+      sourceId: input.sourceId,
+      sourceType: "phone_contact",
+      sourcePlatform: "phone",
+      displayName: input.contact.name,
+      degree: 1,
+      kind: "external_contact",
+      phones: input.contact.phones,
+      emails: input.contact.emails,
+      discovery: input.index.discovery,
+      now: input.now
+    });
+    this.createNetworkEdge({
+      ownerUserId: input.ownerUserId,
+      sourceType: "phone_contact",
+      sourcePlatform: "phone",
+      fromNodeId: input.ownerNodeId,
+      toNodeId: node.id,
+      degree: 1,
+      trustWeight: 0.8,
+      interactionWeight: 0.3,
+      visibilityStatus: "direct",
+      consentStatus: "pending",
+      now: input.now
+    });
+    indexPhonebookNode(input.index, node);
+    return node;
+  }
+
+  private upsertExtendedPhonebookContact(input: {
+    ownerUserId: string;
+    sourceId: string;
+    directNode: NetworkNodeSummary;
+    connection: NormalizedNetworkConnection;
+    index: PhonebookSourceIndex;
+    now: Date;
+  }): void {
+    const key = `${input.directNode.id}:${input.connection.name.toLowerCase()}`;
+    const extended = this.extendedConnectionKeys(input.ownerUserId, input.index);
+
+    if (extended.has(key)) {
+      return;
+    }
+    extended.add(key);
+
+    const extendedNode = this.createImportedNetworkNode({
+      ownerUserId: input.ownerUserId,
+      sourceId: input.sourceId,
+      sourceType: "phone_contact",
+      sourcePlatform: "phone",
+      displayName: input.connection.name,
+      degree: 2,
+      kind: "external_contact",
+      phone: null,
+      email: null,
+      now: input.now
+    });
+    this.createNetworkEdge({
+      ownerUserId: input.ownerUserId,
+      sourceType: "agent_route",
+      sourcePlatform: "phone",
+      fromNodeId: input.directNode.id,
+      toNodeId: extendedNode.id,
+      degree: 2,
+      trustWeight: 0.45,
+      interactionWeight: 0.15,
+      visibilityStatus: "agent_mediated",
+      consentStatus: "agent_required",
+      now: input.now
+    });
+  }
+
+  private contactHashIdsFor(input: {
+    ownerUserId: string;
+    phones: Array<string | null | undefined>;
+    emails: Array<string | null | undefined>;
+    now: Date;
+  }): string[] {
+    const ids: string[] = [];
+
+    for (const [hashType, values] of [
+      ["phone", input.phones],
+      ["email", input.emails]
+    ] as const) {
+      for (const rawValue of values) {
+        if (rawValue === undefined || rawValue === null) continue;
+        const id = this.ensureContactHash({
+          ownerUserId: input.ownerUserId,
+          hashType,
+          rawValue,
+          now: input.now
+        }).id;
+        if (!ids.includes(id)) ids.push(id);
+      }
+    }
+
+    return ids;
+  }
+
+  private recentPhonebookSyncs(userId: string, now: Date) {
+    const since = now.getTime() - phonebookSyncWindowMs;
+    return (this.phonebookSyncLog.get(userId) ?? []).filter((entry) => entry.at > since);
+  }
+
+  /** Refuses a sync that would exceed the budget. Only syncs that succeed are charged. */
+  private assertPhonebookSyncBudget(userId: string, count: number, now: Date): void {
+    const used = this.recentPhonebookSyncs(userId, now).reduce(
+      (total, entry) => total + entry.count,
+      0
+    );
+
+    if (used + count > (this.deps.limits?.phonebookSyncDailyBudget ?? phonebookSyncDailyBudget)) {
+      throw new Cp2Error(
+        429,
+        "network_sync_rate_limited",
+        "You have synced a lot of contacts today. Try again tomorrow."
+      );
+    }
+  }
+
+  private recordPhonebookSync(userId: string, count: number, now: Date): void {
+    this.phonebookSyncLog.set(userId, [
+      ...this.recentPhonebookSyncs(userId, now),
+      { at: now.getTime(), count }
+    ]);
+  }
+
+  /**
+   * How many of `contacts` would become new phonebook nodes, without writing anything: the same
+   * matching upsertPhonebookContact does (any known phone/email hash, else an exact bare name),
+   * with duplicates inside the batch counted once.
+   */
+  private countNewPhonebookContacts(
+    ownerUserId: string,
+    contacts: NormalizedNetworkConnection[],
+    index: PhonebookSourceIndex
+  ): number {
+    const seen = new Set<string>();
+    let count = 0;
+
+    for (const contact of contacts) {
+      const keys = [
+        ...contact.phones.map((value) => `phone:${hashCanonicalContact("phone", value)}`),
+        ...contact.emails.map((value) => `email:${hashCanonicalContact("email", value)}`)
+      ];
+      const known = keys.some((key) => {
+        const hashId = this.contactHashIdByValue.get(`${ownerUserId}:${key}`);
+        return hashId !== undefined && index.byHashId.has(hashId);
+      });
+      const nameKey = `name:${contact.name.toLowerCase()}`;
+      const identity = keys.length > 0 ? keys : [nameKey];
+
+      if (known || (keys.length === 0 && index.byBareName.has(contact.name.toLowerCase()))) {
+        continue;
+      }
+      if (identity.some((key) => seen.has(key))) continue;
+      identity.forEach((key) => seen.add(key));
+      count += 1;
+    }
+
+    return count;
+  }
+
+  private connectionDeps(): NetworkConnectionDeps {
+    return {
+      connections: this.networkConnections,
+      networkNodes: this.networkNodes,
+      users: this.deps.users,
+      memberships: this.deps.memberships,
+      businesses: this.deps.businesses,
+      ...(this.deps.limits?.maxPendingOutgoingConnections === undefined
+        ? {}
+        : { maxPendingOutgoing: this.deps.limits.maxPendingOutgoingConnections }),
+      ...(this.deps.recordAuditEvent === undefined
+        ? {}
+        : { recordAuditEvent: this.deps.recordAuditEvent })
+    };
   }
 
   private refreshNetworkSourceCounts(sourceId: string, now: Date): void {
@@ -1209,13 +1800,88 @@ export class NetworkDomain {
     } as NetworkSyncSourceSummary);
   }
 
+  /**
+   * Soko users this owner is connected with. Discovery links a contact to a Soko user so the owner
+   * can connect, but which shop they run is only shown once connected: holding someone's number
+   * reveals that they use Soko, not their business.
+   */
+  private connectedUserIds(ownerUserId: string): Set<string> {
+    const connected = new Set<string>();
+    for (const connection of this.networkConnections.values()) {
+      if (connection.status !== "accepted") continue;
+      if (connection.requesterUserId === ownerUserId) connected.add(connection.recipientUserId);
+      if (connection.recipientUserId === ownerUserId) connected.add(connection.requesterUserId);
+    }
+    return connected;
+  }
+
+  /**
+   * Before an account purge sweeps every record that references the purged ids: other owners'
+   * phonebook contacts that were linked to the purged person are theirs, not the purged
+   * person's. Unlink them (back to a plain contact, which the next discovery pass would do
+   * anyway) and drop their identity links, so the sweep leaves them in place. Returns how many
+   * contacts were unlinked.
+   */
+  detachPurgedUsers(scope: Set<string>, now: Date): number {
+    let detached = 0;
+    // The purged user's own nodes and links are skipped here; the sweep deletes those.
+
+    for (const node of [...this.networkNodes.values()]) {
+      if (scope.has(node.ownerUserId)) continue;
+      const linked =
+        (node.sokoUserId !== null && scope.has(node.sokoUserId)) ||
+        (node.sokoBusinessId !== null && scope.has(node.sokoBusinessId));
+      if (!linked) continue;
+      this.networkNodes.set(node.id, {
+        ...node,
+        kind: node.sourceType === "social" ? "external_social" : "external_contact",
+        sokoUserId: null,
+        sokoBusinessId: null,
+        sokoAgentId: null,
+        updatedAt: now.toISOString()
+      });
+      detached += 1;
+    }
+
+    for (const [id, link] of [...this.sokoIdentityLinks.entries()]) {
+      if (scope.has(link.ownerUserId)) continue;
+      if (
+        (link.linkedUserId !== null && scope.has(link.linkedUserId)) ||
+        (link.linkedBusinessId !== null && scope.has(link.linkedBusinessId))
+      ) {
+        this.sokoIdentityLinks.delete(id);
+      }
+    }
+
+    return detached;
+  }
+
+  /** A phonebook node as its owner may see it, for other domains that list the owner's nodes. */
+  phonebookNodeView(ownerUserId: string, node: NetworkNodeSummary): NetworkNodeSummary {
+    return this.phonebookNodeViewer(ownerUserId)(node);
+  }
+
+  /** phonebookNodeView for many nodes of one owner: their connections are read once. */
+  phonebookNodeViewer(ownerUserId: string): (node: NetworkNodeSummary) => NetworkNodeSummary {
+    const connected = this.connectedUserIds(ownerUserId);
+    return (node) => this.nodeView(node, connected);
+  }
+
+  private nodeView(node: NetworkNodeSummary, connected: Set<string>): NetworkNodeSummary {
+    const view = sanitizeNetworkNode(node);
+    return view.sokoUserId === null || connected.has(view.sokoUserId)
+      ? view
+      : { ...view, sokoBusinessId: null, sokoAgentId: null };
+  }
+
   private networkGraphForUser(ownerUserId: string, now: Date): NetworkGraphSummary {
+    const connected = this.connectedUserIds(ownerUserId);
     return {
       ownerUserId,
       generatedAt: now.toISOString(),
       nodes: [...this.networkNodes.values()]
         .filter((node) => node.ownerUserId === ownerUserId)
-        .map(sanitizeNetworkNode)
+        .map((node) => this.nodeView(node, connected))
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
       edges: [...this.networkEdges.values()]
         .filter((edge) => edge.ownerUserId === ownerUserId)
@@ -1231,12 +1897,18 @@ export class NetworkDomain {
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
       identityLinks: [...this.sokoIdentityLinks.values()]
         .filter((link) => link.ownerUserId === ownerUserId)
+        .map((link) =>
+          link.linkedUserId !== null && connected.has(link.linkedUserId)
+            ? link
+            : { ...link, linkedBusinessId: null, linkedAgentId: null }
+        )
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
       identityCandidates: [...this.identityCandidates.values()]
         .filter(
           (candidate) => candidate.ownerUserId === ownerUserId && candidate.status === "pending"
         )
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+      connections: listNetworkConnections(this.connectionDeps(), ownerUserId)
     };
   }
 
@@ -1392,5 +2064,60 @@ export class NetworkDomain {
 
     this.networkRoutes.set(route.id, updatedRoute);
     return updatedRoute;
+  }
+}
+
+/**
+ * One discovery pass: which Soko user each phone/email hash belongs to, and each user's primary
+ * shop. Built once per request and handed to every lookup in it, so linking N contacts costs one
+ * scan of accounts and memberships, not N.
+ */
+interface DiscoveryPass {
+  index: Map<string, string>;
+  businessByUser: Map<string, BusinessSummary>;
+}
+
+interface PhonebookSourceIndex {
+  byHashId: Map<string, NetworkNodeSummary>;
+  /** Contacts with neither phone nor email, matched by exact (case-insensitive) name. */
+  byBareName: Map<string, NetworkNodeSummary>;
+  /** Built once per sync; see NetworkDomain.sokoDiscoveryIndex. */
+  discovery: DiscoveryPass;
+  /** See NetworkDomain.extendedConnectionKeys; null until first needed. */
+  extendedKeys: Set<string> | null;
+}
+
+function indexPhonebookNode(
+  index: PhonebookSourceIndex,
+  node: NetworkNodeSummary,
+  previous?: NetworkNodeSummary
+): void {
+  const previousName = previous?.displayName.toLowerCase();
+  if (previousName !== undefined && index.byBareName.get(previousName)?.id === node.id) {
+    index.byBareName.delete(previousName);
+  }
+
+  if (node.contactHashIds.length === 0) {
+    index.byBareName.set(node.displayName.toLowerCase(), node);
+    return;
+  }
+
+  for (const hashId of node.contactHashIds) {
+    index.byHashId.set(hashId, node);
+  }
+}
+
+/** Second-degree connections (a contact's own contacts) sent in one request, in total. */
+function assertNestedConnectionLimit(
+  contacts: Array<{ connections?: unknown[] | undefined }>,
+  limit: number
+): void {
+  const nested = contacts.reduce((total, contact) => total + (contact.connections?.length ?? 0), 0);
+  if (nested > limit) {
+    throw new Cp2Error(
+      400,
+      "network_connections_too_many",
+      `Send at most ${limit} second-degree connections per request.`
+    );
   }
 }

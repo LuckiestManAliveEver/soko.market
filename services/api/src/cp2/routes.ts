@@ -253,6 +253,7 @@ interface NetworkInviteContactBody {
 
 interface NetworkInvitesBody {
   contacts?: NetworkInviteContactBody[];
+  defaultCountry?: string;
 }
 
 interface SyncQueueParams extends BusinessParams {
@@ -1897,17 +1898,21 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     ) => {
       try {
         const sessionId = readSessionCookie(request.headers.cookie);
-        const invites = store.createNetworkInvites({
+        const defaultCountry = parseOptionalString(request.body.defaultCountry);
+        const { invites, alreadyOnSokoCount, invalidCount } = store.createNetworkInvites({
           sessionId,
           businessId: request.params.businessId,
-          contacts: parseNetworkInviteContacts(request.body.contacts)
+          contacts: parseNetworkInviteContacts(request.body.contacts),
+          ...(defaultCountry === undefined ? {} : { defaultCountry })
         });
         return {
           invites: await store.deliverNetworkInvites({
             sessionId,
             businessId: request.params.businessId,
             inviteIds: invites.map((invite) => invite.id)
-          })
+          }),
+          alreadyOnSokoCount,
+          invalidCount
         };
       } catch (error) {
         return sendCp2Error(reply, error);

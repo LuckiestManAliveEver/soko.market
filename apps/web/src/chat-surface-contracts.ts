@@ -7,11 +7,15 @@ import type {
   ChannelProvider,
   ConversationInboxItem,
   MessageHandoffStatus,
+  NetworkInviteSummary,
   ProductFieldDefinition,
   RecycleBinStatusSummary
 } from "@soko/shared-types";
 
 import type { ChatAttachment, ChatMessage, ShellView, SokoMode } from "./app-shell";
+import type { NetworkConnectionAction } from "./hooks/useNetworkState";
+import type { DevicePhonebookContact } from "./phonebook-directory";
+import type { InviteOutcome } from "./phonebook-sync";
 import type {
   BuyCartItem,
   ContactPickerContact,
@@ -45,6 +49,8 @@ export interface ChatSurfaceProps {
   marketplaceIntroComplete: boolean;
   marketplaceShortcutOpen: boolean;
   networkGraph: NetworkGraphSummary | null;
+  networkDevicePhonebook: DevicePhonebookContact[];
+  networkInvites: NetworkInviteSummary[];
   oauthProviders: OAuthProviderSummary[];
   oauthProvidersLoaded: boolean;
   pendingAttachments: ChatAttachment[];
@@ -117,7 +123,10 @@ export interface ChatSurfaceProps {
   onNetworkPhoneContactsSync: (
     selectedContacts: ContactPickerContact[]
   ) => Promise<NetworkGraphSummary | null>;
-  onNetworkInviteContacts: (selectedContacts: ContactPickerContact[]) => Promise<number>;
+  onNetworkInviteContacts: (contacts: DevicePhonebookContact[]) => Promise<InviteOutcome>;
+  onNetworkConnectionAction: (
+    action: NetworkConnectionAction
+  ) => Promise<{ ok: boolean; message: string }>;
   onNetworkProviderOAuth: (provider: SocialSignupProvider) => Promise<void>;
   onNetworkRefresh: () => void;
   onRemoveAttachment: (attachmentId: string) => void;

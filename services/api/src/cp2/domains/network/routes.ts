@@ -7,6 +7,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { SocialNetworkProvider } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
+import { maxConnectionsPerContact, maxDestinationsPerContact } from "./shared.js";
 import { fetchGoogleContacts, googleContactsScope } from "../../google-contacts.js";
 import {
   type Cp2Store,
@@ -26,6 +27,8 @@ interface NetworkConnectionBody {
   name?: string;
   phone?: string | null;
   email?: string | null;
+  phones?: string[];
+  emails?: string[];
   providerSubject?: string | null;
   handle?: string | null;
 }
@@ -42,6 +45,20 @@ interface SocialProfileNetworkBody extends NetworkConnectionBody {
 interface NetworkContactsSyncBody {
   contacts?: PhoneContactNetworkBody[];
   sourceName?: string;
+  mode?: string;
+  defaultCountry?: string;
+}
+
+interface NetworkConnectionRequestBody {
+  nodeId?: string;
+}
+
+interface NetworkConnectionParams {
+  connectionId: string;
+}
+
+interface NetworkConnectionResponseBody {
+  accept?: boolean;
 }
 
 interface NetworkSocialSyncBody {
@@ -104,10 +121,21 @@ export function registerNetworkRoutes(app: FastifyInstance, store: Cp2Store): vo
     async (request: FastifyRequest<{ Body: NetworkContactsSyncBody }>, reply) => {
       try {
         const sourceName = parseOptionalString(request.body.sourceName);
+        const mode = request.body.mode;
+        if (mode !== undefined && mode !== "replace" && mode !== "merge") {
+          throw new Cp2Error(
+            400,
+            "network_sync_mode_invalid",
+            'mode must be "replace" or "merge".'
+          );
+        }
+        const defaultCountry = parseOptionalString(request.body.defaultCountry);
         return store.syncPhoneContacts({
           sessionId: readSessionCookie(request.headers.cookie),
           contacts: parsePhoneContactNetworkBodies(request.body.contacts),
-          ...(sourceName === undefined ? {} : { sourceName })
+          ...(sourceName === undefined ? {} : { sourceName }),
+          ...(mode === undefined ? {} : { mode }),
+          ...(defaultCountry === undefined ? {} : { defaultCountry })
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -262,6 +290,78 @@ export function registerNetworkRoutes(app: FastifyInstance, store: Cp2Store): vo
           sessionId: readSessionCookie(request.headers.cookie),
           sourceId: parseString(request.params.sourceId, "sourceId")
         });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/network/connections", async (request, reply) => {
+    try {
+      return {
+        connections: store.listNetworkConnections({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/network/connections",
+    async (request: FastifyRequest<{ Body: NetworkConnectionRequestBody }>, reply) => {
+      try {
+        const body = parseRequestBody(request.body);
+        return store.requestNetworkConnection({
+          sessionId: readSessionCookie(request.headers.cookie),
+          nodeId: parseString(body.nodeId, "nodeId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/network/connections/:connectionId/respond",
+    async (
+      request: FastifyRequest<{
+        Params: NetworkConnectionParams;
+        Body: NetworkConnectionResponseBody;
+      }>,
+      reply
+    ) => {
+      try {
+        const body = parseRequestBody(request.body);
+        if (typeof body.accept !== "boolean") {
+          throw new Cp2Error(
+            400,
+            "network_connection_accept_required",
+            "accept must be a boolean."
+          );
+        }
+        const connection = store.respondToNetworkConnection({
+          sessionId: readSessionCookie(request.headers.cookie),
+          connectionId: parseString(request.params.connectionId, "connectionId"),
+          accept: body.accept
+        });
+        return { connection };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/network/connections/:connectionId",
+    async (request: FastifyRequest<{ Params: NetworkConnectionParams }>, reply) => {
+      try {
+        store.removeNetworkConnection({
+          sessionId: readSessionCookie(request.headers.cookie),
+          connectionId: parseString(request.params.connectionId, "connectionId")
+        });
+        return { removed: true };
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -428,6 +528,11 @@ function parseNetworkConnectionBody(
     handle: parseNullableString(record.handle)
   };
 
+  for (const field of ["phones", "emails"] as const) {
+    if (record[field] !== undefined)
+      parsed[field] = parseDestinationList(record[field], `${name}.${field}`);
+  }
+
   if (record.connections !== undefined) {
     parsed.connections = parseNestedNetworkConnectionBodies(
       record.connections,
@@ -438,12 +543,34 @@ function parseNetworkConnectionBody(
   return parsed;
 }
 
+function parseDestinationList(value: unknown, name: string): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > maxDestinationsPerContact ||
+    !value.every((item) => typeof item === "string" && item.length <= 254)
+  ) {
+    throw new Cp2Error(
+      400,
+      "network_destinations_invalid",
+      `${name} must be at most ${maxDestinationsPerContact} strings.`
+    );
+  }
+  return value as string[];
+}
+
 function parseNestedNetworkConnectionBodies(
   value: unknown,
   name: string
 ): PhoneContactNetworkInput[] {
   if (!Array.isArray(value)) {
     throw new Cp2Error(400, "network_connections_invalid", `${name} must be an array.`);
+  }
+  if (value.length > maxConnectionsPerContact) {
+    throw new Cp2Error(
+      400,
+      "network_connections_invalid",
+      `${name} must have at most ${maxConnectionsPerContact} entries.`
+    );
   }
 
   return value.map((connection, index) =>

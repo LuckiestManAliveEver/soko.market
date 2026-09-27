@@ -519,6 +519,8 @@ export function OwnerApp() {
     networkGraph,
     setNetworkGraph,
     networkInvites,
+    devicePhonebook,
+    runNetworkConnectionAction,
     loadNetworkGraph,
     loadNetworkInvites,
     syncPhoneNetwork,
@@ -1925,6 +1927,9 @@ export function OwnerApp() {
                 }
                 replyToMessageId={replyToMessageId}
                 networkGraph={networkGraph}
+                networkDevicePhonebook={devicePhonebook}
+                networkInvites={networkInvites}
+                onNetworkConnectionAction={runNetworkConnectionAction}
                 oauthProviders={oauthProviders}
                 oauthProvidersLoaded={oauthProvidersLoaded}
                 pendingAttachments={pendingAttachments}
@@ -2055,11 +2060,15 @@ export function OwnerApp() {
                 onNetworkPhoneContactsSync={syncSelectedNetworkPhoneContacts}
                 onNetworkInviteContacts={(contacts) =>
                   runAction("network-invite", () => inviteNetworkContacts(contacts)).then(
-                    (count) => count ?? 0
+                    (outcome) => {
+                      // runAction already showed the error; the card still needs to know.
+                      if (outcome === undefined) throw new Error("Invites could not be sent.");
+                      return outcome;
+                    }
                   )
                 }
                 onNetworkProviderOAuth={authenticateSocialProfile}
-                onNetworkRefresh={() => void loadNetworkGraph()}
+                onNetworkRefresh={() => void loadNetworkGraph({ fresh: true })}
                 onRemoveAttachment={removePendingAttachment}
                 onStatusChange={updateShopPresenceStatus}
                 onOpenAgentProfile={() => openAgentProfile()}
