@@ -1,4 +1,11 @@
-import { useState, type ChangeEvent, type Dispatch, type SetStateAction } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type Dispatch,
+  type SetStateAction
+} from "react";
 import { reportBackgroundLoadError } from "../background-load-error";
 
 import { commerceAddressFromSokoId, type NetworkInviteSummary } from "@soko/shared-types";
@@ -6,8 +13,7 @@ import { commerceAddressFromSokoId, type NetworkInviteSummary } from "@soko/shar
 import { copyTextToClipboard } from "../misc-browser-utils";
 import type { ChatMessage } from "../app-shell";
 import { getErrorMessage } from "../chat-message-plumbing";
-import { deleteJson, getJson, postJson } from "../api-helpers";
-import { contactPickerContactToNetworkContact } from "../NetworkSyncNestedCard";
+import { deleteJson, fetchFreshJson, getJson, postJson } from "../api-helpers";
 import {
   contactPickerContactToCustomer,
   createContactsCsv,
@@ -15,6 +21,23 @@ import {
   parseContactImportContent
 } from "../contacts-import";
 import { createPublicStorefrontUrl } from "../sokoid-and-storefront";
+import {
+  browserDefaultCountry,
+  networkChangedEvent,
+  contactPickerContactToSyncContact,
+  describeInviteOutcome,
+  sendInvitesInBatches,
+  syncPhonebookInBatches,
+  type InviteOutcome,
+  type PhonebookSyncContact
+} from "../phonebook-sync";
+import {
+  mergeDevicePhonebook,
+  type DevicePhonebookContact,
+  clearDevicePhonebooks,
+  readDevicePhonebook,
+  writeDevicePhonebook
+} from "../phonebook-device-cache";
 import { getUserFacingErrorMessage } from "../user-facing-error";
 import type {
   ActiveBusiness,
@@ -56,18 +79,46 @@ export function normalizeNetworkGraph(
     edges: Array.isArray(graph?.edges) ? graph.edges : [],
     sources: Array.isArray(graph?.sources) ? graph.sources : [],
     routes: Array.isArray(graph?.routes) ? graph.routes : [],
-    ...(Array.isArray(graph?.identityLinks) ? { identityLinks: graph.identityLinks } : {})
+    ...(Array.isArray(graph?.identityLinks) ? { identityLinks: graph.identityLinks } : {}),
+    ...(Array.isArray(graph?.connections) ? { connections: graph.connections } : {})
   };
 }
+
+export type NetworkConnectionAction =
+  | { type: "request"; nodeId: string }
+  | { type: "respond"; connectionId: string; accept: boolean }
+  | { type: "remove"; connectionId: string };
 
 export function useNetworkState(deps: UseNetworkStateDeps) {
   const [networkGraph, setNetworkGraph] = useState<NetworkGraphSummary | null>(null);
   const [networkInvites, setNetworkInvites] = useState<NetworkInviteSummary[]>([]);
+  const [devicePhonebook, setDevicePhonebook] = useState<DevicePhonebookContact[]>([]);
+  const devicePhonebookUserId = useRef<string | null>(null);
 
-  async function loadNetworkGraph() {
+  // The device copy of picked contacts belongs to one Soko user; load it the first time a graph
+  // tells us who that is.
+  function receiveNetworkGraph(graph: NetworkGraphSummary) {
+    setNetworkGraph(graph);
+    if (graph.ownerUserId !== "" && devicePhonebookUserId.current !== graph.ownerUserId) {
+      devicePhonebookUserId.current = graph.ownerUserId;
+      setDevicePhonebook(readDevicePhonebook(graph.ownerUserId));
+    }
+  }
+
+  // fresh: skip the response cache, for a graph the owner just changed or explicitly refreshed
+  // (a connection request from someone else only shows up on a fresh read).
+  async function loadNetworkGraph(options: { fresh?: boolean } = {}) {
     try {
-      setNetworkGraph(
-        normalizeNetworkGraph(await getJson<Partial<NetworkGraphSummary>>("/network"))
+      const path = "/network";
+      receiveNetworkGraph(
+        normalizeNetworkGraph(
+          options.fresh === true
+            ? await fetchFreshJson<Partial<NetworkGraphSummary>>(path)
+            : await getJson<Partial<NetworkGraphSummary>>(path, (revalidated) =>
+                // A cached copy renders first; the server's answer replaces it when it arrives.
+                receiveNetworkGraph(normalizeNetworkGraph(revalidated))
+              )
+        )
       );
     } catch (error) {
       deps.setStatusMessage(getErrorMessage(error));
@@ -95,12 +146,18 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
     }
 
     try {
+      // merge, like every other sync from this device: adding customers must never wipe the
+      // contacts the owner picked from their phonebook.
       const graph = await postJson<NetworkGraphSummary>("/network/sync/contacts", {
-        sourceName: "Phone contacts",
+        sourceName: "Phone Contacts",
+        mode: "merge",
+        defaultCountry: browserDefaultCountry(),
         contacts
       });
-      setNetworkGraph(graph);
-      deps.setStatusMessage("Phone commerce network synced");
+      receiveNetworkGraph(normalizeNetworkGraph(graph));
+      deps.setStatusMessage(
+        `Added ${contacts.length} customer${contacts.length === 1 ? "" : "s"} to My Network.`
+      );
     } catch (error) {
       deps.setStatusMessage(getErrorMessage(error));
     }
@@ -109,56 +166,145 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
   async function syncSelectedNetworkPhoneContacts(
     selectedContacts: ContactPickerContact[]
   ): Promise<NetworkGraphSummary | null> {
-    const contacts = selectedContacts.map(contactPickerContactToNetworkContact).filter(
-      (
-        contact
-      ): contact is {
-        name: string;
-        phone: string | null;
-        email: string | null;
-      } => contact !== null
-    );
+    const contacts = selectedContacts
+      .map(contactPickerContactToSyncContact)
+      .filter((contact): contact is PhonebookSyncContact => contact !== null);
 
     if (contacts.length === 0) {
       deps.setStatusMessage("No contacts with a usable name were selected.");
       return null;
     }
 
-    try {
-      const graph = await postJson<NetworkGraphSummary>("/network/sync/contacts", {
-        sourceName: "Phone Contacts",
-        contacts
-      });
-      setNetworkGraph(graph);
-      deps.setStatusMessage(
-        `Imported ${contacts.length} contact${contacts.length === 1 ? "" : "s"} into My Network.`
-      );
-      return graph;
-    } catch (error) {
-      deps.setStatusMessage(getErrorMessage(error));
+    const result = await syncPhonebookInBatches(
+      (body) => postJson<NetworkGraphSummary>("/network/sync/contacts", body),
+      contacts
+    );
+
+    if (result.graph === null) {
+      deps.setStatusMessage(getErrorMessage(result.error));
       return null;
     }
+
+    const graph = normalizeNetworkGraph(result.graph);
+    receiveNetworkGraph(graph);
+    // Keep whatever was synced, even when a later batch failed.
+    const picked = contacts.slice(0, result.nodeIds.length).map((contact, index) => ({
+      name: contact.name,
+      phone: contact.phone,
+      email: contact.email,
+      nodeId: result.nodeIds[index] ?? null
+    }));
+    const merged = mergeDevicePhonebook(readDevicePhonebook(graph.ownerUserId), picked);
+    writeDevicePhonebook(graph.ownerUserId, merged);
+    setDevicePhonebook(merged);
+    const syncedIds = new Set(result.nodeIds);
+    const onSoko = graph.nodes.filter(
+      (node) => node.degree === 1 && node.sokoUserId != null && syncedIds.has(node.id)
+    ).length;
+    deps.setStatusMessage(
+      result.error === null
+        ? `Synced ${picked.length} contact${picked.length === 1 ? "" : "s"}. ${onSoko} already on Soko.`
+        : `Synced ${picked.length} of ${contacts.length} contacts, then: ${getErrorMessage(result.error)}`
+    );
+    return { ...graph, syncedContactNodeIds: result.nodeIds };
   }
 
-  async function inviteNetworkContacts(selectedContacts: ContactPickerContact[]): Promise<number> {
-    if (deps.business === null) return 0;
-    const contacts = selectedContacts
-      .map(contactPickerContactToNetworkContact)
-      .filter(
-        (contact): contact is { name: string; phone: string | null; email: string | null } =>
-          contact !== null && (contact.phone !== null || contact.email !== null)
-      );
-    if (contacts.length === 0) return 0;
+  async function inviteNetworkContacts(
+    selectedContacts: Array<{ name: string; phone: string | null; email: string | null }>
+  ): Promise<InviteOutcome> {
+    const contacts = selectedContacts.filter(
+      (contact) => contact.phone !== null || contact.email !== null
+    );
+    const business = deps.business;
 
-    const response = await postJson<NetworkInvitesResponse>(
-      `/businesses/${deps.business.id}/network/invites`,
-      { contacts }
-    );
-    await loadNetworkInvites(deps.business.id);
-    deps.setStatusMessage(
-      `${response.invites.length} invite${response.invites.length === 1 ? "" : "s"} queued for delivery.`
-    );
-    return response.invites.length;
+    // Invites are sent in a shop's name. Without a shop, hand the owner a link to share.
+    if (business === null) {
+      const shared = contacts.length > 0 && (await shareSokoInviteLink());
+      return { invited: 0, alreadyOnSoko: 0, invalid: 0, shared };
+    }
+
+    // Failures show in the status line and are rethrown for the card to report too.
+    let outcome: InviteOutcome;
+    try {
+      outcome = await sendInvitesInBatches(
+        (batch) =>
+          postJson<NetworkInvitesResponse>(`/businesses/${business.id}/network/invites`, {
+            contacts: batch,
+            defaultCountry: browserDefaultCountry()
+          }),
+        contacts
+      );
+    } catch (error) {
+      deps.setStatusMessage(getErrorMessage(error));
+      throw error;
+    }
+    await loadNetworkInvites(business.id);
+    deps.setStatusMessage(describeInviteOutcome(outcome));
+    if (outcome.alreadyOnSoko > 0) await loadNetworkGraph({ fresh: true });
+    return outcome;
+  }
+
+  async function runNetworkConnectionAction(
+    action: NetworkConnectionAction
+  ): Promise<{ ok: boolean; message: string }> {
+    let result: { ok: boolean; message: string };
+    try {
+      if (action.type === "request") {
+        const connection = await postJson<{ status: string; counterpartDisplayName: string }>(
+          "/network/connections",
+          { nodeId: action.nodeId }
+        );
+        result = {
+          ok: true,
+          message:
+            connection.status === "accepted"
+              ? `You are now connected with ${connection.counterpartDisplayName}.`
+              : `Connection request sent to ${connection.counterpartDisplayName}.`
+        };
+      } else if (action.type === "respond") {
+        await postJson(`/network/connections/${action.connectionId}/respond`, {
+          accept: action.accept
+        });
+        result = {
+          ok: true,
+          message: action.accept ? "You are now connected." : "Request declined."
+        };
+      } else {
+        await deleteJson(`/network/connections/${action.connectionId}`);
+        result = { ok: true, message: "Connection removed." };
+      }
+    } catch (error) {
+      result = { ok: false, message: getErrorMessage(error) };
+    }
+    deps.setStatusMessage(result.message);
+    // Let the shell's request prompt drop a request answered here.
+    if (result.ok) {
+      window.dispatchEvent(
+        new CustomEvent(networkChangedEvent, { detail: { source: "network-state" } })
+      );
+    }
+    await loadNetworkGraph({ fresh: true });
+    return result;
+  }
+
+  /** True when the link was handed to the share sheet or copied; false if cancelled or failed. */
+  async function shareSokoInviteLink(): Promise<boolean> {
+    const url = window.location.origin;
+    const text = "Join me on Soko.market.";
+    try {
+      if (navigator.share !== undefined) {
+        await navigator.share({ title: "Soko.market", text, url });
+      } else {
+        await copyTextToClipboard(`${text} ${url}`);
+      }
+      deps.setStatusMessage("Invite link ready to share.");
+      return true;
+    } catch (caught) {
+      if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+        deps.setStatusMessage("Invite sharing is not available on this device");
+      }
+      return false;
+    }
   }
 
   async function syncSocialNetwork(
@@ -232,8 +378,15 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
   }
 
   async function disconnectNetworkSource(sourceId: string) {
+    const phoneSource =
+      networkGraph?.sources.find((source) => source.id === sourceId)?.sourcePlatform === "phone";
     try {
       setNetworkGraph(await deleteJson<NetworkGraphSummary>(`/network/sources/${sourceId}`));
+      // Disconnecting the phonebook forgets the device copy too: its numbers belonged to it.
+      if (phoneSource && networkGraph !== null) {
+        writeDevicePhonebook(networkGraph.ownerUserId, []);
+        setDevicePhonebook([]);
+      }
       deps.setStatusMessage("Network source disconnected");
     } catch (error) {
       deps.setStatusMessage(getErrorMessage(error));
@@ -367,9 +520,26 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
     );
   }
 
+  // The shell's ConnectionRequestsPrompt answers requests outside this hook; reload so an open
+  // Phone Contacts card does not keep offering "Accept" for a request already answered.
+  const reloadGraph = useRef(loadNetworkGraph);
+  reloadGraph.current = loadNetworkGraph;
+  useEffect(() => {
+    const reload = (event: Event) => {
+      // This hook already reloads after its own actions.
+      if ((event as CustomEvent<{ source?: string }>).detail?.source === "network-state") return;
+      void reloadGraph.current({ fresh: true });
+    };
+    window.addEventListener(networkChangedEvent, reload);
+    return () => window.removeEventListener(networkChangedEvent, reload);
+  }, []);
+
   deps.registerReset("network", () => {
     setNetworkGraph(null);
     setNetworkInvites([]);
+    setDevicePhonebook([]);
+    devicePhonebookUserId.current = null;
+    clearDevicePhonebooks();
   });
   deps.registerRefresh("network", ["home", "network"], async (businessId) => {
     await Promise.all([loadNetworkGraph(), loadNetworkInvites(businessId)]);
@@ -383,6 +553,8 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
     // raw mutation access rather than going through this hook's own action functions.
     setNetworkGraph,
     networkInvites,
+    devicePhonebook,
+    runNetworkConnectionAction,
     loadNetworkGraph,
     loadNetworkInvites,
     syncPhoneNetwork,

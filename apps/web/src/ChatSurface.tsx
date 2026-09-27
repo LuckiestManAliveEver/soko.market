@@ -98,6 +98,8 @@ export function ChatSurface({
   marketplaceIntroComplete,
   marketplaceShortcutOpen,
   networkGraph,
+  networkDevicePhonebook,
+  networkInvites,
   oauthProviders,
   oauthProvidersLoaded,
   pendingAttachments,
@@ -165,6 +167,7 @@ export function ChatSurface({
   onNetworkDisconnectSource,
   onNetworkPhoneContactsSync,
   onNetworkInviteContacts,
+  onNetworkConnectionAction,
   onNetworkProviderOAuth,
   onNetworkRefresh,
   onRemoveAttachment,
@@ -940,6 +943,9 @@ export function ChatSurface({
           ) : workspaceCardView === "networkSync" ? (
             <NetworkSyncNestedCard
               graph={networkGraph}
+              devicePhonebook={networkDevicePhonebook}
+              networkInvites={networkInvites}
+              onConnectionAction={onNetworkConnectionAction}
               oauthProviders={oauthProviders}
               oauthProvidersLoaded={oauthProvidersLoaded}
               onBack={() => setWorkspaceCardView("cards")}

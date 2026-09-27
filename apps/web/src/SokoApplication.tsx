@@ -519,6 +519,8 @@ export function OwnerApp() {
     networkGraph,
     setNetworkGraph,
     networkInvites,
+    devicePhonebook,
+    runNetworkConnectionAction,
     loadNetworkGraph,
     loadNetworkInvites,
     syncPhoneNetwork,
@@ -1925,6 +1927,9 @@ export function OwnerApp() {
                 }
                 replyToMessageId={replyToMessageId}
                 networkGraph={networkGraph}
+                networkDevicePhonebook={devicePhonebook}
+                networkInvites={networkInvites}
+                onNetworkConnectionAction={runNetworkConnectionAction}
                 oauthProviders={oauthProviders}
                 oauthProvidersLoaded={oauthProvidersLoaded}
                 pendingAttachments={pendingAttachments}
@@ -2053,13 +2058,9 @@ export function OwnerApp() {
                   void runAction("network-disconnect", () => disconnectNetworkSource(sourceId))
                 }
                 onNetworkPhoneContactsSync={syncSelectedNetworkPhoneContacts}
-                onNetworkInviteContacts={(contacts) =>
-                  runAction("network-invite", () => inviteNetworkContacts(contacts)).then(
-                    (count) => count ?? 0
-                  )
-                }
+                onNetworkInviteContacts={inviteNetworkContacts}
                 onNetworkProviderOAuth={authenticateSocialProfile}
-                onNetworkRefresh={() => void loadNetworkGraph()}
+                onNetworkRefresh={() => void loadNetworkGraph({ fresh: true })}
                 onRemoveAttachment={removePendingAttachment}
                 onStatusChange={updateShopPresenceStatus}
                 onOpenAgentProfile={() => openAgentProfile()}

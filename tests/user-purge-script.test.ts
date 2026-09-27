@@ -57,8 +57,11 @@ describe("registered-user purge script", () => {
     // Staff invitations (infra/db/migrations/099_staff_invitations.sql, docs/architecture/
     // staff-invitations.md) added cp2_staff_invitations, classified DELETE - business-scoped
     // invitation records, same family as cp2_network_invites.
-    expect(plan.size).toBe(201);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(194);
+    // Network connections (infra/db/migrations/105_network_connections.sql, docs/architecture/
+    // phonebook-identity-resolution.md) added cp2_network_connections, classified DELETE - they
+    // reference two user accounts and must not survive a purge of either.
+    expect(plan.size).toBe(202);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(195);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

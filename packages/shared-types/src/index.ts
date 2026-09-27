@@ -1773,6 +1773,44 @@ export interface SokoIdentityLinkSummary {
   createdAt: string;
 }
 
+/**
+ * A connection between two Soko users, discovered through one side's phonebook. One record per
+ * pair: whoever asked first is the requester. See docs/architecture/phonebook-identity-resolution.md.
+ */
+export type NetworkConnectionStatus = "pending" | "accepted" | "declined";
+
+export interface NetworkConnectionRecord {
+  id: string;
+  requesterUserId: string;
+  recipientUserId: string;
+  status: NetworkConnectionStatus;
+  createdAt: string;
+  updatedAt: string;
+  respondedAt: string | null;
+  /** Set when the requester cancels a request that was already declined; hides it from them. */
+  requesterWithdrawnAt?: string | null;
+}
+
+/**
+ * Viewer-relative projection of a NetworkConnectionRecord. A declined request is reported to its
+ * requester as "pending" (the recipient's decision is private), and is never listed for the
+ * recipient, so the recipient can still connect later.
+ */
+export interface NetworkConnectionSummary {
+  id: string;
+  status: NetworkConnectionStatus;
+  direction: "outgoing" | "incoming";
+  counterpartUserId: string;
+  counterpartDisplayName: string;
+  counterpartBusinessName: string | null;
+  counterpartSokoId: string | null;
+  /** The viewer's own phonebook node for the counterpart, when they have one. */
+  nodeId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  respondedAt: string | null;
+}
+
 export type IdentityCandidateStatus = "pending" | "confirmed" | "rejected";
 
 /**
@@ -2102,6 +2140,13 @@ export interface NetworkGraphSummary {
   permissions: NetworkPermissionSummary[];
   identityLinks: SokoIdentityLinkSummary[];
   identityCandidates: IdentityCandidateSummary[];
+  connections?: NetworkConnectionSummary[];
+  /**
+   * Only on a phonebook sync response: the phonebook node each submitted contact landed on, in
+   * submission order (null when a contact was not stored). Lets the device pair its raw contacts,
+   * which never leave the device beyond this sync, with server-side discovery results.
+   */
+  syncedContactNodeIds?: Array<string | null>;
 }
 
 export interface SupplierSummary {

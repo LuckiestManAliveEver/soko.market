@@ -3534,6 +3534,101 @@ a.button-like {
   padding: 0;
 }
 
+.phonebook-summary {
+  color: #cbdcd2;
+  font-size: 13px;
+  margin: 0;
+}
+
+.phonebook-group-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.phonebook-row {
+  align-items: center;
+  border: 1px solid #37433a;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 44px;
+  padding: 8px;
+}
+
+.phonebook-row > span,
+.network-contact-group label > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.phonebook-row strong,
+.phonebook-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phonebook-row small {
+  color: #9daea4;
+  font-size: 12px;
+}
+
+.phonebook-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: end;
+}
+
+.phonebook-row-actions button {
+  min-height: 36px;
+  padding: 6px 12px;
+}
+
+.phonebook-file-button {
+  align-items: center;
+  background: var(--soko-accent);
+  border-radius: 8px;
+  color: var(--soko-accent-ink);
+  cursor: pointer;
+  display: inline-flex;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 40px;
+  padding: 9px 12px;
+  position: relative;
+}
+
+.phonebook-file-button.secondary {
+  background: transparent;
+  border: 1px solid #344636;
+  color: #dee8e2;
+}
+
+.phonebook-file-button:focus-within {
+  outline: 2px solid #85eec3;
+  outline-offset: 2px;
+}
+
+.phonebook-file-button input[type="file"] {
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+}
+
+.network-contact-group > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .nested-form-section {
   background: #242424;
   border: 1px solid #37433a;

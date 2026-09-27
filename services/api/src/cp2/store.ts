@@ -101,7 +101,12 @@ import { SupplierDomain } from "./domains/suppliers/store.js";
 import { DocumentImportDomain } from "./domains/document-imports/store.js";
 import { NotificationsDomain } from "./domains/notifications/store.js";
 import { notificationRuleKey, summarizeNotifications } from "./domains/notifications/shared.js";
-import { NetworkDomain } from "./domains/network/store.js";
+import { NetworkDomain, type NetworkDomainDeps } from "./domains/network/store.js";
+import {
+  normalizeContactEmail,
+  normalizeContactPhone,
+  ownerPhoneCountry
+} from "./domains/network/shared.js";
 import { MessagingDomain } from "./domains/messaging/store.js";
 import {
   requirePublicStorefrontBusiness,
@@ -254,6 +259,7 @@ import type {
   NativeSmsDeviceCommandSummary,
   NativeSmsDeviceSummary,
   NetworkInviteSummary,
+  NetworkConnectionRecord,
   StaffInvitationSummary,
   OfflineCacheSnapshot,
   PaymentSummary,
@@ -803,6 +809,7 @@ export interface Cp2Snapshot
   externalIdentities: ExternalIdentitySummary[];
   sokoIdentityLinks: SokoIdentityLinkSummary[];
   identityCandidates: IdentityCandidateSummary[];
+  networkConnections?: NetworkConnectionRecord[];
   externalRegistryConnections: ExternalConnectionRecord[];
   auditEvents: BusinessEvent[];
 }
@@ -833,6 +840,8 @@ export interface Cp2StoreOptions {
   pushNotificationSender?: PushNotificationSender;
   messageEmailNotificationSender?: MessageEmailNotificationSender;
   networkInviteSender?: NetworkInviteSender;
+  /** Overrides for NetworkDomain's discovery and spam limits (tests); defaults in production. */
+  networkLimits?: NetworkDomainDeps["limits"];
   messageWebBaseUrl?: string;
   accountDeletionProcessors?: AccountDeletionProcessor[];
   channelGateway?: ChannelGateway;
@@ -1076,7 +1085,11 @@ export class Cp2Store {
       userByAccount: this.userByAccount,
       memberships: this.memberships,
       businesses: this.businesses,
-      userIdentities: this.oauthDomain.userIdentitiesMap
+      userIdentities: this.oauthDomain.userIdentitiesMap,
+      users: this.users,
+      recordAuditEvent: (event) =>
+        this.recordAuditEvent({ ...event, aggregateType: "network_connection" }),
+      ...(options.networkLimits === undefined ? {} : { limits: options.networkLimits })
     });
     this.salesDomain = new SalesDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -1223,7 +1236,8 @@ export class Cp2Store {
       requirePhonebookNode: (ownerUserId, networkNodeId) =>
         this.networkDomain.requirePhonebookNode(ownerUserId, networkNodeId),
       networkNodes: this.networkDomain.networkNodesMap,
-      networkSources: this.networkDomain.networkSourcesMap
+      networkSources: this.networkDomain.networkSourcesMap,
+      phonebookNodeViewer: (ownerUserId) => this.networkDomain.phonebookNodeViewer(ownerUserId)
     });
     this.commercialRecordsDomain = new CommercialRecordsDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -5205,8 +5219,10 @@ export class Cp2Store {
     sessionId: string | null;
     businessId: string;
     contacts: Array<{ name: string; phone: string | null; email: string | null }>;
+    /** The device's region, for owners whose own country is unknown. */
+    defaultCountry?: string | null;
     now?: Date;
-  }): NetworkInviteSummary[] {
+  }): { invites: NetworkInviteSummary[]; alreadyOnSokoCount: number; invalidCount: number } {
     const now = input.now ?? new Date();
     const session = this.requireAuthorizedSession(
       input.sessionId,
@@ -5219,28 +5235,101 @@ export class Cp2Store {
     }
 
     const created: NetworkInviteSummary[] = [];
+    let alreadyOnSokoCount = 0;
+    let invalidCount = 0;
+    // Phonebook numbers are usually national ("0712 345 678"): read them in the owner's country so
+    // the Soko-user check and the dedupe see one number however it was written. A contact whose
+    // number and email both fail to parse is skipped and counted: nothing is sent to a value
+    // nobody can check, and an unparsed value could not be matched against Soko users anyway.
+    const country = ownerPhoneCountry(session, input.defaultCountry ?? null);
+    const inviteKey = (channel: "phone" | "email", value: string) =>
+      channel === "phone" ? normalizeContactPhone(value, country) : normalizeContactEmail(value);
+
+    // Read every contact before touching anything, so a refused request writes nothing.
+    const readable: Array<{ name: string; phone: string | null; email: string | null }> = [];
     const destinations = new Set<string>();
     for (const contact of input.contacts) {
-      const phone = normalizeOptionalBoundedText(contact.phone, 40);
-      const email = normalizeOptionalBoundedText(contact.email, 254)?.toLowerCase() ?? null;
-      const destination = phone ?? email;
-      if (destination === null) {
+      const rawPhone = normalizeOptionalBoundedText(contact.phone, 40);
+      const rawEmail = normalizeOptionalBoundedText(contact.email, 254);
+      if (rawPhone === null && rawEmail === null) {
         throw new Cp2Error(
           400,
           "invite_destination_required",
           "Each invite needs a phone or email."
         );
       }
-      const destinationKey = destination.toLowerCase();
-      if (destinations.has(destinationKey)) continue;
-      destinations.add(destinationKey);
+      const phone = rawPhone === null ? null : inviteKey("phone", rawPhone);
+      const email = rawEmail === null ? null : inviteKey("email", rawEmail);
+      const destination = phone ?? email;
+      if (destination === null) {
+        invalidCount += 1;
+        continue;
+      }
+      if (destinations.has(destination.toLowerCase())) continue;
+      destinations.add(destination.toLowerCase());
+      readable.push({
+        name: normalizeRequiredBoundedText(contact.name, "contact name", 120),
+        phone,
+        email
+      });
+    }
 
-      const existing = [...this.networkInvites.values()].find(
-        (invite) =>
-          invite.businessId === input.businessId &&
-          invite.destination.toLowerCase() === destinationKey &&
-          (invite.status === "queued" || invite.status === "sent")
-      );
+    // This shop's open invites by normalized destination, built once. Invites stored before
+    // destinations were normalized still hold what was typed, so those are read again.
+    const openInvites = new Map<string, NetworkInviteSummary>();
+    for (const invite of this.networkInvites.values()) {
+      if (invite.businessId !== input.businessId) continue;
+      if (invite.status !== "queued" && invite.status !== "sent") continue;
+      const canonical =
+        invite.channel === "phone" && /^\+[1-9]\d{6,14}$/u.test(invite.destination)
+          ? invite.destination
+          : (inviteKey(invite.channel, invite.destination) ?? invite.destination);
+      openInvites.set(canonical.toLowerCase(), invite);
+    }
+
+    // Asking whether a number is on Soko is discovery: it is charged like a phonebook sync.
+    const discovery = this.networkDomain.createDiscoveryLookup({
+      userId: session.user.id,
+      // A number or email that is itself the destination of an open invite from this shop was
+      // already asked about, so it is not charged again. Per value, not per contact: another
+      // number or email on the same contact is a new question and is charged.
+      values: readable
+        .flatMap((contact) => [
+          ...(contact.phone === null ? [] : [{ channel: "phone" as const, value: contact.phone }]),
+          ...(contact.email === null ? [] : [{ channel: "email" as const, value: contact.email }])
+        ])
+        .filter(({ value }) => !openInvites.has(value.toLowerCase()))
+        // The same value on two contacts in one request is one question.
+        .filter(
+          (entry, position, all) =>
+            all.findIndex(
+              (other) => other.channel === entry.channel && other.value === entry.value
+            ) === position
+        ),
+      now
+    });
+    for (const contact of readable) {
+      const { phone, email } = contact;
+      const destination = (phone ?? email) as string;
+
+      // Someone already on Soko is connected with, not invited. Either destination counts.
+      if (
+        (phone !== null && discovery.find("phone", phone) !== null) ||
+        (email !== null && discovery.find("email", email) !== null)
+      ) {
+        alreadyOnSokoCount += 1;
+        this.recordAuditEvent({
+          type: "network.invite_skipped_existing",
+          aggregateType: "network_invite",
+          aggregateId: input.businessId,
+          actorId: session.user.id,
+          occurredAt: now.toISOString(),
+          payload: { businessId: input.businessId, channel: phone === null ? "email" : "phone" }
+        });
+        continue;
+      }
+
+      const existing = openInvites.get(destination.toLowerCase());
       if (existing !== undefined) {
         created.push(existing);
         continue;
@@ -5250,7 +5339,7 @@ export class Cp2Store {
         id: randomUUID(),
         businessId: input.businessId,
         invitedByUserId: session.user.id,
-        contactName: normalizeRequiredBoundedText(contact.name, "contact name", 120),
+        contactName: contact.name,
         channel: phone === null ? "email" : "phone",
         destination,
         status: "queued",
@@ -5259,6 +5348,7 @@ export class Cp2Store {
         failureReason: null
       };
       this.networkInvites.set(invite.id, invite);
+      openInvites.set(destination.toLowerCase(), invite);
       created.push(invite);
       this.recordAuditEvent({
         type: "network.invite_queued",
@@ -5269,7 +5359,8 @@ export class Cp2Store {
         payload: { businessId: input.businessId, channel: invite.channel }
       });
     }
-    return created;
+    discovery.commit();
+    return { invites: created, alreadyOnSokoCount, invalidCount };
   }
 
   listNetworkInvites(input: {
@@ -7642,6 +7733,30 @@ export class Cp2Store {
     return this.networkDomain.getNetworkGraph(...args);
   }
 
+  listNetworkConnections(
+    ...args: Parameters<NetworkDomain["listConnections"]>
+  ): ReturnType<NetworkDomain["listConnections"]> {
+    return this.networkDomain.listConnections(...args);
+  }
+
+  requestNetworkConnection(
+    ...args: Parameters<NetworkDomain["requestConnection"]>
+  ): ReturnType<NetworkDomain["requestConnection"]> {
+    return this.networkDomain.requestConnection(...args);
+  }
+
+  respondToNetworkConnection(
+    ...args: Parameters<NetworkDomain["respondToConnection"]>
+  ): ReturnType<NetworkDomain["respondToConnection"]> {
+    return this.networkDomain.respondToConnection(...args);
+  }
+
+  removeNetworkConnection(
+    ...args: Parameters<NetworkDomain["removeConnection"]>
+  ): ReturnType<NetworkDomain["removeConnection"]> {
+    return this.networkDomain.removeConnection(...args);
+  }
+
   getDirectNetwork(
     ...args: Parameters<NetworkDomain["getDirectNetwork"]>
   ): ReturnType<NetworkDomain["getDirectNetwork"]> {
@@ -8111,6 +8226,7 @@ export class Cp2Store {
       externalIdentities: [...this.networkDomain.externalIdentitiesMap.values()],
       sokoIdentityLinks: [...this.networkDomain.sokoIdentityLinksMap.values()],
       identityCandidates: [...this.networkDomain.identityCandidatesMap.values()],
+      networkConnections: [...this.networkDomain.networkConnectionsMap.values()],
       externalRegistryConnections: [...this.externalConnectionsDomain.connectionsMap.values()],
       auditEvents: [...this.auditEvents]
     };
@@ -8515,6 +8631,10 @@ export class Cp2Store {
 
     for (const candidate of snapshot.identityCandidates ?? []) {
       this.networkDomain.identityCandidatesMap.set(candidate.id, candidate);
+    }
+
+    for (const connection of snapshot.networkConnections ?? []) {
+      this.networkDomain.networkConnectionsMap.set(connection.id, connection);
     }
 
     for (const change of snapshot.syncChanges ?? []) {
@@ -12218,6 +12338,8 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.oauthDomain.userIdentitiesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.oauthDomain.oauthSessionsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountPinHashes, scope);
+      // Other owners' contacts that pointed at this person are unlinked, not deleted.
+      this.networkDomain.detachPurgedUsers(scope, new Date());
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkNodesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkEdgesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkSourcesMap, scope);
@@ -12227,6 +12349,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.externalIdentitiesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.sokoIdentityLinksMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.identityCandidatesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkConnectionsMap, scope);
     }
 
     deletedRecordCount += deleteScopedArrayRecords(this.syncChanges, scope);

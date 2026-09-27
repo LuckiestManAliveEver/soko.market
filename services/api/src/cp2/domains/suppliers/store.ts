@@ -78,6 +78,11 @@ export interface SupplierDomainDeps {
   requirePhonebookNode: (ownerUserId: string, networkNodeId: string) => NetworkNodeSummary;
   networkNodes: Map<string, NetworkNodeSummary>;
   networkSources: Map<string, NetworkSyncSourceSummary>;
+  /**
+   * How the owner may see their phonebook nodes (NetworkDomain.phonebookNodeViewer): hides
+   * which shop a contact runs until the two are connected. Defaults to sanitizeNetworkNode.
+   */
+  phonebookNodeViewer?: (ownerUserId: string) => (node: NetworkNodeSummary) => NetworkNodeSummary;
 }
 
 export class SupplierDomain {
@@ -386,7 +391,11 @@ export class SupplierDomain {
           node.displayName.toLowerCase().includes(query)
       )
       .slice(0, 25)
-      .map(sanitizeNetworkNode);
+      .map(
+        this.deps.phonebookNodeViewer === undefined
+          ? sanitizeNetworkNode
+          : this.deps.phonebookNodeViewer(session.user.id)
+      );
   }
 
   createSupplierFromPhoneContact(input: {

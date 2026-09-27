@@ -198,6 +198,7 @@ export const normalizedCollections: NormalizedCollection[] = [
   { key: "externalIdentities", tableName: "cp2_external_identities" },
   { key: "sokoIdentityLinks", tableName: "cp2_soko_identity_links" },
   { key: "identityCandidates", tableName: "cp2_identity_candidates" },
+  { key: "networkConnections", tableName: "cp2_network_connections" },
   { key: "auditEvents", tableName: "cp2_audit_events" }
 ];
 
@@ -348,6 +349,9 @@ const mutatingMethodNames = new Set([
   "setAccountPin",
   "signupWithPhonePin",
   "syncPhoneContacts",
+  "requestNetworkConnection",
+  "respondToNetworkConnection",
+  "removeNetworkConnection",
   "syncSocialNetwork",
   "syncShopSystemCatalogue",
   "setConversationTyping",
@@ -4376,6 +4380,7 @@ function emptySnapshot(): Cp2Snapshot {
     externalIdentities: [],
     sokoIdentityLinks: [],
     identityCandidates: [],
+    networkConnections: [],
     externalRegistryConnections: [],
     auditEvents: []
   };

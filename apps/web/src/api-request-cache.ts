@@ -95,7 +95,10 @@ export async function invalidateApiCacheForMutation(path: string): Promise<void>
           cachePath.startsWith(`/businesses/${agentId}/`))) ||
       (normalized.startsWith("/v1/messages") && cachePath.startsWith("/v1/conversations")) ||
       (normalized.startsWith("/v1/conversations") && cachePath.startsWith("/v1/conversations")) ||
-      (normalized.startsWith("/auth/") && cachePath.startsWith("/auth/"));
+      (normalized.startsWith("/auth/") && cachePath.startsWith("/auth/")) ||
+      // A phonebook sync or a connection change alters the whole network graph.
+      (normalized.startsWith("/network/") &&
+        (cachePath === "/network" || cachePath.startsWith("/network/")));
 
     if (invalid) responseCache.delete(key);
   }
