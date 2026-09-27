@@ -1,5 +1,3 @@
-import type { DevicePhonebookContact } from "./phonebook-directory";
-
 /**
  * The contacts the owner picked, with their raw numbers, kept on this device only so the invite
  * list survives a reload. The server stores hashes, never these numbers (see
@@ -8,6 +6,47 @@ import type { DevicePhonebookContact } from "./phonebook-directory";
  * degrades to "nothing cached".
  */
 const storagePrefix = "soko.phonebook.v1:";
+
+export interface DevicePhonebookContact {
+  name: string;
+  phone: string | null;
+  email: string | null;
+  /** The server phonebook node this contact landed on at its last sync. */
+  nodeId: string | null;
+}
+
+export function devicePhonebookContactKey(contact: {
+  name: string;
+  phone: string | null;
+  email: string | null;
+}): string {
+  if (contact.phone !== null) return destinationKey("phone", contact.phone);
+  if (contact.email !== null) return destinationKey("email", contact.email);
+  return `name:${contact.name.trim().toLowerCase()}`;
+}
+
+/**
+ * Merges newly picked contacts into the device copy: the picker returns only the selection, so a
+ * sync adds to what the owner picked before instead of replacing it. A re-picked contact takes
+ * the new name and node.
+ */
+export function mergeDevicePhonebook(
+  existing: DevicePhonebookContact[],
+  added: DevicePhonebookContact[]
+): DevicePhonebookContact[] {
+  const merged = new Map(existing.map((contact) => [devicePhonebookContactKey(contact), contact]));
+  for (const contact of added) {
+    merged.set(devicePhonebookContactKey(contact), contact);
+  }
+  return [...merged.values()];
+}
+
+/** Phone numbers compare by their last nine digits ("+254 722 000 101" = "0722000101"). */
+export function destinationKey(channel: "phone" | "email", value: string): string {
+  return channel === "phone"
+    ? `phone:${value.replace(/\D/g, "").slice(-9)}`
+    : `email:${value.trim().toLowerCase()}`;
+}
 
 export function readDevicePhonebook(userId: string): DevicePhonebookContact[] {
   try {

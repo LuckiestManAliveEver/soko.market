@@ -3,11 +3,11 @@ import { useMemo, useState, type ChangeEvent } from "react";
 import type { NetworkConnectionSummary, NetworkInviteSummary } from "@soko/shared-types";
 
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
+import { parseVcardContacts } from "./phonebook-vcard";
 import { parseContactImportContent } from "./contacts-import";
 import type { NetworkConnectionAction } from "./hooks/useNetworkState";
 import {
   contactPickerContactToSyncContact,
-  parseVcardContacts,
   describeInviteOutcome,
   type InviteOutcome
 } from "./phonebook-sync";

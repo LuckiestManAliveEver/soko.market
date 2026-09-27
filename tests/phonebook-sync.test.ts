@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  parseVcardContacts,
   browserDefaultCountry,
   contactPickerContactToSyncContact,
   describeInviteOutcome,
@@ -12,6 +11,7 @@ import {
   type PhonebookSyncContact
 } from "../apps/web/src/phonebook-sync";
 import type { NetworkGraphSummary } from "../apps/web/src/soko-application-shared";
+import { parseVcardContacts } from "../apps/web/src/phonebook-vcard";
 
 const at = "2026-09-26T00:00:00.000Z";
 

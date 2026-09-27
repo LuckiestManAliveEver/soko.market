@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 
 import type { NetworkInviteSummary } from "@soko/shared-types";
 
 import type { NetworkConnectionAction } from "./hooks/useNetworkState";
-import { PhoneContactsCard } from "./PhoneContactsCard";
+import { LazyModuleErrorBoundary } from "./LazyModuleErrorBoundary";
 import type { DevicePhonebookContact } from "./phonebook-directory";
 import type { InviteOutcome } from "./phonebook-sync";
 import {
@@ -17,6 +17,12 @@ import {
   type SocialSignupProvider,
   networkSyncProviders
 } from "./soko-application-shared";
+
+// Only rendered once the owner opens Phone Contacts: kept out of the owner route's chunk.
+const PhoneContactsCard = lazy(async () => {
+  const module = await import("./PhoneContactsCard");
+  return { default: module.PhoneContactsCard };
+});
 
 export function NetworkSyncNestedCard({
   graph,
@@ -97,17 +103,21 @@ export function NetworkSyncNestedCard({
 
   if (view === "phone") {
     return (
-      <PhoneContactsCard
-        connected={phoneSource !== null}
-        deviceContacts={devicePhonebook}
-        graph={activeGraph}
-        invites={networkInvites}
-        onBack={() => setView("providers")}
-        onConnectionAction={onConnectionAction}
-        onDisconnect={disconnectPhoneSource}
-        onInvite={onInviteContacts}
-        onSync={onPhoneContactsSync}
-      />
+      <LazyModuleErrorBoundary moduleKey="phone-contacts" label="Phone Contacts">
+        <Suspense fallback={<div className="inline-loading-card">Opening Phone Contacts…</div>}>
+          <PhoneContactsCard
+            connected={phoneSource !== null}
+            deviceContacts={devicePhonebook}
+            graph={activeGraph}
+            invites={networkInvites}
+            onBack={() => setView("providers")}
+            onConnectionAction={onConnectionAction}
+            onDisconnect={disconnectPhoneSource}
+            onInvite={onInviteContacts}
+            onSync={onPhoneContactsSync}
+          />
+        </Suspense>
+      </LazyModuleErrorBoundary>
     );
   }
 

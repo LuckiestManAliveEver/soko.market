@@ -1,6 +1,17 @@
 import type { NetworkConnectionSummary, NetworkInviteSummary } from "@soko/shared-types";
 
 import type { NetworkGraphSummary } from "./soko-application-shared";
+import {
+  destinationKey,
+  devicePhonebookContactKey,
+  type DevicePhonebookContact
+} from "./phonebook-device-cache";
+
+export {
+  devicePhonebookContactKey,
+  mergeDevicePhonebook,
+  type DevicePhonebookContact
+} from "./phonebook-device-cache";
 
 /**
  * The owner's phonebook as the Phone Contacts card shows it, WhatsApp-style: requests waiting for
@@ -10,14 +21,6 @@ import type { NetworkGraphSummary } from "./soko-application-shared";
  * Raw numbers only exist on the device (see phonebook-device-cache.ts); the server returns hashed
  * contacts plus discovery. `syncedContactNodeIds` from a sync pairs the two.
  */
-
-export interface DevicePhonebookContact {
-  name: string;
-  phone: string | null;
-  email: string | null;
-  /** The server phonebook node this contact landed on at its last sync. */
-  nodeId: string | null;
-}
 
 export type OnSokoState = "connect" | "requested" | "connected";
 
@@ -141,40 +144,7 @@ export function buildPhonebookDirectory(input: {
   };
 }
 
-export function devicePhonebookContactKey(contact: {
-  name: string;
-  phone: string | null;
-  email: string | null;
-}): string {
-  if (contact.phone !== null) return destinationKey("phone", contact.phone);
-  if (contact.email !== null) return destinationKey("email", contact.email);
-  return `name:${contact.name.trim().toLowerCase()}`;
-}
-
-/**
- * Merges newly picked contacts into the device copy: the picker returns only the selection, so a
- * sync adds to what the owner picked before instead of replacing it. A re-picked contact takes
- * the new name and node.
- */
-export function mergeDevicePhonebook(
-  existing: DevicePhonebookContact[],
-  added: DevicePhonebookContact[]
-): DevicePhonebookContact[] {
-  const merged = new Map(existing.map((contact) => [devicePhonebookContactKey(contact), contact]));
-  for (const contact of added) {
-    merged.set(devicePhonebookContactKey(contact), contact);
-  }
-  return [...merged.values()];
-}
-
 function connectionState(connection: NetworkConnectionSummary | undefined): OnSokoState {
   if (connection === undefined) return "connect";
   return connection.status === "accepted" ? "connected" : "requested";
-}
-
-function destinationKey(channel: "phone" | "email", value: string): string {
-  // Compare numbers by their last nine digits: "+254 722 000 101" and "0722000101" are one phone.
-  return channel === "phone"
-    ? `phone:${value.replace(/\D/g, "").slice(-9)}`
-    : `email:${value.trim().toLowerCase()}`;
 }

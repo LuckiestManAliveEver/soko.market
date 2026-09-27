@@ -1,11 +1,14 @@
+import { Suspense, lazy } from "react";
 import type { AccountShopSummary } from "@soko/shared-types";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { isRedundantAgentErrorMessage } from "./chat-message-plumbing";
 import StaffInvitationsPrompt from "./StaffInvitationsPrompt";
-import ConnectionRequestsPrompt from "./ConnectionRequestsPrompt";
 import { authenticationRoute } from "./routes";
 import { readPendingJoin } from "./staff-join-link";
 import { staffCopy } from "./staff-copy";
+
+// Renders nothing unless someone asked to connect: loaded after the shell, not with it.
+const ConnectionRequestsPrompt = lazy(() => import("./ConnectionRequestsPrompt"));
 
 // The notices at the top of the app shell: the last action's status line, invitations to join a
 // business waiting for the signed-in person (docs/architecture/staff-invitations.md), and requests
@@ -42,7 +45,11 @@ export default function ShellNotices(props: {
       {props.accountId === null ? null : (
         <StaffInvitationsPrompt accountId={props.accountId} onJoined={props.onJoinedShop} />
       )}
-      {props.accountId === null ? null : <ConnectionRequestsPrompt accountId={props.accountId} />}
+      {props.accountId === null ? null : (
+        <Suspense fallback={null}>
+          <ConnectionRequestsPrompt accountId={props.accountId} />
+        </Suspense>
+      )}
     </>
   );
 }

@@ -236,4 +236,18 @@ describe("useNetworkState phonebook", () => {
     expect(heard).toHaveBeenCalledTimes(1);
     window.removeEventListener("soko:network-changed", heard);
   });
+  it("reports a failed invite in the status line and rethrows it for the card", async () => {
+    act(() => root.render(<Probe business={{ id: "shop" }} />));
+    postJson.mockRejectedValue(new Error("Network down"));
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await hook.inviteNetworkContacts([{ name: "Dan", phone: "0722000101", email: null }]);
+      } catch (error) {
+        caught = error;
+      }
+    });
+    expect(caught).toBeInstanceOf(Error);
+    expect(setStatusMessage).toHaveBeenCalledWith(expect.stringContaining("Network down"));
+  });
 });

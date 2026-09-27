@@ -21,7 +21,6 @@ import {
   parseContactImportContent
 } from "../contacts-import";
 import { createPublicStorefrontUrl } from "../sokoid-and-storefront";
-import { mergeDevicePhonebook, type DevicePhonebookContact } from "../phonebook-directory";
 import {
   browserDefaultCountry,
   networkChangedEvent,
@@ -33,6 +32,8 @@ import {
   type PhonebookSyncContact
 } from "../phonebook-sync";
 import {
+  mergeDevicePhonebook,
+  type DevicePhonebookContact,
   clearDevicePhonebooks,
   readDevicePhonebook,
   writeDevicePhonebook
@@ -222,14 +223,21 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
       return { invited: 0, alreadyOnSoko: 0, invalid: 0, shared };
     }
 
-    const outcome = await sendInvitesInBatches(
-      (batch) =>
-        postJson<NetworkInvitesResponse>(`/businesses/${business.id}/network/invites`, {
-          contacts: batch,
-          defaultCountry: browserDefaultCountry()
-        }),
-      contacts
-    );
+    // Failures show in the status line and are rethrown for the card to report too.
+    let outcome: InviteOutcome;
+    try {
+      outcome = await sendInvitesInBatches(
+        (batch) =>
+          postJson<NetworkInvitesResponse>(`/businesses/${business.id}/network/invites`, {
+            contacts: batch,
+            defaultCountry: browserDefaultCountry()
+          }),
+        contacts
+      );
+    } catch (error) {
+      deps.setStatusMessage(getErrorMessage(error));
+      throw error;
+    }
     await loadNetworkInvites(business.id);
     deps.setStatusMessage(describeInviteOutcome(outcome));
     if (outcome.alreadyOnSoko > 0) await loadNetworkGraph({ fresh: true });

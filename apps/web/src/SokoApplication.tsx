@@ -2058,15 +2058,7 @@ export function OwnerApp() {
                   void runAction("network-disconnect", () => disconnectNetworkSource(sourceId))
                 }
                 onNetworkPhoneContactsSync={syncSelectedNetworkPhoneContacts}
-                onNetworkInviteContacts={(contacts) =>
-                  runAction("network-invite", () => inviteNetworkContacts(contacts)).then(
-                    (outcome) => {
-                      // runAction already showed the error; the card still needs to know.
-                      if (outcome === undefined) throw new Error("Invites could not be sent.");
-                      return outcome;
-                    }
-                  )
-                }
+                onNetworkInviteContacts={inviteNetworkContacts}
                 onNetworkProviderOAuth={authenticateSocialProfile}
                 onNetworkRefresh={() => void loadNetworkGraph({ fresh: true })}
                 onRemoveAttachment={removePendingAttachment}
