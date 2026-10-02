@@ -126,7 +126,7 @@ export function AgentIdentityPanel({
       <form className="agent-catalog-search" onSubmit={searchAgents}>
         <input
           aria-label="Search open-source agents"
-          placeholder="Search agents, frameworks, or capabilities"
+          placeholder="Search agents, e.g. ZeroClaw"
           value={agentSearch}
           onChange={(event) => setAgentSearch(event.target.value)}
         />

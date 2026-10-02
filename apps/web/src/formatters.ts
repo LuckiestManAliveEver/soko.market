@@ -139,6 +139,7 @@ export function formatModelStatus(value: string): string {
 export function formatExecutionTarget(value: AgentModelBindingSummary["executionTarget"]): string {
   return (
     {
+      local: "this computer's local runtime",
       vercel: "Soko backend",
       backend: "Soko backend",
       "remote-shop-device": "signed-in shop device",

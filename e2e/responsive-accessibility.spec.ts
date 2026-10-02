@@ -1057,7 +1057,7 @@ test("reduced-motion and forced-color preferences keep the page operable", async
   await openModelLibrary(page, { width: 390, height: 844 });
   await expectNoViewportOverflow(page);
   await expect(page.getByRole("heading", { name: "Model library", exact: true })).toBeVisible();
-  await expect(page.getByPlaceholder("Search Soko, Hugging Face, and GitHub")).toBeVisible();
+  await expect(page.getByPlaceholder("Search models, e.g. SmolLM")).toBeVisible();
 });
 
 async function openModelLibrary(
@@ -1072,7 +1072,7 @@ async function openModelLibrary(
   await page.locator(".settings-group-title", { hasText: "Model & inference" }).click();
   await expect(page.getByRole("heading", { name: "Model library", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Open model library" }).click();
-  await expect(page.getByPlaceholder("Search Soko, Hugging Face, and GitHub")).toBeVisible({
+  await expect(page.getByPlaceholder("Search models, e.g. SmolLM")).toBeVisible({
     timeout: 15_000
   });
 }

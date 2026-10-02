@@ -786,7 +786,7 @@ export function AgentModelPanel({
                 <input
                   value={modelSearch}
                   onChange={(event) => setModelSearch(event.target.value)}
-                  placeholder="Search Soko, Hugging Face, and GitHub"
+                  placeholder="Search models, e.g. SmolLM"
                 />
               </label>
               <div className="ai-model-search-actions">
