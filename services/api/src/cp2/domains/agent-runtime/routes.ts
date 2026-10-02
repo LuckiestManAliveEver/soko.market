@@ -27,10 +27,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
-import type { GitHubModelCatalog } from "../../github-model-catalog.js";
-import type { HuggingFaceModelCatalog } from "../../huggingface-model-catalog.js";
-import type { GitHubAgentCatalog } from "../../github-agent-catalog.js";
-import type { HuggingFaceAgentCatalog } from "../../huggingface-agent-catalog.js";
 import { parseRuntimeTurnBody } from "./runtime-turn-request.js";
 export { parseRuntimeTurnBody } from "./runtime-turn-request.js";
 import {
@@ -159,11 +155,7 @@ export interface RuntimeTurnBody {
 
 export function registerAgentRuntimeRoutes(
   app: FastifyInstance,
-  store: Cp2Store,
-  githubModelCatalog: GitHubModelCatalog,
-  huggingFaceModelCatalog: HuggingFaceModelCatalog,
-  githubAgentCatalog: GitHubAgentCatalog,
-  huggingFaceAgentCatalog: HuggingFaceAgentCatalog
+  store: Cp2Store
 ): void {
   app.get("/v1/oss-agents/installed", async (request, reply) => {
     try {
@@ -199,50 +191,6 @@ export function registerAgentRuntimeRoutes(
     async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
       try {
         return { models: store.listAiModels(request.query.search) };
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/v1/ai-models/github",
-    async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
-      try {
-        return await githubModelCatalog.searchModels(request.query.search);
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/v1/ai-models/huggingface",
-    async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
-      try {
-        return await huggingFaceModelCatalog.searchModels(request.query.search);
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/v1/oss-agents/github",
-    async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
-      try {
-        return await githubAgentCatalog.searchAgents(request.query.search);
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/v1/oss-agents/huggingface",
-    async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
-      try {
-        return await huggingFaceAgentCatalog.searchAgents(request.query.search);
       } catch (error) {
         return sendCp2Error(reply, error);
       }

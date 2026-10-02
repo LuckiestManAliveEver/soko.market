@@ -29,69 +29,28 @@ export interface InferenceEnvironment {
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-const managedSecretNames = [
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "ZAI_API_KEY",
-  "ZAI_CODING_API_KEY",
-  "SOKO_LLAMA_API_KEY"
-] as const;
+const managedSecretNames = [] as const;
 
-/** The providers every deployment knows about, disabled for execution until configured. */
+/** Local-only provider registry. Neon remains remote data storage; inference never leaves the machine. */
 export function builtinProviderConfigs(): InferenceProviderConfig[] {
-  const base = {
-    enabled: true,
-    capabilities: {},
-    credentialRef: null,
-    byokAllowed: true,
-    allowCredentialEndpoint: false,
-    allowPrivateNetwork: false,
-    allowHttp: false,
-    billingProduct: null,
-    verification: "models-endpoint" as const,
-    options: {},
-    source: "builtin" as const
-  };
   return [
     {
-      ...base,
-      id: "openai",
-      displayName: "OpenAI",
-      type: "openai",
-      baseUrl: "https://api.openai.com/v1",
-      executionTarget: "remote-inference",
-      billingProduct: "openai-api"
-    },
-    {
-      ...base,
-      id: "anthropic",
-      displayName: "Anthropic",
-      type: "anthropic",
-      baseUrl: "https://api.anthropic.com/v1",
-      executionTarget: "remote-inference",
-      billingProduct: "anthropic-api"
-    },
-    {
-      ...base,
-      id: "zai-general",
-      displayName: "Z.ai",
-      type: "zai",
-      baseUrl: "https://api.z.ai/api/paas/v4",
-      executionTarget: "remote-inference",
-      billingProduct: "zai-general",
-      // No free key-verification endpoint is relied on for Z.ai; a 1-token completion is the
-      // cheapest safe check.
-      verification: "minimal-completion"
-    },
-    {
-      ...base,
       id: "local",
       displayName: "Local AI (this device)",
       type: "local",
       baseUrl: null,
       executionTarget: "browser-local",
+      enabled: true,
+      capabilities: {},
+      credentialRef: null,
       byokAllowed: false,
-      verification: "none"
+      allowCredentialEndpoint: false,
+      allowPrivateNetwork: false,
+      allowHttp: false,
+      billingProduct: null,
+      verification: "none",
+      options: {},
+      source: "builtin"
     }
   ];
 }
@@ -103,85 +62,7 @@ export function readInferenceEnvironment(env: Env = process.env): InferenceEnvir
     if (value !== "") managedSecrets.set(name, value);
   }
 
-  const overrides = new Map<string, Partial<InferenceProviderConfig>>();
-  const envBaseUrl = (name: string) => {
-    const value = env[name]?.trim() ?? "";
-    return value === "" ? undefined : value;
-  };
-  const managedRef = (name: string) => (managedSecrets.has(name) ? `env:${name}` : null);
-
-  overrides.set("openai", {
-    ...(envBaseUrl("OPENAI_BASE_URL") === undefined
-      ? {}
-      : { baseUrl: envBaseUrl("OPENAI_BASE_URL") as string }),
-    credentialRef: managedRef("OPENAI_API_KEY")
-  });
-  overrides.set("anthropic", {
-    ...(envBaseUrl("ANTHROPIC_BASE_URL") === undefined
-      ? {}
-      : { baseUrl: envBaseUrl("ANTHROPIC_BASE_URL") as string }),
-    credentialRef: managedRef("ANTHROPIC_API_KEY")
-  });
-  overrides.set("zai-general", {
-    ...(envBaseUrl("ZAI_BASE_URL") === undefined
-      ? {}
-      : { baseUrl: envBaseUrl("ZAI_BASE_URL") as string }),
-    credentialRef: managedRef("ZAI_API_KEY")
-  });
-
-  const providers: InferenceProviderConfig[] = builtinProviderConfigs().map((config) => {
-    const override = overrides.get(config.id);
-    return override === undefined ? config : { ...config, ...override, source: "environment" };
-  });
-
-  // A coding-subscription endpoint is a *different billing product*: it only exists when an
-  // operator configures it explicitly, under its own id, and is never a fallback for zai-general.
-  const zaiCodingBaseUrl = envBaseUrl("ZAI_CODING_BASE_URL");
-  if (zaiCodingBaseUrl !== undefined) {
-    providers.push({
-      id: "zai-coding",
-      displayName: "Z.ai (coding plan)",
-      type: "zai",
-      baseUrl: zaiCodingBaseUrl,
-      executionTarget: "remote-inference",
-      enabled: true,
-      capabilities: {},
-      credentialRef: managedRef("ZAI_CODING_API_KEY"),
-      byokAllowed: false,
-      allowCredentialEndpoint: false,
-      allowPrivateNetwork: false,
-      allowHttp: false,
-      billingProduct: "zai-coding",
-      verification: "minimal-completion",
-      options: {},
-      source: "environment"
-    });
-  }
-
-  // Soko-hosted llama.cpp (or any OpenAI-compatible server Soko operates). Hosting-neutral: the
-  // URL can point at any host; nothing here knows or cares which one.
-  const llamaBaseUrl = envBaseUrl("SOKO_LLAMA_BASE_URL");
-  if (llamaBaseUrl !== undefined) {
-    providers.push({
-      id: "soko-llama",
-      displayName: "Soko Cloud",
-      type: "openai-compatible",
-      baseUrl: llamaBaseUrl,
-      executionTarget: "remote-inference",
-      enabled: true,
-      capabilities: {},
-      credentialRef: managedRef("SOKO_LLAMA_API_KEY"),
-      byokAllowed: false,
-      allowCredentialEndpoint: false,
-      // Operator-only: lets the API reach a llama-server on a private network next to it.
-      allowPrivateNetwork: booleanEnv(env, "SOKO_LLAMA_ALLOW_PRIVATE_NETWORK"),
-      allowHttp: booleanEnv(env, "SOKO_LLAMA_ALLOW_HTTP"),
-      billingProduct: "soko-hosted",
-      verification: "models-endpoint",
-      options: {},
-      source: "environment"
-    });
-  }
+  const providers: InferenceProviderConfig[] = builtinProviderConfigs();
 
   return {
     providers,
@@ -200,10 +81,6 @@ export function readInferenceEnvironment(env: Env = process.env): InferenceEnvir
       maxTokensPerRequest: optionalPositiveInteger(env, "INFERENCE_MAX_TOKENS_PER_REQUEST")
     }
   };
-}
-
-function booleanEnv(env: Env, name: string): boolean {
-  return ["1", "true", "yes", "on"].includes(env[name]?.trim().toLowerCase() ?? "");
 }
 
 function optionalId(value: string | undefined): string | null {

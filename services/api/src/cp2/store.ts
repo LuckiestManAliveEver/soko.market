@@ -40,8 +40,10 @@ import {
   parseInvoiceBody as parseOfflineInvoice
 } from "./domains/sales/routes.js";
 import { parseContactRecordBody as parseOfflineCustomer } from "./route-helpers.js";
-import { parseReceiptOCRBody as parseOfflineReceiptOcr } from "./domains/suppliers/routes.js";
-import { parseExtractionResult as parseOfflineReceiptOcrExtraction } from "./ocr-provider.js";
+import {
+  parseReceiptOCRBody as parseOfflineReceiptOcr,
+  parseToolExtractionResult as parseOfflineReceiptOcrExtraction
+} from "./domains/suppliers/routes.js";
 import { parseProductCaptureOfflineBody as parseOfflineProductCapture } from "./domains/commerce/routes.js";
 import {
   createHash,

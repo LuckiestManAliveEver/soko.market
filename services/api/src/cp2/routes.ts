@@ -92,30 +92,11 @@ import {
   normalizeInternationalOwnerPhoneNumber,
   normalizeOwnerPhoneNumber
 } from "./phone-identity.js";
-import {
-  createGitHubModelCatalogFromEnvironment,
-  type GitHubModelCatalog
-} from "./github-model-catalog.js";
-import {
-  createGitHubAgentCatalogFromEnvironment,
-  type GitHubAgentCatalog
-} from "./github-agent-catalog.js";
-import {
-  createHuggingFaceModelCatalogFromEnvironment,
-  type HuggingFaceModelCatalog
-} from "./huggingface-model-catalog.js";
-import {
-  createHuggingFaceAgentCatalogFromEnvironment,
-  type HuggingFaceAgentCatalog
-} from "./huggingface-agent-catalog.js";
-import type { OcrExtractionProcessor } from "./ocr-provider.js";
 import type { BinaryUploadPipeline } from "./binary-upload-pipeline.js";
 import type { OwnerNodeBroker } from "../inference/owner-node-broker.js";
 import { readAuthRuntimeConfig } from "./auth-runtime-config.js";
 import { registerRuntimeRegistryRoutes } from "./runtime-registry/routes.js";
 import { createSokoCatalogRegistryAdapter } from "./runtime-registry/soko-adapter.js";
-import { createGitHubRegistryAdapter } from "./runtime-registry/github-adapter.js";
-import { createHuggingFaceRegistryAdapter } from "./runtime-registry/huggingface-adapter.js";
 import { createRuntimeRegistrySearchService } from "./runtime-registry/search.js";
 import { createRuntimeRegistryImportService } from "./runtime-registry/import-service.js";
 import {
@@ -128,17 +109,12 @@ import { HttpComputerWorkerClient } from "../computer-runtime/client.js";
 export interface Cp2RouteOptions {
   binaryUploadPipeline?: BinaryUploadPipeline;
   emailProvider?: EmailProvider;
-  githubAgentCatalog?: GitHubAgentCatalog;
-  githubModelCatalog?: GitHubModelCatalog;
-  huggingFaceAgentCatalog?: HuggingFaceAgentCatalog;
-  huggingFaceModelCatalog?: HuggingFaceModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
   ownerNodeBroker?: OwnerNodeBroker;
   realtimeAllowedOrigins?: string[];
   /** Defaults to an in-memory store; pass a Postgres-backed one
    *  (createPostgresRuntimeRegistryImportStore) in a deployment that persists imports. */
   runtimeRegistryImportStore?: RuntimeRegistryImportStore;
-  ocrProcessor?: OcrExtractionProcessor;
   /** Postgres-authoritative corridor fulfillment (docs/architecture/corridor-fulfillment.md).
    *  Omitted in memory mode, where every fulfillment route answers 503
    *  fulfillment_requires_postgres. */
@@ -307,38 +283,13 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     });
   const webPublicUrl = (options.webPublicUrl ?? "https://soko.market").replace(/\/+$/u, "");
   const telegramBotUsername = options.telegramBotUsername ?? "";
-  const ocrProcessor = options.ocrProcessor;
   const binaryUploadPipeline = options.binaryUploadPipeline;
-  const githubModelCatalog =
-    options.githubModelCatalog ?? createGitHubModelCatalogFromEnvironment();
-  const githubAgentCatalog =
-    options.githubAgentCatalog ?? createGitHubAgentCatalogFromEnvironment();
-  const huggingFaceModelCatalog =
-    options.huggingFaceModelCatalog ?? createHuggingFaceModelCatalogFromEnvironment();
-  const huggingFaceAgentCatalog =
-    options.huggingFaceAgentCatalog ?? createHuggingFaceAgentCatalogFromEnvironment();
-  // Deployment-wide GitHub/Hugging Face credentials only, today - a connected account's own token
-  // (services/api/src/cp2/domains/external-connections/) improves cache isolation (see
-  // RuntimeRegistryContext.connected in search.ts's cache key) but does not yet raise this
-  // process's own rate limit or unlock that account's private/gated resources for search. Doing so
-  // requires the four underlying catalogs (github-model-catalog.ts, huggingface-model-catalog.ts,
-  // github-agent-catalog.ts, huggingface-agent-catalog.ts) to accept a per-call token override
-  // instead of one baked in at construction - a real, contained follow-up, not done here to avoid
-  // rushing a change to already-tested, already-working catalog code during integration.
   const runtimeRegistryAdapters: Partial<
     Record<RuntimeRegistryProviderId, RuntimeRegistryAdapter>
   > = {
     soko: createSokoCatalogRegistryAdapter({
       listModels: () => store.listModelCatalog(),
       listAgents: () => store.listAgentCatalog()
-    }),
-    github: createGitHubRegistryAdapter({
-      modelCatalog: githubModelCatalog,
-      agentCatalog: githubAgentCatalog
-    }),
-    huggingface: createHuggingFaceRegistryAdapter({
-      modelCatalog: huggingFaceModelCatalog,
-      agentCatalog: huggingFaceAgentCatalog
     })
   };
   const runtimeRegistrySearchService = createRuntimeRegistrySearchService({
@@ -1587,14 +1538,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  registerAgentRuntimeRoutes(
-    app,
-    store,
-    githubModelCatalog,
-    huggingFaceModelCatalog,
-    githubAgentCatalog,
-    huggingFaceAgentCatalog
-  );
+  registerAgentRuntimeRoutes(app, store);
   registerRuntimeHandoffRoutes(app, store);
   registerComputerRuntimeRoutes(app, store);
   registerModelTemplateRoutes(app, store);
@@ -1925,7 +1869,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   registerStaffRoutes(app, store);
   registerOfflineRuntimeRoutes(app, store);
 
-  registerSuppliersRoutes(app, store, binaryUploadPipeline, ocrProcessor);
+  registerSuppliersRoutes(app, store, binaryUploadPipeline);
 
   registerLogisticsRoutes(app, store);
   registerCommercialRecordsRoutes(app, store);
@@ -2137,9 +2081,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  registerDocumentImportsRoutes(app, store, binaryUploadPipeline, ocrProcessor);
+  registerDocumentImportsRoutes(app, store, binaryUploadPipeline);
 
-  registerCommerceRoutes(app, store, binaryUploadPipeline, ocrProcessor);
+  registerCommerceRoutes(app, store, binaryUploadPipeline);
 
   app.get(
     "/businesses/:businessId/offline-cache",

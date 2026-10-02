@@ -23,25 +23,23 @@ export interface HealthResponse {
 }
 
 export interface EnvironmentConfig {
+  runtimeMode: "local" | "production" | "test";
   apiHost: string;
   apiPort: number;
   allowedCorsOrigins: string[];
   databaseUrl: string;
-  vercelInferenceUrl: string;
-  vercelInferenceTimeoutMs: number;
   inferenceRequired: boolean;
-  inferenceServiceToken: string;
-  neonModelStorageEndpoint: string;
-  neonModelStorageRegion: string;
-  neonModelStorageAccessKeyId: string;
-  neonModelStorageSecretAccessKey: string;
-  modelArtifactUrlTtlSeconds: number;
+  inferenceTimeoutMs: number;
   inferenceOwnerNodeEnabled: boolean;
   inferenceMaxFallbacks: number;
   inferenceJobTimeoutMs: number;
   workspaceDeliveryMaxFileBytes: number;
   workspaceRoot: string;
   redisUrl: string;
+  localCacheMode: "memory";
+  localInferenceProvider: "ollama";
+  ollamaBaseUrl: string;
+  ollamaModel: string;
   platformDefaultRuntime: PlatformDefaultRuntimePolicy;
   /** Shared-secret gate for GET /metrics; empty string means the endpoint is unauthenticated. */
   metricsAuthToken: string;
@@ -1235,9 +1233,10 @@ export type AgentModelBindingStatus =
  *   (services/api/src/inference/device-inference-broker.ts).
  */
 export type ModelExecutionTarget =
-  "vercel" | "backend" | "remote-shop-device" | "browser-local" | "installed-app";
+  "local" | "vercel" | "backend" | "remote-shop-device" | "browser-local" | "installed-app";
 
 export const modelExecutionTargets = [
+  "local",
   "vercel",
   "backend",
   "remote-shop-device",

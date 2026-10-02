@@ -1,5 +1,5 @@
 import { isValidTurnId, turnContext } from "./inference/turn-stream.js";
-import Fastify, { type FastifyRequest } from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
@@ -444,7 +444,7 @@ export function buildApi(options: BuildApiOptions = {}) {
     });
 
     if (options.agentRuntimeDiagnostic !== undefined) {
-      routes.get("/health/ai", async (_request, reply) => {
+      const inferenceHealth = async (_request: FastifyRequest, reply: FastifyReply) => {
         const model = await options.agentRuntimeDiagnostic?.(true);
         if (model?.status !== "ready") reply.code(503);
         return {
@@ -453,7 +453,9 @@ export function buildApi(options: BuildApiOptions = {}) {
           timestamp: new Date().toISOString(),
           model
         };
-      });
+      };
+      routes.get("/health/ai", inferenceHealth);
+      routes.get("/health/inference", inferenceHealth);
     }
 
     if (options.metrics !== undefined) {

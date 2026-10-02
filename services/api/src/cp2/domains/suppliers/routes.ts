@@ -1,16 +1,16 @@
 /**
  * Fifth domain slice of in-process modularization for services/api/src/cp2/routes.ts (see
  * docs/architecture/routes-modularization-roadmap.md). Needs `binaryUploadPipeline`/
- * `ocrProcessor` (both derived once in `registerCp2Routes` from `Cp2RouteOptions`) passed
+ * binary upload pipeline (derived once in `registerCp2Routes` from `Cp2RouteOptions`) passed
  * in as parameters. `decodeReceiptBase64` is exported since `domains/document-imports/routes.ts`
  * (not yet extracted) calls it too - a genuine cross-domain reference, not duplicated logic.
  */
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { OcrBlockSummary, OcrEngine, OcrProfile } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
 import type { BinaryUploadPipeline } from "../../binary-upload-pipeline.js";
-import type { OcrExtractionResult, OcrExtractionProcessor } from "../../ocr-provider.js";
 import {
   parseBoolean,
   parseContactRecordBody,
@@ -72,11 +72,22 @@ interface ReceiptOCRCorrectionBody {
   extractedText?: string;
 }
 
+export interface ToolExtractionResult {
+  engine: OcrEngine;
+  engineVersion: string;
+  modelVersion: string;
+  profile: OcrProfile;
+  fallbackUsed: boolean;
+  blocks: OcrBlockSummary[];
+  fullText: string;
+  averageConfidence: number;
+  warnings: string[];
+}
+
 export function registerSuppliersRoutes(
   app: FastifyInstance,
   store: Cp2Store,
-  binaryUploadPipeline: BinaryUploadPipeline | undefined,
-  ocrProcessor: OcrExtractionProcessor | undefined
+  binaryUploadPipeline: BinaryUploadPipeline | undefined
 ): void {
   app.get(
     "/businesses/:businessId/suppliers",
@@ -300,19 +311,11 @@ export function registerSuppliersRoutes(
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId
         });
-        let extraction: OcrExtractionResult | undefined;
         let fileSizeBytes = body.fileSizeBytes;
         let fileSignature = body.fileSignature;
         let sourceChecksum: string | undefined;
 
-        if (body.extractedText.trim().length === 0 && body.contentBase64 !== null) {
-          if (ocrProcessor === undefined) {
-            throw new Cp2Error(
-              503,
-              "receipt_ocr_worker_unconfigured",
-              "Receipt OCR is not configured on this deployment."
-            );
-          }
+        if (body.contentBase64 !== null) {
           const binary = decodeReceiptBase64(body.contentBase64);
           fileSizeBytes = binary.byteLength;
           fileSignature = binary.subarray(0, 16).toString("hex");
@@ -326,11 +329,13 @@ export function registerSuppliersRoutes(
             },
             { retain: false }
           );
-          extraction = await ocrProcessor.process({
-            fileName: body.fileName,
-            contentType: body.contentType,
-            contentBase64: binary.toString("base64")
-          });
+        }
+        if (body.extractedText.trim().length === 0) {
+          throw new Cp2Error(
+            400,
+            "receipt_text_required",
+            "Receipt text must be supplied by an agent tool or client-side extraction."
+          );
         }
 
         return store.createReceiptOCRJob({
@@ -338,11 +343,10 @@ export function registerSuppliersRoutes(
           businessId: request.params.businessId,
           sourceFileName: body.fileName,
           contentType: body.contentType,
-          extractedText: extraction?.fullText ?? body.extractedText,
+          extractedText: body.extractedText,
           fileSizeBytes,
           fileSignature,
-          ...(sourceChecksum === undefined ? {} : { sourceChecksum }),
-          ...(extraction === undefined ? {} : { extraction })
+          ...(sourceChecksum === undefined ? {} : { sourceChecksum })
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -482,6 +486,99 @@ export function parseReceiptOCRBody(body: ReceiptOCRBody | null | undefined) {
         ? record.fileSignature.trim()
         : null
   };
+}
+
+export function parseToolExtractionResult(value: unknown): ToolExtractionResult {
+  if (typeof value !== "object" || value === null) {
+    throw invalidExtractionPayload();
+  }
+
+  const record = value as Record<string, unknown>;
+  const engine = record.engine;
+  const profile = record.profile;
+  const blocks = record.blocks;
+
+  if (
+    (engine !== "paddleocr" && engine !== "tesseract") ||
+    (profile !== "mobile" && profile !== "balanced" && profile !== "accurate") ||
+    typeof record.engineVersion !== "string" ||
+    typeof record.modelVersion !== "string" ||
+    typeof record.fallbackUsed !== "boolean" ||
+    typeof record.fullText !== "string" ||
+    !Number.isFinite(record.averageConfidence) ||
+    !Array.isArray(record.warnings) ||
+    !record.warnings.every((warning) => typeof warning === "string") ||
+    !Array.isArray(blocks)
+  ) {
+    throw invalidExtractionPayload();
+  }
+
+  const parsedBlocks = blocks.map((block): OcrBlockSummary => {
+    if (typeof block !== "object" || block === null) {
+      throw invalidExtractionPayload();
+    }
+    const item = block as Record<string, unknown>;
+    if (
+      typeof item.id !== "string" ||
+      !Number.isInteger(item.page) ||
+      typeof item.text !== "string" ||
+      !Number.isFinite(item.confidence)
+    ) {
+      throw invalidExtractionPayload();
+    }
+
+    const boundingBox =
+      item.boundingBox === null
+        ? null
+        : Array.isArray(item.boundingBox)
+          ? item.boundingBox.map((point) => {
+              if (
+                typeof point !== "object" ||
+                point === null ||
+                !Number.isFinite((point as Record<string, unknown>).x) ||
+                !Number.isFinite((point as Record<string, unknown>).y)
+              ) {
+                throw invalidExtractionPayload();
+              }
+              return {
+                x: Number((point as Record<string, unknown>).x),
+                y: Number((point as Record<string, unknown>).y)
+              };
+            })
+          : undefined;
+
+    if (boundingBox === undefined) {
+      throw invalidExtractionPayload();
+    }
+
+    return {
+      id: item.id,
+      page: Number(item.page),
+      text: item.text,
+      confidence: Number(item.confidence),
+      boundingBox
+    };
+  });
+
+  return {
+    engine,
+    engineVersion: record.engineVersion,
+    modelVersion: record.modelVersion,
+    profile,
+    fallbackUsed: record.fallbackUsed,
+    blocks: parsedBlocks,
+    fullText: record.fullText,
+    averageConfidence: Number(record.averageConfidence),
+    warnings: record.warnings
+  };
+}
+
+function invalidExtractionPayload(): Cp2Error {
+  return new Cp2Error(
+    400,
+    "tool_extraction_payload_invalid",
+    "The supplied extraction payload is invalid."
+  );
 }
 
 /** Exported - domains/document-imports/routes.ts (not yet extracted) calls this too. */

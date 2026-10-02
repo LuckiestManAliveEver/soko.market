@@ -22,7 +22,7 @@ import {
 import type { RuntimeRegistrySearchService } from "./search.js";
 import type { createRuntimeRegistryImportService } from "./import-service.js";
 
-const providerIds: readonly RuntimeRegistryProviderId[] = ["soko", "github", "huggingface"];
+const providerIds: readonly RuntimeRegistryProviderId[] = ["soko"];
 const assetKinds: readonly RuntimeAssetKind[] = ["agent", "model"];
 
 export interface RuntimeRegistryRouteDeps {
@@ -227,7 +227,7 @@ function parseProviderId(value: unknown): RuntimeRegistryProviderId {
   throw new Cp2Error(
     400,
     "runtime_registry_provider_invalid",
-    "provider must be one of soko, github, huggingface."
+    "provider must be soko."
   );
 }
 

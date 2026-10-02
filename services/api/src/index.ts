@@ -1,40 +1,24 @@
-import {
-  runtimeModels,
-  type RuntimeModelDefinition,
-  type RuntimeModelProviderName
-} from "@soko/shared-types";
+import { type RuntimeModelProviderName } from "@soko/shared-types";
 import { createMetrics, type Metrics } from "@soko/observability";
 import { Pool } from "pg";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
 import { buildPgPoolConfig } from "./db-pool-config.js";
+import { positiveIntegerFromEnv } from "@soko/resource-control";
 import {
-  createBulkhead,
-  createCircuitBreaker,
-  positiveIntegerFromEnv
-} from "@soko/resource-control";
-import { resourceControlEventName, type ResourceControlEvent } from "./resource-control-events.js";
-import {
-  boundModelRuntimeAdapter,
-  createVercelInferenceClient,
-  createVercelModelAdapter,
+  createOllamaInferenceClient,
+  createOllamaModelAdapter,
   type ModelRuntimeAdapter
 } from "./inference/model-runtime.js";
-import { createNeonModelArtifactStore } from "./inference/model-artifact-store.js";
 import { OwnerNodeBroker } from "./inference/owner-node-broker.js";
 import { readInferenceEnvironment } from "./inference/providers/environment.js";
 import { createInferencePlatform } from "./inference/providers/platform.js";
-import {
-  readZeroClawGatewayConfig,
-  zeroClawAgentRuntimeAdapterId,
-  zeroClawUnconnectedFallbackAdapterId
-} from "./agent-harness/zeroclaw-agent-runtime-adapter.js";
 import {
   assertInferenceSchema,
   createPostgresInferenceRepositories
 } from "./inference/providers/postgres-repositories.js";
 import { createMemoryInferenceRepositories } from "./inference/providers/repositories.js";
-import { createRedisRequestRateLimiter } from "./inference/providers/usage-policy.js";
+import { createMemoryRequestRateLimiter } from "./inference/providers/usage-policy.js";
 import {
   startAccountDeletionRunner,
   type AccountDeletionRunner
@@ -59,7 +43,6 @@ import { readBuildManifest } from "./build-manifest.js";
 import { createCp2Store } from "./cp2/store.js";
 import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
 import { createEmailProviderFromEnvironment } from "./cp2/email-provider.js";
-import { createOcrExtractionProcessorFromEnvironment } from "./cp2/ocr-provider.js";
 import { createNetworkInviteSenderFromEnvironment } from "./cp2/network-invite-provider.js";
 import {
   startNotificationDeliveryRunner,
@@ -74,7 +57,6 @@ import {
   type SokoIdCooldownRunner
 } from "./cp2/sokoid-cooldown-runner.js";
 import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-pipeline.js";
-import { createRateLimitRedisClient } from "./redis-client.js";
 import { createChannelGatewayFromEnvironment } from "./messaging/channel-gateway.js";
 import { createEmailMailboxProviderClient } from "./messaging/email-provider-client.js";
 import { createIntervalRunner, type IntervalRunner } from "./cp2/interval-runner.js";
@@ -92,88 +74,23 @@ const config = readEnvironment();
 // ("monitor process RSS in production" - step 1 of that doc's recommended path).
 const metrics = createMetrics({ serviceName: "api" });
 
-/**
- * The one place every bounded workload's structured events land - console output (this process
- * has no request context to attach a Fastify child logger to at module-init time) plus the
- * Prometheus counters/gauges in @soko/observability. See
- * docs/architecture/resource-isolation.md §17/§18 for the event/metric names this produces.
- */
-function onResourceControlEvent(event: ResourceControlEvent): void {
-  metrics.recordResourceEvent(event);
-  const logLine = { event: resourceControlEventName(event), ...event };
-  if (event.type === "operation_rejected" || event.type === "opened") {
-    console.error(logLine);
-  } else {
-    console.log(logLine);
-  }
-}
-
-const rateLimitRedisClient = createRateLimitRedisClient(config.redisUrl);
 const modelRuntimeAdapters = new Map<string, ModelRuntimeAdapter>();
 let primaryInferenceAdapter: ModelRuntimeAdapter | undefined;
-let artifactPool: Pool | undefined;
-if (config.vercelInferenceUrl !== "") {
-  artifactPool = new Pool(
-    buildPgPoolConfig(config.databaseUrl, {
-      max: positiveIntegerFromEnv("DB_ARTIFACT_POOL_MAX", 2)
-    })
-  );
-  metrics.instrumentPgPool(artifactPool, { poolName: "model_artifact_store" });
-  const artifactStore = createNeonModelArtifactStore({
-    database: artifactPool,
-    endpoint: config.neonModelStorageEndpoint,
-    region: config.neonModelStorageRegion,
-    accessKeyId: config.neonModelStorageAccessKeyId,
-    secretAccessKey: config.neonModelStorageSecretAccessKey,
-    downloadUrlTtlSeconds: config.modelArtifactUrlTtlSeconds
-  });
-  const client = createVercelInferenceClient({
-    baseUrl: config.vercelInferenceUrl,
-    serviceToken: config.inferenceServiceToken,
-    timeoutMs: config.vercelInferenceTimeoutMs
-  });
-  // One bulkhead/breaker shared across every model on this execution target: ai-runtime itself
-  // enforces a single global "one generation at a time" budget regardless of which model is
-  // asked for (services/ai-runtime/src/http-server.ts), so per-model budgets here would just
-  // let one model starve another's share of the same underlying capacity for no benefit.
-  const inferenceBulkhead = metrics.instrumentBulkhead(
-    createBulkhead({
-      name: "inference",
-      workloadClass: "important",
-      maxConcurrency: positiveIntegerFromEnv("INFERENCE_MAX_CONCURRENCY", 4),
-      maxQueue: positiveIntegerFromEnv("INFERENCE_QUEUE_MAX", 8),
-      onEvent: onResourceControlEvent
-    })
-  );
-  const inferenceBreaker = metrics.instrumentCircuitBreaker(
-    createCircuitBreaker({
-      name: "inference",
-      failureThreshold: positiveIntegerFromEnv("INFERENCE_CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
-      resetTimeoutMs: positiveIntegerFromEnv("INFERENCE_CIRCUIT_BREAKER_RESET_TIMEOUT_MS", 30_000),
-      onEvent: onResourceControlEvent
-    })
-  );
-  const registeredRuntimeModels = Object.values(runtimeModels) as RuntimeModelDefinition[];
-  for (const model of registeredRuntimeModels.filter((candidate) => candidate.enabled)) {
-    const adapter = instrumentModelAdapter(
-      boundModelRuntimeAdapter(
-        createVercelModelAdapter({
-          modelId: model.id,
-          artifactStore,
-          client,
-          requiresArtifact: model.requiresArtifact ?? true
-        }),
-        {
-          bulkhead: inferenceBulkhead,
-          breaker: inferenceBreaker
-        }
-      ),
-      metrics
-    );
-    modelRuntimeAdapters.set(`vercel:${model.id}`, adapter);
-    if (model.id === config.platformDefaultRuntime.modelId) primaryInferenceAdapter = adapter;
-  }
-}
+const client = createOllamaInferenceClient({
+  baseUrl: config.ollamaBaseUrl,
+  model: config.ollamaModel,
+  timeoutMs: config.inferenceTimeoutMs
+});
+const adapter = instrumentModelAdapter(
+  createOllamaModelAdapter({
+    modelId: config.platformDefaultRuntime.modelId,
+    ollamaModel: config.ollamaModel,
+    client
+  }),
+  metrics
+);
+modelRuntimeAdapters.set(`local:${config.platformDefaultRuntime.modelId}`, adapter);
+primaryInferenceAdapter = adapter;
 const modelRuntimeAdapterResolver = (input: {
   modelId: string;
   executionTarget: ModelRuntimeAdapter["executionTarget"];
@@ -186,15 +103,10 @@ const pushNotificationSender =
 const emailProvider = createEmailProviderFromEnvironment();
 const messageWebBaseUrl = (process.env.WEB_PUBLIC_URL ?? "https://soko.market").trim();
 const accountDeletionProcessors = readAccountDeletionProcessors();
-const ocrProcessor = createOcrExtractionProcessorFromEnvironment(
-  process.env,
-  onResourceControlEvent
-);
 const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
 const channelGateway = createChannelGatewayFromEnvironment();
 const emailMailboxProviderClient = createEmailMailboxProviderClient();
-const renderDeployWebhookSecret = process.env.RENDER_DEPLOY_WEBHOOK_SECRET?.trim() ?? "";
 const ownerNodeSigningSecret = process.env.INFERENCE_JOB_SIGNING_SECRET?.trim() ?? "";
 if (config.inferenceOwnerNodeEnabled && ownerNodeSigningSecret.length < 32) {
   throw new Error(
@@ -239,8 +151,7 @@ const inferencePlatform = createInferencePlatform({
       ? createMemoryInferenceRepositories()
       : createPostgresInferenceRepositories(inferencePool),
   metrics,
-  // Shared per-minute counters across API instances; falls back to in-process on Redis errors.
-  rateLimiter: createRedisRequestRateLimiter(rateLimitRedisClient),
+  rateLimiter: createMemoryRequestRateLimiter(),
   // Callers pass already-redacted fields (inference-router.ts runs redactRecord first).
   log: (event, fields) => console.log({ event, ...fields })
 });
@@ -265,23 +176,9 @@ await inferencePlatform.refresh().catch((error: unknown) => {
     reason: error instanceof Error ? error.name : "unknown"
   });
 });
-// ZeroClaw agent runtime (agent-harness/zeroclaw-agent-runtime-adapter.ts). Optional: without a
-// gateway the default Shopkeeper agent runs on Soko's built-in engine, and the boot log says so.
-const zeroClawGateway = readZeroClawGatewayConfig(process.env);
-if (
-  zeroClawGateway === null &&
-  config.platformDefaultRuntime.agentRuntimeAdapterId === zeroClawAgentRuntimeAdapterId
-) {
-  console.log({
-    event: "runtime.default_engine_resolved",
-    configured: zeroClawAgentRuntimeAdapterId,
-    effective: zeroClawUnconnectedFallbackAdapterId,
-    reason: "ZEROCLAW_GATEWAY_URL is not set"
-  });
-}
 const cp2StoreOptions = {
   channelGateway,
-  zeroClawGateway,
+  zeroClawGateway: null,
   emailMailboxProviderClient,
   metrics,
   modelRuntimeAdapterResolver,
@@ -344,18 +241,15 @@ const apiOptions = {
     Math.ceil((config.workspaceDeliveryMaxFileBytes * 4) / 3) + 1_000_000
   ),
   inferenceRequired: config.inferenceRequired,
-  rateLimitRedisClient,
   metrics,
   ...(config.metricsAuthToken === "" ? {} : { metricsAuthToken: config.metricsAuthToken }),
-  ...(renderDeployWebhookSecret === "" ? {} : { renderDeployWebhookSecret }),
   cp2: {
     store: cp2Store,
     emailProvider,
     webPublicUrl: messageWebBaseUrl,
-    telegramBotUsername: (process.env.TELEGRAM_BOT_USERNAME?.trim() ?? "").replace(/^@/u, ""),
+    telegramBotUsername: "",
     ...(ownerNodeBroker === undefined ? {} : { ownerNodeBroker }),
     ...(binaryUploadPipeline === undefined ? {} : { binaryUploadPipeline }),
-    ...(ocrProcessor === undefined ? {} : { ocrProcessor }),
     ...(fulfillmentService === undefined ? {} : { fulfillmentService }),
     ...(webPushConfiguration === null ? {} : { vapidPublicKey: webPushConfiguration.publicKey })
   }
@@ -386,7 +280,7 @@ app.log.info(
     runtimeArchitecture: "native",
     store: shouldUsePostgresStore ? "postgres" : "memory",
     schemaCompatibility: "verified",
-    redisConfigured: (process.env.REDIS_URL ?? "").trim() !== "",
+    redisConfigured: false,
     ...(buildManifest === null
       ? {}
       : { gitCommitSha: buildManifest.gitCommitSha, buildTimestamp: buildManifest.buildTimestamp })
@@ -428,12 +322,11 @@ app.addHook("onClose", async () => {
   await conversationRecycleBinRunner?.stop();
   await agentOwnerCorrectionRetentionRunner?.stop();
   await runtimeExperienceRetentionRunner?.stop();
-  rateLimitRedisClient.disconnect();
+  
   await fulfillmentIdempotencyRetentionRunner?.stop();
   await fulfillmentIntakeReconcileRunner?.stop();
   await fulfillmentDispatchEvaluationRunner?.stop();
   await fulfillmentOutboxRunner?.stop();
-  await artifactPool?.end();
   await fulfillmentPool?.end();
   await inferencePool?.end();
   if (isClosableStore(cp2Store)) {

@@ -1,12 +1,11 @@
 /**
  * Sixth domain slice of in-process modularization for services/api/src/cp2/routes.ts (see
  * docs/architecture/routes-modularization-roadmap.md). Needs `binaryUploadPipeline`/
- * `ocrProcessor` passed in as parameters, same as suppliers. `parseDocumentImportBody` is
+ * `parseDocumentImportBody` is
  * exported since the not-yet-extracted commerce product-captures route calls it too - a genuine
  * cross-domain reference. `decodeReceiptBase64` is imported back from `domains/suppliers/routes.js`
  * (extracted first, in row 5) rather than duplicated.
  */
-import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ProductImportDraft, SupplierImportDraft } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
@@ -17,8 +16,6 @@ import {
   type DocumentUploadInput
 } from "../../document-extraction.js";
 import type { BinaryUploadPipeline } from "../../binary-upload-pipeline.js";
-import type { OcrExtractionProcessor } from "../../ocr-provider.js";
-import { decodeReceiptBase64 } from "../suppliers/routes.js";
 import {
   parseBoolean,
   parseIntegerString,
@@ -73,20 +70,10 @@ interface SupplierImportConfirmBody {
   selectedRowNumbers?: number[];
 }
 
-const documentOcrContentTypes = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "image/heif",
-  "application/pdf"
-]);
-
 export function registerDocumentImportsRoutes(
   app: FastifyInstance,
   store: Cp2Store,
-  binaryUploadPipeline: BinaryUploadPipeline | undefined,
-  ocrProcessor: OcrExtractionProcessor | undefined
+  binaryUploadPipeline: BinaryUploadPipeline | undefined
 ): void {
   async function prepareDocumentUpload(
     input: DocumentUploadInput,
@@ -186,91 +173,6 @@ export function registerDocumentImportsRoutes(
           false
         );
         return await extractUploadedDocument(upload);
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/documents/ocr",
-    async (
-      request: FastifyRequest<{ Params: BusinessParams; Body: ProductCatalogueImportBody }>,
-      reply
-    ) => {
-      try {
-        const sessionId = readSessionCookie(request.headers.cookie);
-        store.assertDocumentImportWriteAccess({
-          sessionId,
-          businessId: request.params.businessId
-        });
-        if (ocrProcessor === undefined) {
-          throw new Cp2Error(
-            503,
-            "document_ocr_worker_unconfigured",
-            "Document OCR is not configured on this deployment."
-          );
-        }
-
-        const upload = parseDocumentImportBody(request.body);
-        if (upload.contentBase64 === undefined) {
-          throw new Cp2Error(
-            400,
-            "document_ocr_content_required",
-            "Base64 image or PDF content is required for OCR."
-          );
-        }
-        const contentType = upload.contentType?.trim() || "application/octet-stream";
-        if (!documentOcrContentTypes.has(contentType)) {
-          throw new Cp2Error(
-            415,
-            "document_ocr_type_unsupported",
-            "OCR supports images and scanned PDF documents."
-          );
-        }
-
-        const binary = decodeReceiptBase64(upload.contentBase64);
-        if (binary.byteLength > 10 * 1024 * 1024) {
-          throw new Cp2Error(
-            413,
-            "document_too_large",
-            "Uploaded document must be 10 MB or smaller."
-          );
-        }
-        assertDocumentOcrSignature(contentType, binary);
-        await binaryUploadPipeline?.process(
-          {
-            businessId: request.params.businessId,
-            fileName: upload.fileName,
-            contentType,
-            bytes: binary
-          },
-          { retain: false }
-        );
-        const extraction = await ocrProcessor.process({
-          fileName: upload.fileName,
-          contentType,
-          contentBase64: binary.toString("base64")
-        });
-        if (extraction.fullText.trim().length === 0) {
-          throw new Cp2Error(
-            422,
-            "document_ocr_text_missing",
-            "OCR could not find readable text in this document."
-          );
-        }
-
-        return {
-          fileName: upload.fileName,
-          contentType,
-          text: extraction.fullText.trim(),
-          format: "ocr" as const,
-          warnings: extraction.warnings,
-          sizeBytes: binary.byteLength,
-          checksum: createHash("sha256").update(binary).digest("hex"),
-          engine: extraction.engine,
-          averageConfidence: extraction.averageConfidence
-        };
       } catch (error) {
         return sendCp2Error(reply, error);
       }

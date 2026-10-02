@@ -103,6 +103,175 @@ export interface VercelInferenceClient {
   ): Promise<Extract<InferenceExecutionEvent, { type: "result" }>>;
 }
 
+export interface OllamaHealthResult {
+  provider: "ollama";
+  available: boolean;
+  endpoint: string;
+  model: string;
+  modelInstalled: boolean;
+  errorCode: string | null;
+  message: string | null;
+}
+
+interface OllamaChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface OllamaInferenceClient {
+  health(signal?: AbortSignal): Promise<OllamaHealthResult>;
+  chat(
+    messages: OllamaChatMessage[],
+    options?: { signal?: AbortSignal; onDelta?: (text: string) => void }
+  ): Promise<{ text: string; promptTokens?: number; completionTokens?: number; finishReason?: string }>;
+}
+
+export function createOllamaInferenceClient(options: {
+  baseUrl: string;
+  model: string;
+  timeoutMs: number;
+  request?: typeof fetch;
+}): OllamaInferenceClient {
+  const baseUrl = normalizeBaseUrl(options.baseUrl, "OLLAMA_BASE_URL");
+  const model = options.model;
+  const invoke = async (path: string, init: RequestInit, signal?: AbortSignal) => {
+    const controller = new AbortController();
+    let externallyAborted = signal?.aborted === true;
+    const abort = () => {
+      externallyAborted = true;
+      controller.abort(signal?.reason);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
+    try {
+      return await (options.request ?? fetch)(new URL(path, baseUrl), {
+        ...init,
+        headers: {
+          accept: "application/x-ndjson, application/json",
+          ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+          ...init.headers
+        },
+        signal: controller.signal,
+        credentials: "omit"
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new ModelRuntimeError(
+          externallyAborted ? "INFERENCE_CANCELLED" : "INFERENCE_TIMEOUT",
+          externallyAborted ? "Inference was cancelled." : "Local Ollama inference timed out.",
+          true,
+          { cause: error }
+        );
+      }
+      throw new ModelRuntimeError(
+        "OLLAMA_UNREACHABLE",
+        "Local Ollama is unreachable at the configured endpoint.",
+        true,
+        { cause: error }
+      );
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    }
+  };
+  return {
+    async health(signal) {
+      try {
+        const response = await invoke("/api/tags", { method: "GET" }, signal);
+        if (!response.ok) throw responseError(response.status, await response.json().catch(() => null));
+        const body = (await response.json().catch(() => ({}))) as { models?: Array<{ name?: string }> };
+        const modelInstalled = (body.models ?? []).some((entry) => entry.name === model);
+        return {
+          provider: "ollama",
+          available: modelInstalled,
+          endpoint: baseUrl.toString().replace(/\/+$/u, ""),
+          model,
+          modelInstalled,
+          errorCode: modelInstalled ? null : "MODEL_NOT_INSTALLED",
+          message: modelInstalled ? null : `Ollama model ${model} is not installed.`
+        };
+      } catch (error) {
+        const normalized = asModelRuntimeError(error);
+        return {
+          provider: "ollama",
+          available: false,
+          endpoint: baseUrl.toString().replace(/\/+$/u, ""),
+          model,
+          modelInstalled: false,
+          errorCode: normalized.code,
+          message: normalized.message
+        };
+      }
+    },
+    async chat(messages, callOptions = {}) {
+      const response = await invoke(
+        "/api/chat",
+        {
+          method: "POST",
+          body: JSON.stringify({ model, messages, stream: true, options: { temperature: 0.2 } })
+        },
+        callOptions.signal
+      );
+      if (!response.ok) throw responseError(response.status, await response.json().catch(() => null));
+      if (response.body === null) {
+        throw new ModelRuntimeError("INFERENCE_FAILED", "Ollama returned no stream.", true);
+      }
+      let buffer = "";
+      let text = "";
+      let promptTokens: number | undefined;
+      let completionTokens: number | undefined;
+      let finishReason: string | undefined;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (line.trim() === "") continue;
+            const event = parseOllamaChatEvent(line);
+            const delta = event.message?.content ?? "";
+            if (delta !== "") {
+              text += delta;
+              callOptions.onDelta?.(delta);
+            }
+            if (event.done === true) {
+              promptTokens = event.prompt_eval_count;
+              completionTokens = event.eval_count;
+              finishReason = event.done_reason;
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      if (buffer.trim() !== "") {
+        const event = parseOllamaChatEvent(buffer);
+        const delta = event.message?.content ?? "";
+        text += delta;
+        if (delta !== "") callOptions.onDelta?.(delta);
+        if (event.done === true) {
+          promptTokens = event.prompt_eval_count;
+          completionTokens = event.eval_count;
+          finishReason = event.done_reason;
+        }
+      }
+      if (text.trim() === "") {
+        throw new ModelRuntimeError("INFERENCE_FAILED", "Ollama returned an empty response.", true);
+      }
+      return {
+        text,
+        ...(promptTokens === undefined ? {} : { promptTokens }),
+        ...(completionTokens === undefined ? {} : { completionTokens }),
+        ...(finishReason === undefined ? {} : { finishReason })
+      };
+    }
+  };
+}
+
 export function createVercelInferenceClient(options: {
   baseUrl: string;
   serviceToken: string;
@@ -331,6 +500,76 @@ export function createVercelModelAdapter(input: {
   };
 }
 
+export function createOllamaModelAdapter(input: {
+  modelId: string;
+  ollamaModel: string;
+  client: OllamaInferenceClient;
+}): ModelRuntimeAdapter {
+  return {
+    provider: "ollama",
+    executionTarget: "local",
+    async canRun(context) {
+      if (context.modelId !== input.modelId) {
+        return {
+          available: false,
+          errorCode: "MODEL_IDENTITY_MISMATCH",
+          message: "The adapter does not serve this model."
+        };
+      }
+      const health = await input.client.health(context.signal);
+      return {
+        available: health.available,
+        errorCode: health.errorCode,
+        message: health.message
+      };
+    },
+    async healthCheck(context) {
+      const startedAt = Date.now();
+      const health = await input.client.health(context.signal);
+      return {
+        available: health.available,
+        errorCode: health.errorCode,
+        message: health.message,
+        modelId: context.modelId,
+        provider: this.provider,
+        executionTarget: this.executionTarget,
+        latencyMs: Date.now() - startedAt,
+        responsePreview: null,
+        retryable: !health.available
+      };
+    },
+    async generate({ context, prompt }) {
+      const startedAt = Date.now();
+      const publisher = turnStreamHub.replyPublisher(context.accountId, currentTurnId());
+      const result = await input.client.chat(buildOllamaMessages(prompt), {
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+        ...(publisher === null ? {} : { onDelta: (delta: string) => publisher.raw(delta) })
+      });
+      const text = normalizeModelText(result.text);
+      if (text === "") {
+        throw new ModelRuntimeError(
+          "INFERENCE_FAILED",
+          "The local model returned malformed output.",
+          true
+        );
+      }
+      return {
+        text,
+        modelId: context.modelId,
+        provider: "ollama",
+        executionTarget: "local",
+        ...(result.promptTokens === undefined ? {} : { promptTokens: result.promptTokens }),
+        ...(result.completionTokens === undefined
+          ? {}
+          : { completionTokens: result.completionTokens }),
+        latencyMs: Date.now() - startedAt,
+        ...(result.finishReason === undefined ? {} : { finishReason: result.finishReason }),
+        inferenceRequestId: randomUUID()
+      };
+    }
+  };
+}
+
 /**
  * Gates `generate()` behind a bulkhead (bounded concurrency + bounded wait queue) and a circuit
  * breaker, both shared across every model adapter targeting the same execution host - see
@@ -471,6 +710,17 @@ export function buildInferenceInstructions(prompt: RuntimeModelPrompt): string {
   ].join("\n");
 }
 
+function buildOllamaMessages(prompt: RuntimeModelPrompt): OllamaChatMessage[] {
+  return [
+    { role: "system", content: buildInferenceInstructions(prompt) },
+    ...(prompt.conversationHistory ?? []).map((message): OllamaChatMessage => ({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: message.content
+    })),
+    { role: "user", content: prompt.message }
+  ];
+}
+
 function renderModelTemplateRecipe(prompt: RuntimeModelPrompt): string {
   const recipe = prompt.modelTemplate;
   if (recipe === undefined) return "";
@@ -511,6 +761,22 @@ function parseEvent(line: string): InferenceExecutionEvent {
     );
   }
   return parsed as InferenceExecutionEvent;
+}
+
+function parseOllamaChatEvent(line: string): {
+  message?: { content?: string };
+  done?: boolean;
+  done_reason?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
+} {
+  try {
+    const parsed = JSON.parse(line);
+    if (typeof parsed === "object" && parsed !== null) return parsed;
+  } catch {
+    // Converted below.
+  }
+  throw new ModelRuntimeError("INFERENCE_FAILED", "Ollama returned malformed stream data.", true);
 }
 
 function responseError(status: number, body: unknown): ModelRuntimeError {
