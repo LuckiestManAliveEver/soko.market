@@ -197,6 +197,24 @@ const cp2StoreOptions = {
 // Runtime resources remain provider-neutral and independently swappable. Deployments that promise
 // zero-setup AI set INFERENCE_REQUIRED=true, making /health/ready fail unless the configured
 // Vercel execution host can reach the selected model artifact.
+// Corridor fulfillment is Postgres-authoritative (docs/architecture/corridor-fulfillment.md §5):
+// its own instrumented pool, per-request transactions, and no participation in the in-memory
+// snapshot. Memory mode gets no service, so its routes answer 503 fulfillment_requires_postgres.
+// Its schema check runs alongside CP2 store hydration and is awaited before the service is built.
+let fulfillmentPool: Pool | undefined;
+let fulfillmentSchemaCheck: Promise<unknown> = Promise.resolve(null);
+if (shouldUsePostgresStore) {
+  fulfillmentPool = new Pool(
+    buildPgPoolConfig(config.databaseUrl, {
+      max: positiveIntegerFromEnv("DB_FULFILLMENT_POOL_MAX", 3)
+    })
+  );
+  metrics.instrumentPgPool(fulfillmentPool, { poolName: "fulfillment" });
+  fulfillmentSchemaCheck = assertFulfillmentSchema(fulfillmentPool).then(
+    () => null,
+    (error: unknown) => error
+  );
+}
 const cp2Store = await createCp2StoreOrExplainSchemaFailure();
 // Cp2Store attaches its database-backed model catalog to the provider router during construction.
 // Resolve the default only after that late binding, otherwise a provider-routed default appears
@@ -205,19 +223,10 @@ primaryInferenceAdapter ??= inferencePlatform.adapterFor({
   modelId: config.platformDefaultRuntime.modelId,
   executionTarget: config.platformDefaultRuntime.executionTarget
 });
-// Corridor fulfillment is Postgres-authoritative (docs/architecture/corridor-fulfillment.md §5):
-// its own instrumented pool, per-request transactions, and no participation in the in-memory
-// snapshot. Memory mode gets no service, so its routes answer 503 fulfillment_requires_postgres.
-let fulfillmentPool: Pool | undefined;
 let fulfillmentService: FulfillmentService | undefined;
-if (shouldUsePostgresStore) {
-  fulfillmentPool = new Pool(
-    buildPgPoolConfig(config.databaseUrl, {
-      max: positiveIntegerFromEnv("DB_FULFILLMENT_POOL_MAX", 3)
-    })
-  );
-  metrics.instrumentPgPool(fulfillmentPool, { poolName: "fulfillment" });
-  await assertFulfillmentSchema(fulfillmentPool);
+if (fulfillmentPool !== undefined) {
+  const fulfillmentSchemaError = await fulfillmentSchemaCheck;
+  if (fulfillmentSchemaError !== null) throw fulfillmentSchemaError;
   fulfillmentService = createPostgresFulfillmentService({
     pool: fulfillmentPool,
     deps: fulfillmentDepsFromStore(cp2Store),
@@ -322,7 +331,7 @@ app.addHook("onClose", async () => {
   await conversationRecycleBinRunner?.stop();
   await agentOwnerCorrectionRetentionRunner?.stop();
   await runtimeExperienceRetentionRunner?.stop();
-  
+
   await fulfillmentIdempotencyRetentionRunner?.stop();
   await fulfillmentIntakeReconcileRunner?.stop();
   await fulfillmentDispatchEvaluationRunner?.stop();

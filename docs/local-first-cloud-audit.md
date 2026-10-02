@@ -41,3 +41,36 @@ Status: implementation inventory for `SOKO_RUNTIME_MODE=local`.
 - Caching/rate-limit dependencies: `LOCAL_CACHE_MODE=memory` avoids Redis for local startup.
 - Object-storage dependencies: conversation/file storage remains separate; model artifact object storage is bypassed locally.
 - Agent-runtime dependencies: built-in Soko runtime remains available; ZeroClaw is optional.
+
+## Boot time and write amplification against Neon
+
+Local mode keeps Neon as the only remote dependency, so every database round trip at boot pays
+the full network latency (~350ms per round trip measured to `us-east-2`). Measured boot to
+`Server listening` (`pnpm dev:local`, 2026-10-02):
+
+| Step | Before | After |
+|---|---|---|
+| Normalized collections (~147 tables) | one query per table, ~50s | one `union all` of `jsonb_agg(record order by entity_id)`, ~3.5s |
+| Relational core (~24 tables) | sequential, ~7s | concurrent over the pool, ~2-4s |
+| Pool connections | opened one by one as queries needed them | a short-lived boot pool is warmed concurrently, used for the migration check and snapshot load, then closed, so no extra idle connections stay open |
+| Fulfillment schema check | after store hydration | alongside store hydration |
+| Total | ~90s | ~24-29s |
+
+What remains is mostly fixed cost: ~7.5s of `tsx` compile in dev, ~5s of inference schema check
+and provider refresh, and one TLS connection setup per pool.
+
+Persistence re-sends whole collections on every save. Every hot-path upsert in
+`services/api/src/cp2/postgres-store.ts` now ends with `where (...) is distinct from (excluded...)`,
+so unchanged rows produce no new row version. Before that guard, `account_sync_changes` had
+22,248 inserts and 584 million updates, and its heap grew to 379 MB for ~15 MB of live data;
+`sessions` had 10 million updates on 703 rows. Session retention triggers still apply because they
+fire `before insert or update` and stamp the proposed row; the guard ignores the trigger's revocation
+timestamp once both the stored and proposed rows carry the `expired` revocation, otherwise every
+expired session would be rewritten on every save.
+
+The guard stops new bloat but does not return space already used. `VACUUM FULL
+account_sync_changes` reclaims it, and it takes an exclusive lock on the table while it runs.
+
+Regression coverage: `tests/normalized-snapshot-sql.test.ts` (gate) and the Postgres-gated cases in
+`tests/cp2-postgres-store.test.ts` (single-query load parity, unchanged sync rows keep their `xmin`,
+expired sessions revoked once and then left alone).

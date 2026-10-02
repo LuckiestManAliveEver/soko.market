@@ -93,14 +93,14 @@ describe("registerRuntimeRegistryRoutes", () => {
   });
 
   it("exposes GET /v1/runtime-registry/resources/:provider/:id", async () => {
-    const github = fakeAdapter("github", "example/agent-repo");
+    const soko = fakeAdapter("soko", "example/agent-repo");
     const app = Fastify();
     registerRuntimeRegistryRoutes(app, {
-      searchService: createRuntimeRegistrySearchService({ adapters: { github } }),
-      adapters: { github },
+      searchService: createRuntimeRegistrySearchService({ adapters: { soko } }),
+      adapters: { soko },
       importService: createRuntimeRegistryImportService({
         store: createMemoryRuntimeRegistryImportStore(),
-        adapters: { github }
+        adapters: { soko }
       }),
       resolveContext: () => publicContext,
       requireAccount: () => ({ accountId: "acct-1", userId: "user-1" })
@@ -108,14 +108,14 @@ describe("registerRuntimeRegistryRoutes", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/v1/runtime-registry/resources/github/example%2Fagent-repo?kind=agent"
+      url: "/v1/runtime-registry/resources/soko/example%2Fagent-repo?kind=agent"
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ provider: "github", externalId: "example/agent-repo" });
+    expect(response.json()).toMatchObject({ provider: "soko", externalId: "example/agent-repo" });
 
     const missingKind = await app.inject({
       method: "GET",
-      url: "/v1/runtime-registry/resources/github/example%2Fagent-repo"
+      url: "/v1/runtime-registry/resources/soko/example%2Fagent-repo"
     });
     expect(missingKind.statusCode).toBe(400);
 
@@ -123,15 +123,15 @@ describe("registerRuntimeRegistryRoutes", () => {
   });
 
   it("starts and polls an import through POST/GET /v1/runtime-registry/imports", async () => {
-    const github = fakeAdapter("github", "example/agent-repo");
+    const soko = fakeAdapter("soko", "example/agent-repo");
     const app = Fastify();
     const importStore = createMemoryRuntimeRegistryImportStore();
     registerRuntimeRegistryRoutes(app, {
-      searchService: createRuntimeRegistrySearchService({ adapters: { github } }),
-      adapters: { github },
+      searchService: createRuntimeRegistrySearchService({ adapters: { soko } }),
+      adapters: { soko },
       importService: createRuntimeRegistryImportService({
         store: importStore,
-        adapters: { github }
+        adapters: { soko }
       }),
       resolveContext: () => publicContext,
       requireAccount: () => ({ accountId: "acct-1", userId: "user-1" })
@@ -140,7 +140,7 @@ describe("registerRuntimeRegistryRoutes", () => {
     const startResponse = await app.inject({
       method: "POST",
       url: "/v1/runtime-registry/imports",
-      payload: { provider: "github", kind: "agent", externalId: "example/agent-repo" }
+      payload: { provider: "soko", kind: "agent", externalId: "example/agent-repo" }
     });
     expect(startResponse.statusCode).toBe(200);
     const started = startResponse.json();
@@ -162,6 +162,40 @@ describe("registerRuntimeRegistryRoutes", () => {
       url: "/v1/runtime-registry/imports/does-not-exist"
     });
     expect(missingResponse.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it("rejects GitHub and Hugging Face providers now that local mode is Soko-catalog only", async () => {
+    const soko = fakeAdapter("soko", "example/agent-repo");
+    const app = Fastify();
+    registerRuntimeRegistryRoutes(app, {
+      searchService: createRuntimeRegistrySearchService({ adapters: { soko } }),
+      adapters: { soko },
+      importService: createRuntimeRegistryImportService({
+        store: createMemoryRuntimeRegistryImportStore(),
+        adapters: { soko }
+      }),
+      resolveContext: () => publicContext,
+      requireAccount: () => ({ accountId: "acct-1", userId: "user-1" })
+    });
+
+    for (const provider of ["github", "huggingface"]) {
+      const inspect = await app.inject({
+        method: "GET",
+        url: `/v1/runtime-registry/resources/${provider}/example%2Fagent-repo?kind=agent`
+      });
+      expect(inspect.statusCode).toBe(400);
+      expect(inspect.json().code).toBe("runtime_registry_provider_invalid");
+
+      const start = await app.inject({
+        method: "POST",
+        url: "/v1/runtime-registry/imports",
+        payload: { provider, kind: "agent", externalId: "example/agent-repo" }
+      });
+      expect(start.statusCode).toBe(400);
+      expect(start.json().code).toBe("runtime_registry_provider_invalid");
+    }
 
     await app.close();
   });

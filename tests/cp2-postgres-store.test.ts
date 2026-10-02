@@ -39,7 +39,9 @@ import {
 } from "../packages/shared-types/src/index";
 import { buildApi } from "../services/api/src/app";
 import {
+  buildNormalizedSnapshotSql,
   createPostgresCp2Store,
+  normalizedCollections,
   upsertAccountSyncChangesBulk
 } from "../services/api/src/cp2/postgres-store";
 import { readSessionCookie, sessionCookieName } from "../services/api/src/cp2/store";
@@ -2469,6 +2471,166 @@ describePostgres("CP2 Postgres store", () => {
       await pool.end();
     }
   }, 15_000);
+
+  it("loads every normalized collection in one query with the same rows and order as one query per table", async () => {
+    expect(databaseUrl).toBeDefined();
+    const pool = new Pool({ connectionString: databaseUrl ?? "" });
+    try {
+      const combined = await pool.query<{ collection_index: number; records: unknown[] }>(
+        buildNormalizedSnapshotSql(normalizedCollections)
+      );
+      // union all may return branches in any order; the loader keys rows by collection_index.
+      expect(combined.rows.map((row) => row.collection_index).sort((a, b) => a - b)).toEqual(
+        normalizedCollections.map((_collection, index) => index)
+      );
+      for (const row of combined.rows) {
+        const collection = normalizedCollections[row.collection_index];
+        if (collection === undefined) throw new Error("Unknown collection index.");
+        const perTable = await pool.query<{ record: unknown }>(
+          `select record from ${collection.tableName} order by entity_id`
+        );
+        expect(row.records, collection.tableName).toEqual(perTable.rows.map((r) => r.record));
+      }
+    } finally {
+      await pool.end();
+    }
+  }, 60_000);
+
+  it("leaves unchanged account sync changes untouched on re-upsert and still updates changed rows", async () => {
+    expect(databaseUrl).toBeDefined();
+    const pool = new Pool({ connectionString: databaseUrl ?? "" });
+    const client = await pool.connect();
+    // Persistence re-sends the whole sync journal on every save. Before the is-distinct-from guard,
+    // each save rewrote every row, which bloated account_sync_changes (~26k rewrites per row in
+    // the Neon database). xmin changes only when Postgres writes a new row version.
+    try {
+      const accountId = randomUUID();
+      await client.query(
+        "insert into accounts (id, primary_auth_channel, primary_auth_destination, created_at) values ($1, 'phone', $2, now())",
+        [accountId, `+254732${Date.now().toString().slice(-6)}`]
+      );
+      const changes = [1, 2, 3].map((sequence) => ({
+        accountId,
+        sequence,
+        cursor: randomUUID(),
+        collection: "conversation_messages" as const,
+        entityId: randomUUID(),
+        operation: "upsert" as const,
+        shopId: null,
+        entity: { text: `message ${sequence}` },
+        changedAt: new Date().toISOString(),
+        tombstoneExpiresAt: null
+      }));
+      const upsert = (rows: typeof changes) =>
+        upsertAccountSyncChangesBulk(
+          client as unknown as Parameters<typeof upsertAccountSyncChangesBulk>[0],
+          rows
+        );
+      const versions = async () =>
+        (
+          await client.query<{ sequence: string; xmin: string; entity: { text: string } }>(
+            "select sequence::text, xmin::text, entity from account_sync_changes where account_id = $1 order by sequence",
+            [accountId]
+          )
+        ).rows;
+
+      await upsert(changes);
+      const initial = await versions();
+
+      await upsert(changes);
+      expect(await versions()).toEqual(initial);
+
+      const edited = changes.map((change) =>
+        change.sequence === 2 ? { ...change, entity: { text: "edited" } } : change
+      );
+      await upsert(edited);
+      const after = await versions();
+      expect(after[0]).toEqual(initial[0]);
+      expect(after[2]).toEqual(initial[2]);
+      expect(after[1]?.xmin).not.toBe(initial[1]?.xmin);
+      expect(after[1]?.entity).toEqual({ text: "edited" });
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  }, 15_000);
+
+  it("lets the retention trigger revoke an expired session once, then stops rewriting it", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    // sessions_retention_trigger fires before insert or update, so it stamps the proposed row of
+    // an expired session as revoked and the unchanged-row guard lets that write through. This
+    // builds a session that expired after its last write, so memory and database otherwise agree.
+    try {
+      const firstStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const firstApp = buildApi({ cp2: { store: firstStore } });
+      const owner = await createOwnerBusiness(firstApp, `254733${Date.now().toString().slice(-6)}`);
+      await firstApp.close();
+      await firstStore.close();
+      const sessionId = readSessionCookie(owner.sessionCookie);
+      if (sessionId === null) throw new Error("Owner session cookie was not issued.");
+
+      const expiredAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await pool.query("alter table sessions disable trigger sessions_retention_trigger");
+      await pool.query("alter table cp2_sessions disable trigger cp2_sessions_retention_trigger");
+      try {
+        await pool.query("update sessions set expires_at = $2, revoked_at = null where id = $1", [
+          sessionId,
+          expiredAt
+        ]);
+        await pool.query(
+          "update cp2_sessions set record = jsonb_set(record, '{expiresAt}', to_jsonb($2::text)) - 'revokedAt' where entity_id = $1",
+          [sessionId, expiredAt]
+        );
+      } finally {
+        await pool.query("alter table sessions enable trigger sessions_retention_trigger");
+        await pool.query("alter table cp2_sessions enable trigger cp2_sessions_retention_trigger");
+      }
+
+      const secondStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const secondApp = buildApi({ cp2: { store: secondStore } });
+      await createOwnerBusiness(secondApp, `254734${Date.now().toString().slice(-6)}`);
+      await secondApp.close();
+      await secondStore.close();
+
+      const revokedRow = async () =>
+        (
+          await pool.query<{
+            revoked_at: Date | null;
+            revocation_reason: string | null;
+            xmin: string;
+          }>("select revoked_at, revocation_reason, xmin::text from sessions where id = $1", [
+            sessionId
+          ])
+        ).rows[0];
+      const compatibilityRow = async () =>
+        (
+          await pool.query<{ record: { revokedAt?: string | null }; xmin: string }>(
+            "select record, xmin::text from cp2_sessions where entity_id = $1",
+            [sessionId]
+          )
+        ).rows[0];
+      const revoked = await revokedRow();
+      const compatibilityRevoked = await compatibilityRow();
+      expect(compatibilityRevoked?.record.revokedAt).toBeTruthy();
+      expect(revoked?.revoked_at).not.toBeNull();
+      expect(revoked?.revocation_reason).toBe("expired");
+
+      // Later saves must not rewrite the already-revoked row: the trigger would stamp a fresh
+      // revoked_at on every save, so without the guard's expired-revocation carve-out every
+      // expired session was rewritten on every persist (all 418 sessions in the Neon database).
+      const thirdStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const thirdApp = buildApi({ cp2: { store: thirdStore } });
+      await createOwnerBusiness(thirdApp, `254735${Date.now().toString().slice(-6)}`);
+      await thirdApp.close();
+      await thirdStore.close();
+      expect(await revokedRow()).toEqual(revoked);
+      expect(await compatibilityRow()).toEqual(compatibilityRevoked);
+    } finally {
+      await pool.end();
+    }
+  }, 45_000);
 
   it("attributes a bulk sync-change persistence failure to the exact account/collection via the row-by-row fallback", async () => {
     expect(databaseUrl).toBeDefined();

@@ -550,17 +550,35 @@ interface PasskeyCeremonyMutation {
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
 ): Promise<PostgresCp2Store> {
-  const pool = new Pool(buildPgPoolConfig(options.databaseUrl));
+  const poolConfig = buildPgPoolConfig(options.databaseUrl);
+  const pool = new Pool(poolConfig);
   options.metrics?.instrumentPgPool(pool, { poolName: "cp2_primary" });
   pool.on("error", (error) => {
     console.error("Unexpected PostgreSQL pool error.", error);
   });
+  const realtimePool = new Pool(buildPgPoolConfig(options.databaseUrl, { max: 1 }));
+  options.metrics?.instrumentPgPool(realtimePool, { poolName: "cp2_realtime" });
+  realtimePool.on("error", (error) => {
+    console.error("Unexpected PostgreSQL realtime pool error.", error);
+  });
+  // Boot reads run on their own short-lived pool, warmed up front and closed right after the
+  // snapshot loads, so concurrent loading never leaves extra idle connections behind on the
+  // long-lived pool (several stores booting together would otherwise exhaust max_connections).
+  const bootPool = new Pool(poolConfig);
+  bootPool.on("error", (error) => {
+    console.error("Unexpected PostgreSQL boot pool error.", error);
+  });
+  warmPool(bootPool, poolConfig.max ?? 1);
+  warmPool(realtimePool, 1);
+  const endBootPool = () => bootPool.end().catch(() => undefined);
+  const endPools = () =>
+    Promise.all([pool.end(), realtimePool.end(), endBootPool()]).catch(() => undefined);
   let store: Cp2Store;
   let savedSnapshot: Cp2Snapshot;
   let initialSyncPersistenceError: AccountSyncPersistenceError | null = null;
 
   try {
-    await assertDatabaseMigrated(pool);
+    await assertDatabaseMigrated(bootPool);
     store = createCp2Store({
       ...(options.runtimeModelProvider === undefined
         ? {}
@@ -605,11 +623,12 @@ export async function createPostgresCp2Store(
         options.conversationAttachmentBlobStore ?? createPostgresAttachmentBlobStore(pool),
       accountAiAssetStore: options.accountAiAssetStore ?? createPostgresAccountAiAssetStore(pool)
     });
-    savedSnapshot = await loadNormalizedSnapshot(pool);
+    savedSnapshot = await loadNormalizedSnapshot(bootPool);
   } catch (error) {
-    await pool.end().catch(() => undefined);
+    await endPools();
     throw error;
   }
+  await endBootPool();
 
   try {
     if (snapshotHasData(savedSnapshot)) {
@@ -620,15 +639,9 @@ export async function createPostgresCp2Store(
       }
     }
   } catch (error) {
-    await pool.end().catch(() => undefined);
+    await endPools();
     throw error;
   }
-
-  const realtimePool = new Pool(buildPgPoolConfig(options.databaseUrl, { max: 1 }));
-  options.metrics?.instrumentPgPool(realtimePool, { poolName: "cp2_realtime" });
-  realtimePool.on("error", (error) => {
-    console.error("Unexpected PostgreSQL realtime pool error.", error);
-  });
 
   let lastPersistedSnapshot = structuredClone(store.snapshot());
   let saveQueue: Promise<void> = Promise.resolve();
@@ -1423,18 +1436,37 @@ async function assertDatabaseMigrated(pool: Pool): Promise<void> {
   }
 }
 
+/**
+ * Opens `connections` connections at once and returns them to the pool idle. Each new connection
+ * to a remote database costs several round trips (TCP, TLS, auth), ~2s against Neon from far
+ * away, so warming them concurrently at boot overlaps that cost with the migration check instead
+ * of paying it serially as the snapshot loaders first need connections. Never rejects: a failed
+ * warm-up only means the real query connects, and reports any error, itself.
+ */
+function warmPool(pool: Pool, connections: number): void {
+  for (let index = 0; index < connections; index += 1) {
+    void pool.connect().then(
+      (client) => client.release(),
+      () => undefined
+    );
+  }
+}
+
 async function loadNormalizedSnapshot(pool: Pool): Promise<Cp2Snapshot> {
   const snapshot = emptySnapshot();
-
-  for (const collection of normalizedCollections) {
-    const result = await pool.query<{ record: SnapshotRecord }>(
-      `select record from ${collection.tableName} order by entity_id`
-    );
-    setSnapshotCollection(
-      snapshot,
-      collection.key,
-      result.rows.map((row) => row.record)
-    );
+  const result = await timedQuery<{ collection_index: number; records: SnapshotRecord[] }>(
+    pool,
+    "load normalized collections",
+    buildNormalizedSnapshotSql(normalizedCollections)
+  );
+  for (const row of result.rows) {
+    const collection = normalizedCollections[row.collection_index];
+    if (collection === undefined) {
+      throw new Error(
+        `Normalized snapshot returned unknown collection index ${row.collection_index}.`
+      );
+    }
+    setSnapshotCollection(snapshot, collection.key, row.records);
   }
 
   await loadRelationalCoreSnapshot(pool, snapshot);
@@ -1442,906 +1474,959 @@ async function loadNormalizedSnapshot(pool: Pool): Promise<Cp2Snapshot> {
   return snapshot;
 }
 
+/**
+ * Loads every normalized collection in one round trip. Boot used to issue one query per table
+ * (~150 tables), so against a remote database the API spent most of its startup waiting on
+ * network latency. jsonb_agg(... order by entity_id) keeps each collection's row order identical
+ * to the previous per-table `order by entity_id` query, and aggregating per table means the
+ * union only ever combines jsonb values, so differing entity_id types never matter.
+ */
+export function buildNormalizedSnapshotSql(collections: readonly NormalizedCollection[]): string {
+  return collections
+    .map(
+      (collection, index) =>
+        `select ${index}::int as collection_index, coalesce(jsonb_agg(record order by entity_id), '[]'::jsonb) as records from ${collection.tableName}`
+    )
+    .join("\nunion all\n");
+}
+
 async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Promise<void> {
-  const accountsResult = await timedQuery<{
-    id: string;
-    primary_auth_channel: string;
-    primary_auth_destination: string;
-    identity_level: "device" | "verified_contact" | "strong";
-    status: "active" | "locked" | "suspended" | "pending_deletion" | "deleted";
-    deleted_at: Date | null;
-    created_at: Date;
-  }>(
-    pool,
-    "load accounts",
-    "select id, primary_auth_channel, primary_auth_destination, identity_level, status, deleted_at, created_at from accounts order by id"
-  );
-  snapshot.accounts = accountsResult.rows.map((row) => ({
-    id: row.id,
-    primaryAuthChannel: row.primary_auth_channel,
-    primaryAuthDestination: row.primary_auth_destination,
-    identityLevel: row.identity_level,
-    status: row.status,
-    deletedAt: row.deleted_at === null ? null : timestampToIso(row.deleted_at),
-    createdAt: timestampToIso(row.created_at)
-  })) as Cp2Snapshot["accounts"];
+  // Each loader fills its own snapshot key, so they run concurrently: boot against a remote
+  // database was dominated by ~25 sequential round trips here (~7s at ~350ms per round trip).
+  await Promise.all(
+    [
+      async () => {
+        const accountsResult = await timedQuery<{
+          id: string;
+          primary_auth_channel: string;
+          primary_auth_destination: string;
+          identity_level: "device" | "verified_contact" | "strong";
+          status: "active" | "locked" | "suspended" | "pending_deletion" | "deleted";
+          deleted_at: Date | null;
+          created_at: Date;
+        }>(
+          pool,
+          "load accounts",
+          "select id, primary_auth_channel, primary_auth_destination, identity_level, status, deleted_at, created_at from accounts order by id"
+        );
+        snapshot.accounts = accountsResult.rows.map((row) => ({
+          id: row.id,
+          primaryAuthChannel: row.primary_auth_channel,
+          primaryAuthDestination: row.primary_auth_destination,
+          identityLevel: row.identity_level,
+          status: row.status,
+          deletedAt: row.deleted_at === null ? null : timestampToIso(row.deleted_at),
+          createdAt: timestampToIso(row.created_at)
+        })) as Cp2Snapshot["accounts"];
+      },
+      async () => {
+        const usersResult = await timedQuery<{
+          id: string;
+          account_id: string;
+          display_name: string;
+          language: string;
+          phone_number_e164: string | null;
+          phone_country_code: string | null;
+          phone_national_number: string | null;
+          phone_verification_status: "unverified" | "verified" | null;
+          phone_added_at: Date | null;
+          phone_updated_at: Date | null;
+          phone_source: "phone_login" | "shop_registration" | null;
+          public_phone_enabled: boolean;
+          created_at: Date;
+        }>(
+          pool,
+          "load users",
+          `
+              select
+                id,
+                account_id,
+                display_name,
+                language,
+                phone_number_e164,
+                phone_country_code,
+                phone_national_number,
+                phone_verification_status,
+                phone_added_at,
+                phone_updated_at,
+                phone_source,
+                public_phone_enabled,
+                created_at
+              from users
+              order by id
+            `
+        );
+        snapshot.users = usersResult.rows.map((row) => ({
+          id: row.id,
+          accountId: row.account_id,
+          displayName: row.display_name,
+          language: row.language,
+          phoneNumberE164: row.phone_number_e164,
+          phoneCountryCode: row.phone_country_code,
+          phoneNationalNumber: row.phone_national_number,
+          phoneVerificationStatus: row.phone_verification_status,
+          phoneAddedAt: row.phone_added_at === null ? null : timestampToIso(row.phone_added_at),
+          phoneUpdatedAt:
+            row.phone_updated_at === null ? null : timestampToIso(row.phone_updated_at),
+          phoneSource: row.phone_source,
+          publicPhoneEnabled: row.public_phone_enabled,
+          createdAt: timestampToIso(row.created_at)
+        })) as Cp2Snapshot["users"];
+      },
+      async () => {
+        const businessesResult = await timedQuery<{
+          id: string;
+          name: string;
+          language: string;
+          soko_id: string | null;
+          timezone: string | null;
+          created_at: Date;
+        }>(
+          pool,
+          "load businesses",
+          "select id, name, language, soko_id, timezone, created_at from businesses order by id"
+        );
+        snapshot.businesses = businessesResult.rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          language: row.language,
+          sokoId: row.soko_id,
+          timezone: row.timezone,
+          createdAt: timestampToIso(row.created_at)
+        })) as Cp2Snapshot["businesses"];
+      },
+      async () => {
+        const membershipsResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          user_id: string;
+          role: string;
+          created_at: Date;
+        }>(
+          pool,
+          "load memberships",
+          "select id, business_id, user_id, role, created_at from business_memberships order by id"
+        );
+        snapshot.memberships = membershipsResult.rows.map((row) => ({
+          id: row.id,
+          businessId: row.business_id,
+          userId: row.user_id,
+          role: row.role,
+          createdAt: timestampToIso(row.created_at)
+        })) as Cp2Snapshot["memberships"];
+      },
+      async () => {
+        const productsResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          name: string;
+          sku: string | null;
+          aliases: string[];
+          unit: string;
+          quantity: string;
+          buying_price: string | null;
+          selling_price: string | null;
+          unit_weight_grams: string | null;
+          primary_media_id: string | null;
+          created_at: Date;
+          updated_at: Date;
+        }>(
+          pool,
+          "load products",
+          `
+              select id, business_id, name, sku, aliases, unit, quantity, buying_price, selling_price,
+                     unit_weight_grams, primary_media_id, created_at, updated_at
+              from products
+              order by business_id, name, id
+            `
+        );
+        // The relational row is authoritative for every column it has, but it does not carry every
+        // ProductSummary field (for example business-defined `fieldValues`). Start from the
+        // compatibility record loaded above so those fields survive a restart instead of being dropped.
+        const compatibilityProductsById = new Map(
+          snapshotRecords(snapshot.products).map((record) => [String(record.id), record])
+        );
+        snapshot.products = productsResult.rows.map((row) => ({
+          ...compatibilityProductsById.get(row.id),
+          id: row.id,
+          businessId: row.business_id,
+          name: row.name,
+          sku: row.sku,
+          aliases: row.aliases,
+          unit: row.unit,
+          quantity: numberFromDatabase(row.quantity),
+          buyingPrice: nullableNumberFromDatabase(row.buying_price),
+          sellingPrice: nullableNumberFromDatabase(row.selling_price),
+          // pg returns BIGINT as a decimal string, which is exactly the A22 record format.
+          unitWeightGrams: row.unit_weight_grams,
+          primaryMediaId: row.primary_media_id,
+          createdAt: timestampToIso(row.created_at),
+          updatedAt: timestampToIso(row.updated_at)
+        })) as Cp2Snapshot["products"];
+      },
+      async () => {
+        const customersResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          name: string;
+          phone: string | null;
+          email: string | null;
+          linked_account_id: string | null;
+          notes: string | null;
+          created_at: Date;
+          updated_at: Date;
+        }>(
+          pool,
+          "load customers",
+          `
+              select id, business_id, name, phone, email, linked_account_id, notes, created_at, updated_at
+              from customers
+              order by business_id, name, id
+            `
+        );
+        snapshot.customers = customersResult.rows.map((row) => ({
+          id: row.id,
+          businessId: row.business_id,
+          name: row.name,
+          phone: row.phone,
+          email: row.email,
+          linkedAccountId: row.linked_account_id,
+          notes: row.notes,
+          createdAt: timestampToIso(row.created_at),
+          updatedAt: timestampToIso(row.updated_at)
+        })) as Cp2Snapshot["customers"];
+      },
+      async () => {
+        const suppliersResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          name: string;
+          phone: string | null;
+          linked_phonebook_contact_id: string | null;
+          linked_phonebook_contact_name: string | null;
+          email: string | null;
+          notes: string | null;
+          sales_agent_count: number;
+          purchase_receipt_count: number;
+          last_purchase_date: Date | null;
+          created_at: Date;
+          updated_at: Date;
+        }>(
+          pool,
+          "load suppliers",
+          `
+              select id, business_id, name, phone, linked_phonebook_contact_id, linked_phonebook_contact_name,
+                     email, notes, sales_agent_count, purchase_receipt_count, last_purchase_date, created_at, updated_at
+              from suppliers
+              order by business_id, name, id
+            `
+        );
+        snapshot.suppliers = suppliersResult.rows.map((row) => ({
+          id: row.id,
+          businessId: row.business_id,
+          name: row.name,
+          phone: row.phone,
+          linkedPhonebookContactId: row.linked_phonebook_contact_id,
+          linkedPhonebookContactName: row.linked_phonebook_contact_name,
+          email: row.email,
+          notes: row.notes,
+          salesAgentCount: row.sales_agent_count,
+          purchaseReceiptCount: row.purchase_receipt_count,
+          lastPurchaseDate:
+            row.last_purchase_date === null ? null : timestampToIso(row.last_purchase_date),
+          createdAt: timestampToIso(row.created_at),
+          updatedAt: timestampToIso(row.updated_at)
+        })) as Cp2Snapshot["suppliers"];
+      },
+      async () => {
+        const salesAgentsResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          supplier_id: string;
+          supplier_name: string;
+          name: string;
+          phone: string | null;
+          linked_phonebook_contact_id: string | null;
+          linked_phonebook_contact_name: string | null;
+          notes: string | null;
+          receipts_handled: number;
+          last_transaction_date: Date | null;
+          created_at: Date;
+          updated_at: Date;
+        }>(
+          pool,
+          "load sales agents",
+          `
+              select id, business_id, supplier_id, supplier_name, name, phone, linked_phonebook_contact_id,
+                     linked_phonebook_contact_name, notes, receipts_handled, last_transaction_date, created_at, updated_at
+              from sales_agents
+              order by business_id, supplier_id, name, id
+            `
+        );
+        snapshot.salesAgents = salesAgentsResult.rows.map((row) => ({
+          id: row.id,
+          businessId: row.business_id,
+          supplierId: row.supplier_id,
+          supplierName: row.supplier_name,
+          name: row.name,
+          phone: row.phone,
+          linkedPhonebookContactId: row.linked_phonebook_contact_id,
+          linkedPhonebookContactName: row.linked_phonebook_contact_name,
+          notes: row.notes,
+          receiptsHandled: row.receipts_handled,
+          lastTransactionDate:
+            row.last_transaction_date === null ? null : timestampToIso(row.last_transaction_date),
+          createdAt: timestampToIso(row.created_at),
+          updatedAt: timestampToIso(row.updated_at)
+        })) as Cp2Snapshot["salesAgents"];
+      },
+      async () => {
+        const supplierContactLinksResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          link_type: string;
+          supplier_id: string | null;
+          sales_agent_id: string | null;
+          network_node_id: string;
+          contact_name: string;
+          linked_at: Date;
+        }>(
+          pool,
+          "load supplier contact links",
+          `
+              select id, business_id, link_type, supplier_id, sales_agent_id, network_node_id, contact_name, linked_at
+              from supplier_contact_links
+              order by business_id, linked_at, id
+            `
+        );
+        snapshot.supplierContactLinks = supplierContactLinksResult.rows.map((row) => ({
+          id: row.id,
+          businessId: row.business_id,
+          linkType: row.link_type,
+          supplierId: row.supplier_id,
+          salesAgentId: row.sales_agent_id,
+          networkNodeId: row.network_node_id,
+          contactName: row.contact_name,
+          linkedAt: timestampToIso(row.linked_at)
+        })) as Cp2Snapshot["supplierContactLinks"];
+      },
+      async () => {
+        const ocrJobsResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          tenant_id: string;
+          shop_id: string;
+          uploaded_by: string;
+          status: string;
+          source_file_name: string;
+          content_type: string;
+          engine: string;
+          engine_version: string;
+          model_version: string;
+          profile: string;
+          fallback_used: boolean;
+          language_hints: unknown;
+          full_text: string;
+          average_confidence: string;
+          warnings: unknown;
+          field_evidence: unknown;
+          structured_extraction: unknown;
+          contact_matching_result: unknown;
+          supplier_candidates: unknown;
+          sales_agent_candidates: unknown;
+          supplier_name: string | null;
+          sales_agent_name: string | null;
+          phone: string | null;
+          created_at: Date;
+          updated_at: Date;
+        }>(
+          pool,
+          "load receipt OCR jobs",
+          `
+              select id, business_id, tenant_id, shop_id, uploaded_by, status, source_file_name, content_type,
+                     engine, engine_version, model_version, profile, fallback_used, language_hints, full_text,
+                     average_confidence, warnings, field_evidence, structured_extraction, contact_matching_result,
+                     supplier_candidates, sales_agent_candidates, supplier_name, sales_agent_name, phone, created_at, updated_at
+              from receipt_ocr_jobs
+              order by business_id, updated_at, id
+            `
+        );
+        snapshot.receiptOCRJobs = ocrJobsResult.rows.map((row) => ({
+          id: row.id,
+          businessId: row.business_id,
+          tenantId: row.tenant_id,
+          shopId: row.shop_id,
+          uploadedBy: row.uploaded_by,
+          status: row.status,
+          sourceFileName: row.source_file_name,
+          contentType: row.content_type,
+          engine: row.engine,
+          engineVersion: row.engine_version,
+          modelVersion: row.model_version,
+          profile: row.profile,
+          fallbackUsed: row.fallback_used,
+          languageHints: row.language_hints,
+          fullText: row.full_text,
+          averageConfidence: numberFromDatabase(row.average_confidence),
+          warnings: row.warnings,
+          fieldEvidence: row.field_evidence,
+          structuredExtraction: row.structured_extraction,
+          contactMatchingResult: row.contact_matching_result,
+          supplierCandidates: row.supplier_candidates,
+          salesAgentCandidates: row.sales_agent_candidates,
+          supplierName: row.supplier_name,
+          salesAgentName: row.sales_agent_name,
+          phone: row.phone,
+          createdAt: timestampToIso(row.created_at),
+          updatedAt: timestampToIso(row.updated_at)
+        })) as Cp2Snapshot["receiptOCRJobs"];
+      },
+      async () => {
+        const purchaseReceiptsResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          supplier_id: string;
+          supplier_name: string;
+          sales_agent_id: string | null;
+          sales_agent_name: string | null;
+          receipt_date: Date;
+          total: string;
+          source_file_name: string | null;
+          ocr_job_id: string | null;
+          image_stored: boolean;
+          created_at: Date;
+        }>(
+          pool,
+          "load purchase receipts",
+          `
+              select id, business_id, supplier_id, supplier_name, sales_agent_id, sales_agent_name,
+                     receipt_date, total, source_file_name, ocr_job_id, image_stored, created_at
+              from purchase_receipts
+              order by business_id, receipt_date, id
+            `
+        );
+        snapshot.purchaseReceipts = purchaseReceiptsResult.rows.map((row) => ({
+          id: row.id,
+          businessId: row.business_id,
+          supplierId: row.supplier_id,
+          supplierName: row.supplier_name,
+          salesAgentId: row.sales_agent_id,
+          salesAgentName: row.sales_agent_name,
+          receiptDate: timestampToIso(row.receipt_date),
+          total: numberFromDatabase(row.total),
+          sourceFileName: row.source_file_name,
+          ocrJobId: row.ocr_job_id,
+          imageStored: row.image_stored,
+          createdAt: timestampToIso(row.created_at)
+        })) as Cp2Snapshot["purchaseReceipts"];
+      },
+      async () => {
+        const receiptLineItemsResult = await timedQuery<{
+          id: string;
+          receipt_id: string;
+          name: string;
+          quantity: string;
+          unit_price: string;
+          total: string;
+        }>(
+          pool,
+          "load receipt line items",
+          "select id, receipt_id, name, quantity, unit_price, total from receipt_line_items order by receipt_id, id"
+        );
+        snapshot.receiptLineItems = receiptLineItemsResult.rows.map((row) => ({
+          id: row.id,
+          receiptId: row.receipt_id,
+          name: row.name,
+          quantity: numberFromDatabase(row.quantity),
+          unitPrice: numberFromDatabase(row.unit_price),
+          total: numberFromDatabase(row.total)
+        })) as Cp2Snapshot["receiptLineItems"];
+      },
+      async () => {
+        const invoicesResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          invoice_number: string;
+          status: string;
+          customer_id: string | null;
+          customer_name: string | null;
+          subtotal: string;
+          tax_rate: string;
+          tax_total: string;
+          total: string;
+          confirmed_at: Date | null;
+          created_at: Date;
+          updated_at: Date;
+          source: string | null;
+          source_message_channel: string | null;
+          created_by_user_id: string | null;
+        }>(
+          pool,
+          "load invoices",
+          `
+              select id, business_id, invoice_number, status, customer_id, customer_name,
+                     subtotal, tax_rate, tax_total, total, confirmed_at, created_at, updated_at,
+                     source, source_message_channel, created_by_user_id
+              from invoices
+              order by business_id, created_at, id
+            `
+        );
+        const invoiceItemsResult = await timedQuery<{
+          id: string;
+          invoice_id: string;
+          product_id: string;
+          product_name: string;
+          quantity: string;
+          unit_price: string;
+          line_total: string;
+          unit_weight_grams_snapshot: string | null;
+          total_weight_grams: string | null;
+          weight_status: string | null;
+          weight_unresolved_reason: string | null;
+        }>(
+          pool,
+          "load invoice items",
+          `
+              select id, invoice_id, product_id, product_name, quantity, unit_price, line_total,
+                     unit_weight_grams_snapshot, total_weight_grams, weight_status, weight_unresolved_reason
+              from invoice_items
+              order by invoice_id, id
+            `
+        );
+        const itemsByInvoiceId = new Map<string, SnapshotRecord[]>();
 
-  const usersResult = await timedQuery<{
-    id: string;
-    account_id: string;
-    display_name: string;
-    language: string;
-    phone_number_e164: string | null;
-    phone_country_code: string | null;
-    phone_national_number: string | null;
-    phone_verification_status: "unverified" | "verified" | null;
-    phone_added_at: Date | null;
-    phone_updated_at: Date | null;
-    phone_source: "phone_login" | "shop_registration" | null;
-    public_phone_enabled: boolean;
-    created_at: Date;
-  }>(
-    pool,
-    "load users",
-    `
-      select
-        id,
-        account_id,
-        display_name,
-        language,
-        phone_number_e164,
-        phone_country_code,
-        phone_national_number,
-        phone_verification_status,
-        phone_added_at,
-        phone_updated_at,
-        phone_source,
-        public_phone_enabled,
-        created_at
-      from users
-      order by id
-    `
-  );
-  snapshot.users = usersResult.rows.map((row) => ({
-    id: row.id,
-    accountId: row.account_id,
-    displayName: row.display_name,
-    language: row.language,
-    phoneNumberE164: row.phone_number_e164,
-    phoneCountryCode: row.phone_country_code,
-    phoneNationalNumber: row.phone_national_number,
-    phoneVerificationStatus: row.phone_verification_status,
-    phoneAddedAt: row.phone_added_at === null ? null : timestampToIso(row.phone_added_at),
-    phoneUpdatedAt: row.phone_updated_at === null ? null : timestampToIso(row.phone_updated_at),
-    phoneSource: row.phone_source,
-    publicPhoneEnabled: row.public_phone_enabled,
-    createdAt: timestampToIso(row.created_at)
-  })) as Cp2Snapshot["users"];
+        for (const row of invoiceItemsResult.rows) {
+          const item = {
+            id: row.id,
+            invoiceId: row.invoice_id,
+            productId: row.product_id,
+            productName: row.product_name,
+            quantity: numberFromDatabase(row.quantity),
+            unitPrice: numberFromDatabase(row.unit_price),
+            lineTotal: numberFromDatabase(row.line_total),
+            // Only snapshotted (post-089 confirmed) lines carry weight fields; older lines stay as they
+            // were so their weight reads as NOT_SNAPSHOTTED rather than as a fabricated value.
+            ...(row.weight_status === null
+              ? {}
+              : {
+                  unitWeightGramsSnapshot: row.unit_weight_grams_snapshot,
+                  totalWeightGrams: row.total_weight_grams,
+                  weightStatus: row.weight_status,
+                  weightUnresolvedReason: row.weight_unresolved_reason
+                })
+          };
+          itemsByInvoiceId.set(row.invoice_id, [
+            ...(itemsByInvoiceId.get(row.invoice_id) ?? []),
+            item
+          ]);
+        }
 
-  const businessesResult = await timedQuery<{
-    id: string;
-    name: string;
-    language: string;
-    soko_id: string | null;
-    timezone: string | null;
-    created_at: Date;
-  }>(
-    pool,
-    "load businesses",
-    "select id, name, language, soko_id, timezone, created_at from businesses order by id"
-  );
-  snapshot.businesses = businessesResult.rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    language: row.language,
-    sokoId: row.soko_id,
-    timezone: row.timezone,
-    createdAt: timestampToIso(row.created_at)
-  })) as Cp2Snapshot["businesses"];
-
-  const membershipsResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    user_id: string;
-    role: string;
-    created_at: Date;
-  }>(
-    pool,
-    "load memberships",
-    "select id, business_id, user_id, role, created_at from business_memberships order by id"
-  );
-  snapshot.memberships = membershipsResult.rows.map((row) => ({
-    id: row.id,
-    businessId: row.business_id,
-    userId: row.user_id,
-    role: row.role,
-    createdAt: timestampToIso(row.created_at)
-  })) as Cp2Snapshot["memberships"];
-
-  const productsResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    name: string;
-    sku: string | null;
-    aliases: string[];
-    unit: string;
-    quantity: string;
-    buying_price: string | null;
-    selling_price: string | null;
-    unit_weight_grams: string | null;
-    primary_media_id: string | null;
-    created_at: Date;
-    updated_at: Date;
-  }>(
-    pool,
-    "load products",
-    `
-      select id, business_id, name, sku, aliases, unit, quantity, buying_price, selling_price,
-             unit_weight_grams, primary_media_id, created_at, updated_at
-      from products
-      order by business_id, name, id
-    `
-  );
-  // The relational row is authoritative for every column it has, but it does not carry every
-  // ProductSummary field (for example business-defined `fieldValues`). Start from the
-  // compatibility record loaded above so those fields survive a restart instead of being dropped.
-  const compatibilityProductsById = new Map(
-    snapshotRecords(snapshot.products).map((record) => [String(record.id), record])
-  );
-  snapshot.products = productsResult.rows.map((row) => ({
-    ...compatibilityProductsById.get(row.id),
-    id: row.id,
-    businessId: row.business_id,
-    name: row.name,
-    sku: row.sku,
-    aliases: row.aliases,
-    unit: row.unit,
-    quantity: numberFromDatabase(row.quantity),
-    buyingPrice: nullableNumberFromDatabase(row.buying_price),
-    sellingPrice: nullableNumberFromDatabase(row.selling_price),
-    // pg returns BIGINT as a decimal string, which is exactly the A22 record format.
-    unitWeightGrams: row.unit_weight_grams,
-    primaryMediaId: row.primary_media_id,
-    createdAt: timestampToIso(row.created_at),
-    updatedAt: timestampToIso(row.updated_at)
-  })) as Cp2Snapshot["products"];
-
-  const customersResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    name: string;
-    phone: string | null;
-    email: string | null;
-    linked_account_id: string | null;
-    notes: string | null;
-    created_at: Date;
-    updated_at: Date;
-  }>(
-    pool,
-    "load customers",
-    `
-      select id, business_id, name, phone, email, linked_account_id, notes, created_at, updated_at
-      from customers
-      order by business_id, name, id
-    `
-  );
-  snapshot.customers = customersResult.rows.map((row) => ({
-    id: row.id,
-    businessId: row.business_id,
-    name: row.name,
-    phone: row.phone,
-    email: row.email,
-    linkedAccountId: row.linked_account_id,
-    notes: row.notes,
-    createdAt: timestampToIso(row.created_at),
-    updatedAt: timestampToIso(row.updated_at)
-  })) as Cp2Snapshot["customers"];
-
-  const suppliersResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    name: string;
-    phone: string | null;
-    linked_phonebook_contact_id: string | null;
-    linked_phonebook_contact_name: string | null;
-    email: string | null;
-    notes: string | null;
-    sales_agent_count: number;
-    purchase_receipt_count: number;
-    last_purchase_date: Date | null;
-    created_at: Date;
-    updated_at: Date;
-  }>(
-    pool,
-    "load suppliers",
-    `
-      select id, business_id, name, phone, linked_phonebook_contact_id, linked_phonebook_contact_name,
-             email, notes, sales_agent_count, purchase_receipt_count, last_purchase_date, created_at, updated_at
-      from suppliers
-      order by business_id, name, id
-    `
-  );
-  snapshot.suppliers = suppliersResult.rows.map((row) => ({
-    id: row.id,
-    businessId: row.business_id,
-    name: row.name,
-    phone: row.phone,
-    linkedPhonebookContactId: row.linked_phonebook_contact_id,
-    linkedPhonebookContactName: row.linked_phonebook_contact_name,
-    email: row.email,
-    notes: row.notes,
-    salesAgentCount: row.sales_agent_count,
-    purchaseReceiptCount: row.purchase_receipt_count,
-    lastPurchaseDate:
-      row.last_purchase_date === null ? null : timestampToIso(row.last_purchase_date),
-    createdAt: timestampToIso(row.created_at),
-    updatedAt: timestampToIso(row.updated_at)
-  })) as Cp2Snapshot["suppliers"];
-
-  const salesAgentsResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    supplier_id: string;
-    supplier_name: string;
-    name: string;
-    phone: string | null;
-    linked_phonebook_contact_id: string | null;
-    linked_phonebook_contact_name: string | null;
-    notes: string | null;
-    receipts_handled: number;
-    last_transaction_date: Date | null;
-    created_at: Date;
-    updated_at: Date;
-  }>(
-    pool,
-    "load sales agents",
-    `
-      select id, business_id, supplier_id, supplier_name, name, phone, linked_phonebook_contact_id,
-             linked_phonebook_contact_name, notes, receipts_handled, last_transaction_date, created_at, updated_at
-      from sales_agents
-      order by business_id, supplier_id, name, id
-    `
-  );
-  snapshot.salesAgents = salesAgentsResult.rows.map((row) => ({
-    id: row.id,
-    businessId: row.business_id,
-    supplierId: row.supplier_id,
-    supplierName: row.supplier_name,
-    name: row.name,
-    phone: row.phone,
-    linkedPhonebookContactId: row.linked_phonebook_contact_id,
-    linkedPhonebookContactName: row.linked_phonebook_contact_name,
-    notes: row.notes,
-    receiptsHandled: row.receipts_handled,
-    lastTransactionDate:
-      row.last_transaction_date === null ? null : timestampToIso(row.last_transaction_date),
-    createdAt: timestampToIso(row.created_at),
-    updatedAt: timestampToIso(row.updated_at)
-  })) as Cp2Snapshot["salesAgents"];
-
-  const supplierContactLinksResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    link_type: string;
-    supplier_id: string | null;
-    sales_agent_id: string | null;
-    network_node_id: string;
-    contact_name: string;
-    linked_at: Date;
-  }>(
-    pool,
-    "load supplier contact links",
-    `
-      select id, business_id, link_type, supplier_id, sales_agent_id, network_node_id, contact_name, linked_at
-      from supplier_contact_links
-      order by business_id, linked_at, id
-    `
-  );
-  snapshot.supplierContactLinks = supplierContactLinksResult.rows.map((row) => ({
-    id: row.id,
-    businessId: row.business_id,
-    linkType: row.link_type,
-    supplierId: row.supplier_id,
-    salesAgentId: row.sales_agent_id,
-    networkNodeId: row.network_node_id,
-    contactName: row.contact_name,
-    linkedAt: timestampToIso(row.linked_at)
-  })) as Cp2Snapshot["supplierContactLinks"];
-
-  const ocrJobsResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    tenant_id: string;
-    shop_id: string;
-    uploaded_by: string;
-    status: string;
-    source_file_name: string;
-    content_type: string;
-    engine: string;
-    engine_version: string;
-    model_version: string;
-    profile: string;
-    fallback_used: boolean;
-    language_hints: unknown;
-    full_text: string;
-    average_confidence: string;
-    warnings: unknown;
-    field_evidence: unknown;
-    structured_extraction: unknown;
-    contact_matching_result: unknown;
-    supplier_candidates: unknown;
-    sales_agent_candidates: unknown;
-    supplier_name: string | null;
-    sales_agent_name: string | null;
-    phone: string | null;
-    created_at: Date;
-    updated_at: Date;
-  }>(
-    pool,
-    "load receipt OCR jobs",
-    `
-      select id, business_id, tenant_id, shop_id, uploaded_by, status, source_file_name, content_type,
-             engine, engine_version, model_version, profile, fallback_used, language_hints, full_text,
-             average_confidence, warnings, field_evidence, structured_extraction, contact_matching_result,
-             supplier_candidates, sales_agent_candidates, supplier_name, sales_agent_name, phone, created_at, updated_at
-      from receipt_ocr_jobs
-      order by business_id, updated_at, id
-    `
-  );
-  snapshot.receiptOCRJobs = ocrJobsResult.rows.map((row) => ({
-    id: row.id,
-    businessId: row.business_id,
-    tenantId: row.tenant_id,
-    shopId: row.shop_id,
-    uploadedBy: row.uploaded_by,
-    status: row.status,
-    sourceFileName: row.source_file_name,
-    contentType: row.content_type,
-    engine: row.engine,
-    engineVersion: row.engine_version,
-    modelVersion: row.model_version,
-    profile: row.profile,
-    fallbackUsed: row.fallback_used,
-    languageHints: row.language_hints,
-    fullText: row.full_text,
-    averageConfidence: numberFromDatabase(row.average_confidence),
-    warnings: row.warnings,
-    fieldEvidence: row.field_evidence,
-    structuredExtraction: row.structured_extraction,
-    contactMatchingResult: row.contact_matching_result,
-    supplierCandidates: row.supplier_candidates,
-    salesAgentCandidates: row.sales_agent_candidates,
-    supplierName: row.supplier_name,
-    salesAgentName: row.sales_agent_name,
-    phone: row.phone,
-    createdAt: timestampToIso(row.created_at),
-    updatedAt: timestampToIso(row.updated_at)
-  })) as Cp2Snapshot["receiptOCRJobs"];
-
-  const purchaseReceiptsResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    supplier_id: string;
-    supplier_name: string;
-    sales_agent_id: string | null;
-    sales_agent_name: string | null;
-    receipt_date: Date;
-    total: string;
-    source_file_name: string | null;
-    ocr_job_id: string | null;
-    image_stored: boolean;
-    created_at: Date;
-  }>(
-    pool,
-    "load purchase receipts",
-    `
-      select id, business_id, supplier_id, supplier_name, sales_agent_id, sales_agent_name,
-             receipt_date, total, source_file_name, ocr_job_id, image_stored, created_at
-      from purchase_receipts
-      order by business_id, receipt_date, id
-    `
-  );
-  snapshot.purchaseReceipts = purchaseReceiptsResult.rows.map((row) => ({
-    id: row.id,
-    businessId: row.business_id,
-    supplierId: row.supplier_id,
-    supplierName: row.supplier_name,
-    salesAgentId: row.sales_agent_id,
-    salesAgentName: row.sales_agent_name,
-    receiptDate: timestampToIso(row.receipt_date),
-    total: numberFromDatabase(row.total),
-    sourceFileName: row.source_file_name,
-    ocrJobId: row.ocr_job_id,
-    imageStored: row.image_stored,
-    createdAt: timestampToIso(row.created_at)
-  })) as Cp2Snapshot["purchaseReceipts"];
-
-  const receiptLineItemsResult = await timedQuery<{
-    id: string;
-    receipt_id: string;
-    name: string;
-    quantity: string;
-    unit_price: string;
-    total: string;
-  }>(
-    pool,
-    "load receipt line items",
-    "select id, receipt_id, name, quantity, unit_price, total from receipt_line_items order by receipt_id, id"
-  );
-  snapshot.receiptLineItems = receiptLineItemsResult.rows.map((row) => ({
-    id: row.id,
-    receiptId: row.receipt_id,
-    name: row.name,
-    quantity: numberFromDatabase(row.quantity),
-    unitPrice: numberFromDatabase(row.unit_price),
-    total: numberFromDatabase(row.total)
-  })) as Cp2Snapshot["receiptLineItems"];
-
-  const invoicesResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    invoice_number: string;
-    status: string;
-    customer_id: string | null;
-    customer_name: string | null;
-    subtotal: string;
-    tax_rate: string;
-    tax_total: string;
-    total: string;
-    confirmed_at: Date | null;
-    created_at: Date;
-    updated_at: Date;
-    source: string | null;
-    source_message_channel: string | null;
-    created_by_user_id: string | null;
-  }>(
-    pool,
-    "load invoices",
-    `
-      select id, business_id, invoice_number, status, customer_id, customer_name,
-             subtotal, tax_rate, tax_total, total, confirmed_at, created_at, updated_at,
-             source, source_message_channel, created_by_user_id
-      from invoices
-      order by business_id, created_at, id
-    `
-  );
-  const invoiceItemsResult = await timedQuery<{
-    id: string;
-    invoice_id: string;
-    product_id: string;
-    product_name: string;
-    quantity: string;
-    unit_price: string;
-    line_total: string;
-    unit_weight_grams_snapshot: string | null;
-    total_weight_grams: string | null;
-    weight_status: string | null;
-    weight_unresolved_reason: string | null;
-  }>(
-    pool,
-    "load invoice items",
-    `
-      select id, invoice_id, product_id, product_name, quantity, unit_price, line_total,
-             unit_weight_grams_snapshot, total_weight_grams, weight_status, weight_unresolved_reason
-      from invoice_items
-      order by invoice_id, id
-    `
-  );
-  const itemsByInvoiceId = new Map<string, SnapshotRecord[]>();
-
-  for (const row of invoiceItemsResult.rows) {
-    const item = {
-      id: row.id,
-      invoiceId: row.invoice_id,
-      productId: row.product_id,
-      productName: row.product_name,
-      quantity: numberFromDatabase(row.quantity),
-      unitPrice: numberFromDatabase(row.unit_price),
-      lineTotal: numberFromDatabase(row.line_total),
-      // Only snapshotted (post-089 confirmed) lines carry weight fields; older lines stay as they
-      // were so their weight reads as NOT_SNAPSHOTTED rather than as a fabricated value.
-      ...(row.weight_status === null
-        ? {}
-        : {
-            unitWeightGramsSnapshot: row.unit_weight_grams_snapshot,
-            totalWeightGrams: row.total_weight_grams,
-            weightStatus: row.weight_status,
-            weightUnresolvedReason: row.weight_unresolved_reason
+        snapshot.invoices = invoicesResult.rows.map((row) => ({
+          id: row.id,
+          businessId: row.business_id,
+          invoiceNumber: row.invoice_number,
+          status: row.status,
+          customerId: row.customer_id,
+          customerName: row.customer_name,
+          items: itemsByInvoiceId.get(row.id) ?? [],
+          subtotal: numberFromDatabase(row.subtotal),
+          taxRate: numberFromDatabase(row.tax_rate),
+          taxTotal: numberFromDatabase(row.tax_total),
+          total: numberFromDatabase(row.total),
+          confirmedAt: row.confirmed_at === null ? null : timestampToIso(row.confirmed_at),
+          createdAt: timestampToIso(row.created_at),
+          updatedAt: timestampToIso(row.updated_at),
+          source: row.source,
+          sourceMessageChannel: row.source_message_channel,
+          createdByUserId: row.created_by_user_id
+        })) as unknown as Cp2Snapshot["invoices"];
+      },
+      async () => {
+        const paymentsResult = await timedQuery<{
+          id: string;
+          business_id: string;
+          invoice_id: string;
+          customer_id: string | null;
+          method: string;
+          amount: string;
+          reference: string | null;
+          note: string | null;
+          actor_id: string;
+          created_at: Date;
+        }>(
+          pool,
+          "load payments",
+          `
+              select id, business_id, invoice_id, customer_id, method, amount, reference, note, actor_id, created_at
+              from payments
+              order by business_id, created_at, id
+            `
+        );
+        snapshot.payments = paymentsResult.rows.map((row) => ({
+          id: row.id,
+          businessId: row.business_id,
+          invoiceId: row.invoice_id,
+          customerId: row.customer_id,
+          method: row.method,
+          amount: numberFromDatabase(row.amount),
+          reference: row.reference,
+          note: row.note,
+          actorId: row.actor_id,
+          createdAt: timestampToIso(row.created_at)
+        })) as Cp2Snapshot["payments"];
+      },
+      async () => {
+        const sessionsResult = await timedQuery<{
+          id: string;
+          account_id: string;
+          user_id: string;
+          device_id: string;
+          device_name: string;
+          platform: string;
+          browser_or_app: string;
+          user_agent_hash: string;
+          refresh_token_hash: string;
+          session_family_id: string;
+          refresh_expires_at: Date;
+          inactivity_expires_at: Date;
+          absolute_expires_at: Date;
+          rotated_from_session_id: string | null;
+          authenticated_at: Date;
+          last_used_at: Date;
+          rotated_at: Date | null;
+          revocation_reason: string | null;
+          expires_at: Date;
+          pin_verified_at: Date | null;
+          revoked_at: Date | null;
+          created_at: Date;
+        }>(
+          pool,
+          "load sessions",
+          `select id, account_id, user_id, device_id, device_name, platform, browser_or_app,
+                    user_agent_hash, refresh_token_hash, session_family_id, refresh_expires_at,
+                    inactivity_expires_at, absolute_expires_at, rotated_from_session_id, authenticated_at,
+                    last_used_at, rotated_at, revocation_reason, expires_at, pin_verified_at,
+                    revoked_at, created_at
+               from sessions order by created_at, id`
+        );
+        snapshot.sessions = sessionsResult.rows.map((row) => ({
+          id: row.id,
+          accountId: row.account_id,
+          userId: row.user_id,
+          deviceId: row.device_id,
+          deviceName: row.device_name,
+          platform: row.platform,
+          browserOrApp: row.browser_or_app,
+          userAgentHash: row.user_agent_hash,
+          refreshTokenHash: row.refresh_token_hash,
+          sessionFamilyId: row.session_family_id,
+          refreshExpiresAt: timestampToIso(row.refresh_expires_at),
+          inactivityExpiresAt: timestampToIso(row.inactivity_expires_at),
+          absoluteExpiresAt: timestampToIso(row.absolute_expires_at),
+          rotatedFromSessionId: row.rotated_from_session_id,
+          authenticatedAt: timestampToIso(row.authenticated_at),
+          lastUsedAt: timestampToIso(row.last_used_at),
+          rotatedAt: row.rotated_at === null ? null : timestampToIso(row.rotated_at),
+          revocationReason: row.revocation_reason,
+          expiresAt: timestampToIso(row.expires_at),
+          pinVerifiedAt: row.pin_verified_at === null ? null : timestampToIso(row.pin_verified_at),
+          revokedAt: row.revoked_at === null ? null : timestampToIso(row.revoked_at),
+          createdAt: timestampToIso(row.created_at)
+        })) as Cp2Snapshot["sessions"];
+      },
+      async () => {
+        const otpChallengesResult = await timedQuery<{
+          id: string;
+          channel: string;
+          destination: string;
+          purpose: string;
+          code_hash: string;
+          attempts: number;
+          max_attempts: number;
+          expires_at: Date;
+          verified_at: Date | null;
+          consumed_at: Date | null;
+          resend_count: number;
+          next_resend_at: Date | null;
+          provider: string | null;
+          provider_message_id: string | null;
+          created_at: Date;
+        }>(
+          pool,
+          "load OTP challenges",
+          `
+              select id, channel, destination, purpose, code_hash, attempts, max_attempts, expires_at,
+                     verified_at, consumed_at, resend_count, next_resend_at, provider, provider_message_id,
+                     created_at
+              from otp_challenges
+              order by created_at, id
+            `
+        );
+        snapshot.otpChallenges = otpChallengesResult.rows.map((row) => ({
+          id: row.id,
+          channel: row.channel,
+          destination: row.destination,
+          purpose: row.purpose,
+          codeHash: row.code_hash,
+          attempts: row.attempts,
+          maxAttempts: row.max_attempts,
+          expiresAt: timestampToIso(row.expires_at),
+          verifiedAt: row.verified_at === null ? null : timestampToIso(row.verified_at),
+          consumedAt: row.consumed_at === null ? null : timestampToIso(row.consumed_at),
+          resendCount: row.resend_count,
+          nextResendAt: row.next_resend_at === null ? null : timestampToIso(row.next_resend_at),
+          provider: row.provider,
+          providerMessageId: row.provider_message_id,
+          createdAt: timestampToIso(row.created_at)
+        })) as Cp2Snapshot["otpChallenges"];
+      },
+      async () => {
+        const userIdentitiesResult = await timedQuery<{
+          id: string;
+          account_id: string;
+          user_id: string;
+          provider_id: string;
+          provider_subject: string;
+          email: string | null;
+          display_name: string | null;
+          encrypted_access_token: string | null;
+          encrypted_refresh_token: string | null;
+          encrypted_id_token: string | null;
+          token_type: string | null;
+          token_expires_at: Date | null;
+          scope: string | null;
+          linked_at: Date;
+          updated_at: Date;
+        }>(
+          pool,
+          "load user identities",
+          `
+              select id, account_id, user_id, provider_id, provider_subject, email, display_name,
+                     encrypted_access_token, encrypted_refresh_token, encrypted_id_token, token_type,
+                     token_expires_at, scope, linked_at, updated_at
+              from user_identities
+              order by linked_at, id
+            `
+        );
+        snapshot.userIdentities = userIdentitiesResult.rows.map((row) => ({
+          id: row.id,
+          accountId: row.account_id,
+          userId: row.user_id,
+          provider: row.provider_id,
+          providerSubject: row.provider_subject,
+          email: row.email,
+          displayName: row.display_name,
+          encryptedAccessToken: row.encrypted_access_token,
+          encryptedRefreshToken: row.encrypted_refresh_token,
+          encryptedIdToken: row.encrypted_id_token,
+          tokenType: row.token_type,
+          tokenExpiresAt:
+            row.token_expires_at === null ? null : timestampToIso(row.token_expires_at),
+          scope: row.scope,
+          linkedAt: timestampToIso(row.linked_at),
+          updatedAt: timestampToIso(row.updated_at)
+        })) as unknown as Cp2Snapshot["userIdentities"];
+      },
+      async () => {
+        const oauthSessionsResult = await timedQuery<{
+          id: string;
+          provider_id: string;
+          account_id: string | null;
+          state_hash: string;
+          csrf_hash: string;
+          code_challenge: string;
+          encrypted_code_verifier: string;
+          redirect_uri: string;
+          expires_at: Date;
+          completed_at: Date | null;
+          created_at: Date;
+        }>(
+          pool,
+          "load OAuth sessions",
+          `
+              select id, provider_id, account_id, state_hash, csrf_hash, code_challenge,
+                     encrypted_code_verifier, redirect_uri, expires_at, completed_at, created_at
+              from oauth_sessions
+              order by created_at, id
+            `
+        );
+        snapshot.oauthSessions = oauthSessionsResult.rows.map((row) => ({
+          id: row.id,
+          provider: row.provider_id,
+          accountId: row.account_id,
+          stateHash: row.state_hash,
+          csrfHash: row.csrf_hash,
+          codeChallenge: row.code_challenge,
+          codeVerifier: row.encrypted_code_verifier,
+          redirectUri: row.redirect_uri,
+          expiresAt: timestampToIso(row.expires_at),
+          completedAt: row.completed_at === null ? null : timestampToIso(row.completed_at),
+          createdAt: timestampToIso(row.created_at)
+        })) as unknown as Cp2Snapshot["oauthSessions"];
+      },
+      async () => {
+        const accountPinHashesResult = await timedQuery<{
+          account_id: string;
+          pin_hash: string;
+        }>(
+          pool,
+          "load account PIN hashes",
+          "select account_id, pin_hash from account_pin_hashes order by account_id"
+        );
+        snapshot.accountPinHashes = accountPinHashesResult.rows.map((row) => ({
+          accountId: row.account_id,
+          pinHash: row.pin_hash
+        }));
+      },
+      async () => {
+        const deviceTrustResult = await timedQuery<{
+          business_id: string;
+          user_id: string;
+          device_id: string;
+          level: string;
+          reason: string | null;
+          updated_by: string | null;
+          updated_by_type: "user" | "system" | "service";
+          updated_at: Date;
+        }>(
+          pool,
+          "load device trust",
+          `
+              select business_id, user_id, device_id, level, reason,
+                     updated_by, updated_by_type, updated_at
+              from device_trust
+              order by business_id, user_id, device_id
+            `
+        );
+        snapshot.deviceTrust = deviceTrustResult.rows.map((row) => ({
+          businessId: row.business_id,
+          userId: row.user_id,
+          deviceId: row.device_id,
+          level: row.level,
+          reason: row.reason,
+          updatedBy: row.updated_by ?? row.updated_by_type,
+          updatedAt: timestampToIso(row.updated_at)
+        })) as Cp2Snapshot["deviceTrust"];
+      },
+      async () => {
+        const syncChangesResult = await timedQuery<{
+          account_id: string;
+          sequence: string;
+          cursor: string;
+          collection: string;
+          entity_id: string;
+          operation: Cp2Snapshot["syncChanges"][number]["operation"];
+          shop_id: string | null;
+          entity: unknown | null;
+          changed_at: Date;
+          tombstone_expires_at: Date | null;
+        }>(
+          pool,
+          "load account sync changes",
+          `
+              select account_id, sequence, cursor, collection, entity_id, operation,
+                     shop_id, entity, changed_at, tombstone_expires_at
+              from account_sync_changes
+              order by account_id, sequence
+            `
+        );
+        snapshot.syncChanges = syncChangesResult.rows.map((row) => {
+          const collection = requireAccountSyncCollection(row.account_id, row.collection);
+          return {
+            accountId: row.account_id,
+            sequence: Number(row.sequence),
+            cursor: row.cursor,
+            collection,
+            entityId: row.entity_id,
+            operation: row.operation,
+            shopId: row.shop_id,
+            entity: row.entity,
+            changedAt: timestampToIso(row.changed_at),
+            tombstoneExpiresAt:
+              row.tombstone_expires_at === null ? null : timestampToIso(row.tombstone_expires_at)
+          };
+        });
+      },
+      async () => {
+        const mcpAccessTokensResult = await timedQuery<{
+          id: string;
+          account_id: string;
+          user_id: string;
+          created_by_session_id: string | null;
+          token_hash: string;
+          name: string;
+          scopes: Array<"mcp:read" | "mcp:act">;
+          shop_id: string | null;
+          created_at: Date;
+          expires_at: Date;
+          last_used_at: Date | null;
+          revoked_at: Date | null;
+        }>(
+          pool,
+          "load MCP access tokens",
+          `
+              select id, account_id, user_id, created_by_session_id, token_hash, name, scopes, shop_id,
+                     created_at, expires_at, last_used_at, revoked_at
+              from mcp_access_tokens
+              order by account_id, created_at, id
+            `
+        );
+        snapshot.mcpAccessTokens = mcpAccessTokensResult.rows.map((row) => ({
+          id: row.id,
+          accountId: row.account_id,
+          userId: row.user_id,
+          createdBySessionId: row.created_by_session_id,
+          tokenHash: row.token_hash,
+          name: row.name,
+          scopes: row.scopes,
+          shopId: row.shop_id,
+          createdAt: timestampToIso(row.created_at),
+          expiresAt: timestampToIso(row.expires_at),
+          lastUsedAt: row.last_used_at === null ? null : timestampToIso(row.last_used_at),
+          revokedAt: row.revoked_at === null ? null : timestampToIso(row.revoked_at)
+        }));
+      },
+      async () => {
+        const externalRegistryConnectionsResult = await timedQuery<{
+          id: string;
+          account_id: string;
+          provider: "github" | "huggingface";
+          external_account_id: string | null;
+          external_username: string | null;
+          status: "connected" | "expired" | "revoked" | "error";
+          scopes: string[];
+          encrypted_token: string | null;
+          inference_authorized: boolean;
+          created_at: Date;
+          updated_at: Date;
+        }>(
+          pool,
+          "load external registry connections",
+          `
+              select id, account_id, provider, external_account_id, external_username, status, scopes,
+                     encrypted_token, inference_authorized, created_at, updated_at
+              from cp2_external_registry_connections
+              order by account_id, created_at, id
+            `
+        );
+        snapshot.externalRegistryConnections = externalRegistryConnectionsResult.rows.map(
+          (row) => ({
+            id: row.id,
+            accountId: row.account_id,
+            provider: row.provider,
+            externalAccountId: row.external_account_id,
+            externalUsername: row.external_username,
+            status: row.status,
+            scopes: row.scopes,
+            inferenceAuthorized: row.inference_authorized,
+            encryptedToken: row.encrypted_token,
+            createdAt: timestampToIso(row.created_at),
+            updatedAt: timestampToIso(row.updated_at)
           })
-    };
-    itemsByInvoiceId.set(row.invoice_id, [...(itemsByInvoiceId.get(row.invoice_id) ?? []), item]);
-  }
-
-  snapshot.invoices = invoicesResult.rows.map((row) => ({
-    id: row.id,
-    businessId: row.business_id,
-    invoiceNumber: row.invoice_number,
-    status: row.status,
-    customerId: row.customer_id,
-    customerName: row.customer_name,
-    items: itemsByInvoiceId.get(row.id) ?? [],
-    subtotal: numberFromDatabase(row.subtotal),
-    taxRate: numberFromDatabase(row.tax_rate),
-    taxTotal: numberFromDatabase(row.tax_total),
-    total: numberFromDatabase(row.total),
-    confirmedAt: row.confirmed_at === null ? null : timestampToIso(row.confirmed_at),
-    createdAt: timestampToIso(row.created_at),
-    updatedAt: timestampToIso(row.updated_at),
-    source: row.source,
-    sourceMessageChannel: row.source_message_channel,
-    createdByUserId: row.created_by_user_id
-  })) as unknown as Cp2Snapshot["invoices"];
-
-  const paymentsResult = await timedQuery<{
-    id: string;
-    business_id: string;
-    invoice_id: string;
-    customer_id: string | null;
-    method: string;
-    amount: string;
-    reference: string | null;
-    note: string | null;
-    actor_id: string;
-    created_at: Date;
-  }>(
-    pool,
-    "load payments",
-    `
-      select id, business_id, invoice_id, customer_id, method, amount, reference, note, actor_id, created_at
-      from payments
-      order by business_id, created_at, id
-    `
+        );
+      }
+    ].map((load) => load())
   );
-  snapshot.payments = paymentsResult.rows.map((row) => ({
-    id: row.id,
-    businessId: row.business_id,
-    invoiceId: row.invoice_id,
-    customerId: row.customer_id,
-    method: row.method,
-    amount: numberFromDatabase(row.amount),
-    reference: row.reference,
-    note: row.note,
-    actorId: row.actor_id,
-    createdAt: timestampToIso(row.created_at)
-  })) as Cp2Snapshot["payments"];
-
-  const sessionsResult = await timedQuery<{
-    id: string;
-    account_id: string;
-    user_id: string;
-    device_id: string;
-    device_name: string;
-    platform: string;
-    browser_or_app: string;
-    user_agent_hash: string;
-    refresh_token_hash: string;
-    session_family_id: string;
-    refresh_expires_at: Date;
-    inactivity_expires_at: Date;
-    absolute_expires_at: Date;
-    rotated_from_session_id: string | null;
-    authenticated_at: Date;
-    last_used_at: Date;
-    rotated_at: Date | null;
-    revocation_reason: string | null;
-    expires_at: Date;
-    pin_verified_at: Date | null;
-    revoked_at: Date | null;
-    created_at: Date;
-  }>(
-    pool,
-    "load sessions",
-    `select id, account_id, user_id, device_id, device_name, platform, browser_or_app,
-            user_agent_hash, refresh_token_hash, session_family_id, refresh_expires_at,
-            inactivity_expires_at, absolute_expires_at, rotated_from_session_id, authenticated_at,
-            last_used_at, rotated_at, revocation_reason, expires_at, pin_verified_at,
-            revoked_at, created_at
-       from sessions order by created_at, id`
-  );
-  snapshot.sessions = sessionsResult.rows.map((row) => ({
-    id: row.id,
-    accountId: row.account_id,
-    userId: row.user_id,
-    deviceId: row.device_id,
-    deviceName: row.device_name,
-    platform: row.platform,
-    browserOrApp: row.browser_or_app,
-    userAgentHash: row.user_agent_hash,
-    refreshTokenHash: row.refresh_token_hash,
-    sessionFamilyId: row.session_family_id,
-    refreshExpiresAt: timestampToIso(row.refresh_expires_at),
-    inactivityExpiresAt: timestampToIso(row.inactivity_expires_at),
-    absoluteExpiresAt: timestampToIso(row.absolute_expires_at),
-    rotatedFromSessionId: row.rotated_from_session_id,
-    authenticatedAt: timestampToIso(row.authenticated_at),
-    lastUsedAt: timestampToIso(row.last_used_at),
-    rotatedAt: row.rotated_at === null ? null : timestampToIso(row.rotated_at),
-    revocationReason: row.revocation_reason,
-    expiresAt: timestampToIso(row.expires_at),
-    pinVerifiedAt: row.pin_verified_at === null ? null : timestampToIso(row.pin_verified_at),
-    revokedAt: row.revoked_at === null ? null : timestampToIso(row.revoked_at),
-    createdAt: timestampToIso(row.created_at)
-  })) as Cp2Snapshot["sessions"];
-
-  const otpChallengesResult = await timedQuery<{
-    id: string;
-    channel: string;
-    destination: string;
-    purpose: string;
-    code_hash: string;
-    attempts: number;
-    max_attempts: number;
-    expires_at: Date;
-    verified_at: Date | null;
-    consumed_at: Date | null;
-    resend_count: number;
-    next_resend_at: Date | null;
-    provider: string | null;
-    provider_message_id: string | null;
-    created_at: Date;
-  }>(
-    pool,
-    "load OTP challenges",
-    `
-      select id, channel, destination, purpose, code_hash, attempts, max_attempts, expires_at,
-             verified_at, consumed_at, resend_count, next_resend_at, provider, provider_message_id,
-             created_at
-      from otp_challenges
-      order by created_at, id
-    `
-  );
-  snapshot.otpChallenges = otpChallengesResult.rows.map((row) => ({
-    id: row.id,
-    channel: row.channel,
-    destination: row.destination,
-    purpose: row.purpose,
-    codeHash: row.code_hash,
-    attempts: row.attempts,
-    maxAttempts: row.max_attempts,
-    expiresAt: timestampToIso(row.expires_at),
-    verifiedAt: row.verified_at === null ? null : timestampToIso(row.verified_at),
-    consumedAt: row.consumed_at === null ? null : timestampToIso(row.consumed_at),
-    resendCount: row.resend_count,
-    nextResendAt: row.next_resend_at === null ? null : timestampToIso(row.next_resend_at),
-    provider: row.provider,
-    providerMessageId: row.provider_message_id,
-    createdAt: timestampToIso(row.created_at)
-  })) as Cp2Snapshot["otpChallenges"];
-
-  const userIdentitiesResult = await timedQuery<{
-    id: string;
-    account_id: string;
-    user_id: string;
-    provider_id: string;
-    provider_subject: string;
-    email: string | null;
-    display_name: string | null;
-    encrypted_access_token: string | null;
-    encrypted_refresh_token: string | null;
-    encrypted_id_token: string | null;
-    token_type: string | null;
-    token_expires_at: Date | null;
-    scope: string | null;
-    linked_at: Date;
-    updated_at: Date;
-  }>(
-    pool,
-    "load user identities",
-    `
-      select id, account_id, user_id, provider_id, provider_subject, email, display_name,
-             encrypted_access_token, encrypted_refresh_token, encrypted_id_token, token_type,
-             token_expires_at, scope, linked_at, updated_at
-      from user_identities
-      order by linked_at, id
-    `
-  );
-  snapshot.userIdentities = userIdentitiesResult.rows.map((row) => ({
-    id: row.id,
-    accountId: row.account_id,
-    userId: row.user_id,
-    provider: row.provider_id,
-    providerSubject: row.provider_subject,
-    email: row.email,
-    displayName: row.display_name,
-    encryptedAccessToken: row.encrypted_access_token,
-    encryptedRefreshToken: row.encrypted_refresh_token,
-    encryptedIdToken: row.encrypted_id_token,
-    tokenType: row.token_type,
-    tokenExpiresAt: row.token_expires_at === null ? null : timestampToIso(row.token_expires_at),
-    scope: row.scope,
-    linkedAt: timestampToIso(row.linked_at),
-    updatedAt: timestampToIso(row.updated_at)
-  })) as unknown as Cp2Snapshot["userIdentities"];
-
-  const oauthSessionsResult = await timedQuery<{
-    id: string;
-    provider_id: string;
-    account_id: string | null;
-    state_hash: string;
-    csrf_hash: string;
-    code_challenge: string;
-    encrypted_code_verifier: string;
-    redirect_uri: string;
-    expires_at: Date;
-    completed_at: Date | null;
-    created_at: Date;
-  }>(
-    pool,
-    "load OAuth sessions",
-    `
-      select id, provider_id, account_id, state_hash, csrf_hash, code_challenge,
-             encrypted_code_verifier, redirect_uri, expires_at, completed_at, created_at
-      from oauth_sessions
-      order by created_at, id
-    `
-  );
-  snapshot.oauthSessions = oauthSessionsResult.rows.map((row) => ({
-    id: row.id,
-    provider: row.provider_id,
-    accountId: row.account_id,
-    stateHash: row.state_hash,
-    csrfHash: row.csrf_hash,
-    codeChallenge: row.code_challenge,
-    codeVerifier: row.encrypted_code_verifier,
-    redirectUri: row.redirect_uri,
-    expiresAt: timestampToIso(row.expires_at),
-    completedAt: row.completed_at === null ? null : timestampToIso(row.completed_at),
-    createdAt: timestampToIso(row.created_at)
-  })) as unknown as Cp2Snapshot["oauthSessions"];
-
-  const accountPinHashesResult = await timedQuery<{
-    account_id: string;
-    pin_hash: string;
-  }>(
-    pool,
-    "load account PIN hashes",
-    "select account_id, pin_hash from account_pin_hashes order by account_id"
-  );
-  snapshot.accountPinHashes = accountPinHashesResult.rows.map((row) => ({
-    accountId: row.account_id,
-    pinHash: row.pin_hash
-  }));
-
-  const deviceTrustResult = await timedQuery<{
-    business_id: string;
-    user_id: string;
-    device_id: string;
-    level: string;
-    reason: string | null;
-    updated_by: string | null;
-    updated_by_type: "user" | "system" | "service";
-    updated_at: Date;
-  }>(
-    pool,
-    "load device trust",
-    `
-      select business_id, user_id, device_id, level, reason,
-             updated_by, updated_by_type, updated_at
-      from device_trust
-      order by business_id, user_id, device_id
-    `
-  );
-  snapshot.deviceTrust = deviceTrustResult.rows.map((row) => ({
-    businessId: row.business_id,
-    userId: row.user_id,
-    deviceId: row.device_id,
-    level: row.level,
-    reason: row.reason,
-    updatedBy: row.updated_by ?? row.updated_by_type,
-    updatedAt: timestampToIso(row.updated_at)
-  })) as Cp2Snapshot["deviceTrust"];
-
-  const syncChangesResult = await timedQuery<{
-    account_id: string;
-    sequence: string;
-    cursor: string;
-    collection: string;
-    entity_id: string;
-    operation: Cp2Snapshot["syncChanges"][number]["operation"];
-    shop_id: string | null;
-    entity: unknown | null;
-    changed_at: Date;
-    tombstone_expires_at: Date | null;
-  }>(
-    pool,
-    "load account sync changes",
-    `
-      select account_id, sequence, cursor, collection, entity_id, operation,
-             shop_id, entity, changed_at, tombstone_expires_at
-      from account_sync_changes
-      order by account_id, sequence
-    `
-  );
-  snapshot.syncChanges = syncChangesResult.rows.map((row) => {
-    const collection = requireAccountSyncCollection(row.account_id, row.collection);
-    return {
-      accountId: row.account_id,
-      sequence: Number(row.sequence),
-      cursor: row.cursor,
-      collection,
-      entityId: row.entity_id,
-      operation: row.operation,
-      shopId: row.shop_id,
-      entity: row.entity,
-      changedAt: timestampToIso(row.changed_at),
-      tombstoneExpiresAt:
-        row.tombstone_expires_at === null ? null : timestampToIso(row.tombstone_expires_at)
-    };
-  });
-
-  const mcpAccessTokensResult = await timedQuery<{
-    id: string;
-    account_id: string;
-    user_id: string;
-    created_by_session_id: string | null;
-    token_hash: string;
-    name: string;
-    scopes: Array<"mcp:read" | "mcp:act">;
-    shop_id: string | null;
-    created_at: Date;
-    expires_at: Date;
-    last_used_at: Date | null;
-    revoked_at: Date | null;
-  }>(
-    pool,
-    "load MCP access tokens",
-    `
-      select id, account_id, user_id, created_by_session_id, token_hash, name, scopes, shop_id,
-             created_at, expires_at, last_used_at, revoked_at
-      from mcp_access_tokens
-      order by account_id, created_at, id
-    `
-  );
-  snapshot.mcpAccessTokens = mcpAccessTokensResult.rows.map((row) => ({
-    id: row.id,
-    accountId: row.account_id,
-    userId: row.user_id,
-    createdBySessionId: row.created_by_session_id,
-    tokenHash: row.token_hash,
-    name: row.name,
-    scopes: row.scopes,
-    shopId: row.shop_id,
-    createdAt: timestampToIso(row.created_at),
-    expiresAt: timestampToIso(row.expires_at),
-    lastUsedAt: row.last_used_at === null ? null : timestampToIso(row.last_used_at),
-    revokedAt: row.revoked_at === null ? null : timestampToIso(row.revoked_at)
-  }));
-
-  const externalRegistryConnectionsResult = await timedQuery<{
-    id: string;
-    account_id: string;
-    provider: "github" | "huggingface";
-    external_account_id: string | null;
-    external_username: string | null;
-    status: "connected" | "expired" | "revoked" | "error";
-    scopes: string[];
-    encrypted_token: string | null;
-    inference_authorized: boolean;
-    created_at: Date;
-    updated_at: Date;
-  }>(
-    pool,
-    "load external registry connections",
-    `
-      select id, account_id, provider, external_account_id, external_username, status, scopes,
-             encrypted_token, inference_authorized, created_at, updated_at
-      from cp2_external_registry_connections
-      order by account_id, created_at, id
-    `
-  );
-  snapshot.externalRegistryConnections = externalRegistryConnectionsResult.rows.map((row) => ({
-    id: row.id,
-    accountId: row.account_id,
-    provider: row.provider,
-    externalAccountId: row.external_account_id,
-    externalUsername: row.external_username,
-    status: row.status,
-    scopes: row.scopes,
-    inferenceAuthorized: row.inference_authorized,
-    encryptedToken: row.encrypted_token,
-    createdAt: timestampToIso(row.created_at),
-    updatedAt: timestampToIso(row.updated_at)
-  }));
 }
 
 /**
@@ -2743,6 +2828,20 @@ async function saveAccountSyncChanges(client: PoolClient, snapshot: Cp2Snapshot)
   }
 }
 
+/**
+ * Every hot-path upsert skips rows whose values are unchanged (`where ... is distinct from
+ * excluded`): persistence re-sends whole collections, and rewriting identical rows bloated tables
+ * (account_sync_changes reached ~26k rewrites per row). Session retention triggers fire
+ * `before insert or update`, so they already stamp an expired session on the proposed (excluded)
+ * row and the guard lets that write through. Once a session is stored as expired, though, each
+ * save would get a fresh trigger timestamp and rewrite it forever, so the revocation timestamp is
+ * ignored when both the stored and the proposed rows carry the trigger's "expired" revocation.
+ */
+function comparableRecord(tableName: string, side: string): string {
+  if (tableName !== "cp2_sessions") return `${side}.record`;
+  return `case when cp2_sessions.record->>'revocationReason' = 'expired' and excluded.record->>'revocationReason' = 'expired' then ${side}.record - 'revokedAt' else ${side}.record end`;
+}
+
 async function saveCollectionRecords(
   client: PoolClient,
   collection: NormalizedCollection,
@@ -2776,6 +2875,7 @@ async function saveCollectionRecords(
           parent_id = excluded.parent_id,
           record = excluded.record,
           updated_at = now()
+          where (${collection.tableName}.business_id, ${collection.tableName}.account_id, ${collection.tableName}.user_id, ${collection.tableName}.parent_id, ${comparableRecord(collection.tableName, collection.tableName)}) is distinct from (excluded.business_id, excluded.account_id, excluded.user_id, excluded.parent_id, ${comparableRecord(collection.tableName, "excluded")})
       `,
       [
         recordEntityId(collection.key, record),
@@ -2846,6 +2946,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           identity_level = excluded.identity_level,
           status = excluded.status,
           deleted_at = excluded.deleted_at
+          where (accounts.primary_auth_channel, accounts.primary_auth_destination, accounts.identity_level, accounts.status, accounts.deleted_at) is distinct from (excluded.primary_auth_channel, excluded.primary_auth_destination, excluded.identity_level, excluded.status, excluded.deleted_at)
       `,
       [
         requiredText(record, "id"),
@@ -2890,6 +2991,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           phone_updated_at = excluded.phone_updated_at,
           phone_source = excluded.phone_source,
           public_phone_enabled = excluded.public_phone_enabled
+          where (users.account_id, users.display_name, users.language, users.phone_number_e164, users.phone_country_code, users.phone_national_number, users.phone_verification_status, users.phone_added_at, users.phone_updated_at, users.phone_source, users.public_phone_enabled) is distinct from (excluded.account_id, excluded.display_name, excluded.language, excluded.phone_number_e164, excluded.phone_country_code, excluded.phone_national_number, excluded.phone_verification_status, excluded.phone_added_at, excluded.phone_updated_at, excluded.phone_source, excluded.public_phone_enabled)
       `,
       [
         requiredText(record, "id"),
@@ -2919,6 +3021,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           language = excluded.language,
           soko_id = excluded.soko_id,
           timezone = excluded.timezone
+          where (businesses.name, businesses.language, businesses.soko_id, businesses.timezone) is distinct from (excluded.name, excluded.language, excluded.soko_id, excluded.timezone)
       `,
       [
         requiredText(record, "id"),
@@ -2940,6 +3043,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           business_id = excluded.business_id,
           user_id = excluded.user_id,
           role = excluded.role
+          where (business_memberships.business_id, business_memberships.user_id, business_memberships.role) is distinct from (excluded.business_id, excluded.user_id, excluded.role)
       `,
       [
         requiredText(record, "id"),
@@ -2970,6 +3074,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           unit_weight_grams = excluded.unit_weight_grams,
           primary_media_id = excluded.primary_media_id,
           updated_at = excluded.updated_at
+          where (products.business_id, products.name, products.sku, products.aliases, products.unit, products.quantity, products.buying_price, products.selling_price, products.unit_weight_grams, products.primary_media_id, products.updated_at) is distinct from (excluded.business_id, excluded.name, excluded.sku, excluded.aliases, excluded.unit, excluded.quantity, excluded.buying_price, excluded.selling_price, excluded.unit_weight_grams, excluded.primary_media_id, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -3002,6 +3107,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           linked_account_id = excluded.linked_account_id,
           notes = excluded.notes,
           updated_at = excluded.updated_at
+          where (customers.business_id, customers.name, customers.phone, customers.email, customers.linked_account_id, customers.notes, customers.updated_at) is distinct from (excluded.business_id, excluded.name, excluded.phone, excluded.email, excluded.linked_account_id, excluded.notes, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -3037,6 +3143,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           purchase_receipt_count = excluded.purchase_receipt_count,
           last_purchase_date = excluded.last_purchase_date,
           updated_at = excluded.updated_at
+          where (suppliers.business_id, suppliers.name, suppliers.phone, suppliers.linked_phonebook_contact_id, suppliers.linked_phonebook_contact_name, suppliers.email, suppliers.notes, suppliers.sales_agent_count, suppliers.purchase_receipt_count, suppliers.last_purchase_date, suppliers.updated_at) is distinct from (excluded.business_id, excluded.name, excluded.phone, excluded.linked_phonebook_contact_id, excluded.linked_phonebook_contact_name, excluded.email, excluded.notes, excluded.sales_agent_count, excluded.purchase_receipt_count, excluded.last_purchase_date, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -3074,6 +3181,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           receipts_handled = excluded.receipts_handled,
           last_transaction_date = excluded.last_transaction_date,
           updated_at = excluded.updated_at
+          where (sales_agents.supplier_name, sales_agents.name, sales_agents.phone, sales_agents.linked_phonebook_contact_id, sales_agents.linked_phonebook_contact_name, sales_agents.notes, sales_agents.receipts_handled, sales_agents.last_transaction_date, sales_agents.updated_at) is distinct from (excluded.supplier_name, excluded.name, excluded.phone, excluded.linked_phonebook_contact_id, excluded.linked_phonebook_contact_name, excluded.notes, excluded.receipts_handled, excluded.last_transaction_date, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -3110,6 +3218,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           network_node_id = excluded.network_node_id,
           contact_name = excluded.contact_name,
           linked_at = excluded.linked_at
+          where (supplier_contact_links.business_id, supplier_contact_links.link_type, supplier_contact_links.supplier_id, supplier_contact_links.sales_agent_id, supplier_contact_links.network_node_id, supplier_contact_links.contact_name, supplier_contact_links.linked_at) is distinct from (excluded.business_id, excluded.link_type, excluded.supplier_id, excluded.sales_agent_id, excluded.network_node_id, excluded.contact_name, excluded.linked_at)
       `,
       [
         requiredText(record, "id"),
@@ -3197,6 +3306,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           source_file_name = excluded.source_file_name,
           ocr_job_id = excluded.ocr_job_id,
           image_stored = excluded.image_stored
+          where (purchase_receipts.supplier_id, purchase_receipts.supplier_name, purchase_receipts.sales_agent_id, purchase_receipts.sales_agent_name, purchase_receipts.receipt_date, purchase_receipts.total, purchase_receipts.source_file_name, purchase_receipts.ocr_job_id, purchase_receipts.image_stored) is distinct from (excluded.supplier_id, excluded.supplier_name, excluded.sales_agent_id, excluded.sales_agent_name, excluded.receipt_date, excluded.total, excluded.source_file_name, excluded.ocr_job_id, excluded.image_stored)
       `,
       [
         requiredText(record, "id"),
@@ -3230,6 +3340,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           amount = excluded.amount,
           reference = excluded.reference,
           note = excluded.note
+          where (payments.method, payments.amount, payments.reference, payments.note) is distinct from (excluded.method, excluded.amount, excluded.reference, excluded.note)
       `,
       [
         requiredText(record, "id"),
@@ -3276,6 +3387,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           expires_at = excluded.expires_at,
           pin_verified_at = excluded.pin_verified_at,
           revoked_at = excluded.revoked_at
+          where (sessions.device_id, sessions.device_name, sessions.platform, sessions.browser_or_app, sessions.user_agent_hash, sessions.refresh_token_hash, sessions.session_family_id, sessions.refresh_expires_at, sessions.inactivity_expires_at, sessions.absolute_expires_at, sessions.rotated_from_session_id, sessions.authenticated_at, sessions.last_used_at, sessions.rotated_at, sessions.revocation_reason, sessions.expires_at, sessions.pin_verified_at, case when sessions.revocation_reason = 'expired' and excluded.revocation_reason = 'expired' then null else sessions.revoked_at end) is distinct from (excluded.device_id, excluded.device_name, excluded.platform, excluded.browser_or_app, excluded.user_agent_hash, excluded.refresh_token_hash, excluded.session_family_id, excluded.refresh_expires_at, excluded.inactivity_expires_at, excluded.absolute_expires_at, excluded.rotated_from_session_id, excluded.authenticated_at, excluded.last_used_at, excluded.rotated_at, excluded.revocation_reason, excluded.expires_at, excluded.pin_verified_at, case when sessions.revocation_reason = 'expired' and excluded.revocation_reason = 'expired' then null else excluded.revoked_at end)
       `,
       [
         requiredText(record, "id"),
@@ -3320,6 +3432,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           expires_at = excluded.expires_at,
           last_used_at = excluded.last_used_at,
           revoked_at = excluded.revoked_at
+          where (mcp_access_tokens.token_hash, mcp_access_tokens.name, mcp_access_tokens.scopes, mcp_access_tokens.shop_id, mcp_access_tokens.expires_at, mcp_access_tokens.last_used_at, mcp_access_tokens.revoked_at) is distinct from (excluded.token_hash, excluded.name, excluded.scopes, excluded.shop_id, excluded.expires_at, excluded.last_used_at, excluded.revoked_at)
       `,
       [
         token.id,
@@ -3354,6 +3467,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           encrypted_token = excluded.encrypted_token,
           inference_authorized = excluded.inference_authorized,
           updated_at = excluded.updated_at
+          where (cp2_external_registry_connections.external_account_id, cp2_external_registry_connections.external_username, cp2_external_registry_connections.status, cp2_external_registry_connections.scopes, cp2_external_registry_connections.encrypted_token, cp2_external_registry_connections.inference_authorized, cp2_external_registry_connections.updated_at) is distinct from (excluded.external_account_id, excluded.external_username, excluded.status, excluded.scopes, excluded.encrypted_token, excluded.inference_authorized, excluded.updated_at)
       `,
       [
         connection.id,
@@ -3442,6 +3556,7 @@ export async function upsertAccountSyncChangesBulk(
         entity = excluded.entity,
         changed_at = excluded.changed_at,
         tombstone_expires_at = excluded.tombstone_expires_at
+        where (account_sync_changes.cursor, account_sync_changes.collection, account_sync_changes.entity_id, account_sync_changes.operation, account_sync_changes.shop_id, account_sync_changes.entity, account_sync_changes.changed_at, account_sync_changes.tombstone_expires_at) is distinct from (excluded.cursor, excluded.collection, excluded.entity_id, excluded.operation, excluded.shop_id, excluded.entity, excluded.changed_at, excluded.tombstone_expires_at)
     `,
     [JSON.stringify(changes.map(accountSyncChangeToRecordsetRow))]
   );
@@ -3476,6 +3591,7 @@ async function upsertAccountSyncChangesOneByOne(
             entity = excluded.entity,
             changed_at = excluded.changed_at,
             tombstone_expires_at = excluded.tombstone_expires_at
+            where (account_sync_changes.cursor, account_sync_changes.collection, account_sync_changes.entity_id, account_sync_changes.operation, account_sync_changes.shop_id, account_sync_changes.entity, account_sync_changes.changed_at, account_sync_changes.tombstone_expires_at) is distinct from (excluded.cursor, excluded.collection, excluded.entity_id, excluded.operation, excluded.shop_id, excluded.entity, excluded.changed_at, excluded.tombstone_expires_at)
         `,
         [
           change.accountId,
@@ -3730,6 +3846,7 @@ async function saveShopDeletionArchives(
           status = excluded.status,
           restore_until = excluded.restore_until,
           updated_at = excluded.updated_at
+          where (shop_deletion_archives.status, shop_deletion_archives.restore_until, shop_deletion_archives.updated_at) is distinct from (excluded.status, excluded.restore_until, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -3773,6 +3890,7 @@ async function savePhase1AuthSecurityRecords(
           next_resend_at = excluded.next_resend_at,
           provider = excluded.provider,
           provider_message_id = excluded.provider_message_id
+          where (otp_challenges.channel, otp_challenges.destination, otp_challenges.purpose, otp_challenges.code_hash, otp_challenges.attempts, otp_challenges.max_attempts, otp_challenges.expires_at, otp_challenges.verified_at, otp_challenges.consumed_at, otp_challenges.resend_count, otp_challenges.next_resend_at, otp_challenges.provider, otp_challenges.provider_message_id) is distinct from (excluded.channel, excluded.destination, excluded.purpose, excluded.code_hash, excluded.attempts, excluded.max_attempts, excluded.expires_at, excluded.verified_at, excluded.consumed_at, excluded.resend_count, excluded.next_resend_at, excluded.provider, excluded.provider_message_id)
       `,
       [
         requiredText(record, "id"),
@@ -3828,6 +3946,7 @@ async function savePhase1AuthSecurityRecords(
           provider = excluded.provider,
           provider_message_id = excluded.provider_message_id,
           updated_at = excluded.updated_at
+          where (verification_challenges.channel, verification_challenges.destination, verification_challenges.purpose, verification_challenges.code_hash, verification_challenges.attempts, verification_challenges.max_attempts, verification_challenges.status, verification_challenges.expires_at, verification_challenges.verified_at, verification_challenges.consumed_at, verification_challenges.resend_count, verification_challenges.next_resend_at, verification_challenges.provider, verification_challenges.provider_message_id, verification_challenges.updated_at) is distinct from (excluded.channel, excluded.destination, excluded.purpose, excluded.code_hash, excluded.attempts, excluded.max_attempts, excluded.status, excluded.expires_at, excluded.verified_at, excluded.consumed_at, excluded.resend_count, excluded.next_resend_at, excluded.provider, excluded.provider_message_id, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -3862,6 +3981,7 @@ async function savePhase1AuthSecurityRecords(
           status = excluded.status,
           error_code = excluded.error_code,
           updated_at = excluded.updated_at
+          where (sms_delivery_attempts.provider_message_id, sms_delivery_attempts.status, sms_delivery_attempts.error_code, sms_delivery_attempts.updated_at) is distinct from (excluded.provider_message_id, excluded.status, excluded.error_code, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -3900,6 +4020,7 @@ async function savePhase1AuthSecurityRecords(
           token_expires_at = excluded.token_expires_at,
           scope = excluded.scope,
           updated_at = excluded.updated_at
+          where (user_identities.account_id, user_identities.user_id, user_identities.provider_id, user_identities.provider_subject, user_identities.email, user_identities.display_name, user_identities.encrypted_access_token, user_identities.encrypted_refresh_token, user_identities.encrypted_id_token, user_identities.token_type, user_identities.token_expires_at, user_identities.scope, user_identities.updated_at) is distinct from (excluded.account_id, excluded.user_id, excluded.provider_id, excluded.provider_subject, excluded.email, excluded.display_name, excluded.encrypted_access_token, excluded.encrypted_refresh_token, excluded.encrypted_id_token, excluded.token_type, excluded.token_expires_at, excluded.scope, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -3935,6 +4056,7 @@ async function savePhase1AuthSecurityRecords(
           email = excluded.email,
           display_name = excluded.display_name,
           updated_at = excluded.updated_at
+          where (auth_accounts.account_id, auth_accounts.user_id, auth_accounts.provider_id, auth_accounts.provider_subject, auth_accounts.email, auth_accounts.display_name, auth_accounts.updated_at) is distinct from (excluded.account_id, excluded.user_id, excluded.provider_id, excluded.provider_subject, excluded.email, excluded.display_name, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -3968,6 +4090,7 @@ async function savePhase1AuthSecurityRecords(
           redirect_uri = excluded.redirect_uri,
           expires_at = excluded.expires_at,
           completed_at = excluded.completed_at
+          where (oauth_sessions.provider_id, oauth_sessions.account_id, oauth_sessions.state_hash, oauth_sessions.csrf_hash, oauth_sessions.code_challenge, oauth_sessions.encrypted_code_verifier, oauth_sessions.redirect_uri, oauth_sessions.expires_at, oauth_sessions.completed_at) is distinct from (excluded.provider_id, excluded.account_id, excluded.state_hash, excluded.csrf_hash, excluded.code_challenge, excluded.encrypted_code_verifier, excluded.redirect_uri, excluded.expires_at, excluded.completed_at)
       `,
       [
         requiredText(record, "id"),
@@ -3993,6 +4116,7 @@ async function savePhase1AuthSecurityRecords(
         on conflict (account_id) do update set
           pin_hash = excluded.pin_hash,
           updated_at = now()
+          where account_pin_hashes.pin_hash is distinct from excluded.pin_hash
       `,
       [requiredText(record, "accountId"), requiredText(record, "pinHash")]
     );
@@ -4015,6 +4139,7 @@ async function savePhase1AuthSecurityRecords(
           updated_by = excluded.updated_by,
           updated_by_type = excluded.updated_by_type,
           updated_at = excluded.updated_at
+          where (device_trust.level, device_trust.reason, device_trust.updated_by, device_trust.updated_by_type, device_trust.updated_at) is distinct from (excluded.level, excluded.reason, excluded.updated_by, excluded.updated_by_type, excluded.updated_at)
       `,
       [
         requiredText(record, "businessId"),
@@ -4086,6 +4211,7 @@ async function replaceReceiptLineItems(
           quantity = excluded.quantity,
           unit_price = excluded.unit_price,
           total = excluded.total
+          where (receipt_line_items.receipt_id, receipt_line_items.name, receipt_line_items.quantity, receipt_line_items.unit_price, receipt_line_items.total) is distinct from (excluded.receipt_id, excluded.name, excluded.quantity, excluded.unit_price, excluded.total)
       `,
       [
         requiredText(record, "id"),
@@ -4178,6 +4304,7 @@ async function saveInvoicesAndItems(client: PoolClient, records: SnapshotRecord[
           total = excluded.total,
           confirmed_at = excluded.confirmed_at,
           updated_at = excluded.updated_at
+          where (invoices.source, invoices.source_message_channel, invoices.created_by_user_id, invoices.status, invoices.customer_id, invoices.customer_name, invoices.subtotal, invoices.tax_rate, invoices.tax_total, invoices.total, invoices.confirmed_at, invoices.updated_at) is distinct from (excluded.source, excluded.source_message_channel, excluded.created_by_user_id, excluded.status, excluded.customer_id, excluded.customer_name, excluded.subtotal, excluded.tax_rate, excluded.tax_total, excluded.total, excluded.confirmed_at, excluded.updated_at)
       `,
       [
         requiredText(record, "id"),
@@ -4227,6 +4354,7 @@ async function saveInvoicesAndItems(client: PoolClient, records: SnapshotRecord[
             total_weight_grams = excluded.total_weight_grams,
             weight_status = excluded.weight_status,
             weight_unresolved_reason = excluded.weight_unresolved_reason
+            where (invoice_items.invoice_id, invoice_items.product_id, invoice_items.product_name, invoice_items.quantity, invoice_items.unit_price, invoice_items.line_total, invoice_items.unit_weight_grams_snapshot, invoice_items.total_weight_grams, invoice_items.weight_status, invoice_items.weight_unresolved_reason) is distinct from (excluded.invoice_id, excluded.product_id, excluded.product_name, excluded.quantity, excluded.unit_price, excluded.line_total, excluded.unit_weight_grams_snapshot, excluded.total_weight_grams, excluded.weight_status, excluded.weight_unresolved_reason)
         `,
         [
           requiredText(item, "id"),

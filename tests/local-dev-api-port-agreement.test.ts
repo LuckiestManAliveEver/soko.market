@@ -16,9 +16,17 @@ function captured(source: string, pattern: RegExp, label: string): string {
 describe("local development API port", () => {
   it.each([
     ["web api client default", "apps/web/src/lib/api.ts", /return "http:\/\/127\.0\.0\.1:(\d+)";/u],
-    ["web dev CSP connect-src", "apps/web/vite.config.ts", /connect-src 'self' http:\/\/127\.0\.0\.1:(\d+)/u],
+    [
+      "web dev CSP connect-src",
+      "apps/web/vite.config.ts",
+      /connect-src 'self' http:\/\/127\.0\.0\.1:(\d+)/u
+    ],
     ["api config default", "services/api/src/config.ts", /\["API_PORT", "PORT"\], (\d+)\)/u],
-    ["local doctor default", "scripts/local-doctor.mjs", /env\.API_PORT \|\| env\.PORT \|\| (\d+)\)/u],
+    [
+      "local doctor default",
+      "scripts/local-doctor.mjs",
+      /env\.API_PORT \|\| env\.PORT \|\| (\d+)\)/u
+    ],
     ["local env template", ".env.local.example", /^API_PORT=(\d+)$/mu],
     ["env template", ".env.example", /^API_PORT=(\d+)$/mu]
   ])("%s uses the shared dev API port", (label, path, pattern) => {
