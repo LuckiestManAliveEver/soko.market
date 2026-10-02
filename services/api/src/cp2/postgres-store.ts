@@ -528,6 +528,9 @@ export interface PostgresStoreHealth {
 const requiredMigrationFilename = "051_single_identity_single_store.sql";
 const requiredAttachmentBlobMigrationFilename = "059_conversation_attachment_blob_storage.sql";
 const requiredAccountAiAssetsMigrationFilename = "066_account_ai_assets.sql";
+// Without 106 the session retention trigger revokes refreshable sessions, signing users out on
+// every restart, so the API refuses to boot until it is applied.
+const requiredSessionRetentionMigrationFilename = "106_session_retention_uses_refresh_lifetime.sql";
 const realtimeChannel = "soko_sync_changes";
 const defaultPersistenceQueueWarningThresholdMs = 10_000;
 const defaultPersistenceRetryInitialDelayMs = 2_000;
@@ -1406,6 +1409,16 @@ async function assertDatabaseMigrated(pool: Pool): Promise<void> {
   if (accountAiAssetsMigration.rows[0]?.applied !== true) {
     throw new Error(
       `Database migrations are not up to date. Run "pnpm db:migrate" before starting the API. Missing ${requiredAccountAiAssetsMigrationFilename}.`
+    );
+  }
+
+  const sessionRetentionMigration = await pool.query<{ applied: boolean }>(
+    "select exists(select 1 from soko_schema_migrations where filename = $1) as applied",
+    [requiredSessionRetentionMigrationFilename]
+  );
+  if (sessionRetentionMigration.rows[0]?.applied !== true) {
+    throw new Error(
+      `Database migrations are not up to date. Run "pnpm db:migrate" before starting the API. Missing ${requiredSessionRetentionMigrationFilename}.`
     );
   }
 
@@ -2842,7 +2855,11 @@ function comparableRecord(tableName: string, side: string): string {
   return `case when cp2_sessions.record->>'revocationReason' = 'expired' and excluded.record->>'revocationReason' = 'expired' then ${side}.record - 'revokedAt' else ${side}.record end`;
 }
 
-async function saveCollectionRecords(
+/** 6 parameters per row keeps each statement far below Postgres's 65,535 bind-parameter limit. */
+const collectionUpsertChunkSize = 1_000;
+
+/** Exported for tests/cp2-postgres-store.test.ts, which counts its round trips directly. */
+export async function saveCollectionRecords(
   client: PoolClient,
   collection: NormalizedCollection,
   records: SnapshotRecord[]
@@ -2862,12 +2879,39 @@ async function saveCollectionRecords(
     ]);
   }
 
+  // One multi-row upsert per chunk instead of one round trip per record: against a remote
+  // database the per-row loop made saving a large collection (cp2_audit_events, ~1,400 rows)
+  // take minutes. A plain VALUES list lets Postgres type each parameter from its target column,
+  // which differs across the normalized tables. The old loop let a repeated entity_id's last
+  // record win; a multi-row upsert rejects repeats, so they are collapsed the same way first.
+  const rowsByEntityId = new Map<string, unknown[]>();
   for (const record of records) {
+    const entityId = recordEntityId(collection.key, record);
+    rowsByEntityId.delete(entityId);
+    rowsByEntityId.set(entityId, [
+      entityId,
+      firstText(record, ["businessId", "shopId", "tenantId"]),
+      firstText(record, ["accountId", "buyerAccountId"]),
+      firstText(record, ["userId", "ownerUserId", "actorId", "postedBy"]),
+      recordParentId(collection.key, record),
+      JSON.stringify(record)
+    ]);
+  }
+  const rows = [...rowsByEntityId.values()];
+  for (let offset = 0; offset < rows.length; offset += collectionUpsertChunkSize) {
+    const chunk = rows.slice(offset, offset + collectionUpsertChunkSize);
+    const placeholders = chunk
+      .map((_row, index) => {
+        const base = index * 6;
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}::jsonb, now())`;
+      })
+      .join(",\n          ");
     await client.query(
       `
         insert into ${collection.tableName}
           (entity_id, business_id, account_id, user_id, parent_id, record, updated_at)
-        values ($1, $2, $3, $4, $5, $6::jsonb, now())
+        values
+          ${placeholders}
         on conflict (entity_id) do update set
           business_id = excluded.business_id,
           account_id = excluded.account_id,
@@ -2877,14 +2921,7 @@ async function saveCollectionRecords(
           updated_at = now()
           where (${collection.tableName}.business_id, ${collection.tableName}.account_id, ${collection.tableName}.user_id, ${collection.tableName}.parent_id, ${comparableRecord(collection.tableName, collection.tableName)}) is distinct from (excluded.business_id, excluded.account_id, excluded.user_id, excluded.parent_id, ${comparableRecord(collection.tableName, "excluded")})
       `,
-      [
-        recordEntityId(collection.key, record),
-        firstText(record, ["businessId", "shopId", "tenantId"]),
-        firstText(record, ["accountId", "buyerAccountId"]),
-        firstText(record, ["userId", "ownerUserId", "actorId", "postedBy"]),
-        recordParentId(collection.key, record),
-        JSON.stringify(record)
-      ]
+      chunk.flat()
     );
   }
 }

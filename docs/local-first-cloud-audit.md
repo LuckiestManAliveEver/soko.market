@@ -74,3 +74,29 @@ account_sync_changes` reclaims it, and it takes an exclusive lock on the table w
 Regression coverage: `tests/normalized-snapshot-sql.test.ts` (gate) and the Postgres-gated cases in
 `tests/cp2-postgres-store.test.ts` (single-query load parity, unchanged sync rows keep their `xmin`,
 expired sessions revoked once and then left alone).
+
+## Session retention followed the access token, not the refresh lifetime
+
+Migration 038's retention trigger revoked a session on any write once `expires_at` had passed.
+Since 036/045 that column is the ~15 minute access token; a session stays refreshable until the
+earliest of `refresh_expires_at`, `inactivity_expires_at` and `absolute_expires_at` (30 days of
+inactivity by default). Because persistence rewrote sessions on every save, each session was
+stored as revoked shortly after its access token expired. Running processes kept the in-memory
+copy, so nothing looked wrong until a restart: sessions then loaded as revoked and
+`/auth/session/refresh` answered `auth_refresh_revoked`. On 2026-10-02 the Neon database had
+0 of 418 sessions unrevoked, so every restart signed everyone out.
+
+Migration `106_session_retention_uses_refresh_lifetime.sql` makes both retention triggers use the
+refreshable lifetime and restores sessions the old trigger revoked while still refreshable
+(76 sessions across 36 accounts in Neon, plus their `cp2_sessions` compatibility rows). The API
+refuses to boot until 106 is applied. The rollback restores the old functions and never
+re-revokes restored sessions.
+
+## Normalized collection saves are batched
+
+`saveCollectionRecords` sent one `insert ... on conflict` per record, so saving a large
+collection cost one round trip per row (`cp2_audit_events`, ~1,400 rows, is minutes at ~350ms
+per round trip). It now sends one multi-row upsert per 1,000 rows. A plain `VALUES` list lets
+Postgres type each parameter from its target column. Repeated entity ids are collapsed to the
+last record first, matching the old loop's last-write-wins behavior, since a multi-row upsert
+rejects repeats.

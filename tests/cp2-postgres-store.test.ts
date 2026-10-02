@@ -42,6 +42,7 @@ import {
   buildNormalizedSnapshotSql,
   createPostgresCp2Store,
   normalizedCollections,
+  saveCollectionRecords,
   upsertAccountSyncChangesBulk
 } from "../services/api/src/cp2/postgres-store";
 import { readSessionCookie, sessionCookieName } from "../services/api/src/cp2/store";
@@ -2575,12 +2576,15 @@ describePostgres("CP2 Postgres store", () => {
       await pool.query("alter table sessions disable trigger sessions_retention_trigger");
       await pool.query("alter table cp2_sessions disable trigger cp2_sessions_retention_trigger");
       try {
-        await pool.query("update sessions set expires_at = $2, revoked_at = null where id = $1", [
-          sessionId,
-          expiredAt
-        ]);
         await pool.query(
-          "update cp2_sessions set record = jsonb_set(record, '{expiresAt}', to_jsonb($2::text)) - 'revokedAt' where entity_id = $1",
+          "update sessions set expires_at = $2, refresh_expires_at = $2, inactivity_expires_at = $2, revoked_at = null where id = $1",
+          [sessionId, expiredAt]
+        );
+        await pool.query(
+          `update cp2_sessions
+              set record = jsonb_set(jsonb_set(jsonb_set(record, '{expiresAt}', to_jsonb($2::text)),
+                '{refreshExpiresAt}', to_jsonb($2::text)), '{inactivityExpiresAt}', to_jsonb($2::text)) - 'revokedAt'
+            where entity_id = $1`,
           [sessionId, expiredAt]
         );
       } finally {
@@ -2631,6 +2635,202 @@ describePostgres("CP2 Postgres store", () => {
       await pool.end();
     }
   }, 45_000);
+
+  it("keeps a session refreshable across a restart after only its access token has expired", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    // Repro for migration 106: the retention trigger used to revoke a session on any write once
+    // its ~15 minute access token (expires_at) had passed, although refresh stays valid for 30
+    // days. After a restart the session loaded as revoked and refresh answered
+    // auth_refresh_revoked, signing out everyone idle for more than ~15 minutes.
+    try {
+      const firstStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const firstApp = buildApi({ cp2: { store: firstStore } });
+      const signup = await firstApp.inject({
+        method: "POST",
+        url: "/auth/pin/signup",
+        headers: jsonHeaders(),
+        payload: JSON.stringify({
+          method: "phone",
+          contact: `254736${Date.now().toString().slice(-6)}`,
+          pin: "1234"
+        })
+      });
+      expect(signup.statusCode).toBe(200);
+      const setCookies = [signup.headers["set-cookie"]].flat().map(String);
+      const cookies = setCookies.map((cookie) => cookie.split(";")[0] ?? "").join("; ");
+      const sessionId = readSessionCookie(cookies);
+      if (sessionId === null) throw new Error("Session cookie was not issued.");
+      expect(cookies).toContain("soko_refresh=");
+      await firstApp.close();
+      await firstStore.close();
+
+      // The access token expires while the refresh lifetime is intact. This write goes through
+      // the retention triggers exactly like the API's own persistence writes do.
+      const accessExpiredAt = new Date(Date.now() - 60 * 1000).toISOString();
+      await pool.query("update sessions set expires_at = $2 where id = $1", [
+        sessionId,
+        accessExpiredAt
+      ]);
+      await pool.query(
+        "update cp2_sessions set record = jsonb_set(record, '{expiresAt}', to_jsonb($2::text)) where entity_id = $1",
+        [sessionId, accessExpiredAt]
+      );
+      const stored = await pool.query<{ revoked_at: Date | null }>(
+        "select revoked_at from sessions where id = $1",
+        [sessionId]
+      );
+      expect(stored.rows[0]?.revoked_at).toBeNull();
+
+      const secondStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const secondApp = buildApi({ cp2: { store: secondStore } });
+      try {
+        const refresh = await secondApp.inject({
+          method: "POST",
+          url: "/auth/session/refresh",
+          headers: { cookie: cookies }
+        });
+        expect(refresh.statusCode, refresh.body).toBe(200);
+      } finally {
+        await secondApp.close();
+        await secondStore.close();
+      }
+    } finally {
+      await pool.end();
+    }
+  }, 45_000);
+
+  it("migration 106 restores trigger-revoked refreshable sessions and leaves truly expired ones revoked", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    try {
+      const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const app = buildApi({ cp2: { store } });
+      const refreshable = await createOwnerBusiness(
+        app,
+        `254737${Date.now().toString().slice(-6)}`
+      );
+      const lapsed = await createOwnerBusiness(app, `254738${Date.now().toString().slice(-6)}`);
+      await app.close();
+      await store.close();
+      const refreshableId = readSessionCookie(refreshable.sessionCookie);
+      const lapsedId = readSessionCookie(lapsed.sessionCookie);
+      if (refreshableId === null || lapsedId === null) throw new Error("Sessions were not issued.");
+
+      // Recreate the state the old trigger left behind: both rows revoked as 'expired', only one
+      // of them past its refreshable lifetime.
+      const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await pool.query("alter table sessions disable trigger sessions_retention_trigger");
+      try {
+        await pool.query(
+          "update sessions set expires_at = $2, revoked_at = $2, revocation_reason = 'expired' where id = $1",
+          [refreshableId, past]
+        );
+        await pool.query(
+          "update sessions set expires_at = $2, refresh_expires_at = $2, inactivity_expires_at = $2, revoked_at = $2, revocation_reason = 'expired' where id = $1",
+          [lapsedId, past]
+        );
+      } finally {
+        await pool.query("alter table sessions enable trigger sessions_retention_trigger");
+      }
+
+      const migration = await readFile(
+        "infra/db/migrations/106_session_retention_uses_refresh_lifetime.sql",
+        "utf8"
+      );
+      await pool.query(migration);
+
+      const rows = await pool.query<{
+        id: string;
+        revoked_at: Date | null;
+        revocation_reason: string | null;
+      }>("select id, revoked_at, revocation_reason from sessions where id = any($1::uuid[])", [
+        [refreshableId, lapsedId]
+      ]);
+      const byId = new Map(rows.rows.map((row) => [row.id, row]));
+      expect(byId.get(refreshableId)).toMatchObject({ revoked_at: null, revocation_reason: null });
+      expect(byId.get(lapsedId)?.revoked_at).not.toBeNull();
+      expect(byId.get(lapsedId)?.revocation_reason).toBe("expired");
+    } finally {
+      await pool.end();
+    }
+  }, 45_000);
+
+  it("saves a large normalized collection in a few round trips, last duplicate wins, unchanged rows untouched", async () => {
+    expect(databaseUrl).toBeDefined();
+    const pool = new Pool({ connectionString: databaseUrl ?? "" });
+    const client = await pool.connect();
+    // saveCollectionRecords used to send one insert per record, so saving cp2_audit_events
+    // (~1,400 rows in the Neon database) cost ~1,400 round trips. Count them directly.
+    let queries = 0;
+    const counting = {
+      query: (sql: string, values?: unknown[]) => {
+        queries += 1;
+        return client.query(sql, values);
+      }
+    };
+    const collection = normalizedCollections.find((entry) => entry.key === "auditEvents");
+    if (collection === undefined) throw new Error("auditEvents collection is missing.");
+    const save = (records: Array<Record<string, unknown>>) =>
+      saveCollectionRecords(
+        counting as unknown as Parameters<typeof saveCollectionRecords>[0],
+        collection,
+        records as unknown as Parameters<typeof saveCollectionRecords>[2]
+      );
+    const prefix = `bulk-audit-${randomUUID()}`;
+    try {
+      await client.query("begin");
+      const existing = await client.query<{ record: Record<string, unknown> }>(
+        "select record from cp2_audit_events order by entity_id"
+      );
+      const records = [
+        ...existing.rows.map((row) => row.record),
+        ...Array.from({ length: 2_500 }, (_unused, index) => ({
+          id: `${prefix}-${index}`,
+          type: "test.bulk",
+          occurredAt: new Date().toISOString(),
+          payload: { index }
+        }))
+      ];
+      records.push({ id: `${prefix}-0`, type: "test.bulk", payload: { index: "last wins" } });
+
+      queries = 0;
+      await save(records);
+      // select existing ids, then ceil(rows / 1,000) upserts; never one per row.
+      expect(queries).toBeLessThanOrEqual(2 + Math.ceil(records.length / 1_000));
+
+      const duplicate = await client.query<{ record: { payload: { index: unknown } } }>(
+        "select record from cp2_audit_events where entity_id = $1",
+        [`${prefix}-0`]
+      );
+      expect(duplicate.rows[0]?.record.payload.index).toBe("last wins");
+      const count = await client.query<{ count: string }>(
+        "select count(*)::text as count from cp2_audit_events where entity_id like $1",
+        [`${prefix}-%`]
+      );
+      expect(count.rows[0]?.count).toBe("2500");
+
+      const versions = async () =>
+        (
+          await client.query<{ entity_id: string; xmin: string }>(
+            "select entity_id, xmin::text from cp2_audit_events where entity_id like $1 order by entity_id",
+            [`${prefix}-%`]
+          )
+        ).rows;
+      await client.query("commit");
+      await client.query("begin");
+      const before = await versions();
+      await save(records);
+      expect(await versions()).toEqual(before);
+      await client.query("rollback");
+    } finally {
+      await client.query("delete from cp2_audit_events where entity_id like $1", [`${prefix}-%`]);
+      client.release();
+      await pool.end();
+    }
+  }, 60_000);
 
   it("attributes a bulk sync-change persistence failure to the exact account/collection via the row-by-row fallback", async () => {
     expect(databaseUrl).toBeDefined();
