@@ -8,7 +8,7 @@ const { Pool } = apiRequire("pg");
 
 const rootEnv = readEnvFile(".env.local");
 const env = { ...rootEnv, ...process.env };
-const apiPort = Number(env.API_PORT || env.PORT || 3001);
+const apiPort = Number(env.API_PORT || env.PORT || 4000);
 const webPort = Number(env.WEB_PORT || env.VITE_PORT || 5173);
 const ollamaBaseUrl = (env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/+$/u, "");
 const ollamaModel = env.OLLAMA_MODEL || "smollm2:360m";

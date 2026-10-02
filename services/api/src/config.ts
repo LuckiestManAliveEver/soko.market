@@ -16,7 +16,7 @@ export function readEnvironment(): EnvironmentConfig {
   return {
     runtimeMode,
     apiHost: stringFromEnv("API_HOST", "127.0.0.1"),
-    apiPort: numberFromEnvList(["API_PORT", "PORT"], 3001),
+    apiPort: numberFromEnvList(["API_PORT", "PORT"], 4000),
     allowedCorsOrigins: stringListFromEnv("WEB_ORIGINS", [
       "http://127.0.0.1:5173",
       "http://localhost:5173"
