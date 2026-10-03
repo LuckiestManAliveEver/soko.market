@@ -633,12 +633,27 @@ export async function createPostgresCp2Store(
   }
   await endBootPool();
 
+  // Saves write only records that differ from lastPersistedSnapshot, so the baseline must be what
+  // the database holds: the snapshot as loaded, cloned before hydrateSnapshot can repair or share
+  // its records. Anything hydration changes is then written by the first save (2 of ~25k records
+  // against the Neon data), instead of silently staying out of the database.
+  let lastPersistedSnapshot = structuredClone(savedSnapshot);
+  const initialForcedRemovalChecks = new Set<string>();
   try {
     if (snapshotHasData(savedSnapshot)) {
       store.hydrateSnapshot(savedSnapshot);
       if (savedSnapshot.syncChanges.length === 0 && store.snapshot().syncChanges.length > 0) {
-        const result = await saveNormalizedSnapshot(pool, store.snapshot(), savedSnapshot);
+        const bootSnapshot = structuredClone(store.snapshot());
+        const result = await saveNormalizedSnapshot(pool, bootSnapshot, lastPersistedSnapshot);
         initialSyncPersistenceError = result.syncJournalError;
+        const previousBaseline = lastPersistedSnapshot;
+        lastPersistedSnapshot = bootSnapshot;
+        // A failed journal backfill keeps the (empty) journal baseline so the next save retries it.
+        if (result.syncJournalError !== null) {
+          const shrunk = baselineAfterFailedSave(previousBaseline, bootSnapshot, ["syncChanges"]);
+          lastPersistedSnapshot.syncChanges = shrunk.baseline.syncChanges;
+          for (const key of shrunk.forcedRemovalChecks) initialForcedRemovalChecks.add(key);
+        }
       }
     }
   } catch (error) {
@@ -646,8 +661,10 @@ export async function createPostgresCp2Store(
     throw error;
   }
 
-  let lastPersistedSnapshot = structuredClone(store.snapshot());
   let saveQueue: Promise<void> = Promise.resolve();
+  // Collections whose delete pass must run on the next save even if they look unchanged (see
+  // baselineAfterFailedSave).
+  let forcedRemovalChecks = new Set<string>(initialForcedRemovalChecks);
   let lastPersistenceError: unknown = null;
   let nextPersistenceOperationId = 1;
   const pendingPersistenceOperations = new Map<
@@ -717,6 +734,7 @@ export async function createPostgresCp2Store(
   let lastSyncPersistenceError: AccountSyncPersistenceError | null = initialSyncPersistenceError;
   if (lastSyncPersistenceError !== null) {
     logAccountSyncDegradation(lastSyncPersistenceError);
+    scheduleSaveRetry();
   }
   let lastRealtimeListenerError: unknown = null;
   let lastRealtimePublishError: unknown = null;
@@ -800,11 +818,20 @@ export async function createPostgresCp2Store(
       })
       .then(
         () => {
+          // Only a snapshot save writes everything (passkey ceremonies included), so only its
+          // success proves an earlier failure is repaired. A passkey ceremony write that succeeds
+          // after a failed snapshot must not clear that failure: flush() and close() rely on it.
+          if (name !== "snapshot") return;
           lastPersistenceError = null;
-          persistenceRetryDelayMs = persistenceRetryInitialDelayMs;
+          // A journal failure resolves the operation but schedules its own retry; keep backing off.
+          if (lastSyncPersistenceError === null) {
+            persistenceRetryDelayMs = persistenceRetryInitialDelayMs;
+          }
         },
         (error: unknown) => {
           lastPersistenceError = error;
+          if ((error as { code?: unknown } | null)?.code === "55P03")
+            void logStoreLockHolders(pool);
           console.error(
             JSON.stringify({
               event: "cp2_persistence_failed",
@@ -819,7 +846,11 @@ export async function createPostgresCp2Store(
                   ? error.attemptedCollection
                   : "unavailable",
               constraintName:
-                error instanceof AccountSyncPersistenceError ? error.constraintName : null
+                error instanceof AccountSyncPersistenceError ? error.constraintName : null,
+              operation: name,
+              error: error instanceof Error ? error.message : String(error),
+              errorCode: (error as { code?: unknown } | null)?.code ?? null,
+              stack: error instanceof Error ? error.stack : undefined
             })
           );
           scheduleSaveRetry();
@@ -845,12 +876,50 @@ export async function createPostgresCp2Store(
       try {
         snapshotSaveQueued = false;
         snapshotSaveRunning = true;
-        const snapshot = store.snapshot();
-        const result = await saveNormalizedSnapshot(pool, snapshot, lastPersistedSnapshot);
-        lastPersistedSnapshot = structuredClone(snapshot);
+        // store.snapshot() copies the arrays but shares record objects the store mutates in place
+        // (session revocation, OTP attempts, token lastUsedAt). Clone before writing: a baseline
+        // cloned after the awaited save could include an in-place change made mid-save that was
+        // never written, and the diff would then skip that record (e.g. a logout lost on restart).
+        const snapshot = structuredClone(store.snapshot());
+        const journalDeleteCheckPending = forcedRemovalChecks.has("syncChanges");
+        let result: Awaited<ReturnType<typeof saveNormalizedSnapshot>>;
+        try {
+          result = await saveNormalizedSnapshot(
+            pool,
+            snapshot,
+            lastPersistedSnapshot,
+            forcedRemovalChecks
+          );
+        } catch (error) {
+          // The commit may have landed even though this failed (lost acknowledgement): stop
+          // trusting the baseline for anything the attempt touched.
+          const shrunk = baselineAfterFailedSave(lastPersistedSnapshot, snapshot);
+          lastPersistedSnapshot = shrunk.baseline;
+          for (const key of shrunk.forcedRemovalChecks) forcedRemovalChecks.add(key);
+          throw error;
+        }
+        const previousBaseline = lastPersistedSnapshot;
+        lastPersistedSnapshot = snapshot;
         lastSyncPersistenceError = result.syncJournalError;
+        forcedRemovalChecks = new Set();
         if (result.syncJournalError !== null) {
+          // The relational transaction committed but the journal did not: keep the journal's last
+          // saved baseline, shrunk like a failed save, so the next save re-sends every entry this
+          // one failed (or may have failed) to write.
+          const shrunk = baselineAfterFailedSave(previousBaseline, snapshot, ["syncChanges"]);
+          lastPersistedSnapshot.syncChanges = shrunk.baseline.syncChanges;
+          forcedRemovalChecks = shrunk.forcedRemovalChecks;
+          // A journal delete check this save was carrying is still owed: its transaction rolled back.
+          if (journalDeleteCheckPending) forcedRemovalChecks.add("syncChanges");
           logAccountSyncDegradation(result.syncJournalError);
+          // Through the pooler the relational transaction can run on a backend holding a leaked
+          // lock (re-entrant) while the journal transaction lands elsewhere and times out.
+          if ((result.syncJournalError.cause as { code?: unknown } | undefined)?.code === "55P03") {
+            void logStoreLockHolders(pool);
+          }
+          // Without a retry the missed entries would wait for an unrelated mutation, and a restart
+          // before then loses them (boot only backfills an empty journal).
+          scheduleSaveRetry();
           return;
         }
         try {
@@ -893,8 +962,18 @@ export async function createPostgresCp2Store(
     }
   }
 
-  async function close(): Promise<void> {
+  let closePromise: Promise<void> | null = null;
+  const finalSaveAttempts = 2;
+  const saveFailed = () => lastPersistenceError !== null || lastSyncPersistenceError !== null;
+
+  function close(): Promise<void> {
+    closePromise ??= closeOnce();
+    return closePromise;
+  }
+
+  async function closeOnce(): Promise<void> {
     closing = true;
+    const retryWasPending = persistenceRetryTimer !== null;
     if (persistenceRetryTimer !== null) {
       clearTimeout(persistenceRetryTimer);
       persistenceRetryTimer = null;
@@ -904,7 +983,20 @@ export async function createPostgresCp2Store(
       parityCheckTimer = null;
     }
     try {
-      await flush();
+      // Once closing, failed saves no longer schedule retries, and changed-only writes re-send
+      // missed records only from the in-memory baseline that a restart loses (boot backfills only
+      // an empty journal). So after the queue drains (including a save in flight at shutdown),
+      // anything recorded as unsaved gets up to two final attempts; if it is still unsaved, close()
+      // rejects so the process does not exit cleanly over lost data. A cancelled retry timer also
+      // earns one attempt, as a backstop in case a failure was not recorded.
+      if (retryWasPending) enqueueSave();
+      await flush().catch(() => undefined);
+      for (let attempt = 0; attempt < finalSaveAttempts && saveFailed(); attempt += 1) {
+        enqueueSave();
+        await flush().catch(() => undefined);
+      }
+      if (lastPersistenceError !== null) throw lastPersistenceError;
+      if (lastSyncPersistenceError !== null) throw lastSyncPersistenceError;
     } finally {
       realtimeClosed = true;
       if (realtimeReconnectTimer !== null) {
@@ -2452,11 +2544,9 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
  * produce a false "changed" (falls back to today's existing behavior for that collection, safe by
  * definition), never a false "unchanged", so it cannot skip work that was actually needed.
  *
- * This intentionally does not touch saveRelationalCoreRecords below: that function's ~20
- * individually-hand-written table blocks (accounts, users, sessions, business_memberships, etc.)
- * are exactly the kind of large, correctness-sensitive surface the single-instance-store-ceiling
- * doc already warns against rewriting in one sitting. Applying the same "skip if unchanged"
- * technique there is a legitimate, bounded follow-up, not something to fold into this change.
+ * saveRelationalCoreRecords and the account sync journal apply the same gate per record (see
+ * recordsChangedSince): only records that differ from `previousSnapshot` are upserted, while
+ * deletions still compare against the full snapshot.
  */
 function collectionUnchanged(current: SnapshotRecord[], previous: SnapshotRecord[]): boolean {
   if (current === previous) return true;
@@ -2464,23 +2554,138 @@ function collectionUnchanged(current: SnapshotRecord[], previous: SnapshotRecord
   return JSON.stringify(current) === JSON.stringify(previous);
 }
 
+/**
+ * Serializes CP2 persistence across API instances. This must be the transaction-scoped
+ * pg_advisory_xact_lock, taken inside the transaction: DATABASE_URL is Neon's PgBouncer pooler in
+ * transaction mode, where statements outside a transaction can run on different server backends.
+ * The previous session-level pg_advisory_lock/pg_advisory_unlock pair ran outside the transaction,
+ * so an unlock that landed on another backend (or never ran after a dropped connection) leaked the
+ * lock on a pooled backend that never closes, and every later save blocked on it until "Query read
+ * timeout". A transaction pins one backend and the lock is released at commit or rollback.
+ * Each transaction (relational, then journal) takes it separately, so another instance could
+ * interleave between the two; with one in-memory store per instance that was never coherent.
+ */
+async function lockNormalizedStore(client: PoolClient): Promise<void> {
+  // Bounded wait: a lock leaked by an older build (or held by a stuck writer) fails this save with
+  // lock_not_available (55P03) and a scheduled retry, instead of hanging until the query timeout.
+  // `set local` scopes it to this transaction, so it also bounds the row locks the upserts take.
+  // One simple-protocol round trip for both statements (no bind parameters): each round trip to
+  // Neon costs up to ~450ms and this runs in both transactions of every save.
+  await client.query(
+    `set local lock_timeout = '${normalizedStoreLockTimeoutMs}ms'; select pg_advisory_xact_lock(hashtext('soko.cp2.normalized_store'))`
+  );
+}
+
+const normalizedStoreLockTimeoutMs = 10_000;
+
+/**
+ * Matches only the store lock in the current database (pg_locks is server-wide; a bigint advisory
+ * key is classid = high 32 bits, objid = low 32 bits, objsubid 1). Kept identical to
+ * services/api/scripts/store-lock-lib.mjs; tests/relational-change-diff.test.ts enforces it.
+ */
+export const storeLockPredicate = `
+  l.locktype = 'advisory'
+  and l.database = (select oid from pg_database where datname = current_database())
+  and l.classid = ((hashtext('soko.cp2.normalized_store')::bigint >> 32) & 4294967295)::oid
+  and l.objid = (hashtext('soko.cp2.normalized_store')::bigint & 4294967295)::oid
+  and l.objsubid = 1`;
+
+/**
+ * On lock_not_available, names who holds the store lock. A holder that stays "idle" across
+ * retries is a lock leaked by an older build through the pooler; see docs/runbooks/
+ * cp2-store-lock-leak.md for how to confirm and release it. This query also goes through the
+ * pooler and can land on the leaked backend itself, which then reports "active": `self: true`
+ * marks that case, and such a holder is the leak too.
+ */
+async function logStoreLockHolders(pool: Pool): Promise<void> {
+  try {
+    const holders = await pool.query<{
+      pid: number;
+      state: string | null;
+      application_name: string | null;
+      backend_start: Date | null;
+      state_change: Date | null;
+      self: boolean;
+    }>(
+      `select a.pid, a.state, a.application_name, a.backend_start, a.state_change,
+              a.pid = pg_backend_pid() as self
+         from pg_locks l join pg_stat_activity a on a.pid = l.pid
+        where ${storeLockPredicate} and l.granted`
+    );
+    console.error(
+      JSON.stringify({
+        event: "cp2_persistence_lock_unavailable",
+        holders: holders.rows,
+        runbook: "docs/runbooks/cp2-store-lock-leak.md"
+      })
+    );
+  } catch (error) {
+    console.error("Failed to inspect CP2 persistence lock holders.", error);
+  }
+}
+
+/**
+ * The baseline to keep after a save that failed (or whose commit acknowledgement was lost, so it
+ * may in fact have committed). Records the attempt left unchanged stay in the baseline; records it
+ * wrote, changed or deleted are dropped, so the next save re-sends whatever the database might now
+ * hold differently, even if the in-memory value meanwhile went back to its old content. Dropping a
+ * record would also hide a deletion from the content-equality delete gates (as would a record the
+ * attempt added and memory deleted since), so every collection the attempt changed in any way is
+ * returned in `forcedRemovalChecks`: the next save rewrites that
+ * `cp2_*` collection (whose save deletes rows missing from memory) and runs its relational and
+ * journal delete passes, until a save succeeds. Only the given keys are shrunk (all array-valued keys by default).
+ */
+export function baselineAfterFailedSave(
+  previous: Cp2Snapshot,
+  attempted: Cp2Snapshot,
+  keys: readonly (keyof Cp2Snapshot)[] = Object.keys(previous) as (keyof Cp2Snapshot)[]
+): { baseline: Cp2Snapshot; forcedRemovalChecks: Set<string> } {
+  const baseline = { ...previous };
+  const forcedRemovalChecks = new Set<string>();
+  for (const key of keys) {
+    const previousRecords = previous[key];
+    if (!Array.isArray(previousRecords)) continue;
+    const attemptedRecords = Array.isArray(attempted[key]) ? (attempted[key] as unknown[]) : [];
+    const previousContent = new Set(
+      (previousRecords as unknown[]).map((record) => JSON.stringify(record))
+    );
+    const attemptedContent = new Set(attemptedRecords.map((record) => JSON.stringify(record)));
+    const kept = (previousRecords as unknown[]).filter((record) =>
+      attemptedContent.has(JSON.stringify(record))
+    );
+    const attemptAddedOrChanged = [...attemptedContent].some(
+      (content) => !previousContent.has(content)
+    );
+    if (kept.length === previousRecords.length && !attemptAddedOrChanged) continue;
+    (baseline as Record<string, unknown>)[key] = kept;
+    // A record the attempt added may now exist in the database even though the baseline does not
+    // list it; if memory deletes it before the next successful save, the collection would look
+    // unchanged again. So any difference at all forces the delete pass, not only dropped records.
+    forcedRemovalChecks.add(key);
+  }
+  return { baseline, forcedRemovalChecks };
+}
+
 async function saveNormalizedSnapshot(
   pool: Pool,
   snapshot: Cp2Snapshot,
-  previousSnapshot?: Cp2Snapshot
+  previousSnapshot?: Cp2Snapshot,
+  forcedRemovalChecks: ReadonlySet<string> = new Set()
 ): Promise<{ syncJournalError: AccountSyncPersistenceError | null }> {
   const client = await pool.connect();
   const startedAt = Date.now();
+  const stats: PersistenceWriteStats = { relationalRecords: 0, journalEntries: 0 };
 
   try {
-    await client.query("select pg_advisory_lock(hashtext('soko.cp2.normalized_store'))");
     try {
       await client.query("begin");
+      await lockNormalizedStore(client);
 
       for (const collection of normalizedCollections) {
         const records = getSnapshotCollection(snapshot, collection.key);
         if (
           previousSnapshot !== undefined &&
+          !forcedRemovalChecks.has(collection.key) &&
           collectionUnchanged(records, getSnapshotCollection(previousSnapshot, collection.key))
         ) {
           continue;
@@ -2490,7 +2695,13 @@ async function saveNormalizedSnapshot(
 
       await reconcileConversationAttachmentBlobs(client, snapshot.conversationAttachments ?? []);
 
-      await saveRelationalCoreRecords(client, snapshot);
+      await saveRelationalCoreRecords(
+        client,
+        snapshot,
+        previousSnapshot,
+        stats,
+        forcedRemovalChecks
+      );
       await client.query("commit");
       logSlowQuery("persist CP2 relational store", startedAt);
     } catch (error) {
@@ -2500,20 +2711,29 @@ async function saveNormalizedSnapshot(
       throw error;
     }
 
+    // Logged once the relational transaction has committed, whether or not the journal then
+    // succeeds, so the trace also covers saves whose journal write failed (journal: "failed").
+    const logSaved = (journal: "ok" | "failed") =>
+      console.info(
+        JSON.stringify({
+          event: "cp2_persistence_saved",
+          durationMs: Date.now() - startedAt,
+          relationalRecordsChanged: stats.relationalRecords,
+          journalEntriesWritten: journal === "ok" ? stats.journalEntries : 0,
+          journal
+        })
+      );
     try {
-      await saveAccountSyncChanges(client, snapshot);
+      await saveAccountSyncChanges(client, snapshot, previousSnapshot, stats, forcedRemovalChecks);
+      logSaved("ok");
       return { syncJournalError: null };
     } catch (error) {
+      logSaved("failed");
       return {
         syncJournalError: normalizeAccountSyncPersistenceError(error, snapshot)
       };
     }
   } finally {
-    await client
-      .query("select pg_advisory_unlock(hashtext('soko.cp2.normalized_store'))")
-      .catch((error: unknown) => {
-        console.error("Failed to release CP2 normalized persistence lock.", error);
-      });
     client.release();
   }
 }
@@ -2769,9 +2989,9 @@ async function savePasskeyCeremonyMutation(
   const startedAt = Date.now();
 
   try {
-    await client.query("select pg_advisory_lock(hashtext('soko.cp2.normalized_store'))");
     try {
       await client.query("begin");
+      await lockNormalizedStore(client);
       if (mutation.removedIds.length > 0) {
         await client.query("delete from cp2_passkey_ceremonies where entity_id = any($1::text[])", [
           mutation.removedIds
@@ -2806,30 +3026,33 @@ async function savePasskeyCeremonyMutation(
       throw error;
     }
   } finally {
-    await client
-      .query("select pg_advisory_unlock(hashtext('soko.cp2.normalized_store'))")
-      .catch((error: unknown) => {
-        console.error("Failed to release passkey ceremony persistence lock.", error);
-      });
     client.release();
   }
 }
 
-async function saveAccountSyncChanges(client: PoolClient, snapshot: Cp2Snapshot): Promise<void> {
+async function saveAccountSyncChanges(
+  client: PoolClient,
+  snapshot: Cp2Snapshot,
+  previous?: Cp2Snapshot,
+  stats?: PersistenceWriteStats,
+  forcedRemovalChecks: ReadonlySet<string> = new Set()
+): Promise<void> {
   const startedAt = Date.now();
 
   try {
     await client.query("begin");
+    await lockNormalizedStore(client);
     for (const change of snapshot.syncChanges) {
       requireAccountSyncCollection(change.accountId, change.collection);
     }
-    await replaceAccountSyncChanges(client, snapshot);
+    await replaceAccountSyncChanges(client, snapshot, previous, stats, forcedRemovalChecks);
     await client.query("commit");
     logSlowQuery("persist account sync journal", startedAt);
     console.info(
       JSON.stringify({
         event: "account_sync_changes_transaction_committed",
         changeCount: snapshot.syncChanges.length,
+        changesWritten: stats?.journalEntries ?? snapshot.syncChanges.length,
         accountCount: new Set(snapshot.syncChanges.map((change) => change.accountId)).size
       })
     );
@@ -2926,50 +3149,182 @@ export async function saveCollectionRecords(
   }
 }
 
-async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapshot): Promise<void> {
+/**
+ * Records in `current` that are not content-identical to a record in `previous`, the snapshot of
+ * the last successful save. Without a `previous` (the first save, or callers that want a full
+ * write) every record counts as changed. Like collectionUnchanged above, a false "changed" only
+ * costs a no-op upsert; a false "unchanged" is impossible because any difference in a record's
+ * serialized content marks it changed.
+ */
+export function recordsChangedSince<T>(
+  current: readonly T[] | undefined,
+  previous: readonly T[] | undefined
+): T[] {
+  const records = current ?? [];
+  if (previous === undefined) return [...records];
+  const persisted = new Set(previous.map((record) => JSON.stringify(record)));
+  return records.filter((record) => !persisted.has(JSON.stringify(record)));
+}
+
+/**
+ * The relational upsert loops below used to rewrite every row of every table on every save: one
+ * round trip per row, ~600 for a small store, which against a remote database made each save take
+ * ~5 minutes (measured 319s for "persist CP2 relational store" against Neon). Any network blip in
+ * that window failed the whole transaction, so nothing persisted and every mutating request waited
+ * out the response deadline. Each loop's row is derived only from its own record, so writing only
+ * changed records is equivalent; deletions still compare against the full snapshot.
+ */
+function relationalChangeSelector(
+  snapshot: Cp2Snapshot,
+  previous: Cp2Snapshot | undefined,
+  stats?: PersistenceWriteStats
+) {
+  return (key: keyof Cp2Snapshot): SnapshotRecord[] => {
+    const changed = recordsChangedSince(
+      snapshotRecords(snapshot[key]),
+      previous === undefined ? undefined : snapshotRecords(previous[key])
+    );
+    if (stats !== undefined) stats.relationalRecords += changed.length;
+    return changed;
+  };
+}
+
+/**
+ * Records a save actually sent, logged per save (cp2_persistence_saved) as the trace for the
+ * changed-only writes. A record can map to more than one row (e.g. user identities).
+ */
+interface PersistenceWriteStats {
+  relationalRecords: number;
+  journalEntries: number;
+}
+
+/**
+ * replaceReceiptLineItems deletes every line item of each receipt it is given and re-inserts the
+ * records passed in, so it must receive all current items of any receipt whose items changed -
+ * passing only the changed items would drop their unchanged siblings.
+ */
+export function receiptLineItemsToRewrite(
+  snapshot: Cp2Snapshot,
+  previous: Cp2Snapshot | undefined
+): SnapshotRecord[] {
+  const items = snapshotRecords(snapshot.receiptLineItems);
+  if (previous === undefined) return items;
+  const touchedReceiptIds = new Set(
+    recordsChangedSince(items, snapshotRecords(previous.receiptLineItems)).map((item) =>
+      requiredText(item, "receiptId")
+    )
+  );
+  return items.filter((item) => touchedReceiptIds.has(requiredText(item, "receiptId")));
+}
+
+/** Exported for tests/cp2-postgres-store.test.ts, which drives receipt line-item rewrites directly. */
+export async function saveRelationalCoreRecords(
+  client: PoolClient,
+  snapshot: Cp2Snapshot,
+  previous?: Cp2Snapshot,
+  stats?: PersistenceWriteStats,
+  forcedRemovalChecks: ReadonlySet<string> = new Set()
+): Promise<void> {
   const now = new Date().toISOString();
+  const changed = relationalChangeSelector(snapshot, previous, stats);
+  // A collection identical to the last save cannot have lost a row, so its delete query (which
+  // ships every current id to the database) is skipped; any change still runs it.
+  const mayHaveRemovals = (key: keyof Cp2Snapshot) =>
+    previous?.[key] === undefined ||
+    forcedRemovalChecks.has(key) ||
+    !collectionUnchanged(snapshotRecords(snapshot[key] ?? []), snapshotRecords(previous[key]));
 
-  await saveShopDeletionArchives(client, snapshotRecords(snapshot.accountDeletionRequests));
+  await saveShopDeletionArchives(client, changed("accountDeletionRequests"));
 
-  await deleteMissingRows(client, "mcp_access_tokens", snapshotRecords(snapshot.mcpAccessTokens));
-  await deleteMissingRows(
-    client,
-    "cp2_external_registry_connections",
-    snapshotRecords(snapshot.externalRegistryConnections)
-  );
-  await deleteMissingRows(client, "receipt_line_items", snapshotRecords(snapshot.receiptLineItems));
-  await deleteMissingRows(client, "payments", snapshotRecords(snapshot.payments));
-  await deleteMissingInvoiceRows(client, snapshotRecords(snapshot.invoices));
-  await deleteMissingRows(client, "purchase_receipts", snapshotRecords(snapshot.purchaseReceipts));
-  await deleteMissingRows(client, "receipt_ocr_jobs", snapshotRecords(snapshot.receiptOCRJobs));
-  await deleteMissingRows(
-    client,
-    "supplier_contact_links",
-    snapshotRecords(snapshot.supplierContactLinks)
-  );
-  await deleteMissingDeviceTrustRows(client, snapshotRecords(snapshot.deviceTrust));
-  await deleteMissingRows(client, "oauth_sessions", snapshotRecords(snapshot.oauthSessions));
-  await deleteMissingRows(client, "auth_accounts", snapshotRecords(snapshot.userIdentities));
-  await deleteMissingRows(
-    client,
-    "verification_challenges",
-    snapshotRecords(snapshot.otpChallenges)
-  );
-  await deleteMissingRows(
-    client,
-    "sms_delivery_attempts",
-    snapshotRecords(snapshot.smsDeliveryAttempts)
-  );
-  await deleteMissingRows(client, "user_identities", snapshotRecords(snapshot.userIdentities));
-  await deleteMissingRows(client, "otp_challenges", snapshotRecords(snapshot.otpChallenges));
-  await deleteMissingAccountPinHashes(client, snapshotRecords(snapshot.accountPinHashes));
-  await deleteMissingRows(client, "sales_agents", snapshotRecords(snapshot.salesAgents));
-  await deleteMissingRows(client, "suppliers", snapshotRecords(snapshot.suppliers));
-  await deleteMissingRows(client, "sessions", snapshotRecords(snapshot.sessions));
-  await deleteMissingRows(client, "business_memberships", snapshotRecords(snapshot.memberships));
-  await deleteRemovedAccountRelationalGraph(client, snapshot);
+  if (mayHaveRemovals("mcpAccessTokens")) {
+    await deleteMissingRows(client, "mcp_access_tokens", snapshotRecords(snapshot.mcpAccessTokens));
+  }
+  if (mayHaveRemovals("externalRegistryConnections")) {
+    await deleteMissingRows(
+      client,
+      "cp2_external_registry_connections",
+      snapshotRecords(snapshot.externalRegistryConnections)
+    );
+  }
+  if (mayHaveRemovals("receiptLineItems")) {
+    await deleteMissingRows(
+      client,
+      "receipt_line_items",
+      snapshotRecords(snapshot.receiptLineItems)
+    );
+  }
+  if (mayHaveRemovals("payments")) {
+    await deleteMissingRows(client, "payments", snapshotRecords(snapshot.payments));
+  }
+  if (mayHaveRemovals("invoices")) {
+    await deleteMissingInvoiceRows(client, snapshotRecords(snapshot.invoices));
+  }
+  if (mayHaveRemovals("purchaseReceipts")) {
+    await deleteMissingRows(
+      client,
+      "purchase_receipts",
+      snapshotRecords(snapshot.purchaseReceipts)
+    );
+  }
+  if (mayHaveRemovals("receiptOCRJobs")) {
+    await deleteMissingRows(client, "receipt_ocr_jobs", snapshotRecords(snapshot.receiptOCRJobs));
+  }
+  if (mayHaveRemovals("supplierContactLinks")) {
+    await deleteMissingRows(
+      client,
+      "supplier_contact_links",
+      snapshotRecords(snapshot.supplierContactLinks)
+    );
+  }
+  if (mayHaveRemovals("deviceTrust")) {
+    await deleteMissingDeviceTrustRows(client, snapshotRecords(snapshot.deviceTrust));
+  }
+  if (mayHaveRemovals("oauthSessions")) {
+    await deleteMissingRows(client, "oauth_sessions", snapshotRecords(snapshot.oauthSessions));
+  }
+  if (mayHaveRemovals("userIdentities")) {
+    await deleteMissingRows(client, "auth_accounts", snapshotRecords(snapshot.userIdentities));
+  }
+  if (mayHaveRemovals("otpChallenges")) {
+    await deleteMissingRows(
+      client,
+      "verification_challenges",
+      snapshotRecords(snapshot.otpChallenges)
+    );
+  }
+  if (mayHaveRemovals("smsDeliveryAttempts")) {
+    await deleteMissingRows(
+      client,
+      "sms_delivery_attempts",
+      snapshotRecords(snapshot.smsDeliveryAttempts)
+    );
+  }
+  if (mayHaveRemovals("userIdentities")) {
+    await deleteMissingRows(client, "user_identities", snapshotRecords(snapshot.userIdentities));
+  }
+  if (mayHaveRemovals("otpChallenges")) {
+    await deleteMissingRows(client, "otp_challenges", snapshotRecords(snapshot.otpChallenges));
+  }
+  if (mayHaveRemovals("accountPinHashes")) {
+    await deleteMissingAccountPinHashes(client, snapshotRecords(snapshot.accountPinHashes));
+  }
+  if (mayHaveRemovals("salesAgents")) {
+    await deleteMissingRows(client, "sales_agents", snapshotRecords(snapshot.salesAgents));
+  }
+  if (mayHaveRemovals("suppliers")) {
+    await deleteMissingRows(client, "suppliers", snapshotRecords(snapshot.suppliers));
+  }
+  if (mayHaveRemovals("sessions")) {
+    await deleteMissingRows(client, "sessions", snapshotRecords(snapshot.sessions));
+  }
+  if (mayHaveRemovals("memberships")) {
+    await deleteMissingRows(client, "business_memberships", snapshotRecords(snapshot.memberships));
+  }
+  if (mayHaveRemovals("accounts") || mayHaveRemovals("users") || mayHaveRemovals("businesses")) {
+    await deleteRemovedAccountRelationalGraph(client, snapshot);
+  }
 
-  for (const record of snapshotRecords(snapshot.accounts)) {
+  for (const record of changed("accounts")) {
     await client.query(
       `
         insert into accounts (
@@ -2997,7 +3352,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.users)) {
+  for (const record of changed("users")) {
     await client.query(
       `
         insert into users (
@@ -3048,7 +3403,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.businesses)) {
+  for (const record of changed("businesses")) {
     await client.query(
       `
         insert into businesses (id, name, language, soko_id, timezone, created_at)
@@ -3071,7 +3426,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.memberships)) {
+  for (const record of changed("memberships")) {
     await client.query(
       `
         insert into business_memberships (id, business_id, user_id, role, created_at)
@@ -3092,7 +3447,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.products)) {
+  for (const record of changed("products")) {
     await client.query(
       `
         insert into products
@@ -3131,7 +3486,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.customers)) {
+  for (const record of changed("customers")) {
     await client.query(
       `
         insert into customers (id, business_id, name, phone, email, linked_account_id, notes, created_at, updated_at)
@@ -3160,7 +3515,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.suppliers)) {
+  for (const record of changed("suppliers")) {
     await client.query(
       `
         insert into suppliers (
@@ -3200,7 +3555,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.salesAgents)) {
+  for (const record of changed("salesAgents")) {
     await client.query(
       `
         insert into sales_agents (
@@ -3238,9 +3593,9 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  await savePhase1AuthSecurityRecords(client, snapshot);
+  await savePhase1AuthSecurityRecords(client, snapshot, previous, stats);
 
-  for (const record of snapshotRecords(snapshot.supplierContactLinks)) {
+  for (const record of changed("supplierContactLinks")) {
     await client.query(
       `
         insert into supplier_contact_links (
@@ -3270,7 +3625,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.receiptOCRJobs)) {
+  for (const record of changed("receiptOCRJobs")) {
     await client.query(
       `
         insert into receipt_ocr_jobs (
@@ -3325,7 +3680,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.purchaseReceipts)) {
+  for (const record of changed("purchaseReceipts")) {
     await client.query(
       `
         insert into purchase_receipts (
@@ -3362,10 +3717,12 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  await replaceReceiptLineItems(client, snapshotRecords(snapshot.receiptLineItems));
-  await saveInvoicesAndItems(client, snapshotRecords(snapshot.invoices));
+  const receiptLineItems = receiptLineItemsToRewrite(snapshot, previous);
+  if (stats !== undefined) stats.relationalRecords += receiptLineItems.length;
+  await replaceReceiptLineItems(client, receiptLineItems);
+  await saveInvoicesAndItems(client, changed("invoices"));
 
-  for (const record of snapshotRecords(snapshot.payments)) {
+  for (const record of changed("payments")) {
     await client.query(
       `
         insert into payments (
@@ -3394,7 +3751,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const record of snapshotRecords(snapshot.sessions)) {
+  for (const record of changed("sessions")) {
     await client.query(
       `
         insert into sessions (
@@ -3453,7 +3810,12 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const token of snapshot.mcpAccessTokens) {
+  const changedMcpAccessTokens = recordsChangedSince(
+    snapshot.mcpAccessTokens,
+    previous?.mcpAccessTokens
+  );
+  if (stats !== undefined) stats.relationalRecords += changedMcpAccessTokens.length;
+  for (const token of changedMcpAccessTokens) {
     await client.query(
       `
         insert into mcp_access_tokens (
@@ -3488,7 +3850,12 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
-  for (const connection of snapshot.externalRegistryConnections) {
+  const changedExternalRegistryConnections = recordsChangedSince(
+    snapshot.externalRegistryConnections,
+    previous?.externalRegistryConnections
+  );
+  if (stats !== undefined) stats.relationalRecords += changedExternalRegistryConnections.length;
+  for (const connection of changedExternalRegistryConnections) {
     await client.query(
       `
         insert into cp2_external_registry_connections (
@@ -3523,7 +3890,20 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   }
 }
 
-async function replaceAccountSyncChanges(client: PoolClient, snapshot: Cp2Snapshot): Promise<void> {
+/** True when an entry saved last time is gone from the journal (pruned): only then can the delete remove a row. */
+function syncChangesMayHaveRemovals(
+  current: Cp2Snapshot["syncChanges"],
+  previous: Cp2Snapshot["syncChanges"] | undefined
+): boolean {
+  if (previous === undefined) return true;
+  const currentKeys = new Set(current.map((change) => `${change.accountId}:${change.sequence}`));
+  return previous.some((change) => !currentKeys.has(`${change.accountId}:${change.sequence}`));
+}
+
+async function deleteRemovedAccountSyncChanges(
+  client: PoolClient,
+  snapshot: Cp2Snapshot
+): Promise<void> {
   await client.query(
     `
       delete from account_sync_changes as persisted
@@ -3543,8 +3923,27 @@ async function replaceAccountSyncChanges(client: PoolClient, snapshot: Cp2Snapsh
       )
     ]
   );
+}
 
-  if (snapshot.syncChanges.length === 0) return;
+async function replaceAccountSyncChanges(
+  client: PoolClient,
+  snapshot: Cp2Snapshot,
+  previous?: Cp2Snapshot,
+  stats?: PersistenceWriteStats,
+  forcedRemovalChecks: ReadonlySet<string> = new Set()
+): Promise<void> {
+  if (
+    forcedRemovalChecks.has("syncChanges") ||
+    syncChangesMayHaveRemovals(snapshot.syncChanges, previous?.syncChanges)
+  ) {
+    await deleteRemovedAccountSyncChanges(client, snapshot);
+  }
+
+  // Re-sending the whole journal (~22k rows, ~15 MB) on every save took ~14s against Neon even
+  // with the bulk upsert; only entries added or changed since the last saved journal need writing.
+  const changedSyncChanges = recordsChangedSince(snapshot.syncChanges, previous?.syncChanges);
+  if (stats !== undefined) stats.journalEntries = changedSyncChanges.length;
+  if (changedSyncChanges.length === 0) return;
 
   try {
     // The common case (no constraint violation) is a single bulk upsert instead of one round
@@ -3553,12 +3952,12 @@ async function replaceAccountSyncChanges(client: PoolClient, snapshot: Cp2Snapsh
     // were the dominant cost of "persist account sync journal", observed taking 40s+ in
     // production. See docs note at upsertAccountSyncChangesOneByOne for why the fallback below
     // still exists.
-    await upsertAccountSyncChangesBulk(client, snapshot.syncChanges);
+    await upsertAccountSyncChangesBulk(client, changedSyncChanges);
   } catch {
     // The bulk statement can't identify which row violated a constraint - fall back to the
     // slower row-by-row path only when something actually went wrong, so
     // AccountSyncPersistenceError still names the exact offending account/collection.
-    await upsertAccountSyncChangesOneByOne(client, snapshot.syncChanges);
+    await upsertAccountSyncChangesOneByOne(client, changedSyncChanges);
   }
 }
 
@@ -3900,11 +4299,14 @@ async function saveShopDeletionArchives(
 
 async function savePhase1AuthSecurityRecords(
   client: PoolClient,
-  snapshot: Cp2Snapshot
+  snapshot: Cp2Snapshot,
+  previous?: Cp2Snapshot,
+  stats?: PersistenceWriteStats
 ): Promise<void> {
+  const changed = relationalChangeSelector(snapshot, previous, stats);
   await saveIdentityProviders(client, snapshot);
 
-  for (const record of snapshotRecords(snapshot.otpChallenges)) {
+  for (const record of changed("otpChallenges")) {
     await client.query(
       `
         insert into otp_challenges (
@@ -4005,7 +4407,7 @@ async function savePhase1AuthSecurityRecords(
     );
   }
 
-  for (const record of snapshotRecords(snapshot.smsDeliveryAttempts)) {
+  for (const record of changed("smsDeliveryAttempts")) {
     await client.query(
       `
         insert into sms_delivery_attempts (
@@ -4034,7 +4436,7 @@ async function savePhase1AuthSecurityRecords(
     );
   }
 
-  for (const record of snapshotRecords(snapshot.userIdentities)) {
+  for (const record of changed("userIdentities")) {
     await client.query(
       `
         insert into user_identities (
@@ -4109,7 +4511,7 @@ async function savePhase1AuthSecurityRecords(
     );
   }
 
-  for (const record of snapshotRecords(snapshot.oauthSessions)) {
+  for (const record of changed("oauthSessions")) {
     await client.query(
       `
         insert into oauth_sessions (
@@ -4145,7 +4547,7 @@ async function savePhase1AuthSecurityRecords(
     );
   }
 
-  for (const record of snapshotRecords(snapshot.accountPinHashes)) {
+  for (const record of changed("accountPinHashes")) {
     await client.query(
       `
         insert into account_pin_hashes (account_id, pin_hash, updated_at)
@@ -4159,7 +4561,7 @@ async function savePhase1AuthSecurityRecords(
     );
   }
 
-  for (const record of snapshotRecords(snapshot.deviceTrust)) {
+  for (const record of changed("deviceTrust")) {
     const updatedBy = requiredText(record, "updatedBy");
     const updatedByType = updatedBy === "system" || updatedBy === "service" ? updatedBy : "user";
 

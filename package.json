@@ -53,6 +53,7 @@
     "db:verify-neon-production": "REQUIRE_NEON_DATABASE=true pnpm --filter @soko/api db:verify-schema",
     "db:rollback": "pnpm --filter @soko/api db:rollback",
     "db:restore": "pnpm --filter @soko/api db:restore",
+    "db:store-lock": "pnpm --filter @soko/api db:store-lock",
     "eval:ai": "pnpm --filter @soko/api eval:ai",
     "format": "prettier --check .",
     "format:write": "prettier --write .",

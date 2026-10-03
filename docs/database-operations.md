@@ -115,6 +115,8 @@ The API must fail fast when migrations are missing. It must not create tables fr
 
 Core business records hydrate from relational tables. The `cp2_*` tables remain as compatibility tables for non-core CP2 collections while the API surface is incrementally moved to direct relational access.
 
+Each save upserts only the relational records that changed since the last successful save (`cp2_persistence_saved` logs how many after each relational commit, with `journal: "ok"` or `"failed"`); a `cp2_*` compatibility collection is still sent whole, in bulk, when any record in it changes. Saves run under a transaction-scoped advisory lock that is safe through Neon's transaction-mode pooler. The API never re-reads Postgres while running, so stop every API instance before editing CP2 tables by hand and start it afterwards; see [Out-of-band database edits](runbooks/cp2-store-lock-leak.md#out-of-band-database-edits). Columns that triggers or the save derive from the clock at write time (`sessions.revoked_at` for expired sessions, `verification_challenges.status` for expired challenges) are refreshed only when that row is next written; readers enforce expiry from the stored timestamps. If saves fail with `55P03` (lock_not_available), follow [the CP2 store lock leak runbook](runbooks/cp2-store-lock-leak.md).
+
 ## Monitoring and pool settings
 
 Use:

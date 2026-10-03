@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -43,9 +43,10 @@ import {
   createPostgresCp2Store,
   normalizedCollections,
   saveCollectionRecords,
+  saveRelationalCoreRecords,
   upsertAccountSyncChangesBulk
 } from "../services/api/src/cp2/postgres-store";
-import { readSessionCookie, sessionCookieName } from "../services/api/src/cp2/store";
+import { Cp2Store, readSessionCookie, sessionCookieName } from "../services/api/src/cp2/store";
 import type { ModelArtifactStore } from "../services/api/src/inference/model-artifact-store";
 import {
   createVercelInferenceClient,
@@ -66,7 +67,7 @@ interface TestPool extends SqlExecutor {
 }
 
 interface TestPoolClient extends SqlExecutor {
-  release(): void;
+  release(destroy?: boolean): void;
 }
 
 const requireApiDependency = createRequire(resolve(process.cwd(), "services/api/package.json"));
@@ -95,6 +96,21 @@ interface SyncPageResponse {
 interface McpTokenResponse {
   accessToken: string;
   token: { id: string };
+}
+
+const usedTestTags = new Set<string>();
+/**
+ * Five random digits, unique within this run, for building `+2547${tag}NNN` test phone numbers that
+ * do not collide with accounts left in a reused development database by earlier runs.
+ */
+function uniqueTestTag(): string {
+  for (;;) {
+    const tag = String(randomInt(0, 100_000)).padStart(5, "0");
+    if (!usedTestTags.has(tag)) {
+      usedTestTags.add(tag);
+      return tag;
+    }
+  }
 }
 
 const databaseUrl = process.env.CP2_POSTGRES_TEST_DATABASE_URL;
@@ -2473,6 +2489,1403 @@ describePostgres("CP2 Postgres store", () => {
     }
   }, 15_000);
 
+  it("saves only changed relational rows after boot instead of rewriting every account, user and session", async () => {
+    // Regression: saveRelationalCoreRecords re-upserted every row of accounts/users/sessions/...
+    // one round trip at a time on every save. Against Neon (~450ms per round trip) one save took
+    // 319s, a network blip in that window failed it, nothing ever persisted, and every mutating
+    // request (PIN login included) hung for the full 8s response deadline.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const tag = uniqueTestTag();
+    const seededCount = 30;
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    try {
+      const seeded = Array.from({ length: seededCount }, (_unused, index) =>
+        store.continueWithChannelPin({
+          channel: "phone",
+          destination: `+2547${tag}${String(index).padStart(3, "0")}`,
+          pin: "7421"
+        })
+      );
+      await store.flush();
+      await store.close();
+
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const { Client } = requireApiDependency("pg") as {
+        Client: { prototype: { query: (...args: unknown[]) => unknown } };
+      };
+      const statements: string[] = [];
+      // Each statement keeps the client that ran it: background work (the parity refresh) runs
+      // on other pool clients and can interleave, so ordering is only checked per client.
+      const statementsByClient = new Map<unknown, string[]>();
+      const originalQuery = Client.prototype.query;
+      const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        const [first] = args;
+        const sql = typeof first === "string" ? first : (first as { text?: unknown } | null)?.text;
+        if (typeof sql === "string") {
+          statements.push(sql);
+          const ownStatements = statementsByClient.get(this) ?? [];
+          ownStatements.push(sql);
+          statementsByClient.set(this, ownStatements);
+        }
+        return originalQuery.apply(this, args);
+      });
+      const infoSpy = vi.spyOn(console, "info");
+      let added: ReturnType<typeof store.continueWithChannelPin>;
+      try {
+        added = store.continueWithChannelPin({
+          channel: "phone",
+          destination: `+2547${tag}999`,
+          pin: "7421"
+        });
+        await store.flush();
+      } finally {
+        querySpy.mockRestore();
+      }
+      const savedEvents = infoSpy.mock.calls
+        .map(([line]) => line)
+        .filter(
+          (line): line is string =>
+            typeof line === "string" && line.includes("cp2_persistence_saved")
+        )
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              relationalRecordsChanged: number;
+              journalEntriesWritten: number;
+              journal: string;
+            }
+        );
+      infoSpy.mockRestore();
+      // The trace for this change: the save reports how little it wrote. The journal holds every
+      // seeded account's entries (2 each, >= 60), so a full journal re-send would show here.
+      expect(savedEvents.length).toBeGreaterThan(0);
+      const lastSave = savedEvents[savedEvents.length - 1];
+      expect(lastSave?.relationalRecordsChanged).toBeGreaterThan(0);
+      expect(lastSave?.relationalRecordsChanged).toBeLessThanOrEqual(10);
+      expect(lastSave?.journalEntriesWritten).toBeGreaterThan(0);
+      expect(lastSave?.journalEntriesWritten).toBeLessThanOrEqual(10);
+      expect(lastSave?.journal).toBe("ok");
+
+      const upserts = (table: string) =>
+        statements.filter((sql) => new RegExp(`insert into ${table}\\s*\\(`).test(sql)).length;
+      // Before the fix each of these equalled the table's full row count (>= seededCount + 1).
+      expect(upserts("accounts")).toBe(1);
+      expect(upserts("users")).toBe(1);
+      expect(upserts("sessions")).toBeLessThanOrEqual(2);
+      expect(upserts("account_pin_hashes")).toBe(1);
+      // Untouched collections cannot have lost rows, so their delete queries are skipped too.
+      const deletes = (table: string) =>
+        statements.filter((sql) => new RegExp(`delete from ${table}\\s+where`).test(sql)).length;
+      expect(deletes("suppliers")).toBe(0);
+      expect(deletes("payments")).toBe(0);
+      expect(deletes("mcp_access_tokens")).toBe(0);
+
+      // Regression: a session-level pg_advisory_lock taken outside the transaction leaked through
+      // Neon's transaction-mode PgBouncer and wedged every later save. Only the transaction-scoped
+      // lock may be used, taken right after "begin" and a bounded lock_timeout, on the same client.
+      expect(statements.some((sql) => /pg_advisory_(un)?lock\(/.test(sql))).toBe(false);
+      let lockCount = 0;
+      for (const ownStatements of statementsByClient.values()) {
+        ownStatements.forEach((sql, index) => {
+          if (!/pg_advisory_xact_lock\(/.test(sql)) return;
+          lockCount += 1;
+          expect(sql).toMatch(/^set local lock_timeout = '\d+ms'; select pg_advisory_xact_lock\(/);
+          expect(ownStatements[index - 1]?.trim()).toBe("begin");
+        });
+      }
+      expect(lockCount).toBeGreaterThan(0);
+
+      // Skipping unchanged rows must not lose anything: a cold reload sees every account.
+      await store.close();
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      for (const actor of [...seeded, added]) {
+        expect(store.getSession(actor.session.id)?.account.id).toBe(actor.account.id);
+      }
+      expect(
+        store.loginWithAccountPin({
+          channel: "phone",
+          destination: `+2547${tag}999`,
+          pin: "7421"
+        }).account.id
+      ).toBe(added.account.id);
+    } finally {
+      await store.close();
+    }
+  }, 120_000);
+
+  it("still deletes a removed relational row after skipping unchanged collections", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    try {
+      const app = buildApi({ cp2: { store } });
+      const owner = await createOwnerBusiness(app, `254706${Date.now().toString().slice(-6)}`);
+      const businessId = owner.business.id;
+      const supplier = await postJson<SupplierBusinessCardSummary>(
+        app,
+        `/businesses/${businessId}/suppliers`,
+        { name: "Removed Supplier Ltd", phone: "+254711222334", email: null, notes: null },
+        owner.sessionCookie
+      );
+      await app.close();
+      await store.flush();
+      await store.close();
+
+      // Fresh boot: the delete must be detected against the loaded baseline, not a full rewrite.
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const sessionId = readSessionCookie(owner.sessionCookie);
+      store.deleteSupplier({ sessionId, businessId, supplierId: supplier.id });
+      await store.flush();
+
+      const remaining = await pool.query("select id from suppliers where id = $1", [supplier.id]);
+      expect(remaining.rows).toHaveLength(0);
+    } finally {
+      await store.close();
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("persists a logout that lands while a save is in flight (no in-place change baked into the baseline)", async () => {
+    // Regression: store.snapshot() shares record objects that the store mutates in place. The
+    // baseline used to be cloned after the awaited save, so a revocation made mid-save entered the
+    // baseline unwritten, the trailing save diffed it as unchanged, and the logout was lost on
+    // restart.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const tag = uniqueTestTag();
+    const { Client } = requireApiDependency("pg") as {
+      Client: { prototype: { query: (...args: unknown[]) => unknown } };
+    };
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    try {
+      const victim = store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}001`,
+        pin: "7421"
+      });
+      await store.flush();
+
+      const originalQuery = Client.prototype.query;
+      let loggedOutMidSave = false;
+      const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        const [first] = args;
+        const sql = typeof first === "string" ? first : (first as { text?: string } | null)?.text;
+        if (!loggedOutMidSave && sql?.trim() === "commit") {
+          loggedOutMidSave = true;
+          store.logout(victim.session.id);
+        }
+        return originalQuery.apply(this, args);
+      });
+      try {
+        store.continueWithChannelPin({
+          channel: "phone",
+          destination: `+2547${tag}002`,
+          pin: "7421"
+        });
+        await store.flush();
+      } finally {
+        querySpy.mockRestore();
+      }
+      expect(loggedOutMidSave).toBe(true);
+      expect(store.getSession(victim.session.id)).toBeNull();
+
+      await store.close();
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      expect(store.getSession(victim.session.id)).toBeNull();
+    } finally {
+      await store.close();
+    }
+  }, 120_000);
+
+  it("re-sends journal entries a failed journal write left behind on the next save", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const infoSpy = vi.spyOn(console, "info");
+    try {
+      await pool.query(
+        "alter table account_sync_changes add constraint force_journal_retry_failure check (false) not valid"
+      );
+      let missed: ReturnType<typeof store.continueWithChannelPin>;
+      try {
+        missed = store.continueWithChannelPin({
+          channel: "phone",
+          destination: `+2547${tag}001`,
+          pin: "7421"
+        });
+        await store.flush();
+        expect((await store.health()).syncJournal.status).toBe("degraded");
+        // The relational rows did commit, so the trace still reports the save, marked failed.
+        expect(
+          infoSpy.mock.calls.some(
+            ([line]) =>
+              typeof line === "string" &&
+              line.includes("cp2_persistence_saved") &&
+              line.includes('"journal":"failed"')
+          )
+        ).toBe(true);
+      } finally {
+        await pool.query(
+          "alter table account_sync_changes drop constraint if exists force_journal_retry_failure"
+        );
+      }
+      const journalCount = async (accountId: string) =>
+        Number(
+          (
+            await pool.query<{ count: string }>(
+              "select count(*)::text as count from account_sync_changes where account_id = $1",
+              [accountId]
+            )
+          ).rows[0]?.count
+        );
+      expect(await journalCount(missed.account.id)).toBe(0);
+
+      store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}002`,
+        pin: "7421"
+      });
+      await store.flush();
+      expect(await journalCount(missed.account.id)).toBeGreaterThan(0);
+      expect((await store.health()).syncJournal.status).toBe("ok");
+    } finally {
+      consoleErrorSpy.mockRestore();
+      infoSpy.mockRestore();
+      await store.close();
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("retries a boot-time journal backfill that failed", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "50";
+    process.env.DB_PERSISTENCE_RETRY_MAX_MS = "200";
+    // The backfill only runs when the stored journal is empty, so park the journal and restore it.
+    const client = await pool.connect();
+    let store: Awaited<ReturnType<typeof createPostgresCp2Store>> | null = null;
+    try {
+      await client.query("create temp table parked as select * from account_sync_changes");
+      await client.query("delete from account_sync_changes");
+      await client.query(
+        "alter table account_sync_changes add constraint force_boot_backfill_failure check (false) not valid"
+      );
+      try {
+        store = await createPostgresCp2Store({ databaseUrl: connectionString });
+        expect((await store.health()).syncJournal.status).toBe("degraded");
+      } finally {
+        await client.query(
+          "alter table account_sync_changes drop constraint if exists force_boot_backfill_failure"
+        );
+      }
+      expect(
+        Number(
+          (await client.query("select count(*)::text as count from account_sync_changes")).rows[0]
+            ?.count
+        )
+      ).toBe(0);
+
+      // No mutation: the retry scheduled at boot alone must write the backfilled journal.
+      const bootStore = store;
+      await waitUntil(async () => {
+        const persisted = await client.query(
+          "select count(*)::text as count from account_sync_changes"
+        );
+        return Number(persisted.rows[0]?.count) > 0;
+      });
+      await waitUntil(async () => (await bootStore.health()).syncJournal.status === "ok");
+    } finally {
+      await store?.close();
+      await client
+        .query("insert into account_sync_changes select * from parked on conflict do nothing")
+        .catch(() => undefined);
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      delete process.env.DB_PERSISTENCE_RETRY_MAX_MS;
+      client.release();
+      await pool.end();
+    }
+  }, 180_000);
+
+  it("writes a hydration repair on the first save after boot (baseline is the loaded snapshot)", async () => {
+    // The diff baseline must be what the database holds. If it were the hydrated store state,
+    // anything hydrateSnapshot changes would look unchanged and never be written. Hydration here
+    // repairs one user's display name in place (users are restored by reference, so this also
+    // proves the baseline is cloned before hydration rather than sharing those records).
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const repairedName = `Repaired on boot ${tag}`;
+    let hydrateSpy: { mockRestore: () => void } | null = null;
+    try {
+      const actor = store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}001`,
+        pin: "7421"
+      });
+      await store.flush();
+      await store.close();
+
+      const originalHydrate = Cp2Store.prototype.hydrateSnapshot;
+      hydrateSpy = vi.spyOn(Cp2Store.prototype, "hydrateSnapshot").mockImplementation(function (
+        this: Cp2Store,
+        snapshot
+      ) {
+        originalHydrate.call(this, snapshot);
+        const user = this.snapshot().users.find((item) => item.id === actor.user.id);
+        if (user !== undefined) user.displayName = repairedName;
+      });
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      hydrateSpy.mockRestore();
+      hydrateSpy = null;
+
+      store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}002`,
+        pin: "7421"
+      });
+      await store.flush();
+
+      const persisted = await pool.query<{ display_name: string }>(
+        "select display_name from users where id = $1",
+        [actor.user.id]
+      );
+      expect(persisted.rows[0]?.display_name).toBe(repairedName);
+    } finally {
+      hydrateSpy?.mockRestore();
+      await store.close();
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("fails a save fast with lock_not_available while another holder has the store lock, then recovers", async () => {
+    // A lock leaked by an older build must not hang each save until the query timeout.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "50";
+    process.env.DB_PERSISTENCE_RETRY_MAX_MS = "200";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const holder = await pool.connect();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await holder.query("select pg_advisory_lock(hashtext('soko.cp2.normalized_store'))");
+      const holderPid = (await holder.query<{ pid: number }>("select pg_backend_pid() as pid"))
+        .rows[0]?.pid;
+      const startedAt = Date.now();
+      const added = store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}001`,
+        pin: "7421"
+      });
+      await expect(store.flush()).rejects.toMatchObject({ code: "55P03" });
+      expect(Date.now() - startedAt).toBeLessThan(14_000);
+      // The failure names who holds the lock and points at the runbook.
+      await waitUntil(async () =>
+        consoleErrorSpy.mock.calls.some(
+          ([line]) => typeof line === "string" && line.includes("cp2_persistence_lock_unavailable")
+        )
+      );
+      const holderLog = consoleErrorSpy.mock.calls
+        .map(([line]) => line)
+        .find(
+          (line): line is string =>
+            typeof line === "string" && line.includes("cp2_persistence_lock_unavailable")
+        );
+      const parsedHolderLog = JSON.parse(holderLog ?? "{}") as {
+        holders?: { pid: number }[];
+        runbook?: string;
+      };
+      expect(parsedHolderLog.holders?.map((item) => item.pid)).toContain(holderPid);
+      expect(parsedHolderLog.runbook).toBe("docs/runbooks/cp2-store-lock-leak.md");
+
+      await holder.query("select pg_advisory_unlock(hashtext('soko.cp2.normalized_store'))");
+      await waitUntil(async () => {
+        const row = await pool.query("select 1 from accounts where id = $1", [added.account.id]);
+        return row.rows.length === 1;
+      });
+    } finally {
+      await holder.query("select pg_advisory_unlock_all()").catch(() => undefined);
+      holder.release();
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      delete process.env.DB_PERSISTENCE_RETRY_MAX_MS;
+      await store.close();
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("retries a failed journal write on its own, without waiting for another mutation", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "50";
+    process.env.DB_PERSISTENCE_RETRY_MAX_MS = "200";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await pool.query(
+        "alter table account_sync_changes add constraint force_journal_autoretry_failure check (false) not valid"
+      );
+      let missed: ReturnType<typeof store.continueWithChannelPin>;
+      try {
+        missed = store.continueWithChannelPin({
+          channel: "phone",
+          destination: `+2547${tag}001`,
+          pin: "7421"
+        });
+        await store.flush();
+        expect((await store.health()).syncJournal.status).toBe("degraded");
+      } finally {
+        await pool.query(
+          "alter table account_sync_changes drop constraint if exists force_journal_autoretry_failure"
+        );
+      }
+      // No further mutation: the scheduled retry alone must deliver the missed entries.
+      await waitUntil(async () => {
+        const rows = await pool.query("select 1 from account_sync_changes where account_id = $1", [
+          missed.account.id
+        ]);
+        return rows.rows.length > 0;
+      });
+      await waitUntil(async () => (await store.health()).syncJournal.status === "ok");
+    } finally {
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      delete process.env.DB_PERSISTENCE_RETRY_MAX_MS;
+      await store.close();
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("deletes a purged business from Postgres after boot (account graph delete gate)", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    let app = buildApi({ cp2: { store } });
+    try {
+      const owner = await createOwnerBusiness(app, `254707${Date.now().toString().slice(-6)}`);
+      const businessId = owner.business.id;
+      await app.close();
+      await store.flush();
+      await store.close();
+
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      app = buildApi({ cp2: { store } });
+      const deletion = await postJson<{ request: { id: string } }>(
+        app,
+        `/businesses/${businessId}/shop-deletion/request`,
+        { shopId: owner.business.sokoId },
+        owner.sessionCookie
+      );
+      await postJson(
+        app,
+        `/businesses/${businessId}/shop-deletion/${deletion.request.id}/finalize`,
+        { pin: "1234", acknowledgement: true, idempotencyKey: `purge-${businessId}` },
+        owner.sessionCookie
+      );
+      expect(store.purgeExpiredShopDeletions(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000))).toBe(
+        1
+      );
+      await store.flush();
+
+      const remaining = await pool.query("select id from businesses where id = $1", [businessId]);
+      expect(remaining.rows).toHaveLength(0);
+    } finally {
+      await app.close();
+      await store.close().catch(() => undefined);
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("deletes pruned journal tombstones from Postgres after boot (journal delete gate)", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    let app = buildApi({ cp2: { store } });
+    try {
+      // Purging a shop journals a "shops" delete tombstone for the owner's devices.
+      const owner = await createOwnerBusiness(app, `254708${Date.now().toString().slice(-6)}`);
+      const businessId = owner.business.id;
+      const deletion = await postJson<{ request: { id: string } }>(
+        app,
+        `/businesses/${businessId}/shop-deletion/request`,
+        { shopId: owner.business.sokoId },
+        owner.sessionCookie
+      );
+      await postJson(
+        app,
+        `/businesses/${businessId}/shop-deletion/${deletion.request.id}/finalize`,
+        { pin: "1234", acknowledgement: true, idempotencyKey: `tombstone-${businessId}` },
+        owner.sessionCookie
+      );
+      store.purgeExpiredShopDeletions(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000));
+      await app.close();
+      await store.flush();
+      await store.close();
+
+      const tombstones = await pool.query(
+        `update account_sync_changes set tombstone_expires_at = now() - interval '1 day'
+          where operation = 'delete' and entity_id = $1
+          returning sequence`,
+        [businessId]
+      );
+      expect(tombstones.rows.length).toBeGreaterThan(0);
+
+      // Boot loads the expired tombstone; pulling prunes it in memory, and the next save must
+      // delete it from Postgres.
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      app = buildApi({ cp2: { store } });
+      // Pruning expired tombstones is journal-wide, so any PIN-verified session can trigger it.
+      const reader = store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}001`,
+        pin: "7421"
+      });
+      store.pullSyncChanges({ sessionId: reader.session.id, cursor: null });
+      store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}002`,
+        pin: "7421"
+      });
+      await store.flush();
+
+      const remaining = await pool.query(
+        "select 1 from account_sync_changes where operation = 'delete' and entity_id = $1",
+        [businessId]
+      );
+      expect(remaining.rows).toHaveLength(0);
+    } finally {
+      await app.close();
+      await store.close().catch(() => undefined);
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("backs off retries while the journal keeps failing instead of retrying at the initial delay", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "25";
+    process.env.DB_PERSISTENCE_RETRY_MAX_MS = "800";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const journalFailures = () =>
+      consoleErrorSpy.mock.calls.filter(
+        ([line]) => typeof line === "string" && line.includes('"attemptedCollection"')
+      ).length;
+    try {
+      await pool.query(
+        "alter table account_sync_changes add constraint force_journal_backoff_failure check (false) not valid"
+      );
+      try {
+        store.continueWithChannelPin({
+          channel: "phone",
+          destination: `+2547${tag}001`,
+          pin: "7421"
+        });
+        await store.flush();
+        const before = journalFailures();
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_000));
+        // Doubling from 25ms reaches the 800ms cap within ~1.5s: about 6 attempts in 2s. Without
+        // backoff (delay reset to 25ms after every failed journal write) it would be dozens.
+        expect(journalFailures() - before).toBeLessThanOrEqual(10);
+      } finally {
+        await pool.query(
+          "alter table account_sync_changes drop constraint if exists force_journal_backoff_failure"
+        );
+      }
+    } finally {
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      delete process.env.DB_PERSISTENCE_RETRY_MAX_MS;
+      await store.close();
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("store-lock.mjs finds and releases only an idle leaked holder in this database", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const { findStoreLockHolders, releaseLeakedStoreLockHolders } =
+      (await import("../services/api/scripts/store-lock-lib.mjs")) as {
+        findStoreLockHolders: (client: TestPool) => Promise<{
+          holders: { pid: number; state: string }[];
+          waiters: { pid: number }[];
+        }>;
+        releaseLeakedStoreLockHolders: (
+          client: TestPool
+        ) => Promise<{ pid: number; terminated: boolean }[]>;
+      };
+    const pool = new Pool({ connectionString });
+    const otherDatabaseUrl = connectionString.replace(/\/[^/?]+(\?|$)/, "/postgres$1");
+    const otherPool = new Pool({ connectionString: otherDatabaseUrl });
+    const leaked = await pool.connect();
+    // Terminating this backend is the point of the test; swallow the resulting socket error.
+    (leaked as unknown as { on: (event: string, listener: () => void) => void }).on(
+      "error",
+      () => undefined
+    );
+    const otherDatabaseHolder = await otherPool.connect();
+    try {
+      await leaked.query("select pg_advisory_lock(hashtext('soko.cp2.normalized_store'))");
+      await otherDatabaseHolder.query(
+        "select pg_advisory_lock(hashtext('soko.cp2.normalized_store'))"
+      );
+      const leakedPid = (await leaked.query<{ pid: number }>("select pg_backend_pid() as pid"))
+        .rows[0]?.pid;
+      const otherPid = (
+        await otherDatabaseHolder.query<{ pid: number }>("select pg_backend_pid() as pid")
+      ).rows[0]?.pid;
+
+      const found = await findStoreLockHolders(pool);
+      const pids = found.holders.map((row) => row.pid);
+      expect(pids).toContain(leakedPid);
+      // pg_locks is server-wide: the same key held in another database must not match.
+      expect(pids).not.toContain(otherPid);
+
+      const released = await releaseLeakedStoreLockHolders(pool);
+      expect(released).toContainEqual({ pid: leakedPid, terminated: true });
+      expect(released.map((row) => row.pid)).not.toContain(otherPid);
+      expect((await findStoreLockHolders(pool)).holders.map((row) => row.pid)).not.toContain(
+        leakedPid
+      );
+    } finally {
+      await otherDatabaseHolder.query("select pg_advisory_unlock_all()").catch(() => undefined);
+      otherDatabaseHolder.release();
+      leaked.release(true);
+      await otherPool.end();
+      await pool.end().catch(() => undefined);
+    }
+  }, 60_000);
+
+  it("store-lock.mjs leaves a holder inside a transaction (a current-build save) alone", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const { releaseLeakedStoreLockHolders } =
+      (await import("../services/api/scripts/store-lock-lib.mjs")) as {
+        releaseLeakedStoreLockHolders: (
+          client: TestPool
+        ) => Promise<{ pid: number; terminated: boolean }[]>;
+      };
+    const pool = new Pool({ connectionString });
+    const saving = await pool.connect();
+    try {
+      await saving.query("begin");
+      await saving.query("select pg_advisory_xact_lock(hashtext('soko.cp2.normalized_store'))");
+      const savingPid = (await saving.query<{ pid: number }>("select pg_backend_pid() as pid"))
+        .rows[0]?.pid;
+      const released = await releaseLeakedStoreLockHolders(pool);
+      expect(released.map((row) => row.pid)).not.toContain(savingPid);
+      await saving.query("commit");
+    } finally {
+      saving.release();
+      await pool.end();
+    }
+  }, 60_000);
+
+  it("keeps a receipt's unchanged line items when only one of them changes", async () => {
+    // replaceReceiptLineItems deletes all items of each receipt it is given before re-inserting,
+    // so a changed-only write must pass every item of a touched receipt, not just the changed one.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store } });
+    const pool = new Pool({ connectionString });
+    const client = await pool.connect();
+    try {
+      const owner = await createOwnerBusiness(app, `254709${Date.now().toString().slice(-6)}`);
+      const businessId = owner.business.id;
+      const supplier = await postJson<SupplierBusinessCardSummary>(
+        app,
+        `/businesses/${businessId}/suppliers`,
+        { name: "Two Item Wholesale", phone: "+254711222336", email: null, notes: null },
+        owner.sessionCookie
+      );
+      const ocrJob = await postJson<ReceiptOCRJobSummary>(
+        app,
+        `/businesses/${businessId}/receipt-ocr/jobs`,
+        {
+          fileName: "receipt.txt",
+          contentType: "text/plain",
+          contentBase64: null,
+          extractedText:
+            "Supplier: Two Item Wholesale\nPhone: +254711222336\nTotal: 500\nItem A, 2, 100, 200\nItem B, 1, 300, 300"
+        },
+        owner.sessionCookie
+      );
+      const receipt = await postJson<PurchaseReceiptSummary>(
+        app,
+        `/businesses/${businessId}/receipt-ocr/jobs/${ocrJob.id}/confirm`,
+        { supplierId: supplier.id },
+        owner.sessionCookie
+      );
+      await store.flush();
+
+      const previous = structuredClone(store.snapshot());
+      const current = structuredClone(previous);
+      const items = current.receiptLineItems.filter((item) => item.receiptId === receipt.id);
+      expect(items).toHaveLength(2);
+      const [edited, sibling] = items;
+      if (edited === undefined || sibling === undefined) throw new Error("Missing line items.");
+      edited.quantity = 5;
+
+      await client.query("begin");
+      await saveRelationalCoreRecords(
+        client as unknown as Parameters<typeof saveRelationalCoreRecords>[0],
+        current,
+        previous
+      );
+      await client.query("commit");
+
+      const persisted = await client.query<{ id: string; quantity: string }>(
+        "select id, quantity::text from receipt_line_items where receipt_id = $1 order by id",
+        [receipt.id]
+      );
+      expect(persisted.rows.map((row) => row.id).sort()).toEqual([edited.id, sibling.id].sort());
+      expect(Number(persisted.rows.find((row) => row.id === edited.id)?.quantity)).toBe(5);
+    } finally {
+      await client.query("rollback").catch(() => undefined);
+      client.release();
+      await app.close();
+      await store.close();
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("writes journal entries a failed write left behind when the store closes before the retry", async () => {
+    // A graceful shutdown (SIGTERM -> close()) used to cancel the pending retry without a final
+    // save, losing the missed entries for good: boot only backfills an empty journal.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "60000";
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await pool.query(
+        "alter table account_sync_changes add constraint force_journal_close_failure check (false) not valid"
+      );
+      let missed: ReturnType<typeof store.continueWithChannelPin>;
+      try {
+        missed = store.continueWithChannelPin({
+          channel: "phone",
+          destination: `+2547${tag}001`,
+          pin: "7421"
+        });
+        await store.flush();
+        expect((await store.health()).syncJournal.status).toBe("degraded");
+      } finally {
+        await pool.query(
+          "alter table account_sync_changes drop constraint if exists force_journal_close_failure"
+        );
+      }
+      // The retry is a minute away; close now, as a SIGTERM would.
+      await store.close();
+
+      const persisted = await pool.query<{ count: number }>(
+        "select count(*)::int as count from account_sync_changes where account_id = $1",
+        [missed.account.id]
+      );
+      expect(persisted.rows[0]?.count).toBeGreaterThan(0);
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      expect(
+        store.snapshot().syncChanges.filter((change) => change.accountId === missed.account.id)
+          .length
+      ).toBeGreaterThan(0);
+    } finally {
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      await store.close().catch(() => undefined);
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("keeps retrying in close() when the save in flight and the first final attempt both fail", async () => {
+    // Once closing, a failed save schedules no retry; without a final attempt the journal entries of
+    // a save that fails mid-shutdown were lost for good (boot only backfills an empty journal).
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const { Client } = requireApiDependency("pg") as {
+      Client: { prototype: { query: (...args: unknown[]) => unknown } };
+    };
+    const originalQuery = Client.prototype.query;
+    // Fail the journal of the save in flight and of the first final attempt (each ends in a
+    // rollback), then let the second final attempt through.
+    let failedJournalTransactions = 0;
+    let failJournal = true;
+    const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+      this: unknown,
+      ...args: unknown[]
+    ) {
+      const [first] = args;
+      const sql = typeof first === "string" ? first : (first as { text?: string } | null)?.text;
+      if (failJournal && sql?.includes("insert into account_sync_changes")) {
+        return Promise.reject(new Error("injected journal failure"));
+      }
+      if (failJournal && sql?.trim() === "rollback") {
+        failedJournalTransactions += 1;
+        if (failedJournalTransactions === 2) failJournal = false;
+      }
+      return originalQuery.apply(this, args);
+    });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let added: ReturnType<typeof store.continueWithChannelPin>;
+    try {
+      added = store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}001`,
+        pin: "7421"
+      });
+      // Close while that save is still in flight.
+      await store.close();
+    } finally {
+      querySpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+    try {
+      expect(failedJournalTransactions).toBe(2);
+      const persisted = await pool.query<{ count: number }>(
+        "select count(*)::int as count from account_sync_changes where account_id = $1",
+        [added.account.id]
+      );
+      expect(persisted.rows[0]?.count).toBeGreaterThan(0);
+    } finally {
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("rejects close() when journal entries are still unsaved after the final attempt", async () => {
+    // Exiting 0 would hide a permanent loss; the shutdown path logs a rejected close and exits 1.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const tag = uniqueTestTag();
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const { Client } = requireApiDependency("pg") as {
+      Client: { prototype: { query: (...args: unknown[]) => unknown } };
+    };
+    const originalQuery = Client.prototype.query;
+    const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+      this: unknown,
+      ...args: unknown[]
+    ) {
+      const [first] = args;
+      const sql = typeof first === "string" ? first : (first as { text?: string } | null)?.text;
+      if (sql?.includes("insert into account_sync_changes")) {
+        return Promise.reject(new Error("injected journal failure"));
+      }
+      return originalQuery.apply(this, args);
+    });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}002`,
+        pin: "7421"
+      });
+      await store.flush();
+      expect((await store.health()).syncJournal.status).toBe("degraded");
+      await expect(store.close()).rejects.toBeDefined();
+    } finally {
+      querySpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  }, 120_000);
+
+  it("close() is idempotent: repeated calls share one shutdown", async () => {
+    expect(databaseUrl).toBeDefined();
+    const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const first = store.close();
+    expect(store.close()).toBe(first);
+    await expect(first).resolves.toBeUndefined();
+    // Calling again after shutdown must not end the pools a second time.
+    await expect(store.close()).resolves.toBeUndefined();
+  }, 60_000);
+
+  it("keeps a failed save recorded when a later passkey ceremony write succeeds", async () => {
+    // A passkey ceremony write is its own persistence operation. Its success used to clear the
+    // failure of an earlier snapshot save, so flush() resolved and close() skipped its final save,
+    // silently losing the failed snapshot's records.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "60000";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const { Client } = requireApiDependency("pg") as {
+      Client: { prototype: { query: (...args: unknown[]) => unknown } };
+    };
+    const originalQuery = Client.prototype.query;
+    const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+      this: unknown,
+      ...args: unknown[]
+    ) {
+      const [first] = args;
+      const sql = typeof first === "string" ? first : (first as { text?: string } | null)?.text;
+      if (sql?.includes("insert into accounts")) {
+        return Promise.reject(new Error("injected relational failure"));
+      }
+      return originalQuery.apply(this, args);
+    });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const added = store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}001`,
+        pin: "7421"
+      });
+      await expect(store.flush()).rejects.toThrow("injected relational failure");
+      querySpy.mockRestore();
+
+      await store.beginPasskeyAuthentication({ rpId: "localhost", purpose: "pin_recovery" });
+      await expect(store.flush()).rejects.toThrow("injected relational failure");
+
+      await store.close();
+      const persisted = await pool.query("select 1 from accounts where id = $1", [
+        added.account.id
+      ]);
+      expect(persisted.rows).toHaveLength(1);
+    } finally {
+      querySpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      await store.close().catch(() => undefined);
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("rewrites a record whose save lost its commit acknowledgement, even after it reverts", async () => {
+    // If a commit lands but the client sees an error, the baseline must stop trusting the touched
+    // records: otherwise a value reverted before the next save diffs as unchanged and the database
+    // keeps the reverted-away value forever.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "60000";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const { Client } = requireApiDependency("pg") as {
+      Client: { prototype: { query: (...args: unknown[]) => unknown } };
+    };
+    const originalQuery = Client.prototype.query;
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const actor = store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}001`,
+        pin: "7421"
+      });
+      const created = store.createBusiness({
+        sessionId: actor.session.id,
+        name: "Ack Lost Shop",
+        language: "en"
+      }) as { business: { id: string } };
+      const businessId = created.business.id;
+      store.updateBusinessTimezone({
+        sessionId: actor.session.id,
+        businessId,
+        timezone: "Africa/Nairobi"
+      });
+      await store.flush();
+
+      let commitAckLost = false;
+      const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        const [first] = args;
+        const sql = typeof first === "string" ? first : (first as { text?: string } | null)?.text;
+        const result = originalQuery.apply(this, args);
+        if (!commitAckLost && sql?.trim() === "commit") {
+          commitAckLost = true;
+          return (result as Promise<unknown>).then(() => {
+            throw new Error("Connection terminated unexpectedly");
+          });
+        }
+        return result;
+      });
+      try {
+        store.updateBusinessTimezone({
+          sessionId: actor.session.id,
+          businessId,
+          timezone: "Europe/London"
+        });
+        await expect(store.flush()).rejects.toThrow("Connection terminated unexpectedly");
+      } finally {
+        querySpy.mockRestore();
+      }
+      const landed = await pool.query<{ timezone: string }>(
+        "select timezone from businesses where id = $1",
+        [businessId]
+      );
+      expect(landed.rows[0]?.timezone).toBe("Europe/London");
+
+      store.updateBusinessTimezone({
+        sessionId: actor.session.id,
+        businessId,
+        timezone: "Africa/Nairobi"
+      });
+      await store.flush();
+      const healed = await pool.query<{ timezone: string }>(
+        "select timezone from businesses where id = $1",
+        [businessId]
+      );
+      expect(healed.rows[0]?.timezone).toBe("Africa/Nairobi");
+    } finally {
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      await store.close().catch(() => undefined);
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("still deletes a row whose delete commit failed, on the next unrelated save", async () => {
+    // After a failed save the baseline drops the records the attempt touched, which would also hide
+    // a deletion from the content-equality delete gate; the forced delete check must cover it.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "60000";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store } });
+    const { Client } = requireApiDependency("pg") as {
+      Client: { prototype: { query: (...args: unknown[]) => unknown } };
+    };
+    const originalQuery = Client.prototype.query;
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const owner = await createOwnerBusiness(app, `2547${tag}002`);
+      const businessId = owner.business.id;
+      const supplier = await postJson<SupplierBusinessCardSummary>(
+        app,
+        `/businesses/${businessId}/suppliers`,
+        { name: "Failed Delete Supplier", phone: "+254711222337", email: null, notes: null },
+        owner.sessionCookie
+      );
+      await store.flush();
+
+      let commitFailed = false;
+      const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        const [first] = args;
+        const sql = typeof first === "string" ? first : (first as { text?: string } | null)?.text;
+        if (!commitFailed && sql?.trim() === "commit") {
+          // Never sent: the transaction is rolled back, so the delete really did not happen.
+          commitFailed = true;
+          return Promise.reject(new Error("injected commit failure"));
+        }
+        return originalQuery.apply(this, args);
+      });
+      try {
+        store.deleteSupplier({
+          sessionId: readSessionCookie(owner.sessionCookie),
+          businessId,
+          supplierId: supplier.id
+        });
+        await expect(store.flush()).rejects.toThrow("injected commit failure");
+      } finally {
+        querySpy.mockRestore();
+      }
+      const stillThere = await pool.query("select 1 from suppliers where id = $1", [supplier.id]);
+      expect(stillThere.rows).toHaveLength(1);
+
+      store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}003`,
+        pin: "7421"
+      });
+      await store.flush();
+      const removed = await pool.query("select 1 from suppliers where id = $1", [supplier.id]);
+      expect(removed.rows).toHaveLength(0);
+    } finally {
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      await app.close();
+      await store.close().catch(() => undefined);
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("deletes a normalized-only record whose delete commit failed, and it stays gone after restart", async () => {
+    // cp2_* collections are skipped when content-identical to the baseline; after a failed save
+    // that shrank the baseline, a forced check must still rewrite (and so prune) the collection.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "60000";
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const { Client } = requireApiDependency("pg") as {
+      Client: { prototype: { query: (...args: unknown[]) => unknown } };
+    };
+    const originalQuery = Client.prototype.query;
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const operator = store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}001`,
+        pin: "7421"
+      });
+      store.grantPlatformOperator({ accountId: operator.account.id, grantedBy: "test" });
+      store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}002`,
+        pin: "7421"
+      });
+      await store.flush();
+      const operatorRow = () =>
+        pool.query("select 1 from cp2_platform_operators where entity_id = $1", [
+          operator.account.id
+        ]);
+      expect((await operatorRow()).rows).toHaveLength(1);
+
+      let commitFailed = false;
+      const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        const [first] = args;
+        const sql = typeof first === "string" ? first : (first as { text?: string } | null)?.text;
+        if (!commitFailed && sql?.trim() === "commit") {
+          commitFailed = true;
+          return Promise.reject(new Error("injected commit failure"));
+        }
+        return originalQuery.apply(this, args);
+      });
+      try {
+        store.revokePlatformOperator(operator.account.id);
+        store.continueWithChannelPin({
+          channel: "phone",
+          destination: `+2547${tag}003`,
+          pin: "7421"
+        });
+        await expect(store.flush()).rejects.toThrow("injected commit failure");
+      } finally {
+        querySpy.mockRestore();
+      }
+      expect((await operatorRow()).rows).toHaveLength(1);
+
+      store.continueWithChannelPin({
+        channel: "phone",
+        destination: `+2547${tag}004`,
+        pin: "7421"
+      });
+      await store.flush();
+      expect((await operatorRow()).rows).toHaveLength(0);
+
+      await store.close();
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      expect(
+        store.snapshot().platformOperators?.some((grant) => grant.accountId === operator.account.id)
+      ).toBe(false);
+    } finally {
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      await store.close().catch(() => undefined);
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("keeps the journal delete check owed across two journal failures in a row", async () => {
+    // The owed check only matters when the failing saves add no journal entries of their own (an
+    // addition would force the check anyway): the first failing save here comes from a supplier
+    // change (suppliers are not journaled) and the second from the retry timer, with no mutation.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "50";
+    process.env.DB_PERSISTENCE_RETRY_MAX_MS = "200";
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    let app = buildApi({ cp2: { store } });
+    const { Client } = requireApiDependency("pg") as {
+      Client: { prototype: { query: (...args: unknown[]) => unknown } };
+    };
+    const originalQuery = Client.prototype.query;
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      // A purged shop journals a "shops" delete tombstone; expire it so the next pull prunes it.
+      const purged = await createOwnerBusiness(app, `2547${tag}010`);
+      const purgedBusinessId = purged.business.id;
+      const deletion = await postJson<{ request: { id: string } }>(
+        app,
+        `/businesses/${purgedBusinessId}/shop-deletion/request`,
+        { shopId: purged.business.sokoId },
+        purged.sessionCookie
+      );
+      await postJson(
+        app,
+        `/businesses/${purgedBusinessId}/shop-deletion/${deletion.request.id}/finalize`,
+        { pin: "1234", acknowledgement: true, idempotencyKey: `double-${purgedBusinessId}` },
+        purged.sessionCookie
+      );
+      store.purgeExpiredShopDeletions(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000));
+      await app.close();
+      await store.flush();
+      await store.close();
+      await pool.query(
+        `update account_sync_changes set tombstone_expires_at = now() - interval '1 day'
+          where operation = 'delete' and entity_id = $1`,
+        [purgedBusinessId]
+      );
+
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      app = buildApi({ cp2: { store } });
+      const owner = await createOwnerBusiness(app, `2547${tag}011`);
+      await store.flush();
+
+      let failedJournalDeletes = 0;
+      const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        const [first] = args;
+        const sql = typeof first === "string" ? first : (first as { text?: string } | null)?.text;
+        if (failedJournalDeletes < 2 && sql?.includes("delete from account_sync_changes")) {
+          failedJournalDeletes += 1;
+          return Promise.reject(new Error("injected journal delete failure"));
+        }
+        return originalQuery.apply(this, args);
+      });
+      const tombstoneRows = async () =>
+        (
+          await pool.query(
+            "select 1 from account_sync_changes where operation = 'delete' and entity_id = $1",
+            [purgedBusinessId]
+          )
+        ).rows.length;
+      try {
+        const journalBefore = store.snapshot().syncChanges.length;
+        store.pullSyncChanges({ sessionId: readSessionCookie(owner.sessionCookie), cursor: null });
+        store.createSupplier({
+          sessionId: readSessionCookie(owner.sessionCookie),
+          businessId: owner.business.id,
+          supplier: {
+            name: "Prune Only Supplier",
+            phone: "+254711222339",
+            email: null,
+            notes: null
+          }
+        });
+        // Pruning removed the tombstone and the supplier added no journal entry.
+        expect(store.snapshot().syncChanges.length).toBe(journalBefore - 1);
+        await store.flush();
+        // The retry timer makes the second, mutation-free attempt; the third succeeds.
+        await waitUntil(async () => failedJournalDeletes === 2 && (await tombstoneRows()) === 0);
+      } finally {
+        querySpy.mockRestore();
+      }
+      expect(await tombstoneRows()).toBe(0);
+    } finally {
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      delete process.env.DB_PERSISTENCE_RETRY_MAX_MS;
+      await app.close();
+      await store.close().catch(() => undefined);
+      await pool.end();
+    }
+  }, 120_000);
+
+  it("deletes a record added by a save whose commit ack was lost, once memory deletes it", async () => {
+    // The lost-ack save may have inserted the supplier. When it is deleted before the next
+    // successful save, the collection looks unchanged against the shrunk baseline, so the attempt's
+    // addition alone must force the delete pass, or the row survives and returns on restart.
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const tag = uniqueTestTag();
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "60000";
+    let store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store } });
+    const { Client } = requireApiDependency("pg") as {
+      Client: { prototype: { query: (...args: unknown[]) => unknown } };
+    };
+    const originalQuery = Client.prototype.query;
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const owner = await createOwnerBusiness(app, `2547${tag}020`);
+      const businessId = owner.business.id;
+      const sessionId = readSessionCookie(owner.sessionCookie);
+      await store.flush();
+
+      let commitAckLost = false;
+      const querySpy = vi.spyOn(Client.prototype, "query").mockImplementation(function (
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        const [first] = args;
+        const sql = typeof first === "string" ? first : (first as { text?: string } | null)?.text;
+        const result = originalQuery.apply(this, args);
+        if (!commitAckLost && sql?.trim() === "commit") {
+          commitAckLost = true;
+          return (result as Promise<unknown>).then(() => {
+            throw new Error("Connection terminated unexpectedly");
+          });
+        }
+        return result;
+      });
+      let supplierId: string;
+      try {
+        supplierId = store.createSupplier({
+          sessionId,
+          businessId,
+          supplier: { name: "Ack Lost Supplier", phone: "+254711222338", email: null, notes: null }
+        }).id;
+        await expect(store.flush()).rejects.toThrow("Connection terminated unexpectedly");
+      } finally {
+        querySpy.mockRestore();
+      }
+      const supplierRows = async () =>
+        (await pool.query("select 1 from suppliers where id = $1", [supplierId])).rows.length +
+        (await pool.query("select 1 from cp2_suppliers where entity_id = $1", [supplierId])).rows
+          .length;
+      expect(await supplierRows()).toBeGreaterThan(0);
+
+      store.deleteSupplier({ sessionId, businessId, supplierId });
+      await store.flush();
+      expect(await supplierRows()).toBe(0);
+
+      await app.close();
+      await store.close();
+      store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      expect(store.snapshot().suppliers.some((supplier) => supplier.id === supplierId)).toBe(false);
+    } finally {
+      consoleErrorSpy.mockRestore();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      await app.close();
+      await store.close().catch(() => undefined);
+      await pool.end();
+    }
+  }, 120_000);
+
   it("loads every normalized collection in one query with the same rows and order as one query per table", async () => {
     expect(databaseUrl).toBeDefined();
     const pool = new Pool({ connectionString: databaseUrl ?? "" });
@@ -2556,7 +3969,7 @@ describePostgres("CP2 Postgres store", () => {
     }
   }, 15_000);
 
-  it("lets the retention trigger revoke an expired session once, then stops rewriting it", async () => {
+  it("never rewrites an untouched expired session; the compatibility copy is revoked once, then left alone", async () => {
     expect(databaseUrl).toBeDefined();
     const connectionString = databaseUrl ?? "";
     const pool = new Pool({ connectionString });
@@ -2592,6 +4005,16 @@ describePostgres("CP2 Postgres store", () => {
         await pool.query("alter table cp2_sessions enable trigger cp2_sessions_retention_trigger");
       }
 
+      const relationalBeforeSave = (
+        await pool.query<{
+          revoked_at: Date | null;
+          revocation_reason: string | null;
+          xmin: string;
+        }>("select revoked_at, revocation_reason, xmin::text from sessions where id = $1", [
+          sessionId
+        ])
+      ).rows[0];
+
       const secondStore = await createPostgresCp2Store({ databaseUrl: connectionString });
       const secondApp = buildApi({ cp2: { store: secondStore } });
       await createOwnerBusiness(secondApp, `254734${Date.now().toString().slice(-6)}`);
@@ -2615,15 +4038,19 @@ describePostgres("CP2 Postgres store", () => {
             [sessionId]
           )
         ).rows[0];
+      // Saves write only relational rows that changed since load, so the untouched expired session
+      // is not rewritten at all (same xmin). Before, every save re-upserted all 418 Neon sessions
+      // one round trip at a time. Leaving revoked_at null is safe: getSession and refresh enforce
+      // every expiry on use, and nothing purges by revoked_at.
       const revoked = await revokedRow();
+      expect(revoked).toEqual(relationalBeforeSave);
+      // The normalized cp2_sessions collection is still saved whole when it changes, so its
+      // retention trigger revokes the expired copy once...
       const compatibilityRevoked = await compatibilityRow();
       expect(compatibilityRevoked?.record.revokedAt).toBeTruthy();
-      expect(revoked?.revoked_at).not.toBeNull();
-      expect(revoked?.revocation_reason).toBe("expired");
 
-      // Later saves must not rewrite the already-revoked row: the trigger would stamp a fresh
-      // revoked_at on every save, so without the guard's expired-revocation carve-out every
-      // expired session was rewritten on every persist (all 418 sessions in the Neon database).
+      // ...and later saves must not rewrite it again: the trigger would stamp a fresh revokedAt on
+      // every save without the guard's expired-revocation carve-out.
       const thirdStore = await createPostgresCp2Store({ databaseUrl: connectionString });
       const thirdApp = buildApi({ cp2: { store: thirdStore } });
       await createOwnerBusiness(thirdApp, `254735${Date.now().toString().slice(-6)}`);
